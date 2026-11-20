@@ -965,6 +965,43 @@ All phases land in 1.94.6 on this branch, in this order:
 | The browser's tool set: "Not in this version: … drag" | AD-17: `browser_drag` |
 | BB-19 routing sentence | AD-16 wording |
 
+## What building the wrapper measured
+
+Phase 2 (the wrapper, the consent levels, the refusals and `browser_drag`) landed on this branch on
+2026-11-20. Where building it changed or settled something above:
+
+- **Double and triple clicks are physical on every OS** in v1.3.1 (`double-click` says "requires
+  --headed"; the macOS adapter's chain is a physical multi-click), so AD-11's "headless where the
+  element offers an open action" does not apply to this pin: a double click is headed and an act
+  call everywhere, and unsupported on Wayland.
+- **Display captures are refused on every OS while a Biorouter window is on that display**, the
+  Linux rule of AD-12, until Electron content protection is wired from the grant state and measured.
+  App and window captures are unaffected.
+- **`open_app` on Linux takes only an installed desktop entry** (or an app already running):
+  upstream's `launch` also starts any bare command from `PATH`, and a command such as `shutdown`
+  needs no arguments to do harm. On Windows `open_app` jobs allow silent breakaway, because the
+  engine starts the app with `CreateProcessW` and the job would otherwise end the person's app with
+  the command.
+- **The AT-SPI floor is set to 2.52.0** (Ubuntu 24.04's bridge, which upstream names as working)
+  until the first release with `dc0dc33` is known; an unreadable version is refused.
+- **A reference is checked before the engine is located**, so a reference from another chat, an
+  older request or no observation is refused even where no payload is installed.
+- **The disclaimed spawn works with a real engine**: `version` and a refused bare reference run
+  through `posix_spawn` with `responsibility_spawnattrs_setdisclaim` on macOS 26 (an ignored test,
+  run with `BIOROUTER_COMPUTER_USE_DIR`). Whether TCC then attributes Accessibility to the Copilot
+  bundle is still the live gate of AD-22.
+- **Every option the wrapper writes exists in the pinned engine**, checked against each command's
+  `--help` (another ignored test).
+- **`browser_drag`'s gesture works in Electron 39**: the compiled `performDrag` reordered an HTML5
+  list, moved a pointer-events card into a column and dropped text on a drop zone in a hidden window,
+  each through the mechanism the design names. Copilot's desktop `drag` has not been run against a
+  real app: that needs Accessibility for the Copilot bundle and moves the person's pointer, so it
+  stays with the live macOS and fixture gates.
+- **Not yet built**: the status and route `grant` field, the card's second button and the CLI
+  prompt (Phase 3), content protection, `BIOROUTER_DESKTOP_MAIN_PID` from the launcher (the
+  daemon's ancestors and the install folder already cover the desktop app's processes), and the
+  check that a coordinate click lands on the app's own window rather than one above it.
+
 ## Open questions and things to measure first
 
 - Whether a process started with responsibility disclaimed from `biorouterd` gets the Copilot
