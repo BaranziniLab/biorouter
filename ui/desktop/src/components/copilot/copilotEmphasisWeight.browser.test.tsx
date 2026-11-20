@@ -59,7 +59,8 @@ const STUBS: { filter: RegExp; contents: string }[] = [
       export class CopilotNotApplicable extends Error {}
       export const copilotStatus = async () => STATUS;
       export const copilotDecision = async () => STATUS;
-      export const copilotSetup = async () => ({ status: 'ready', permissions: {} });`,
+      export const copilotSetup = async () => ({ status: 'ready', permissions: {} });
+      export const copilotRequestPermissions = async () => ({ status: 'ready', permissions: {} });`,
   },
   {
     filter: /^\.\.\/\.\.\/utils\/surface$/,

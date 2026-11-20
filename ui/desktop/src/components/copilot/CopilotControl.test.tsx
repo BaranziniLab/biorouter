@@ -86,12 +86,12 @@ describe('CopilotControl', () => {
     expect(container).toBeEmptyDOMElement();
     mocks.status.mockResolvedValue(status);
     await act(async () => vi.advanceTimersByTime(2000));
-    expect(await screen.findByRole('button', { name: 'Allow control and sharing' })).toBeVisible();
+    expect(await screen.findByRole('button', { name: 'Allow' })).toBeVisible();
   });
 
   it('discloses destination and host before a public grant and retains a working Stop', async () => {
     render(<CopilotControl sessionId="task-a" />);
-    const allow = await screen.findByRole('button', { name: 'Allow control and sharing' });
+    const allow = await screen.findByRole('button', { name: 'Allow' });
     expect(screen.getByText(status.destination, { exact: false })).toBeVisible();
     expect(screen.getByText(status.target)).toBeVisible();
     expect(screen.getByText(/including sensitive information/)).toBeVisible();
@@ -106,12 +106,65 @@ describe('CopilotControl', () => {
     expect(mocks.decision).not.toHaveBeenCalled();
     fireEvent.click(allow);
     await screen.findByText('Biorouter Copilot active');
-    expect(mocks.decision).toHaveBeenCalledWith(status, 'consent', '');
-    expect(screen.queryByRole('button', { name: 'Allow control and sharing' })).toBeNull();
+    expect(mocks.decision).toHaveBeenCalledWith(status, 'consent', '', 'act');
+    expect(screen.queryByRole('button', { name: 'Allow' })).toBeNull();
     mocks.decision.mockResolvedValueOnce({ ...status, state: 'stopped', requested: false });
     fireEvent.click(screen.getByRole('button', { name: 'Stop' }));
     await screen.findByRole('button', { name: 'Show Biorouter Copilot details' });
     expect(mocks.decision.mock.calls[1][1]).toBe('revoke');
+  });
+
+  // AD-10: one card, two answers. Only let it look is an observe grant for this request, the
+  // active line says which grant holds, and what Stop cannot undo shows only under control.
+  it('offers Only let it look beside Allow and says what each active grant allows', async () => {
+    mocks.decision.mockResolvedValueOnce({
+      ...status,
+      requested: false,
+      state: 'active',
+      grant: 'observe',
+    });
+    render(<CopilotControl sessionId="task-a" />);
+    const look = await screen.findByRole('button', { name: 'Only let it look' });
+    expect(screen.getByRole('button', { name: 'Allow' })).toBeVisible();
+    expect(screen.getByRole('button', { name: 'Cancel' })).toBeVisible();
+    // What each answer allows is the InfoTip beside the buttons, not a paragraph.
+    expect(
+      screen.getByRole('button', { name: 'About what each answer allows' })
+    ).toHaveAccessibleDescription(/Only let it look lets it see them and change nothing/);
+    fireEvent.click(look);
+    await waitFor(() =>
+      expect(mocks.decision).toHaveBeenCalledWith(status, 'consent', '', 'observe')
+    );
+    expect(await screen.findByText(/looking only, for this request/)).toBeVisible();
+    expect(screen.getByRole('button', { name: 'Stop' })).toBeVisible();
+    // Looking changes nothing, so there is nothing for Stop to fail to undo.
+    expect(screen.queryByText('Stop cannot undo changes already made.')).toBeNull();
+  });
+
+  it('keeps what Stop cannot undo in view while control is held, even folded', async () => {
+    mocks.status.mockResolvedValue({ ...status, requested: false, state: 'active', grant: 'act' });
+    render(<CopilotControl sessionId="task-a" />);
+    expect(await screen.findByText(/looking and controlling, for this request/)).toBeVisible();
+    expect(screen.getByRole('button', { name: 'Show Biorouter Copilot details' })).toHaveAttribute(
+      'aria-expanded',
+      'false'
+    );
+    expect(screen.getByText('Stop cannot undo changes already made.')).toBeVisible();
+  });
+
+  it('asks for the passphrase before either answer in a browser', async () => {
+    mocks.browser = true;
+    render(<CopilotControl sessionId="task-a" />);
+    const look = await screen.findByRole('button', { name: 'Only let it look' });
+    expect(look).toBeDisabled();
+    fireEvent.change(screen.getByLabelText('Biorouter Copilot approval key', { exact: false }), {
+      target: { value: 'human-passphrase' },
+    });
+    expect(look).toBeEnabled();
+    fireEvent.click(look);
+    await waitFor(() =>
+      expect(mocks.decision).toHaveBeenCalledWith(status, 'consent', 'human-passphrase', 'observe')
+    );
   });
 
   it('uses the canonical private disclosure once and exposes an explicit task grant', async () => {
@@ -124,7 +177,7 @@ describe('CopilotControl', () => {
       handoff_required: true,
     });
     render(<CopilotControl sessionId="task-a" />);
-    await screen.findByRole('button', { name: 'Allow for this task' });
+    await screen.findByRole('button', { name: 'Allow' });
     expect(screen.getAllByText(disclosure)).toHaveLength(1);
     expect(mocks.decision).not.toHaveBeenCalled();
   });
@@ -132,7 +185,7 @@ describe('CopilotControl', () => {
   it('requires the terminal passphrase in a browser and names the backend target', async () => {
     mocks.browser = true;
     render(<CopilotControl sessionId="task-a" />);
-    const allow = await screen.findByRole('button', { name: 'Allow control and sharing' });
+    const allow = await screen.findByRole('button', { name: 'Allow' });
     expect(allow).toBeDisabled();
     // Which computer is controlled: named on the Computer line, explained by its InfoTip.
     expect(screen.getByText(status.target)).toBeVisible();
@@ -144,7 +197,7 @@ describe('CopilotControl', () => {
     });
     fireEvent.click(allow);
     await waitFor(() =>
-      expect(mocks.decision).toHaveBeenCalledWith(status, 'consent', 'human-passphrase')
+      expect(mocks.decision).toHaveBeenCalledWith(status, 'consent', 'human-passphrase', 'act')
     );
   });
 
@@ -157,14 +210,14 @@ describe('CopilotControl', () => {
         target: { value: 'human-passphrase' },
       }
     );
-    fireEvent.click(screen.getByRole('button', { name: 'Allow control and sharing' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Allow' }));
     await screen.findByText('Biorouter Copilot active');
     mocks.status.mockResolvedValue({ ...status, session_id: 'task-b' });
     rerender(<CopilotControl sessionId="task-b" />);
     expect(
       await screen.findByLabelText('Biorouter Copilot approval key', { exact: false })
     ).toHaveValue('');
-    expect(screen.getByRole('button', { name: 'Allow control and sharing' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Allow' })).toBeDisabled();
   });
 
   it('keeps acknowledgement available after a refused or stale challenge', async () => {
@@ -172,10 +225,10 @@ describe('CopilotControl', () => {
       new Error('The model destination changed. Review the new destination.')
     );
     render(<CopilotControl sessionId="task-a" />);
-    fireEvent.click(await screen.findByRole('button', { name: 'Allow control and sharing' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Allow' }));
     expect(await screen.findByRole('alert')).toHaveTextContent('destination changed');
     expect(screen.queryByText('Biorouter Copilot active')).toBeNull();
-    expect(screen.getByRole('button', { name: 'Allow control and sharing' })).toBeEnabled();
+    expect(screen.getByRole('button', { name: 'Allow' })).toBeEnabled();
   });
 
   it('does not let a pre-consent poll overwrite an acknowledged grant', async () => {
@@ -188,7 +241,7 @@ describe('CopilotControl', () => {
         })
     );
     render(<CopilotControl sessionId="task-a" />);
-    const allow = await screen.findByRole('button', { name: 'Allow control and sharing' });
+    const allow = await screen.findByRole('button', { name: 'Allow' });
     await act(async () => vi.advanceTimersByTime(2000));
     fireEvent.click(allow);
     await screen.findByText('Biorouter Copilot active');
@@ -199,13 +252,13 @@ describe('CopilotControl', () => {
   it('keeps an approved task active across polls without prompting or approving again', async () => {
     vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
     render(<CopilotControl sessionId="task-a" />);
-    fireEvent.click(await screen.findByRole('button', { name: 'Allow control and sharing' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Allow' }));
     await screen.findByText('Biorouter Copilot active');
     mocks.status.mockResolvedValue({ ...status, state: 'active', requested: false });
     await act(async () => vi.advanceTimersByTime(2000));
     await act(async () => vi.advanceTimersByTime(2000));
     expect(screen.getByRole('button', { name: 'Stop' })).toBeVisible();
-    expect(screen.queryByRole('button', { name: 'Allow control and sharing' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Allow' })).toBeNull();
     expect(mocks.decision).toHaveBeenCalledTimes(1);
   });
 
@@ -266,7 +319,7 @@ describe('CopilotControl', () => {
       activity_id: 'new-request',
     });
     await act(async () => vi.advanceTimersByTime(2000));
-    expect(await screen.findByRole('button', { name: 'Allow control and sharing' })).toBeVisible();
+    expect(await screen.findByRole('button', { name: 'Allow' })).toBeVisible();
     expect(mocks.decision).not.toHaveBeenCalled();
   });
 
@@ -281,7 +334,7 @@ describe('CopilotControl', () => {
     expect(screen.getByRole('button', { name: 'Show Biorouter Copilot request' })).toBeVisible();
     mocks.status.mockResolvedValue({ ...legacy, challenge_id: 'next-legacy-request' });
     await act(async () => vi.advanceTimersByTime(2000));
-    expect(await screen.findByRole('button', { name: 'Allow control and sharing' })).toBeVisible();
+    expect(await screen.findByRole('button', { name: 'Allow' })).toBeVisible();
     expect(mocks.decision).not.toHaveBeenCalled();
   });
 
@@ -338,7 +391,7 @@ describe('CopilotControl', () => {
     expect(screen.getByText('Grant Accessibility permission.')).toBeVisible();
     expect(mocks.setup).toHaveBeenCalledTimes(1);
     expect(mocks.decision).not.toHaveBeenCalled();
-    expect(screen.queryByRole('button', { name: 'Allow control and sharing' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Allow' })).toBeNull();
   });
 
   it('hides a disabled capability without granting or re-enabling it', async () => {
@@ -355,7 +408,7 @@ describe('CopilotControl', () => {
     expect(open).toHaveAttribute('aria-expanded', 'false');
     // How to start is the title's InfoTip, so it is there whether the details are open or not.
     const about = screen.getByRole('button', { name: 'About Biorouter Copilot' });
-    expect(about).toHaveAccessibleDescription(/Ask Biorouter to use the computer/);
+    expect(about).toHaveAccessibleDescription(/Ask Biorouter to use an app on this computer/);
     fireEvent.click(open);
     expect(screen.getByText(/Data destination/)).toBeVisible();
     const close = screen.getByRole('button', { name: 'Hide Biorouter Copilot details' });
@@ -410,7 +463,7 @@ describe('CopilotControl', () => {
 
   it('withholds the collapse control while an approval is pending', async () => {
     render(<CopilotControl sessionId="task-a" />);
-    await screen.findByRole('button', { name: 'Allow control and sharing' });
+    await screen.findByRole('button', { name: 'Allow' });
     // The Allow button lives inside the details block; a chevron that could hide
     // it would be a control that hides the decision it is waiting for.
     expect(screen.queryByRole('button', { name: /Biorouter Copilot details/ })).toBeNull();
@@ -488,7 +541,7 @@ describe('CopilotControl', () => {
     // the type system draws only 400 and 600. jsdom has no preflight, so this case
     // pins the class; copilotEmphasisWeight.browser.test.tsx reads the weight.
     render(<CopilotControl sessionId="task-a" />);
-    await screen.findByRole('button', { name: 'Allow control and sharing' });
+    await screen.findByRole('button', { name: 'Allow' });
     const name = screen.getByText(status.target);
     expect(name.tagName).toBe('STRONG');
     expect(name).toHaveClass('font-semibold');
