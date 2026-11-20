@@ -105,6 +105,16 @@ Errors: Don't add error context that doesn't add useful information (e.g., `.con
 Simplicity: Avoid overly defensive code - trust Rust's type system
 Logging: Clean up existing logs, don't add more unless for errors or security events
 
+## Pull Request Review Before Merge
+
+Apply the same review standard to every contributor PR, including later PRs from a contributor whose earlier work passed review:
+
+- Review security, correctness, style, architecture, and consistency with the codebase. Inspect the actual changes and affected callers; passing CI alone is insufficient.
+- Keep UI and UX loyal to Biorouter's existing colors, shapes, spacing, animations, components, and interactions. Reuse established patterns, keep flows minimal, and fold secondary details into existing helper text or expanders. Do not introduce a new aesthetic or interaction model for a fix.
+- Reproduce reported bugs, add meaningful failing-first regression coverage, and run the relevant checks. For UI or desktop behavior, also verify the affected interactions live and check the applicable themes and platforms.
+- Revise findings and retest affected behavior before merging. Record what was checked and any remaining limitations. Preserve failures rather than treating an unexplained successful rerun as proof that a failure was harmless.
+- Retain required human review for security-sensitive code, credential handling, MCP protocol changes, and async or concurrency logic. Complete the final integrated version's required CI and release checks before publication.
+
 ## Never
 
 Never: Edit ui/desktop/openapi.json manually
