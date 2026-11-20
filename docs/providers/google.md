@@ -12,10 +12,12 @@ and defaults; saved model selections remain explicit choices.
 
 Gemini 4 Hydrogen is the default. Google recommends it for everyday coding,
 tool-using agents and multimodal work. Gemini 4 Argon and Carbon follow it in the
-picker for deeper reasoning. Gemini 3.5 Flash-Lite remains the inexpensive fast
-model. See Google's [model selection guide](https://aistudio.google.com/docs/latest-model).
+picker for deeper reasoning. Gemini 4 Neon is offered after them and is never the
+default; Google lists it at $3 input and $15 output per million tokens, with implicit
+caching only (pricing page read 2026-11-19). Gemini 3.5 Flash-Lite remains the
+inexpensive fast model. See Google's [model selection guide](https://aistudio.google.com/docs/latest-model).
 
-All three Gemini 4 models accept images and share 1,048,576 tokens across input,
+All four Gemini 4 models accept images and share 1,048,576 tokens across input,
 thinking and output. Hydrogen defaults to high thinking; Argon and Carbon default
 to medium. The adapter leaves those defaults in place. Google ignores sampling
 parameters on this family, so the request omits temperature. Long decode requires
