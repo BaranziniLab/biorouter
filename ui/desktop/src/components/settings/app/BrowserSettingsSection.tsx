@@ -13,6 +13,7 @@ import {
   useChromeImportStatus,
 } from '../../browser/chromeImport/useChromeImportStatus';
 import { Button } from '../../ui/button';
+import { ConfirmationModal } from '../../ui/ConfirmationModal';
 import { SettingRow, SettingSection } from '../../ui/setting-row';
 import { SETTINGS_SECTION_IDS } from '../settingsSections';
 
@@ -26,6 +27,8 @@ export default function BrowserSettingsSection() {
   const status = useChromeImportStatus();
   const [open, setOpen] = useState(false);
   const [removing, setRemoving] = useState<string | null>(null);
+  // L4: what Remove imported data would take, waiting for the person's yes.
+  const [confirmRemove, setConfirmRemove] = useState<ChromeImportSummary | null>(null);
 
   if (isBrowserSurface() || !chromeImportBridge()) return null;
 
@@ -61,7 +64,7 @@ export default function BrowserSettingsSection() {
             size="sm"
             aria-label={COPY.removeNamed(summary.profileName)}
             disabled={removing !== null}
-            onClick={() => void remove(summary)}
+            onClick={() => setConfirmRemove(summary)}
           >
             {removing === summary.id ? COPY.removing : COPY.remove}
           </Button>
@@ -84,6 +87,21 @@ export default function BrowserSettingsSection() {
         </Button>
       </SettingRow>
       <ChromeImportDialog open={open} onOpenChange={setOpen} />
+      <ConfirmationModal
+        isOpen={confirmRemove !== null}
+        title={COPY.confirmRemoveTitle(confirmRemove?.profileName ?? '')}
+        message={COPY.confirmRemoveMessage}
+        confirmLabel={COPY.confirmRemove}
+        cancelLabel={COPY.cancel}
+        // Not red: it takes only what the import brought, and importing again restores it.
+        confirmVariant="default"
+        onConfirm={() => {
+          const summary = confirmRemove;
+          setConfirmRemove(null);
+          if (summary) void remove(summary);
+        }}
+        onCancel={() => setConfirmRemove(null)}
+      />
     </SettingSection>
   );
 }

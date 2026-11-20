@@ -38,6 +38,10 @@ export const CHROME_IMPORT_COPY = {
   remove: 'Remove imported data',
   removeNamed: (profile: string) => `Remove data imported from Chrome (${profile})`,
   removing: 'Removing…',
+  confirmRemoveTitle: (profile: string) => `Remove data imported from Chrome (${profile})?`,
+  confirmRemoveMessage:
+    'The Biorouter Browser signs out of the sites this import logged in to, and its bookmarks, history and settings go.',
+  confirmRemove: 'Remove',
   removed: 'Imported data removed.',
   section: 'Browser',
   sectionHelp: 'The Biorouter Browser in the side panel.',

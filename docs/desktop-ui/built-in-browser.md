@@ -882,7 +882,9 @@ Allow** in the prompt, macOS remembers the choice for the requesting program. Fo
 
 **Settings > App > Browser** shows one line per import, for example "Imported from Chrome (Work) on
 Nov 19: logins for 96 sites, 412 bookmarks, 8,900 history entries, search engine", and one control,
-**Remove imported data**. It deletes:
+**Remove imported data**. It asks first, in the app's confirmation dialog ("Remove data imported
+from Chrome (Work)?", with **Remove** and **Cancel**; not red, because it takes only what the import
+brought and importing again restores it), then deletes:
 
 - every cookie the import set, found by the manifest of keys (`url`, `name`, `domain`, `path`) the
   import recorded in `browser/import-manifest.json`, which never holds values;

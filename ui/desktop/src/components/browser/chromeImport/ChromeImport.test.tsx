@@ -347,7 +347,19 @@ describe('Settings > App > Browser (BB-25)', () => {
     expect(summaryDetails({ ...SUMMARY, logins: 'not-allowed', cookies: 0 })).toBe(
       '5 bookmarks, 91 history entries, search engine, languages, default zoom. Logins were not imported because access was not allowed.'
     );
+    // L4: Remove asks first, in the app's confirmation, and Cancel keeps everything.
     await userEvent.click(screen.getByRole('button', { name: COPY.removeNamed('Work') }));
+    const ask = await screen.findByRole('dialog', { name: COPY.confirmRemoveTitle('Work') });
+    expect(ask.textContent).toContain(COPY.confirmRemoveMessage);
+    expect(bridge.remove).not.toHaveBeenCalled();
+    await userEvent.click(within(ask).getByRole('button', { name: COPY.cancel }));
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    expect(bridge.remove).not.toHaveBeenCalled();
+    expect(screen.getByTestId('settings-browser-import')).toBeTruthy();
+
+    await userEvent.click(screen.getByRole('button', { name: COPY.removeNamed('Work') }));
+    const again = await screen.findByRole('dialog', { name: COPY.confirmRemoveTitle('Work') });
+    await userEvent.click(within(again).getByRole('button', { name: COPY.confirmRemove }));
     expect(bridge.remove).toHaveBeenCalledWith('chrome-1');
     await waitFor(() => expect(screen.queryByTestId('settings-browser-import')).toBeNull());
     await userEvent.click(screen.getByTestId('settings-browser-import-open'));
