@@ -1103,6 +1103,33 @@ mod platform_extension_tests {
         assert!(extensions["chatrecall"].enabled);
         assert_eq!(extensions["chatrecall"].config.name(), "Chat Recall");
     }
+
+    /// The Dictionary capability is on in a configuration that never saved it (owner,
+    /// 2026-11-19), and a configuration that saved it off keeps it off: the default fills
+    /// only an absent entry, so an existing person's choice is never overwritten.
+    #[test]
+    fn the_dictionary_capability_is_on_unless_a_saved_choice_turned_it_off() {
+        let key = crate::dictation::activation::EXTENSION_KEY;
+        let mut fresh = IndexMap::new();
+        inject_platform_extensions(&mut fresh);
+        assert!(fresh[key].enabled, "a fresh configuration has it on");
+
+        let mut saved = IndexMap::from([(
+            key.to_string(),
+            ExtensionEntry {
+                enabled: false,
+                config: ExtensionConfig::Platform {
+                    name: crate::agents::dictionary_extension::EXTENSION_NAME.to_string(),
+                    description: "saved".to_string(),
+                    bundled: Some(true),
+                    available_tools: Vec::new(),
+                },
+            },
+        )]);
+        inject_platform_extensions(&mut saved);
+        assert!(!saved[key].enabled, "a saved off was turned on");
+        assert_eq!(saved.len(), fresh.len());
+    }
 }
 
 #[cfg(test)]

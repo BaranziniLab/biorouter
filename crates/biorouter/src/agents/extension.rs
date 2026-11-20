@@ -165,7 +165,12 @@ pub static PLATFORM_EXTENSIONS: Lazy<HashMap<&'static str, PlatformExtensionDef>
             PlatformExtensionDef {
                 name: dictionary_extension::EXTENSION_NAME,
                 description: "Suggest dictionary words from chats and add the terms you ask for",
-                default_enabled: false,
+                // Default ON (owner, 2026-11-19, replacing DD-51's off). This fills only an
+                // absent entry (`config::extensions::inject_platform_extensions`), so a
+                // configuration that saved it off keeps it off, and turning it on where it is
+                // off stays the person's act (DD-56). NOT counted by the delegation gate:
+                // `has_non_injected_extensions` excludes it by name, as it does `decisions`.
+                default_enabled: true,
                 client_factory: |ctx| Box::new(dictionary_extension::DictionaryClient::new(ctx)),
             },
         );
@@ -997,8 +1002,11 @@ mod tests {
         assert!(PLATFORM_EXTENSIONS["skills"].default_enabled);
         assert!(PLATFORM_EXTENSIONS["code_execution"].default_enabled);
         assert!(PLATFORM_EXTENSIONS["crew"].default_enabled);
+        // On by default since the owner's request of 2026-11-19, replacing DD-51's off: a
+        // configuration that saved a choice keeps it, because the default fills only an
+        // absent entry (`config::extensions::inject_platform_extensions`).
+        assert!(PLATFORM_EXTENSIONS["dictionary"].default_enabled);
         assert!(!PLATFORM_EXTENSIONS["chatrecall"].default_enabled);
-        assert!(!PLATFORM_EXTENSIONS["dictionary"].default_enabled);
     }
 
     /// Crew is a capability, not an extension: the desktop lists it in Settings → Chat →

@@ -2551,8 +2551,8 @@ mod tests {
         };
         let shown = go(&store, &piped(), set(None, None));
         assert_eq!(
-            shown.out, "agent_writes: on_request\nsuggest_from_chats: off\nlearn_from_chats: on\n",
-            "a new store suggests words from chats (owner, 2026-11-19)"
+            shown.out, "agent_writes: on_request\nsuggest_from_chats: on\nlearn_from_chats: on\n",
+            "a fresh configuration and a new store suggest words from chats (owner, 2026-11-19)"
         );
 
         let lowered = go(&store, &terminal(), set(Some(AgentWrites::Suggest), None));
@@ -2609,7 +2609,8 @@ mod tests {
     /// value is refused before any question, and managed `dictionary_agent_writes: false`
     /// refuses turning it on. Both values go through `activation.rs`, which writes this
     /// process's one configuration file, so the test runs in a process of its own: the
-    /// test above reads the same switch as off.
+    /// test above reads the same switch as on. A fresh configuration has it on (owner,
+    /// 2026-11-19), so the test turns it off first, as a person who saved it off has it.
     #[test]
     fn settings_ask_before_turning_chat_suggestions_on_and_never_before_turning_them_off() {
         if !crate::test_sandbox::in_a_process_of_its_own() {
@@ -2628,9 +2629,11 @@ mod tests {
             )
         };
         assert!(
-            !suggest_from_chats(),
-            "a fresh configuration has the capability off"
+            suggest_from_chats(),
+            "a fresh configuration has the capability on"
         );
+        biorouter::dictation::activation::activate(false).unwrap();
+        assert!(!suggest_from_chats(), "the person's saved off");
 
         let mut no = Script {
             confirms: VecDeque::from([false]),

@@ -1052,7 +1052,7 @@ fn install_gates(args: &InstallArgs) -> Result<(DictationPolicy, Roots, PathBuf)
     Ok((policy, roots, target))
 }
 
-/// Whether a verified install turns on suggesting dictionary words from chats (DD-56),
+/// Whether a verified install leaves suggesting dictionary words from chats on (DD-56),
 /// and whether a flag asked for a choice an earlier install already recorded.
 fn suggest_choice(
     policy: &DictationPolicy,
@@ -1082,11 +1082,17 @@ fn suggest_choice(
         }
         (_, Some(_)) => false,
         (Some(value), None) => value,
-        (None, None) if yes || chosen_before => false,
-        (None, None) if terminal => cliclack::confirm("Suggest dictionary words from your chats?")
-            .initial_value(true)
-            .interact()?,
-        (None, None) => false,
+        // A recorded choice stands; `activate_first_install` leaves it as it is.
+        (None, None) if chosen_before => false,
+        (None, None) if terminal && !yes => {
+            cliclack::confirm("Suggest dictionary words from your chats?")
+                .initial_value(true)
+                .interact()?
+        }
+        // No question was asked, so the configuration's own value stands: on in a fresh
+        // configuration (owner, 2026-11-19), off where the person saved it off. A script
+        // that passes `--yes` never shows the question, so it never turns the capability on.
+        (None, None) => biorouter::dictation::activation::suggest_from_chats(),
     };
     Ok((suggest_from_chats, flag_kept))
 }

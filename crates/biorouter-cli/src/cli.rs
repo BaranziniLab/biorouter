@@ -1342,7 +1342,7 @@ enum DictationCommand {
         #[arg(long, conflicts_with = "no_suggest_from_chats")]
         suggest_from_chats: bool,
 
-        /// Leave chat suggestions off after this verified install
+        /// Turn chat suggestions off after this verified install
         #[arg(long, conflicts_with = "suggest_from_chats")]
         no_suggest_from_chats: bool,
     },

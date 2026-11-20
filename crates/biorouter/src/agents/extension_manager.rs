@@ -2192,9 +2192,10 @@ impl ExtensionManager {
     /// arriving by the other door. Excluding it by name as well as by origin is
     /// what keeps the question honest.
     ///
-    /// The `decisions` extension is excluded by name for the same reason: it is
-    /// default-on and loads as `Explicit`, so counting it would open the gate in
-    /// every chat whether or not the user enabled anything.
+    /// The `decisions` extension and the `dictionary` capability are excluded by
+    /// name for the same reason: each is default-on and loads as `Explicit`, so
+    /// counting it would open the gate in every chat whether or not the user
+    /// enabled anything. The Dictionary's tools also never reach a subagent.
     pub async fn has_non_injected_extensions(&self) -> bool {
         self.extensions
             .lock()
@@ -2211,6 +2212,7 @@ impl ExtensionManager {
     fn is_not_counted_by_the_delegation_gate(name: &str) -> bool {
         name.eq_ignore_ascii_case(crate::agents::agent::Agent::SPAWN_EXTENSION)
             || name.eq_ignore_ascii_case(crate::agents::decisions_extension::EXTENSION_NAME)
+            || name.eq_ignore_ascii_case(crate::agents::dictionary_extension::EXTENSION_NAME)
     }
 
     pub async fn add_client(
@@ -4909,6 +4911,37 @@ mod tests {
         assert!(
             !manager.has_non_injected_extensions().await,
             "decisions alone must not count as a capability the user granted"
+        );
+
+        manager.add_extension(platform("todo")).await.unwrap();
+        assert!(
+            manager.has_non_injected_extensions().await,
+            "an ordinary extension still counts"
+        );
+    }
+
+    /// The Dictionary capability is on by default (owner, 2026-11-19) and loads as
+    /// Explicit, so like `decisions` it must not satisfy condition 5 by itself. Its tools
+    /// reach only a person's own chat, never a subagent, so it is no capability a delegated
+    /// child could use either.
+    #[tokio::test]
+    async fn the_default_on_dictionary_capability_never_opens_the_delegation_gate_by_itself() {
+        let root = tempfile::tempdir().unwrap();
+        let manager = Arc::new(ExtensionManager::new_without_provider(
+            root.path().to_path_buf(),
+        ));
+        let platform = |name: &str| ExtensionConfig::Platform {
+            name: name.to_string(),
+            description: String::new(),
+            bundled: Some(true),
+            available_tools: Vec::new(),
+        };
+        let dictionary = crate::agents::dictionary_extension::EXTENSION_NAME;
+        manager.add_extension(platform(dictionary)).await.unwrap();
+        assert!(manager.is_extension_enabled(dictionary).await);
+        assert!(
+            !manager.has_non_injected_extensions().await,
+            "the Dictionary alone must not count as a capability the user granted"
         );
 
         manager.add_extension(platform("todo")).await.unwrap();

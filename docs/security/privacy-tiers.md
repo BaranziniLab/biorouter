@@ -481,7 +481,9 @@ this section is the ledger.
     is sent to a public model, and MSG-PRIVATE-DRAFT-SWITCH before an unsent chat switches to one.
   - **Stamps follow the real tier with the master switch off**; only the filters go inert, so
     turning the switch back on restores them with correct rows.
-  - **The `dictionary` capability** (PR-23). It is off in a fresh configuration. The workspace
+  - **The `dictionary` capability** (PR-23). It is on in a fresh configuration since the owner's
+    request of 2026-11-19 (it was off as PR-23 built it), and a configuration that saved it off
+    keeps it off. Turning it on where it is off stays the person's act. The workspace
     doors (`workspace_set_tools`, `workspace_open` and `WorkspaceServices::start_session`) refuse
     it by name, and `manage_extensions` refuses it as it refuses every built in capability. It is
     absent from Crew scoped, app, ACP `--ws`, SubAgent, Scheduled, Hidden and Terminal sessions.

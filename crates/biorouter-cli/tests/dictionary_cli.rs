@@ -16,7 +16,8 @@
 //! * managed `dictionary: false` refuses `import` with the policy's sentence and still
 //!   exports;
 //! * `settings` prints its three settings without a terminal, and the refused
-//!   `--suggest-from-chats on` leaves the `dictionary` capability off (PR-23);
+//!   `--suggest-from-chats on` leaves off a `dictionary` capability the person saved off
+//!   (PR-23; a fresh configuration has it on since the owner's request of 2026-11-19);
 //! * `suggestions` lists the public suggestions without a terminal, as text or JSON, and
 //!   `suggestions keep`, `dismiss` and `scan` are writes like the rest; at a terminal (a
 //!   pseudo terminal here, on Unix) `scan` says to turn suggestions on first while they are
@@ -142,11 +143,25 @@ const WRITES: &[&[&str]] = &[
 #[test]
 fn every_write_but_import_needs_a_terminal() {
     let root = sandbox();
+    save_suggestions_off(root.path());
     for args in WRITES {
         assert_refused(&run(root.path(), args, "", &[]), MSG_DICTIONARY_TTY);
     }
     assert!(!store_file(root.path()).exists(), "nothing was written");
     assert_suggestions_off(root.path());
+}
+
+/// A configuration under `root` that saved the `dictionary` capability off, as an existing
+/// person's choice does, so a refused `--suggest-from-chats on` has something to change.
+fn save_suggestions_off(root: &Path) {
+    let dir = root.join("config");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("config.yaml"),
+        "computer_use_capabilities_version: 2\nextensions:\n  dictionary:\n    enabled: false\n    type: platform\n    name: dictionary\n    description: Saved off\n    bundled: true\n    available_tools: []\n",
+    )
+    .unwrap();
+    assert_suggestions_off(root);
 }
 
 /// `--suggest-from-chats on` refused, the `dictionary` capability is still off.
@@ -163,6 +178,7 @@ fn assert_suggestions_off(root: &Path) {
 #[test]
 fn every_write_is_refused_in_an_agent_shell() {
     let root = sandbox();
+    save_suggestions_off(root.path());
     const IMPORT: &[&str] = &["import", "-", "--format", "txt"];
     let agent = [("BIOROUTER_TERMINAL", "1")];
     for args in WRITES.iter().copied().chain([IMPORT]) {
@@ -412,8 +428,8 @@ fn managed_dictionary_off_refuses_import_and_still_exports() {
 }
 
 /// `settings` with no flag prints the three settings without a terminal; PR-23 added
-/// `suggest_from_chats`, the `dictionary` capability, which a fresh configuration has off.
-/// A new store suggests words from chats (owner, 2026-11-19).
+/// `suggest_from_chats`, the `dictionary` capability. A fresh configuration has it on, and a
+/// new store suggests words from chats (owner, 2026-11-19).
 #[test]
 fn settings_print_without_a_terminal() {
     let root = sandbox();
@@ -421,7 +437,7 @@ fn settings_print_without_a_terminal() {
     assert!(output.status.success(), "{}", stderr(&output));
     assert_eq!(
         stdout(&output),
-        "agent_writes: on_request\nsuggest_from_chats: off\nlearn_from_chats: on\n"
+        "agent_writes: on_request\nsuggest_from_chats: on\nlearn_from_chats: on\n"
     );
 }
 

@@ -4,7 +4,7 @@
 > **Status:** Current.
 > **Audience:** People using Biorouter dictation.
 
-The Dictionary capability starts off. At your first speech model install, **Suggest dictionary words from my chats** lets you turn it on for new chats. You can change that choice later in **Settings > Models > Speech models**, where the dictionary's options are; the Dictionary page's **⋯** menu opens them with **Dictionary settings**. Existing chats keep their current tools.
+The Dictionary capability is on for new chats in a new configuration. A configuration that already saved it off keeps it off. At your first speech model install, **Suggest dictionary words from my chats** shows your choice beside **Install**, ticked. You can change it later in **Settings > Models > Speech models**, where the dictionary's options are; the Dictionary page's **⋯** menu opens them with **Dictionary settings**. Existing chats keep their current tools.
 
 ## What the agent can do
 

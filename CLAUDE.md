@@ -1997,9 +1997,9 @@ hold:
 self-excluding.** `ensure_spawn_extension` puts `workspace` into the extension
 map, so counting it would make one turn's `true` the reason for the next turn's
 `true` — an agent that removed its last real extension would keep delegating
-forever off a grant it derived from itself. The default-on `decisions` platform
-extension is not counted either (`is_not_counted_by_the_delegation_gate` in
-`extension_manager.rs`): it is on in every chat, so counting it would enable
+forever off a grant it derived from itself. The default-on `decisions` and
+`dictionary` platform extensions are not counted either (`is_not_counted_by_the_delegation_gate` in
+`extension_manager.rs`): each is on in every chat, so counting it would enable
 delegation everywhere by itself. The consequence to recognise: a chat
 with **every** extension disabled has no `subagent` tool, which looks exactly
 like a registration bug and is not one.
@@ -2383,7 +2383,10 @@ binary, from `BaranziniLab/biorouter-models`.
   whose model is unstated (no live agent yet) gets only the private rows with no institution, which
   the owner kept on 2026-11-10 (O-43). Crew, the clipboard and the app preview use public terms
   unless the person includes private terms for one recording; ACP is public only. The `dictionary`
-  capability is off in a fresh configuration, and the workspace doors refuse it by name. The chat
+  capability is on in a fresh configuration (owner, 2026-11-19, replacing DD-51's off) and a
+  `config.yaml` that saved it off keeps it off; `install --yes` with no suggest flag keeps the
+  configuration's value. The workspace doors refuse it by name, and the delegation gate never
+  counts it. The chat
   extractor is on in a new store (`LEARN_FROM_CHATS_DEFAULT = true` in
   `crates/biorouter-dictation/src/store/schema.rs`, owner 2026-11-19, replacing O-44's off); a
   store that saved its setting keeps it, and nothing is read from chats until the dictionary file
