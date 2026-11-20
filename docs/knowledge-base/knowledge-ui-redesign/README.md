@@ -17,6 +17,18 @@
 > graph into flush columns, made the facet strip 44px, and retired the height step. The container
 > ladder (860/940/1140/1400) is unchanged.
 
+> **Superseded in part (2026-11).** One shape across the page (owner, 2026-11-19). The graph
+> canvas is no longer a flush, square fill: it is an inset panel, 16px in from the graph column's
+> sides and foot on the container radius, which is the Sources dropzone's own inset and corner
+> (`.br-knowledge-canvas` in `main.css`). The facet strip lost its bottom rule and the legend rail
+> its left rule, because the canvas's fill and the air around it divide them now. The canvas's
+> border probe no longer carries a border width, which had drawn a 2px dot at the canvas's
+> top-left corner. The read-only commit preview is a rounded `Note` on the same 16px edge rather
+> than a full-bleed strip, the Sources footer's rule is inset to the dropzone's width, the
+> drawers clip their header band to their rounded corners, and the lint drawer's group headings
+> are rounded fills inset like their rows. Measured in
+> `ui/desktop/src/components/knowledge/knowledgeCanvas.browser.test.tsx`.
+
 Read the specification first, then open the studio beside it — the studio draws every surface the
 specification describes, at BioRouter's real token values, in both light and dark, so a disagreement
 about a decision can be settled by looking at it rather than by imagining it.
