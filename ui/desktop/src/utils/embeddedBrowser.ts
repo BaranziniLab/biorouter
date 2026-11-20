@@ -1024,6 +1024,14 @@ function registerEntry(
   // BrowserView was transparent; WebContentsView defaults to white, which flashes
   // against a dark panel before the first paint.
   view.setBackgroundColor('#00000000');
+  if (!managed) {
+    // ...but once a page has painted, a page that sets no background of its own must sit on
+    // white, as in Chrome: transparent, it showed the panel through it, which in dark mode put
+    // black text on a dark ground (measured with the fixture site, whose pages set no colour).
+    contents.once('dom-ready', () => {
+      if (!contents.isDestroyed()) view.setBackgroundColor('#ffffff');
+    });
+  }
   view.setBounds(bounds);
   view.setVisible(false);
   views.set(viewKey(window, viewId), entry);

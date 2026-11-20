@@ -115,6 +115,16 @@ const api = {
   suggest: (query: string) => embeddedBrowserSuggestions(query),
   sent: (channel?: string) => sent.filter((item) => !channel || item.channel === channel),
   url: (viewId: string) => contentsOf(viewId).getURL(),
+  /** The colour of the page's top right corner, where the fixture draws nothing. */
+  cornerPixel: async (viewId: string) => {
+    const image = await contentsOf(viewId).capturePage();
+    const { width } = image.getSize();
+    const bitmap = image.toBitmap();
+    const scale = image.getScaleFactors?.()[0] ?? 1;
+    const offset = (Math.floor(width * scale) - 2) * 4;
+    // toBitmap is BGRA.
+    return [bitmap[offset + 2], bitmap[offset + 1], bitmap[offset], bitmap[offset + 3]];
+  },
   title: (viewId: string) => contentsOf(viewId).getTitle(),
   run: (viewId: string, script: string) => contentsOf(viewId).executeJavaScript(script),
   /** A real click: mouse down and up at the element's centre, as the person makes one. */

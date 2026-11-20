@@ -98,6 +98,11 @@ test('opens a page, follows a link in the same tab, and goes back and forward', 
   await expect.poll(title('links')).toBe('Article on site-a.test');
 });
 
+test('puts a page that sets no background on white, as Chrome does', async () => {
+  // The fixture's pages set no colour; on a transparent view they showed the panel through.
+  await expect.poll(() => call<number[]>('cornerPixel', 'links')).toEqual([255, 255, 255, 255]);
+});
+
 test('keeps a tab’s page and history when the panel hides it (BB-01)', async () => {
   const before = await call('state', 'links');
   await call('release', 'links');

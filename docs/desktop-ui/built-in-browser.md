@@ -1124,11 +1124,25 @@ Where the build differs from the text above, and why:
   cannot tell a click from a script, so a navigation a public page starts to a private or loopback
   host is refused with a note whose **Open it** is the person's own navigation. A local page may
   reach its own host on any port, so a development front end can call its API on another port.
+- **A page that sets no background sits on white.** The view stays transparent until the first
+  page is ready, so nothing flashes white over a dark panel, then turns white, as Chrome's base
+  colour is: transparent, an unstyled page showed the panel through it, which in dark mode put
+  black text on a dark ground.
 - **No note for a denied location request.** Chromium answers `getCurrentPosition` from the
   permission check, which also runs on every page load, so only real requests (notifications,
   camera, microphone) get a note.
 - **Not in phase 1:** discarding hidden tabs after 15 minutes, the agent's downloads (phase 2), and
   **Import from Chrome** and **Browser settings** in the ⋯ menu (phase 4).
+
+The live check of 2026-11-20 in the dev app (screenshots in the lane's
+`reports/browser/part1/`) opened example.com from a chat link without the card, typed
+`en.wikipedia.org/wiki/Myelin` and a search into the address field, followed in-page links with Back
+and Forward, opened GitHub's sign-in page in the panel, kept a tab's page and history across panel
+tab switches, showed an arXiv PDF in the tab, opened the fixture's `target=_blank` link as a panel
+tab and its popup as a window that messaged its opener, blocked a late popup with **Open in a new
+tab**, refused another local host until **Open it**, and refused the daemon's own port. Keys sent
+over CDP (`Input.dispatchKeyEvent`) do not reach `before-input-event`, so the in-page keys are
+proven by the Electron spec, whose `sendInputEvent` takes the path real keys take.
 
 Tests: Vitest suites under `src/browser/`, `WebPagePreview.navigation.test.tsx`,
 `ArtifactViewer.biorouterBrowser.test.tsx` and the updated `embeddedBrowser*.test.ts`; and the
