@@ -55,6 +55,7 @@ import {
   startBiorouterd,
   externalBackendUrlFromEnv,
   getBiorouterCliBinaryPath,
+  getBiorouterdBinaryPath,
   type BiorouterdResult,
   type SharedDaemonLink,
 } from './biorouterd';
@@ -219,6 +220,8 @@ import {
   destroyEmbeddedBrowsersForWindow,
   dismissEmbeddedBrowserNotice,
   embeddedBrowserBookmarks,
+  embeddedBrowserImportTargets,
+  embeddedBrowserSearchEngine,
   embeddedBrowserSuggestions,
   findInEmbeddedBrowser,
   navigateEmbeddedBrowser,
@@ -243,6 +246,12 @@ import {
 } from './browser/agent/types';
 import { configureBrowserTestDownloads } from './browser/downloads';
 import { browserTestHooksEnabled } from './browser/testHooks';
+import { chromeImportSource } from './browser/chromeImport/appSource';
+import {
+  createChromeImportService,
+  validImportRequest,
+  type ChromeImportService,
+} from './browser/chromeImport/service';
 import { heicToPng } from './utils/heicConvert';
 import {
   managedAppHasFocusedField,
@@ -5601,6 +5610,101 @@ ipcMain.handle('embedded-browser:suggest', (event, payload: { query: string }) =
     ? embeddedBrowserSuggestions(payload.query)
     : []
 );
+
+ipcMain.handle('embedded-browser:search-engine', (event) =>
+  browserOwnerWindow(event) ? embeddedBrowserSearchEngine() : null
+);
+
+// ── Importing from Chrome (BB-21 to BB-25) ──────────────────────────────────
+//
+// Only the person can start an import: these handlers answer the main frame of one of the app's
+// own windows on the app's own origin (`browserImportOwner`), never a page in the browser, a
+// popup, an artifact frame or another process. There is no daemon route, workspace frame or tool
+// for any of it, so an agent can neither start an import nor answer the operating system's prompt
+// (a census test, `chromeImport/census.test.ts`, holds that line).
+//
+// What crosses back to the renderer is counts, site names and profile names. Cookie values and
+// the key stay in this process and the browser's own partition.
+
+let chromeImport: ChromeImportService | null = null;
+
+function chromeImportService(): ChromeImportService {
+  if (chromeImport) return chromeImport;
+  const source = chromeImportSource({
+    env: process.env,
+    isPackaged: app.isPackaged,
+    platform: process.platform,
+    home: os.homedir(),
+    helperBinary: () => getBiorouterdBinaryPath(app),
+  });
+  const targets = embeddedBrowserImportTargets();
+  chromeImport = createChromeImportService({
+    platform: source.platform,
+    dataRoot: source.dataRoot,
+    stateDir: targets.stateDir,
+    cookies: targets.cookies,
+    store: targets.store,
+    preferences: targets.preferences,
+    onPreferencesChanged: targets.onPreferencesChanged,
+    keyProvider: source.keyProvider,
+    // Counts, outcomes and site names only (the importer never passes a value here).
+    log: (message, details) => log.info(`[ChromeImport] ${message}`, details ?? {}),
+  });
+  return chromeImport;
+}
+
+function browserImportOwner(event: Electron.IpcMainInvokeEvent): BrowserWindow | null {
+  const owner = BrowserWindow.fromWebContents(event.sender);
+  const frame = event.senderFrame;
+  if (
+    !owner ||
+    owner.isDestroyed() ||
+    windowMap.get(owner.id) !== owner ||
+    owner.webContents !== event.sender ||
+    !frame ||
+    frame !== event.sender.mainFrame ||
+    !isAppOrigin(frame.url, rendererEntryUrl())
+  ) {
+    return null;
+  }
+  return owner;
+}
+
+ipcMain.handle('biorouter-browser-import:status', (event) =>
+  browserImportOwner(event) ? chromeImportService().status() : null
+);
+
+ipcMain.handle('biorouter-browser-import:profiles', (event) =>
+  browserImportOwner(event) ? chromeImportService().profiles() : []
+);
+
+ipcMain.handle('biorouter-browser-import:sites', (event, payload: { profileId?: unknown }) =>
+  browserImportOwner(event) &&
+  typeof payload?.profileId === 'string' &&
+  payload.profileId.length <= 64
+    ? chromeImportService().sites(payload.profileId)
+    : { readable: false, sites: [], total: 0 }
+);
+
+ipcMain.handle('biorouter-browser-import:run', async (event, payload: unknown) => {
+  if (!browserImportOwner(event)) return { ok: false, error: 'This window cannot import.' };
+  const request = validImportRequest(payload);
+  if (!request) return { ok: false, error: 'The import request was malformed.' };
+  return chromeImportService().run(request);
+});
+
+ipcMain.handle('biorouter-browser-import:remove', async (event, payload: { id?: unknown }) => {
+  if (!browserImportOwner(event) || typeof payload?.id !== 'string' || payload.id.length > 64) {
+    return false;
+  }
+  return chromeImportService().remove(payload.id);
+});
+
+ipcMain.handle('biorouter-browser-import:dismiss', (event) => {
+  if (!browserImportOwner(event)) return false;
+  chromeImportService().dismissOffer();
+  return true;
+});
 
 ipcMain.handle('read-artifact-file', async (event, filePath: string) => {
   const expandedPath = expandBiorouterPath(filePath);

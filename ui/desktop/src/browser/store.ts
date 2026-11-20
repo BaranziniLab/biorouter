@@ -17,10 +17,26 @@ import path from 'node:path';
 export type HistoryEntry = { url: string; title: string; visits: number; lastVisit: number };
 export type Bookmark = { url: string; title: string; addedAt: number };
 export type Suggestion = { url: string; title: string; bookmarked: boolean };
+/** A bookmark an import brought, under its folder ("Imported from Chrome (Work)", BB-22). */
+export type ImportedBookmark = Bookmark & { folder: string[] };
+/** One import's bookmarks and history, kept apart so removal takes exactly them (BB-25). */
+export type ImportedBrowsingData = {
+  label: string;
+  bookmarks: ImportedBookmark[];
+  history: HistoryEntry[];
+};
+export type ImportedBookmarkFolder = {
+  importId: string;
+  label: string;
+  bookmarks: ImportedBookmark[];
+};
 
 export const HISTORY_RETENTION_MS = 90 * 24 * 60 * 60 * 1000;
 export const MAX_HISTORY_ENTRIES = 5_000;
 export const MAX_BOOKMARKS = 1_000;
+/** Per import: Chrome profiles hold more than the person's own list here ever will. */
+export const MAX_IMPORTED_BOOKMARKS = 5_000;
+export const MAX_IMPORTED_HISTORY = 10_000;
 const MAX_URL_CHARS = 2_048;
 const MAX_TITLE_CHARS = 300;
 const WRITE_DELAY_MS = 1_000;
@@ -83,12 +99,15 @@ export function createBrowserStore(
   const now = options.now ?? (() => Date.now());
   const historyFile = path.join(dir, 'history.json');
   const bookmarksFile = path.join(dir, 'bookmarks.json');
+  const importedFile = path.join(dir, 'imported.json');
   const history = new Map<string, HistoryEntry>();
   let bookmarks: Bookmark[] = [];
+  const imported = new Map<string, ImportedBrowsingData>();
   let loaded = false;
   let timer: ReturnType<typeof setTimeout> | null = null;
   let dirtyHistory = false;
   let dirtyBookmarks = false;
+  let dirtyImported = false;
 
   const load = () => {
     if (loaded) return;
@@ -123,7 +142,61 @@ export function createBrowserStore(
         title: cleanTitle(bookmark.title, bookmark.url),
         addedAt: Number(bookmark.addedAt) || 0,
       }));
+    const storedImports = readJson<{ imports?: Record<string, ImportedBrowsingData> }>(
+      importedFile,
+      {}
+    );
+    for (const [importId, data] of Object.entries(storedImports.imports ?? {})) {
+      if (!data || typeof data !== 'object') continue;
+      imported.set(importId, {
+        label: typeof data.label === 'string' ? data.label : 'Imported',
+        bookmarks: cleanImportedBookmarks(data.bookmarks),
+        history: cleanImportedHistory(data.history),
+      });
+    }
     prune();
+  };
+
+  const cleanImportedBookmarks = (items: unknown): ImportedBookmark[] =>
+    (Array.isArray(items) ? items : [])
+      .filter(
+        (item): item is ImportedBookmark =>
+          item &&
+          typeof item.url === 'string' &&
+          typeof item.title === 'string' &&
+          isRecordableUrl(item.url)
+      )
+      .slice(0, MAX_IMPORTED_BOOKMARKS)
+      .map((item) => ({
+        url: item.url,
+        title: cleanTitle(item.title, item.url),
+        addedAt: Number(item.addedAt) || 0,
+        folder: (Array.isArray(item.folder) ? item.folder : [])
+          .filter((name): name is string => typeof name === 'string')
+          .slice(0, 16)
+          .map((name) => name.slice(0, MAX_TITLE_CHARS)),
+      }));
+
+  const cleanImportedHistory = (items: unknown): HistoryEntry[] => {
+    const cutoff = now() - HISTORY_RETENTION_MS;
+    const seen = new Set<string>();
+    return (Array.isArray(items) ? items : [])
+      .filter(
+        (item): item is HistoryEntry =>
+          item &&
+          typeof item.url === 'string' &&
+          typeof item.lastVisit === 'number' &&
+          item.lastVisit >= cutoff &&
+          isRecordableUrl(item.url)
+      )
+      .filter((item) => !seen.has(item.url) && Boolean(seen.add(item.url)))
+      .slice(0, MAX_IMPORTED_HISTORY)
+      .map((item) => ({
+        url: item.url,
+        title: cleanTitle(typeof item.title === 'string' ? item.title : '', item.url),
+        visits: Math.max(1, Math.floor(Number(item.visits) || 1)),
+        lastVisit: item.lastVisit,
+      }));
   };
 
   const prune = () => {
@@ -154,6 +227,7 @@ export function createBrowserStore(
     if (!persist) {
       dirtyHistory = false;
       dirtyBookmarks = false;
+      dirtyImported = false;
       return;
     }
     try {
@@ -164,6 +238,10 @@ export function createBrowserStore(
       if (dirtyBookmarks) {
         dirtyBookmarks = false;
         writeFile(bookmarksFile, { version: 1, bookmarks });
+      }
+      if (dirtyImported) {
+        dirtyImported = false;
+        writeFile(importedFile, { version: 1, imports: Object.fromEntries(imported) });
       }
     } catch {
       // A full disk or a read only profile loses history, not the page.
@@ -206,14 +284,27 @@ export function createBrowserStore(
       load();
       const needle = query.trim().toLowerCase();
       if (!needle) return [];
-      const marked = new Set(bookmarks.map((bookmark) => bookmark.url));
+      const importedBookmarks = [...imported.values()].flatMap((data) => data.bookmarks);
+      const allBookmarks = [...bookmarks, ...importedBookmarks];
+      const marked = new Set(allBookmarks.map((bookmark) => bookmark.url));
       const matches = (url: string, title: string) =>
         url.toLowerCase().includes(needle) || title.toLowerCase().includes(needle);
-      const fromBookmarks = bookmarks
+      const seenBookmarks = new Set<string>();
+      const fromBookmarks = allBookmarks
         .filter((bookmark) => matches(bookmark.url, bookmark.title))
+        .filter(
+          (bookmark) => !seenBookmarks.has(bookmark.url) && Boolean(seenBookmarks.add(bookmark.url))
+        )
         .map((bookmark) => ({ url: bookmark.url, title: bookmark.title, bookmarked: true }));
       const reference = now();
-      const fromHistory = [...history.values()]
+      // The person's own history first, then imported pages it does not already hold.
+      const visited = new Map(history);
+      for (const data of imported.values()) {
+        for (const entry of data.history) {
+          if (!visited.has(entry.url)) visited.set(entry.url, entry);
+        }
+      }
+      const fromHistory = [...visited.values()]
         .filter((entry) => !marked.has(entry.url) && matches(entry.url, entry.title))
         .sort((a, b) => {
           const score = (entry: HistoryEntry) =>
@@ -258,7 +349,72 @@ export function createBrowserStore(
       load();
       history.clear();
       dirtyHistory = true;
+      for (const data of imported.values()) data.history = [];
+      dirtyImported = true;
       flush();
+    },
+
+    /** Bookmarks an import brought, one folder per import, for the Bookmarks menu. */
+    importedBookmarkFolders(): ImportedBookmarkFolder[] {
+      load();
+      return [...imported]
+        .filter(([, data]) => data.bookmarks.length > 0)
+        .map(([importId, data]) => ({
+          importId,
+          label: data.label,
+          bookmarks: data.bookmarks.map((bookmark) => ({
+            ...bookmark,
+            folder: [...bookmark.folder],
+          })),
+        }));
+    },
+
+    /** One import's bookmarks and history, copied. */
+    importedData(importId: string): { bookmarks: ImportedBookmark[]; history: HistoryEntry[] } {
+      load();
+      const data = imported.get(importId);
+      return {
+        bookmarks: (data?.bookmarks ?? []).map((bookmark) => ({
+          ...bookmark,
+          folder: [...bookmark.folder],
+        })),
+        history: (data?.history ?? []).map((entry) => ({ ...entry })),
+      };
+    },
+
+    /** Keep one import's bookmarks under `label`; returns how many were kept. */
+    importBookmarks(importId: string, label: string, items: ImportedBookmark[]): number {
+      load();
+      const existing = imported.get(importId) ?? { label, bookmarks: [], history: [] };
+      existing.label = label;
+      existing.bookmarks = cleanImportedBookmarks(items);
+      imported.set(importId, existing);
+      dirtyImported = true;
+      flush();
+      return existing.bookmarks.length;
+    },
+
+    /** Keep one import's history (the last 90 days); returns how many pages were kept. */
+    importHistory(importId: string, label: string, items: HistoryEntry[]): number {
+      load();
+      const existing = imported.get(importId) ?? { label, bookmarks: [], history: [] };
+      existing.label = label;
+      existing.history = cleanImportedHistory(items);
+      imported.set(importId, existing);
+      dirtyImported = true;
+      flush();
+      return existing.history.length;
+    },
+
+    /** Remove everything one import brought (BB-25); the person's own data is untouched. */
+    removeImport(importId: string): { bookmarks: number; history: number } {
+      load();
+      const data = imported.get(importId);
+      if (!data) return { bookmarks: 0, history: 0 };
+      imported.delete(importId);
+      dirtyImported = true;
+      flush();
+      return { bookmarks: data.bookmarks.length, history: data.history.length };
     },
 
     flush,

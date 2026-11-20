@@ -174,6 +174,10 @@ async function startFixtureSite(names = {}) {
         );
         return;
       }
+      case '/languages':
+        // The language a page was asked for, in its title (the Chrome import's settings).
+        html(200, `lang:${String(request.headers['accept-language'] || '')}`, '<h1>Headers</h1>');
+        return;
       case '/xfo':
         html(200, 'Refuses framing', '<h1>This page sends X-Frame-Options DENY</h1>', {
           'x-frame-options': 'DENY',

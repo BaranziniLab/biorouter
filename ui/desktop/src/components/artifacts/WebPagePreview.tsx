@@ -18,7 +18,11 @@ import { PreviewIconButton } from './PreviewBar';
 import { previewOpenTarget } from '../../utils/openInBrowser';
 import { isBrowserSurface } from '../../utils/surface';
 import { copyToClipboard } from '../../utils/clipboard';
-import { addressFieldTarget } from '../../browser/addressBar';
+import { addressFieldTarget, type SearchEngine } from '../../browser/addressBar';
+import { ChromeImportDialog } from '../browser/chromeImport/ChromeImportDialog';
+import { ChromeImportOffer } from '../browser/chromeImport/ChromeImportOffer';
+import { CHROME_IMPORT_COPY } from '../browser/chromeImport/copy';
+import { useChromeImportStatus } from '../browser/chromeImport/useChromeImportStatus';
 import type {
   EmbeddedBrowserBookmark,
   EmbeddedBrowserState,
@@ -91,6 +95,7 @@ export default function WebPagePreview({
   onStateChange,
   refreshRevision = 0,
   navigateRevision,
+  allowChromeImport = false,
 }: {
   url: string;
   /** The browser tab to show. Stable for the panel tab; a page-opened tab names its own. */
@@ -121,6 +126,11 @@ export default function WebPagePreview({
    * tab has acted on loads `url` again, so a second click on a chat link goes back to it.
    */
   navigateRevision?: number;
+  /**
+   * BB-21: a tab the person opened may offer **Import from Chrome** (the first use card and the
+   * ⋯ menu). Never an app preview or a tab the agent opened.
+   */
+  allowChromeImport?: boolean;
 }) {
   const slotRef = useRef<HTMLDivElement | null>(null);
   const addressRef = useRef<HTMLInputElement | null>(null);
@@ -156,8 +166,31 @@ export default function WebPagePreview({
 
   const browser = window.electron?.embeddedBrowser;
   const showingSuggestions = isEditingAddress && suggestions.length > 0;
-  // The bar's own surfaces that would sit over the page hide it while they are up.
-  const coveredBySelf = menuOpen || showingSuggestions;
+  const importStatus = useChromeImportStatus();
+  const [importOpen, setImportOpen] = useState(false);
+  const [offerAnswered, setOfferAnswered] = useState(false);
+  const [searchEngine, setSearchEngine] = useState<SearchEngine | undefined>(undefined);
+  const showImportOffer =
+    allowChromeImport &&
+    !requireManagedApp &&
+    !state?.managedApp &&
+    !offerAnswered &&
+    importStatus?.offerFirstUse === true;
+  // The bar's own surfaces that would sit over the page hide it while they are up, and so do the
+  // Chrome import's card and dialog: the page is a native view above every DOM layer.
+  const coveredBySelf = menuOpen || showingSuggestions || importOpen || showImportOffer;
+
+  // BB-22: the address field searches with Chrome's engine once it was imported.
+  useEffect(() => {
+    if (!browser?.searchEngine || importOpen) return;
+    let active = true;
+    void browser.searchEngine().then((engine) => {
+      if (active) setSearchEngine(engine ?? undefined);
+    });
+    return () => {
+      active = false;
+    };
+  }, [browser, importOpen]);
 
   // Dictate into this app is shown only while an editable field in the app has focus
   // (owner decision, 2026-11-10). It does not depend on Dictate into other apps.
@@ -413,10 +446,10 @@ export default function WebPagePreview({
         openAddress(suggestions[highlighted].url);
         return;
       }
-      const target = addressFieldTarget(addressDraft);
+      const target = addressFieldTarget(addressDraft, searchEngine);
       if (target) openAddress(target.url);
     },
-    [addressDraft, highlighted, openAddress, suggestions]
+    [addressDraft, highlighted, openAddress, searchEngine, suggestions]
   );
 
   const runFind = useCallback(
@@ -772,17 +805,30 @@ export default function WebPagePreview({
                   <DropdownMenuSub>
                     <DropdownMenuSubTrigger>{BROWSER_COPY.bookmarks}</DropdownMenuSubTrigger>
                     <DropdownMenuSubContent className="max-h-[60vh] w-64 overflow-y-auto">
-                      {bookmarks.slice(0, 50).map((bookmark) => (
-                        <DropdownMenuItem
-                          key={bookmark.url}
-                          onSelect={() => openAddress(bookmark.url)}
-                          className="flex-col items-start gap-0"
-                        >
-                          <span className="w-full min-w-0 truncate">{bookmark.title}</span>
-                          <span className="w-full min-w-0 truncate text-supporting text-text-muted">
-                            {bookmark.url}
-                          </span>
-                        </DropdownMenuItem>
+                      {bookmarks
+                        .filter((bookmark) => !bookmark.folder)
+                        .slice(0, 50)
+                        .map((bookmark) => (
+                          <BookmarkItem
+                            key={bookmark.url}
+                            bookmark={bookmark}
+                            onOpen={openAddress}
+                          />
+                        ))}
+                      {/* An import's bookmarks, in its own folder (BB-22). */}
+                      {importedBookmarkGroups(bookmarks).map(([label, items]) => (
+                        <DropdownMenuSub key={label}>
+                          <DropdownMenuSubTrigger>{label}</DropdownMenuSubTrigger>
+                          <DropdownMenuSubContent className="max-h-[60vh] w-64 overflow-y-auto">
+                            {items.slice(0, 50).map((bookmark) => (
+                              <BookmarkItem
+                                key={`${bookmark.folder}\u0000${bookmark.url}`}
+                                bookmark={bookmark}
+                                onOpen={openAddress}
+                              />
+                            ))}
+                          </DropdownMenuSubContent>
+                        </DropdownMenuSub>
                       ))}
                     </DropdownMenuSubContent>
                   </DropdownMenuSub>
@@ -790,6 +836,11 @@ export default function WebPagePreview({
               </>
             )}
             <DropdownMenuSeparator />
+            {allowChromeImport && !managed && importStatus?.available && (
+              <DropdownMenuItem onSelect={() => setImportOpen(true)}>
+                {CHROME_IMPORT_COPY.open}
+              </DropdownMenuItem>
+            )}
             <DropdownMenuItem
               onSelect={() => {
                 if (!browser) return;
@@ -866,6 +917,15 @@ export default function WebPagePreview({
             : undefined
         }
       >
+        {showImportOffer && (
+          <ChromeImportOffer
+            onImport={() => {
+              setOfferAnswered(true);
+              setImportOpen(true);
+            }}
+            onNotNow={() => setOfferAnswered(true)}
+          />
+        )}
         {snapshotDataUrl && (
           <img
             src={snapshotDataUrl}
@@ -904,6 +964,14 @@ export default function WebPagePreview({
           </ul>
         )}
       </div>
+      {allowChromeImport && (
+        <ChromeImportDialog
+          open={importOpen}
+          onOpenChange={setImportOpen}
+          // The page picks up logins it was just given, or loses ones just removed.
+          onImported={() => control('reload')}
+        />
+      )}
     </div>
   );
 }
@@ -953,6 +1021,36 @@ export const BROWSER_COPY = {
     return `Downloading ${download.filename}…`;
   },
 } as const;
+
+function BookmarkItem({
+  bookmark,
+  onOpen,
+}: {
+  bookmark: EmbeddedBrowserBookmark;
+  onOpen: (url: string) => void;
+}) {
+  return (
+    <DropdownMenuItem onSelect={() => onOpen(bookmark.url)} className="flex-col items-start gap-0">
+      <span className="w-full min-w-0 truncate">{bookmark.title}</span>
+      <span className="w-full min-w-0 truncate text-supporting text-text-muted">
+        {bookmark.url}
+      </span>
+    </DropdownMenuItem>
+  );
+}
+
+/** Imported bookmarks grouped by their import's folder ("Imported from Chrome (Work)"). */
+function importedBookmarkGroups(
+  bookmarks: EmbeddedBrowserBookmark[]
+): Array<[string, EmbeddedBrowserBookmark[]]> {
+  const groups = new Map<string, EmbeddedBrowserBookmark[]>();
+  for (const bookmark of bookmarks) {
+    if (!bookmark.folder) continue;
+    const label = bookmark.folder.split(' / ')[0];
+    groups.set(label, [...(groups.get(label) ?? []), bookmark]);
+  }
+  return [...groups];
+}
 
 /** One quiet line under the bar: an error, a note or a download, with its one action. */
 function BrowserLine({

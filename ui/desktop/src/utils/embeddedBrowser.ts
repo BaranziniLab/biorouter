@@ -43,6 +43,12 @@ import {
   handlePersonDownload,
 } from '../browser/downloads';
 import { createBrowserStore, type BrowserStore } from '../browser/store';
+import {
+  createBrowserPreferences,
+  type BrowserPreferences,
+  type BrowserPreferencesStore,
+} from '../browser/preferences';
+import type { SearchEngine } from '../browser/addressBar';
 import type {
   EmbeddedBrowserBookmark,
   EmbeddedBrowserDownload,
@@ -182,6 +188,7 @@ let embeddedNetworkReady: Promise<void> | null = null;
 let proxyTeardownRegistered = false;
 let pageTabSequence = 0;
 let store: BrowserStore | null = null;
+let preferences: BrowserPreferencesStore | null = null;
 const registeredOwnerTeardown = new WeakSet<BrowserWindow>();
 
 function viewKey(window: BrowserWindow, viewId: string): string {
@@ -192,19 +199,65 @@ function entryFor(window: BrowserWindow, viewId: string): Entry | undefined {
   return views.get(viewKey(window, viewId));
 }
 
+/** The browser's own state folder (history, bookmarks, settings, the import manifest). */
+export function browserStateDir(): string | null {
+  try {
+    return path.join(app.getPath('userData'), 'biorouter-browser');
+  } catch {
+    return null;
+  }
+}
+
 function browserStore(): BrowserStore {
   if (!store) {
-    let dir: string | null = null;
-    try {
-      dir = path.join(app.getPath('userData'), 'biorouter-browser');
-    } catch {
-      dir = null;
-    }
+    const dir = browserStateDir();
     // Without a user data folder (a unit test's stand in for Electron) the store lives in memory.
     store = createBrowserStore(dir ?? '', { persist: dir !== null });
     app.once('before-quit', () => store?.flush());
   }
   return store;
+}
+
+function browserPreferences(): BrowserPreferencesStore {
+  if (!preferences) preferences = createBrowserPreferences(browserStateDir());
+  return preferences;
+}
+
+function sessionLanguages(): string {
+  return (
+    browserPreferences().get().acceptLanguages ??
+    acceptLanguages(app.getPreferredSystemLanguages?.() ?? [])
+  );
+}
+
+/** The search engine the address field uses (BB-22: Chrome's, once imported). */
+export function embeddedBrowserSearchEngine(): SearchEngine | null {
+  return browserPreferences().get().searchEngine ?? null;
+}
+
+/**
+ * What the Chrome import writes into (BB-22): the browser profile's cookie jar, the store and the
+ * settings. The jar is the hardened partition's own; nothing here touches the app's sessions.
+ */
+export function embeddedBrowserImportTargets() {
+  return {
+    stateDir: browserStateDir(),
+    store: browserStore(),
+    preferences: browserPreferences(),
+    // Resolved at use: reading the import's status (Settings, the first use card) must not
+    // create the partition or start its proxy.
+    cookies: {
+      set: (details: Electron.CookiesSetDetails) => embeddedSession().cookies.set(details),
+      remove: (url: string, name: string) => embeddedSession().cookies.remove(url, name),
+    },
+    /** New languages apply to the next request; a new default zoom to the next page opened. */
+    onPreferencesChanged: (_next: BrowserPreferences) => {
+      hardenedSession?.setUserAgent(
+        chromeUserAgent(process.platform, process.versions.chrome ?? ''),
+        sessionLanguages()
+      );
+    },
+  };
 }
 
 function newRecord(entry: Entry | null, inherit?: ContentsRecord | null): ContentsRecord {
@@ -317,7 +370,7 @@ function embeddedSession(): Session {
   // BB-07: the plain Chrome user agent for the bundled Chromium, never `Electron/…`.
   embedded.setUserAgent(
     chromeUserAgent(process.platform, process.versions.chrome ?? ''),
-    acceptLanguages(app.getPreferredSystemLanguages?.() ?? [])
+    sessionLanguages()
   );
 
   embedded.setPermissionRequestHandler((contents, permission, callback, details) => {
@@ -1134,10 +1187,13 @@ export function createEmbeddedBrowser(
 
   const managed = scope ? managedAppSession(window, scope) : undefined;
   const embedded = managed?.session ?? embeddedSession();
+  // A default zoom imported from Chrome applies to the person's own pages, never to an app preview.
+  const zoomFactor = managed ? undefined : browserPreferences().get().defaultZoomFactor;
   const view = new WebContentsView({
     webPreferences: {
       session: embedded,
       ...HARDENED_PREFERENCES,
+      ...(zoomFactor ? { zoomFactor } : {}),
     },
   });
   const contents = view.webContents;
@@ -1366,9 +1422,20 @@ export function setEmbeddedBrowserBookmark(
 }
 
 export function embeddedBrowserBookmarks(): EmbeddedBrowserBookmark[] {
-  return browserStore()
+  const own = browserStore()
     .bookmarks()
     .map((bookmark) => ({ url: bookmark.url, title: bookmark.title }));
+  // An import's bookmarks sit in their own folder ("Imported from Chrome (Work)", BB-22).
+  const imported = browserStore()
+    .importedBookmarkFolders()
+    .flatMap((folder) =>
+      folder.bookmarks.map((bookmark) => ({
+        url: bookmark.url,
+        title: bookmark.title,
+        folder: [folder.label, ...bookmark.folder].join(' / '),
+      }))
+    );
+  return [...own, ...imported];
 }
 
 export function embeddedBrowserSuggestions(query: string): EmbeddedBrowserSuggestion[] {

@@ -951,7 +951,7 @@ export const getBiorouterCliBinaryPath = (app: Electron.App): string => {
   throw new Error(`Could not find ${executableName} in: ${possiblePaths.join(', ')}`);
 };
 
-const getBiorouterdBinaryPath = (app: Electron.App): string => {
+export const getBiorouterdBinaryPath = (app: Electron.App): string => {
   let executableName = process.platform === 'win32' ? 'biorouterd.exe' : 'biorouterd';
 
   let possiblePaths: string[];

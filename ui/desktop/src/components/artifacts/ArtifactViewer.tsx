@@ -2447,6 +2447,11 @@ function ArtifactPreviewBody({
           onStopAgent={onStopAgent}
           onAgentShareChange={onLiveBrowserShareChange}
           onOpenExternal={(url) => void openInBrowser(url)}
+          // BB-21: only a page the person opened offers the Chrome import.
+          allowChromeImport={
+            !preview.managedApp &&
+            !(artifact.kind === 'externalUrl' && artifact.openedBy === 'agent')
+          }
         />
       );
     }

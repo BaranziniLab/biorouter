@@ -5,10 +5,10 @@
 > beside Biorouter Copilot without overlapping it, and that can take a person's logins, bookmarks
 > and history from Google Chrome when they ask.
 > **Status:** Current. Accepted design of 2026-11-19; implementation is in progress on branch
-> `br1946/browser`, where phases 1 and 2 are built (see "Phase 1 as built" and "Phase 2 as
-> built"). Until that branch merges, the shipping behaviour is the one recorded in the
-> [preview panel implementation record](preview-panel/implementation-record.md), and the open work is
-> listed under "Phases" below.
+> `br1946/browser`, where phases 1, 2 and 4 are built (see "Phase 1 as built", "Phase 2 as
+> built" and "Phase 4 as built"). Until that branch merges, the shipping behaviour is the one
+> recorded in the [preview panel implementation record](preview-panel/implementation-record.md),
+> and the open work is listed under "Phases" below.
 > **Audience:** developers working on the desktop app, the agent loop, privacy and security, and
 > anyone reviewing or testing the browser.
 
@@ -1227,6 +1227,81 @@ Tests: `cargo test -p biorouter --lib -- browser_use browser_extension`, the bro
 routes::browser_use`; Vitest `src/browser/agent`, `components/browser`,
 `components/chatGroups/browserCommands.test.ts`; and the Electron spec
 `tests/e2e/biorouter-browser-agent.spec.ts` (15 tests) against the fixture site's `/agent/*` pages.
+
+### Phase 4 as built
+
+Phase 4, the Chrome import, is on branch `br1946/browser`. It runs in Electron main and the
+renderer; the daemon gains only the key helper.
+
+| Area | Where | What it does |
+|---|---|---|
+| Reading Chrome (BB-22) | `ui/desktop/src/browser/chromeImport/` (`profiles.ts`, `sqliteCopy.ts`, `cookies.ts`, `cookieCrypto.ts`, `profileData.ts`) | Profiles from `Local State`; every SQLite file read from a private copy with its `-wal` and `-journal`; `v10` and `v11` decryption, the version 24 host digest checked, `v20` and unknown prefixes counted and skipped; conversion to `session.cookies.set` with the rules above; bookmarks with their folders, 90 days of history, the search engine, languages and default zoom. `Login Data` and `Web Data` are never opened. |
+| The import (BB-21, BB-25) | `chromeImport/importer.ts`, `service.ts`, `manifest.ts` | One import into the browser partition's cookie jar, the store and the browser's settings, through injected targets so the tests run the same code. The key is asked for only after **Import**, only for the versions the chosen sites use, and wiped when the import ends. The report and the log hold counts, outcomes and site names; the manifest holds cookie keys (url, name, domain, path), never a value. |
+| The key (BB-23, BB-24) | `crates/biorouter/src/browser_key.rs`, the hidden `biorouterd browser-key --source chrome`, `chromeImport/keyProvider.ts` | The helper reads "Chrome Safe Storage" through `keyring` on macOS, or Chrome's Secret Service item (`chrome_libsecret_os_crypt_password_v2`, then `_v1`) through `dbus-secret-service` on Linux, derives the key with PBKDF2-HMAC-SHA1 (`ring`), and prints it as one line of hex. Exit codes 3 (key store turned off), 4 (not found), 5 (not allowed), 6 (unsupported) become the summary's sentence. Linux `v10` uses `peanuts` in main and never runs the helper. Windows never asks. |
+| Where the import reads from | `chromeImport/appSource.ts` | Chrome's data folder for the system, and the helper. Under the Electron test hooks (unpackaged, `BIOROUTER_E2E=1`) only `BIOROUTER_BROWSER_TEST_CHROME_DIR`, a synthetic profile, with keys derived from `BIOROUTER_BROWSER_TEST_CHROME_PASSWORD`; with the variable unset no Chrome is found at all. |
+| IPC | `main.ts` (`biorouter-browser-import:status`, `profiles`, `sites`, `run`, `remove`, `dismiss`), `preload.ts` (`window.electron.browserImport`) | Each handler first checks the sender is the main frame of one of the app's own windows on the app's origin. No route, workspace frame or tool names the import. |
+| Store and settings | `browser/store.ts` (`imported.json`), `browser/preferences.ts` (`preferences.json`), `utils/embeddedBrowser.ts` | An import's bookmarks and history kept apart from the person's own, so removal takes exactly them; suggestions and the Bookmarks menu read both. The search engine reaches the address field (`embedded-browser:search-engine`), the languages the partition's `Accept-Language`, and the default zoom new tabs the person opens. |
+| Interface | `components/browser/chromeImport/` (`ChromeImportDialog.tsx`, `ChromeImportOffer.tsx`, `copy.ts`, `useChromeImportStatus.ts`), `WebPagePreview.tsx`, `settings/app/BrowserSettingsSection.tsx` | The first use card in the page slot, **Import from Chrome…** in the ⋯ menu, and **Settings > App > Browser**, all opening one dialog: profile, Logins, Bookmarks, History, Settings, what is not imported, **Choose sites** behind a disclosure, the macOS line, then the summary with **Remove imported data**. The native page is hidden while the card or the dialog is up. |
+| Secret guard | `crates/biorouter-mcp/src/secret_guard.rs` | Chrome's `Cookies`, `Login Data`, `Login Data For Account` and `Web Data`, and the browser partition's `Cookies`, are on the floor. |
+
+What the build measured on Electron 39.8.10:
+
+- `node:sqlite` loads in main; the Vite main build keeps it external.
+- `cookies.set` with a `domain` makes a domain cookie; without one, a host only cookie
+  (`hostOnly: true`). A `__Host-` cookie set secure, on `/` and without a domain is accepted.
+- A cookie database another connection holds with an exclusive lock cannot be read in place
+  ("database is locked"), and its copy reads in full.
+- Chromium adds q-values to the imported languages: `en-US,en,fr-CA` is sent as
+  `en-US,en;q=0.9,fr-CA;q=0.8`.
+
+Where the build differs from the text above, and why:
+
+- **JSON files, not `browser.sqlite`.** Phase 1 stores history and bookmarks as JSON in
+  `biorouter-browser/` under the user data folder, so the import adds `imported.json`,
+  `preferences.json` and `import-manifest.json` beside them.
+- **One line per profile.** Importing a profile again replaces its earlier import: the new record
+  keeps every cookie key either import set, so removal still finds them, and carries over what
+  the second import did not choose.
+- **The card does not come back.** Importing answers the first use card for good, so removing the
+  import later does not offer it again.
+- **The Settings line is short.** "Imported from Chrome (Work) on Nov 20", with what it brought in
+  the line's InfoTip; the full sentence did not fit the row.
+- **Default zoom.** It applies to pages the person opens after the import, through the view's
+  `zoomFactor`; agent tabs and app previews stay at 100%. Removal restores the default for new
+  tabs; a tab that is already open keeps its zoom until reset.
+- **Sites are approximated.** The per-site list groups hosts by their last two labels, or three
+  under a two letter country domain's shared second level (`ox.ac.uk`), without the public suffix
+  list.
+- **Two direct dependencies.** `ring` (PBKDF2-HMAC-SHA1) and, on Linux, `dbus-secret-service`; both
+  were already in `Cargo.lock` through `jsonwebtoken` and `keyring`. The Linux helper path was
+  type-checked against `dbus-secret-service` 4.1.0 on macOS with Homebrew's libdbus; it has not run
+  on Linux.
+- **The diagnostics bundle** never reads Electron's user data folder (it reads the daemon's logs,
+  config and the named chat), so neither the partition nor `biorouter-browser/` can reach it.
+
+The live check of 2026-11-20 in the dev app (screenshots in the lane's `reports/browser/part3/`)
+ran with the test hooks and a synthetic profile built by
+`tests/fixtures/chrome-profile/build.mjs`; nothing read a real Chrome profile or the Keychain. A
+chat link opened the fixture dashboard, "Not signed in", under the first use card; **Import from
+Chrome…** showed both fixture profiles, the sites with their cookie counts and the macOS line;
+the import reported logins for 3 sites, 5 bookmarks, 91 history entries and the settings, and the
+reloaded dashboard read "Signed in as fixture-user". The ⋯ menu held **Import from Chrome…** and the
+imported folder under Bookmarks, the address field suggested imported history, Settings showed the
+import with **Remove imported data**, and after removing it the dashboard was signed out again
+with no card. A second import with History and one site left out imported logins for 2 sites.
+The app's log held counts and outcomes only.
+
+Tests: Vitest `src/browser/chromeImport` (the reader, the importer against synthetic macOS and
+Linux profiles, the key provider against a fake helper, the service, the source gate and the
+census) and `components/browser/chromeImport` (the dialog, the card, the menu and Settings);
+`cargo test -p biorouter --lib browser_key`, `cargo test -p biorouter-server --bin biorouterd
+browser_key_tests`, `cargo test -p biorouter-mcp --lib secret_guard`; and the Electron spec
+`tests/e2e/biorouter-browser-import.spec.ts`, which imports a synthetic profile into a fresh browser
+profile, checks the dashboard signs in, the cookies' flags, the bookmarks, the search engine and
+the languages, removes the import and checks it signs out, and reads the log and the manifest for
+any fixture value. Mutation checks: each guard (the digest check, host only cookies, expired and
+partitioned cookies, a value in the log, wiping the keys, the test hook gate, the profile id
+check, the IPC sender check, asking for a key only when needed) was reverted and its test failed.
 
 ## Open questions and things to measure first
 

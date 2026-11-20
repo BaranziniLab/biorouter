@@ -11,12 +11,18 @@ import {
 // The browser's types live in `browser/types.ts`, a types-only module, so preload can share
 // them without pulling in any main-process code (the import is erased at build time).
 import type {
+  ChromeImportProfile,
+  ChromeImportRequest,
+  ChromeImportResult,
+  ChromeImportSites,
+  ChromeImportStatus,
   EmbeddedBrowserBookmark,
   EmbeddedBrowserOpened,
   EmbeddedBrowserShortcut,
   EmbeddedBrowserState,
   EmbeddedBrowserSuggestion,
 } from './browser/types';
+import type { SearchEngine } from './browser/addressBar';
 import type {
   BrowserAgentActivity,
   BrowserAgentRequest,
@@ -627,8 +633,23 @@ type ElectronAPI = {
     setBookmark: (viewId: string, bookmarked: boolean) => Promise<boolean>;
     bookmarks: () => Promise<EmbeddedBrowserBookmark[]>;
     suggest: (query: string) => Promise<EmbeddedBrowserSuggestion[]>;
+    /** The address field's search engine once Chrome's was imported; `null` for Google. */
+    searchEngine?: () => Promise<SearchEngine | null>;
     onOpened: (callback: (payload: EmbeddedBrowserOpened) => void) => () => void;
     onShortcut: (callback: (payload: EmbeddedBrowserShortcut) => void) => () => void;
+  };
+  /**
+   * BB-21 to BB-25: importing logins, bookmarks, history and settings from Chrome into the
+   * Biorouter Browser. Only the app's own windows can reach it, and only counts and names come
+   * back; no agent route, frame or tool leads here.
+   */
+  browserImport?: {
+    status: () => Promise<ChromeImportStatus | null>;
+    profiles: () => Promise<ChromeImportProfile[]>;
+    sites: (profileId: string) => Promise<ChromeImportSites>;
+    run: (request: ChromeImportRequest) => Promise<ChromeImportResult>;
+    remove: (id: string) => Promise<boolean>;
+    dismissOffer: () => Promise<boolean>;
   };
   /**
    * BB-10: the agent's half of the Biorouter Browser. `run` forwards one operation the daemon
@@ -1147,6 +1168,7 @@ const electronAPI: ElectronAPI = {
       ipcRenderer.invoke('embedded-browser:bookmark', { viewId, bookmarked }),
     bookmarks: () => ipcRenderer.invoke('embedded-browser:bookmarks'),
     suggest: (query: string) => ipcRenderer.invoke('embedded-browser:suggest', { query }),
+    searchEngine: () => ipcRenderer.invoke('embedded-browser:search-engine'),
     onOpened: (callback: (payload: EmbeddedBrowserOpened) => void) => {
       const wrapped = (_event: unknown, payload: EmbeddedBrowserOpened) => callback(payload);
       ipcRenderer.on('embedded-browser:opened', wrapped);
@@ -1161,6 +1183,16 @@ const electronAPI: ElectronAPI = {
         ipcRenderer.removeListener('embedded-browser:shortcut', wrapped);
       };
     },
+  },
+  browserImport: {
+    status: () => ipcRenderer.invoke('biorouter-browser-import:status'),
+    profiles: () => ipcRenderer.invoke('biorouter-browser-import:profiles'),
+    sites: (profileId: string) =>
+      ipcRenderer.invoke('biorouter-browser-import:sites', { profileId }),
+    run: (request: ChromeImportRequest) =>
+      ipcRenderer.invoke('biorouter-browser-import:run', request),
+    remove: (id: string) => ipcRenderer.invoke('biorouter-browser-import:remove', { id }),
+    dismissOffer: () => ipcRenderer.invoke('biorouter-browser-import:dismiss'),
   },
   browserAgent: {
     run: (request: BrowserAgentRequest) => ipcRenderer.invoke('biorouter-browser:agent', request),

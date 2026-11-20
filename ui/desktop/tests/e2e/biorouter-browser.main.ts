@@ -32,6 +32,17 @@ import {
   runAgentBrowserOperation,
 } from '../../src/browser/agent/driver';
 import type { BrowserAgentRequest } from '../../src/browser/agent/types';
+import {
+  embeddedBrowserBookmarks,
+  embeddedBrowserImportTargets,
+  embeddedBrowserSearchEngine,
+} from '../../src/utils/embeddedBrowser';
+import { chromeImportSource } from '../../src/browser/chromeImport/appSource';
+import {
+  createChromeImportService,
+  validImportRequest,
+  type ChromeImportService,
+} from '../../src/browser/chromeImport/service';
 
 const userData = process.env.BIOROUTER_BROWSER_TEST_USER_DATA;
 if (userData) {
@@ -83,6 +94,36 @@ async function centerOf(contents: WebContents, selector: string) {
       e.scrollIntoView({ block: 'center' }); const r = e.getBoundingClientRect();
       return { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2) }; })()`
   )) as { x: number; y: number } | null;
+}
+
+// The Chrome import exactly as main.ts builds it (BB-21 to BB-25): the same source resolution, so
+// this run reads only the synthetic profile BIOROUTER_BROWSER_TEST_CHROME_DIR names and derives
+// its key from the fixture password; never a real profile or a real key store.
+let chromeImport: ChromeImportService | null = null;
+function chromeImportService(): ChromeImportService {
+  if (chromeImport) return chromeImport;
+  const source = chromeImportSource({
+    env: process.env,
+    isPackaged: app.isPackaged,
+    platform: process.platform,
+    home: os.homedir(),
+    helperBinary: () => {
+      throw new Error('the e2e run never starts the key helper');
+    },
+  });
+  const targets = embeddedBrowserImportTargets();
+  chromeImport = createChromeImportService({
+    platform: source.platform,
+    dataRoot: source.dataRoot,
+    stateDir: targets.stateDir,
+    cookies: targets.cookies,
+    store: targets.store,
+    preferences: targets.preferences,
+    onPreferencesChanged: targets.onPreferencesChanged,
+    keyProvider: source.keyProvider,
+    log: (message, details) => log.info(`[ChromeImport] ${message}`, details ?? {}),
+  });
+  return chromeImport;
 }
 
 const api = {
@@ -251,6 +292,38 @@ const api = {
     );
   },
   agentCancel: (requestId: string) => cancelAgentBrowserOperation(requestId),
+  // --- Importing from Chrome (BB-21 to BB-25), through the service main.ts exposes on IPC.
+  importStatus: () => chromeImportService().status(),
+  importProfiles: () => chromeImportService().profiles(),
+  importSites: (profileId: string) => chromeImportService().sites(profileId),
+  importRun: (request: unknown) => {
+    const valid = validImportRequest(request);
+    if (!valid) throw new Error('malformed request');
+    return chromeImportService().run(valid);
+  },
+  importRemove: (id: string) => chromeImportService().remove(id),
+  /** The partition's cookies for `url`, without values: names and flags only. */
+  cookieFlags: async (url: string) => {
+    const { session } = await import('electron');
+    return (
+      await session.fromPartition('persist:biorouter-embedded-browser').cookies.get({ url })
+    ).map((cookie) => ({
+      name: cookie.name,
+      domain: cookie.domain,
+      hostOnly: cookie.hostOnly,
+      path: cookie.path,
+      secure: cookie.secure,
+      httpOnly: cookie.httpOnly,
+      session: cookie.session,
+      sameSite: cookie.sameSite,
+    }));
+  },
+  bookmarks: () => embeddedBrowserBookmarks(),
+  searchEngine: () => embeddedBrowserSearchEngine(),
+  logText: () => {
+    const file = userData ? path.join(userData, 'logs', 'main.log') : null;
+    return file && fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : '';
+  },
   setAutoShow: (value: boolean) => {
     autoShowAgentTabs = value;
   },

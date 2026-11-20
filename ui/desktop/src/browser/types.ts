@@ -78,4 +78,71 @@ export type EmbeddedBrowserShortcut = {
 };
 
 export type EmbeddedBrowserSuggestion = { url: string; title: string; bookmarked: boolean };
-export type EmbeddedBrowserBookmark = { url: string; title: string };
+/** `folder` names an imported bookmark's folder ("Imported from Chrome (Work) / Bookmarks bar"). */
+export type EmbeddedBrowserBookmark = { url: string; title: string; folder?: string };
+
+/**
+ * Importing from Chrome (BB-21 to BB-25), as the renderer sees it: counts and names only. No
+ * cookie value, key or cookie name ever crosses to the renderer.
+ */
+export type ChromeImportLogins =
+  | 'imported'
+  | 'not-chosen'
+  | 'none-found'
+  | 'unreadable'
+  | 'unsupported'
+  | 'not-allowed'
+  | 'not-found'
+  | 'key-store-off'
+  | 'failed';
+
+export type ChromeImportSummary = {
+  id: string;
+  profileName: string;
+  importedAt: number;
+  logins: ChromeImportLogins;
+  cookies: number;
+  cookieSites: number;
+  skipped: number;
+  failed: number;
+  bookmarks: number | null;
+  history: number | null;
+  settings: Array<'search engine' | 'languages' | 'default zoom'> | null;
+};
+
+export type ChromeImportStatus = {
+  /** A Chrome profile was found on this computer. */
+  available: boolean;
+  /** The first use card may show: Chrome found, nothing imported, never dismissed. */
+  offerFirstUse: boolean;
+  /** False on Windows, where Chrome locks its logins to itself (BB-24). */
+  loginsSupported: boolean;
+  /** The operating system will ask before the key is read (macOS, BB-23). */
+  asksForKeyAccess: boolean;
+  imports: ChromeImportSummary[];
+};
+
+export type ChromeImportProfile = {
+  id: string;
+  name: string;
+  email: string | null;
+  lastUsed: boolean;
+};
+
+export type ChromeImportSites =
+  | { readable: true; sites: Array<{ site: string; count: number }>; total: number }
+  | { readable: false; sites: []; total: 0 };
+
+export type ChromeImportRequest = {
+  profileId: string;
+  logins: boolean;
+  bookmarks: boolean;
+  history: boolean;
+  settings: boolean;
+  /** The sites to import logins for; `null` for every site. */
+  sites: string[] | null;
+};
+
+export type ChromeImportResult =
+  | { ok: true; summary: ChromeImportSummary }
+  | { ok: false; error: string };
