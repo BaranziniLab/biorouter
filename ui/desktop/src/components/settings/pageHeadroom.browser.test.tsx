@@ -39,6 +39,7 @@ import { fileURLToPath } from 'node:url';
 import { build, type Plugin } from 'esbuild';
 import { chromium, type Browser, type Page } from 'playwright';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { WINDOW_MIN_WIDTH } from '../Layout/yieldLadder';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const COMPONENTS = resolve(here, '..');
@@ -50,10 +51,14 @@ const SHOTS = process.env.PAGE_HEADROOM_SHOTS;
 const MIN_HEADROOM = 24;
 /** The band's height (`--chrome-height`), which the fix must not move. */
 const BAND = 44;
-/** The window sizes measured: the smallest the window allows (its width floor), and a laptop. */
+/**
+ * The window sizes measured: the old width floor, a laptop, and the window's floor since
+ * 2026-11-19 (`WINDOW_MIN_WIDTH`), each at the shortest the window allows where it is short.
+ */
 const SIZES = [
   { width: 1048, height: 600 },
   { width: 1440, height: 900 },
+  { width: WINDOW_MIN_WIDTH, height: 600 },
 ] as const;
 
 /** A Settings tab's sections: [DOM id, title, rows]. Every row carries help (an InfoTip). */

@@ -1887,58 +1887,38 @@ const createChat = async (
     y: initialBounds?.y ?? mainWindowState.y,
     width: initialBounds?.width ?? mainWindowState.width,
     height: initialBounds?.height ?? mainWindowState.height,
-    // DERIVED, not chosen: the 288px sidebar DEFAULT (`SIDEBAR_DEFAULT_WIDTH`
-    // in components/ui/sidebarWidth.ts) + the 760px reading column
-    // (`--measure-chat` in styles/main.css) = 1048. `useContentSize` is on, so
-    // this is content width, which is the number the renderer sees.
+    // DERIVED, not chosen: `WINDOW_MIN_WIDTH` in components/Layout/yieldLadder.ts,
+    // the narrowest window that still holds a two-pane split with each pane at
+    // the chat floor (2 x 360 + the 1px splitter = 721). `useContentSize` is on,
+    // so this is content width, which is the number the renderer sees.
+    // `styles/measures.test.ts` pins this literal to that constant.
     //
-    // ⚠ The sidebar's DEFAULT, not its minimum. The sidebar is user-resizable
-    // (216–360px, default 288), and it is tempting to take the floor from the
-    // bottom of that range on the argument that the minimum is the only width
-    // that is a property of the app rather than of a preference. That argument
-    // gets the direction backwards: a floor of 216 + 760 = 976 is a promise
-    // about a width NO install has until someone drags the edge, and at the
-    // width every install actually ships with it leaves the column 976 − 288 =
-    // 688px — under the very measure this floor exists to protect. The default
-    // is the sidebar the window must be able to seat.
+    // It was 1048, the 288px default sidebar plus the 760px chat measure, so
+    // that Home's usage card and its heat map could never be squeezed. The owner
+    // changed the rule (2026-11-19): as the window narrows the sidebar folds
+    // first (rung 1, at 1120), and then the composer narrows, the way a split
+    // pane's composer does. Home's usage card is not squeezed instead: it shows
+    // only at its whole measure and steps aside below it
+    // (components/sessions/homeUsageFit.ts). With the sidebar docked the column
+    // still has its whole measure at every sidebar width, because
+    // SIDEBAR_MAX_WIDTH + 760 = 1120 = SIDEBAR_COMPACT_WIDTH (pinned too).
     //
-    // Past the default the user is giving up reading room deliberately, with
-    // the window already open and the edge under their hand, and can give it
-    // back the same way; a floor cannot promise anything about a preference it
-    // is never told. The wide end is bounded separately and by construction:
-    // 360 + 760 = 1120 = SIDEBAR_COMPACT_WIDTH, so raising SIDEBAR_MAX_WIDTH
-    // past the point where rung 1 of the yield ladder collapses the sidebar to
-    // an overlay would start eating the measure. `styles/measures.test.ts` pins
-    // both the floor here and that identity.
-    //
-    // Below it the Home column is narrower than its own measure, and the usage
-    // heatmap — the one thing on Home whose size is computed rather than
-    // declared — starts shrinking its cells. Measured in a browser against the
-    // real stylesheet, WITH THE THEN-240px SIDEBAR: at 990px content width the
-    // grid is still at its full 23px cells; at 980px it drops to 22px and keeps
-    // stepping down to 16px by 800px, with the exact cliff at 989px.
-    //
-    // ⚠ That 989 is a WINDOW width and therefore carries the sidebar of the day
-    // inside it — what the heatmap actually reacts to is its own column, i.e.
-    // window minus sidebar, so the cliff moves with the sidebar. The measured
-    // cliff is a 749px column (989 − 240); against the 288px default the same
-    // cliff is a 1037px window, and 1048 clears it by the same 11px the old 1000
-    // cleared 989 by. The floor is still the tokens rather than the measurement,
-    // so it survives the heatmap's cell ladder changing.
-    // `styles/measures.test.ts` asserts the arithmetic still holds.
+    // Below 930px the renderer's `useIsMobile` is true, but the desktop keeps
+    // the overlay sidebar there (components/ui/sidebar.tsx): the drawer is the
+    // layout of a narrow browser, and the titlebar reserve every band keys on
+    // belongs to the overlay.
     //
     // ⚠ This is a *minimum window size*, not a content `max-width` — it is not
     // the flat pixel cap that docs/desktop-ui/window-scaling-regressions.md
     // warns about. It puts a floor under the window; it does nothing to a wide
     // one, where `--measure-page` still tracks the pane as a percentage.
     //
-    // The height axis is deliberately NOT capped to the same standard. A short
-    // window shrinks the heatmap's cells too, but the minHeight that would stop
-    // it lands around 700-800px, which is unusable on a 1280x800 display once
-    // the menu bar and Dock are taken out. The heatmap keeps its chrome locked
-    // to its grid instead (see UsageHeatmap's `heatStyle`), so a squeezed grid
-    // stays a coherent block rather than desyncing from its own labels.
-    minWidth: 1048,
+    // The height axis is deliberately NOT raised to fit the usage card. A
+    // minHeight that seated it whole lands around 700-800px, which is unusable
+    // on a 1280x800 display once the menu bar and Dock are taken out. Home's
+    // card yields instead: where it cannot leave the 24px gap above the
+    // composer it drops its heat map, then steps aside.
+    minWidth: 721,
     minHeight: 600,
     resizable: true,
     useContentSize: true,

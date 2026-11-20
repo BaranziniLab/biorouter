@@ -1313,11 +1313,13 @@ value's *location* is as load-bearing as the number.
   216–360px with a 288px default, dragged from `SidebarResizeHandle` and stored
   per user in `localStorage` (clamped **on read**, so a value from an older build
   can never land outside today's bounds). Two consequences that are easy to get
-  wrong. ⚠ **The window's `minWidth` derives from the DEFAULT** (288 + 760 =
-  1048, `main.ts`). It was briefly taken from the *minimum* on the argument that
-  216 is the only width in the range that is a property of the app rather than of
-  a preference; that runs backwards, because `216 + 760 = 976` leaves the shipped
-  288px sidebar a `688px` column — under the measure the floor exists to protect.
+  wrong. ⚠ **The window's `minWidth` no longer derives from the sidebar** (owner,
+  2026-11-19). It was the DEFAULT plus the measure (288 + 760 = 1048), which kept
+  Home's usage heat map whole and also stopped Home's composer from narrowing at
+  all. It is now `WINDOW_MIN_WIDTH` (721, `Layout/yieldLadder.ts`): the narrowest
+  window that holds a two-pane split at the chat floor (2 x 360 + 1), pinned in
+  `styles/measures.test.ts`. Below rung 1 the sidebar is an overlay that costs the
+  column nothing, so the floor needs no sidebar term; see "Below rung 1" below.
   ⚠ **The wide end is closed by an
   identity, not by a clamp** — `SIDEBAR_MAX_WIDTH + 760 = 1120 =
   SIDEBAR_COMPACT_WIDTH`, rung 1 of the yield ladder — so raising the max without
@@ -1422,6 +1424,36 @@ value's *location* is as load-bearing as the number.
   oversized box would otherwise scroll an ancestor. The size is the pane's `getBoundingClientRect`,
   never the viewport; `styles/paneFloor.test.ts` pins the CSS floor to the constants, and
   `composerCard.browser.test.tsx` pins the composer bar height the height floor is built on.
+- **Below rung 1 the composer narrows, and Home's usage card yields** (owner,
+  2026-11-19; [`docs/desktop-ui/narrow-windows.md`](docs/desktop-ui/narrow-windows.md)).
+  As the window narrows the sidebar folds at 1120, then Home's composer (the same
+  fluid `ChatInput`) narrows below an 808px window, down to 673px at the 721px
+  floor. Home's usage card shows only at its whole 760px measure, because its heat
+  map is the one thing on Home whose size is computed; narrower, it steps aside
+  rather than shrink. On a short window it yields before it can touch the composer:
+  the whole card while the greeting, the card and a 24px gap fit, then the tiles
+  only (the heat map and footnote fold), then no card. The decision is
+  `homeUsageFit` (`sessions/homeUsageFit.ts`, pure, kept by `useHomeUsageFit`); a
+  fold CLIPS the box to zero height and never unmounts it, so the card's natural
+  size is measured in every state and the answer cannot feed back into its inputs.
+  ⚠ **The desktop never shows the sidebar drawer.** `useIsMobile` is true under
+  930px, and the drawer is the `biorouter serve` browser's (`ui/sidebar.tsx` gates
+  it on `isBrowserSurface()`); the desktop keeps the overlay at every width it
+  allows, because every page band's titlebar reserve keys on
+  `[data-slot='sidebar'][data-state='collapsed']`, which the drawer does not render,
+  and in it page titles slid under the traffic lights. `AppLayout`'s width watcher
+  is a LAYOUT effect so a window opening below rung 1 is an overlay before the page
+  measures itself; as a passive effect, a reload at the floor merged a fitting
+  two-pane split (`ChatGroupsShell` read the box beside the docked column). Its
+  cleanup must not lift the overlay class (it re-runs on every toggle, and a lifted
+  class mid-commit stops ⌘B moving focus into the overlay); an unmount-only effect
+  removes it. ⚠ The
+  Knowledge band is the
+  widest band at the floor: while the reserve and its Sources/Graph pair share it
+  (a collapsed sidebar and a pane under 860), its counts fold (`main.css`, "THE
+  WINDOW FLOOR, KNOWLEDGE'S PART"). Tests: `sessions/homeUsageFit.test.ts`,
+  `sessions/homeLayout.browser.test.tsx`, `Layout/windowFloor.browser.test.tsx`,
+  `Layout/AppLayout.test.tsx`.
 - **Fills before lines** (R-27, owner message 13). In-page containers and
   controls are a subtle solid fill with no resting outline: `--background-fill`
   (`#f4f4f2` light, `#232320` dark) at rest and `--background-fill-strong`

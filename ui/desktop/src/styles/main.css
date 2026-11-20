@@ -5034,6 +5034,26 @@ body:has(.biorouter-modal-surface [data-slot='select-content'][data-state='open'
    point; keeping it working would have preserved a fix for a defect that no
    longer exists. */
 
+/* THE WINDOW FLOOR, KNOWLEDGE'S PART (owner, 2026-11-19). The window may now
+   narrow to `WINDOW_MIN_WIDTH` (721px, Layout/yieldLadder.ts). Below rung 1 the
+   sidebar is folded and the band carries the titlebar reserve (172px on macOS,
+   the selector `.biorouter-page-header-bar` keys its margin on), and below the
+   860px step the Sources/Graph pair joins the band too. There, with the widest
+   labels (BioOKF, Private, four-digit counts), the counts painted over the
+   pair below an 830px window, even after the base's name had given way. So
+   while both hold, the counts fold: the title, the base's format and tier, the
+   pair and the actions keep their size, and the band fits down to about 700px.
+   A docked sidebar leaves the band its whole width, and the counts stay.
+   Measured in `Layout/windowFloor.browser.test.tsx`. */
+@container br-knowledge-pane (max-width: 859px) {
+  [data-slot='sidebar'][data-state='collapsed']
+    ~ [data-slot='sidebar-inset']
+    .br-knowledge-pane
+    [data-testid='knowledge-graph-summary'] {
+    display: none;
+  }
+}
+
 /* @ws WS-USAGE begin: home */
 .biorouter-home-content {
   container-name: biorouter-home-content;
@@ -5076,8 +5096,29 @@ body:has(.biorouter-modal-surface [data-slot='select-content'][data-state='open'
   text-wrap: balance;
 }
 
-/* The card is never folded away. As the window gets short only the hero
-   compacts, then yields, and below that Home scrolls. */
+/* THE CARD YIELDS BEFORE IT CAN TOUCH THE COMPOSER (owner, 2026-11-19). It
+   used to be "never folded away", and at the shortest window, with the Larger
+   text size or a greeting on two lines, the column outgrew the room above the
+   composer: the card ran down to the scroller's edge and read as sliding under
+   the composer. `sessions/homeUsageFit.ts` decides, from measured boxes, and
+   this is how each answer is drawn:
+     - 'compact': the heat map and its footnote fold away (the tiles stay);
+     - 'hidden': the card folds away (the greeting and the composer stay), and
+       also wherever the column is narrower than the card's measure.
+   A fold CLIPS, never unmounts or `display: none`s: the box inside keeps its
+   natural size, which is what the fit measures next time. `visibility` takes
+   the folded part out of sight and out of the tab order, and the hidden card is
+   also `inert` (SessionsInsights.tsx). Any card that shows leaves the column's
+   24px bottom padding as ground above the composer. */
+.biorouter-home-usage[data-fit='hidden'],
+.biorouter-home-usage[data-fit='compact'] .br-usage-card-extra {
+  block-size: 0;
+  overflow: clip;
+  visibility: hidden;
+}
+
+/* As the window gets short the hero compacts, then yields, and below that
+   Home scrolls. */
 @container biorouter-home-content (max-height: 720px) {
   .biorouter-home-hero {
     padding-block: 56px 16px;

@@ -273,7 +273,7 @@ When a front-matter title exists, demote the first `# H1` to the h2 style.
 | Icons | 14 (chip and inline help glyph) / 16 (rows and controls) / 20 (banners and empty states) | Amend the `--icon-chip` comment (`main.css:371`) to allow "inline help glyph" |
 | Radii | 4 inner / 8 element / 12 container / 16 surface (the preview sheet only) / full | Unchanged. A nested radius is `outer − padding` (so a segment is 6px). `rounded-2xl` is banned outside `artifacts/`. |
 | `--measure-chat` | 760 flat | Unchanged (pinned by `measures.test.ts:202-222`) |
-| Sidebar width | 216 to 360, default 288 | Unchanged (`ui/sidebarWidth.ts`; `minWidth` 1048 = 288 + 760) |
+| Sidebar width | 216 to 360, default 288 | Unchanged (`ui/sidebarWidth.ts`; `minWidth` was 1048 = 288 + 760, and is 721 since 2026-11-19, see [narrow windows](../../desktop-ui/narrow-windows.md)) |
 
 ### 2.3 Colour and contrast additions (WS-TOKENS; light and dark in every family)
 

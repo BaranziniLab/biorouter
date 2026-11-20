@@ -12,7 +12,8 @@
  * What is pinned here, and why only here:
  * - an unreadable app's row is two lines, the height of every other row (the consequence moved
  *   into the badge's help; a third line of prose made it the one tall row in the list);
- * - the export dialog's body scrolls at the app's minimum window (1048x600) instead of clipping
+ * - the export dialog's body scrolls at the app's minimum window (721x600 since 2026-11-19, and
+ *   the old 1048x600) instead of clipping
  *   its last rows, which the shell's `overflow: hidden` used to do without a scrollbar;
  * - the app check's findings sit in a warning Note, the shell body is the one scroller, the Note's
  *   own ceiling folds a long list behind "Show more", and focus lands on the findings;
@@ -27,6 +28,7 @@ import { fileURLToPath } from 'node:url';
 import { build } from 'esbuild';
 import { chromium, type Browser, type Page } from 'playwright';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { WINDOW_MIN_WIDTH } from '../Layout/yieldLadder';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const STYLES = resolve(here, '../../styles');
@@ -381,6 +383,7 @@ describe('Applications and its export dialog, in Chromium', () => {
     if (!browser) return ctx.skip();
     for (const mode of ['light', 'dark'] as const) {
       for (const size of [
+        { width: WINDOW_MIN_WIDTH, height: 600 },
         { width: 1048, height: 600 },
         { width: 1440, height: 900 },
       ]) {

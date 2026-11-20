@@ -1,6 +1,9 @@
 import { act, fireEvent, render, screen } from '@testing-library/react';
+import { useEffect } from 'react';
 import { MemoryRouter, Route, Routes, useNavigate } from 'react-router-dom';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { SIDEBAR_OVERLAY_BODY_CLASS } from '../ui/sidebar';
+import { SIDEBAR_COMPACT_WIDTH } from './yieldLadder';
 import {
   AppLayout,
   routeOwnsTopBand,
@@ -256,5 +259,46 @@ describe('the top-band body class', () => {
     expect(document.body).toHaveClass(CHAT_ROUTE_CLASS);
     view.unmount();
     expect(document.body).not.toHaveClass(CHAT_ROUTE_CLASS);
+  });
+});
+
+/**
+ * A window that opens below rung 1 must already be an overlay when the page under it first
+ * measures itself. The sidebar starts open, and the watcher used to be a passive effect, which
+ * React runs AFTER every child's passive effect: `ChatGroupsShell`'s split watcher read a
+ * 721px window as the 433px box beside a docked sidebar, merged a two-pane split that fits,
+ * and then lost the snapshot it owed back (measured on a reload at the window's floor,
+ * 2026-11-19). jsdom lays nothing out, so what is pinned is the order: the overlay class is on
+ * `<body>` by the time a child's first passive effect runs.
+ */
+describe('the overlay below rung 1, from the first measurement', () => {
+  const realWidth = Object.getOwnPropertyDescriptor(window, 'innerWidth');
+  afterEach(() => {
+    if (realWidth) Object.defineProperty(window, 'innerWidth', realWidth);
+    document.body.classList.remove(SIDEBAR_OVERLAY_BODY_CLASS);
+  });
+
+  it('is in place before the page’s own effects measure it', () => {
+    Object.defineProperty(window, 'innerWidth', {
+      configurable: true,
+      value: SIDEBAR_COMPACT_WIDTH - 399,
+    });
+    const seen: boolean[] = [];
+    function MeasuresOnMount() {
+      useEffect(() => {
+        seen.push(document.body.classList.contains(SIDEBAR_OVERLAY_BODY_CLASS));
+      }, []);
+      return null;
+    }
+    render(
+      <MemoryRouter initialEntries={['/pair']}>
+        <Routes>
+          <Route element={<AppLayout />}>
+            <Route path="*" element={<MeasuresOnMount />} />
+          </Route>
+        </Routes>
+      </MemoryRouter>
+    );
+    expect(seen).toEqual([true]);
   });
 });
