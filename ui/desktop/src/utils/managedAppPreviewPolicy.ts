@@ -225,7 +225,7 @@ export async function managedAppLaunchUrl(
 ): Promise<string> {
   const { secretKey, signal } = scope.backend;
   if (signal.aborted) throw new Error(BACKEND_STOPPED);
-  if (!secretKey) throw new Error('This app cannot be opened here.');
+  if (!secretKey) throw new Error('This application cannot be opened here.');
   const launch = await requestAppLaunch(
     scope.backend.baseUrl,
     scope.appId,
@@ -238,12 +238,13 @@ export async function managedAppLaunchUrl(
   }
   const url = `${scope.origin}${launch.path}`;
   if (!isManagedAppNavigation(scope, url)) {
-    throw new Error('The app backend answered with an unexpected app address.');
+    throw new Error('The application backend answered with an unexpected application address.');
   }
   return url;
 }
 
-const BACKEND_STOPPED = 'The app backend stopped. Reopen the app after it restarts.';
+const BACKEND_STOPPED =
+  'The application backend stopped. Reopen the application after it restarts.';
 
 // An additional policy intersects with (never replaces) the server's CSP.
 export const MANAGED_APP_PREVIEW_CSP = "worker-src 'none'; object-src 'none'; form-action 'none'";

@@ -117,6 +117,7 @@ fn get_extensions_map() -> IndexMap<String, ExtensionEntry> {
     }
     // Also project the idempotent split on reads, including a concurrent pre-migration snapshot.
     migrate_computer_use_capabilities(&mut extensions_map);
+    rename_application_drafter(&mut extensions_map);
     inject_builtin_extensions(&mut extensions_map);
     inject_platform_extensions(&mut extensions_map);
     extensions_map
@@ -218,12 +219,57 @@ const BUILTIN_EXTENSION_METADATA: &[(&str, &str, &str)] = &[
         "Knowledge",
         "Personal knowledge bases stored as markdown with full history.",
     ),
+    // `agent_drafter` is the legacy key of Application Drafter (once "Agent Drafter"): it is
+    // stored in config.yaml, per-chat tool overrides and tool names, so only the label moved.
     (
         "agent_drafter",
-        "Agent Drafter",
-        "Build interactive artifacts, static pages or apps with an embedded Biorouter agent.",
+        "Application Drafter",
+        "Build static pages or interactive applications with an embedded Biorouter agent.",
     ),
 ];
+
+/// The label and description `agent_drafter` was stored with before it was named
+/// Application Drafter (2026-11). `inject_builtin_extensions` never overwrites a present
+/// entry, so an upgrading user's config.yaml keeps these until `rename_application_drafter`
+/// projects the current ones over them.
+const LEGACY_APPLICATION_DRAFTER_LABEL: &str = "Agent Drafter";
+const LEGACY_APPLICATION_DRAFTER_DESCRIPTION: &str =
+    "Build interactive artifacts, static pages or apps with an embedded Biorouter agent.";
+
+/// Replace the retired label and description on a stored `agent_drafter` entry with the
+/// current ones. Only the shipped defaults move, so a label someone chose stays. Every read
+/// projects it and every write saves the projection, so it needs no version gate.
+fn rename_application_drafter(extensions: &mut IndexMap<String, ExtensionEntry>) {
+    let Some(&(key, label, description)) = BUILTIN_EXTENSION_METADATA
+        .iter()
+        .find(|(key, _, _)| *key == "agent_drafter")
+    else {
+        return;
+    };
+    for entry in extensions.values_mut() {
+        let ExtensionConfig::Builtin {
+            name,
+            display_name,
+            description: stored_description,
+            ..
+        } = &mut entry.config
+        else {
+            continue;
+        };
+        if name_to_key(name) != key {
+            continue;
+        }
+        if display_name
+            .as_deref()
+            .is_none_or(|stored| stored == LEGACY_APPLICATION_DRAFTER_LABEL)
+        {
+            *display_name = Some(label.to_owned());
+        }
+        if stored_description == LEGACY_APPLICATION_DRAFTER_DESCRIPTION {
+            *stored_description = description.to_owned();
+        }
+    }
+}
 
 pub fn bundled_extension_display_name(name: &str) -> Option<&'static str> {
     match name {
@@ -717,6 +763,7 @@ pub(crate) fn set_dictionary_activation_in(
             .unwrap_or_default();
         let mut extensions = parsed_extensions_map(raw);
         migrate_computer_use_capabilities(&mut extensions);
+        rename_application_drafter(&mut extensions);
         inject_builtin_extensions(&mut extensions);
         inject_platform_extensions(&mut extensions);
         let entry = extensions
@@ -1208,6 +1255,45 @@ mod computer_use_migration_tests {
         assert_eq!(display_name.as_deref(), Some("Biorouter Copilot"));
     }
 
+    /// `agent_drafter` was "Agent Drafter" until 2026-11. Like the Copilot label above, an
+    /// upgrading user's stored label is reachable only by projecting over it.
+    #[test]
+    fn the_retired_application_drafter_label_and_description_are_replaced() {
+        let mut entries = IndexMap::from([(
+            "agent_drafter".to_owned(),
+            builtin_entry(
+                "agent_drafter",
+                LEGACY_APPLICATION_DRAFTER_LABEL,
+                LEGACY_APPLICATION_DRAFTER_DESCRIPTION,
+            ),
+        )]);
+        rename_application_drafter(&mut entries);
+        let ExtensionConfig::Builtin {
+            display_name,
+            description,
+            ..
+        } = &entries["agent_drafter"].config
+        else {
+            panic!()
+        };
+        assert_eq!(display_name.as_deref(), Some("Application Drafter"));
+        assert!(description.contains("applications"), "{description}");
+        let first = entries.clone();
+        rename_application_drafter(&mut entries);
+        assert_eq!(entries, first);
+    }
+
+    #[test]
+    fn a_chosen_application_drafter_label_is_kept() {
+        let mut entries = IndexMap::from([(
+            "agent_drafter".to_owned(),
+            builtin_entry("agent_drafter", "Lab app builder", "configured"),
+        )]);
+        let before = entries.clone();
+        rename_application_drafter(&mut entries);
+        assert_eq!(entries, before);
+    }
+
     #[test]
     fn disabled_computer_use_keeps_both_capabilities_disabled() {
         let mut entries = IndexMap::from([("custom-key".to_owned(), legacy(false, &[]))]);
@@ -1326,6 +1412,49 @@ mod builtin_description_copy_tests {
             assert!(
                 !source.contains("scientific plots, rendered inline"),
                 "{relative} still says figures render inline"
+            );
+        }
+    }
+}
+
+#[cfg(test)]
+mod application_drafter_name_tests {
+    use super::{bundled_extension_display_name, BUILTIN_EXTENSION_METADATA};
+    use std::path::Path;
+
+    /// The extension is named for what it builds. Every surface that restates its label or
+    /// description carries the current ones, and none still says the retired name.
+    #[test]
+    fn every_surface_names_application_drafter() {
+        assert_eq!(
+            bundled_extension_display_name("agent_drafter"),
+            Some("Application Drafter")
+        );
+        let (_, _, description) = BUILTIN_EXTENSION_METADATA
+            .iter()
+            .find(|(key, _, _)| *key == "agent_drafter")
+            .expect("agent_drafter is a built-in extension");
+        let long = description.trim_end_matches('.');
+        let repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        for relative in [
+            "ui/desktop/src/built-in-extensions.json",
+            "ui/desktop/src/components/settings/extensions/bundled-extensions.json",
+            "ui/desktop/src/components/settings/capabilities/capabilities.ts",
+            "crates/biorouter-cli/src/commands/configure.rs",
+        ] {
+            let source = std::fs::read_to_string(repo.join(relative))
+                .unwrap_or_else(|error| panic!("read {relative}: {error}"));
+            assert!(
+                source.contains("Application Drafter"),
+                "{relative} does not name Application Drafter"
+            );
+            assert!(
+                !source.contains("Agent Drafter"),
+                "{relative} still says Agent Drafter"
+            );
+            assert!(
+                source.contains(long),
+                "{relative} no longer carries the Application Drafter description {long:?}"
             );
         }
     }

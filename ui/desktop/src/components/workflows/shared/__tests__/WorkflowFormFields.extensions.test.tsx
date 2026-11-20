@@ -83,7 +83,7 @@ describe('the workflow editor’s Extensions picker', () => {
     await openPicker(user);
 
     for (const name of [
-      'Agent Drafter',
+      'Application Drafter',
       'Auto Visualiser',
       'Biorouter Copilot',
       'Chat Recall',

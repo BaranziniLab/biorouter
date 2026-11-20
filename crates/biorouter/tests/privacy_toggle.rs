@@ -782,7 +782,7 @@ async fn the_master_toggle_governs_every_gate_in_both_directions() {
         vec![PRIVATE_EXTENSION.to_string()]
     );
 
-    // 14 CP5   (Task 10D) — the Agent Drafter catalog's knowledge bases. The
+    // 14 CP5   (Task 10D) — the Application Drafter catalog's knowledge bases. The
     //          private base is omitted for a public caller, and the assertion is
     //          NOT vacuous: a private caller sees it in the same tree.
     assert!(catalog_kb_ids(path_root, &private_kb_caller()).contains(&"omop".to_string()));
@@ -1055,7 +1055,7 @@ async fn the_matrix_doubles_are_not_registry_providers() {
     }
 }
 
-/// The knowledge bases the Agent Drafter catalog offers a caller.
+/// The knowledge bases the Application Drafter catalog offers a caller.
 ///
 /// `Catalog::discover` resolves its own root through `BIOROUTER_PATH_ROOT`, so
 /// the env guard is taken here — inside a SYNCHRONOUS helper — rather than

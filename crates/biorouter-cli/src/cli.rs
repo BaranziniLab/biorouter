@@ -2078,27 +2078,27 @@ enum KnowledgeCommand {
 
 #[derive(Subcommand)]
 enum AppsCommand {
-    /// List installed Biorouter apps
-    #[command(about = "List installed Biorouter apps")]
+    /// List installed Biorouter applications
+    #[command(about = "List installed Biorouter applications")]
     List {
         /// Emit machine-readable JSON instead of a table
         #[arg(long, help = "Emit machine-readable JSON instead of a table")]
         json: bool,
     },
 
-    /// Open an app in your default browser
-    #[command(about = "Open an app in your default browser")]
+    /// Open an application in your default browser
+    #[command(about = "Open an application in your default browser")]
     Open {
-        /// App id (see `biorouter apps list`)
-        #[arg(help = "App id (see `biorouter apps list`)")]
+        /// Application id (see `biorouter apps list`)
+        #[arg(help = "Application id (see `biorouter apps list`)")]
         id: String,
     },
 
-    /// Serve an app in the foreground until Ctrl-C
-    #[command(about = "Serve an app in the foreground until Ctrl-C")]
+    /// Serve an application in the foreground until Ctrl-C
+    #[command(about = "Serve an application in the foreground until Ctrl-C")]
     Serve {
-        /// App id (see `biorouter apps list`)
-        #[arg(help = "App id (see `biorouter apps list`)")]
+        /// Application id (see `biorouter apps list`)
+        #[arg(help = "Application id (see `biorouter apps list`)")]
         id: String,
     },
 }
@@ -2533,14 +2533,15 @@ enum Command {
         command: SkillCommand,
     },
 
-    /// List, open, and serve Biorouter apps (built by Agent Drafter)
+    /// List, open, and serve Biorouter applications (built by Application Drafter)
     #[command(
-        about = "List, open, and serve Biorouter apps",
-        long_about = "List, open, and serve the Biorouter apps built by Agent Drafter.\n\n\
+        about = "List, open, and serve Biorouter applications",
+        long_about = "List, open, and serve the Biorouter applications built by Application Drafter.\n\n\
                       `open`/`serve` reuse a `biorouterd` already listening on the configured\n\
                       port (BIOROUTER_PORT, default 3000) or start one for you, then open\n\
                       http://127.0.0.1:<port>/apps/<id>/ in your browser.\n\n\
-                      In-terminal rendering of an app is out of scope; apps open in a real browser."
+                      In-terminal rendering of an application is out of scope; applications open in a\n\
+                      real browser."
     )]
     Apps {
         #[command(subcommand)]

@@ -60,7 +60,7 @@ const KINDS: Array<[string, ChatKindSource]> = [
   ['Crew task', { name: 'Crew · #methods · Plot', working_dir: '/x/crew/tasks' }],
   ['Sub-agent', { name: 'Worker', session_type: 'sub_agent' }],
   ['Branch', { name: 'Fork', diverged_from: 's0' }],
-  ['App', { name: 'app:spec-002' }],
+  ['Application', { name: 'app:spec-002' }],
   ['Scheduled run', { name: 'Nightly', session_type: 'scheduled' }],
   ['Terminal', { name: 'zsh', session_type: 'terminal' }],
 ];

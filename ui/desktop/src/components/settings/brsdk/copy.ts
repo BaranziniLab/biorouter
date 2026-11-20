@@ -2,8 +2,8 @@
  * The App SDK safety frameworks: four opt-in switches, each backed by a config key that is false
  * on the server until a person turns it on. Tests import these instead of retyping them.
  *
- * The prose says "Agent Drafter" (no hyphen) and "stop hook" (lower case), the way the rest of the
- * product does. `help` is InfoTip text: two sentences at most.
+ * The prose says "Application Drafter" (no hyphen), "application" (never "app") and "stop hook"
+ * (lower case), the way the rest of the product does. `help` is InfoTip text: two sentences at most.
  */
 export type BrsdkKey =
   | 'brsdk_pii_guardrail'
@@ -21,21 +21,21 @@ export const BRSDK_TOGGLES: readonly BrsdkToggleMeta[] = [
   {
     key: 'brsdk_pii_guardrail',
     label: 'PII / PHI guardrail',
-    help: 'Mask personal and health information before an app message reaches the model or chat.',
+    help: 'Mask personal and health information before an application message reaches the model or chat.',
   },
   {
     key: 'brsdk_llm_guardrails',
     label: 'Goal stop-hook guardrail',
-    help: 'Run the goal stop hook judge for Agent Drafter apps that declare a goal.',
+    help: 'Run the goal stop hook judge for applications that declare a goal.',
   },
   {
     key: 'brsdk_encryption',
     label: 'Encrypted vault',
-    help: "Store each Agent Drafter app's data in a per-app encrypted vault.",
+    help: "Store each application's data in its own encrypted vault.",
   },
   {
     key: 'brsdk_tracing',
     label: 'Agent tracing',
-    help: 'Permit trace timeline support for Agent Drafter apps that declare tracing.',
+    help: 'Permit trace timeline support for applications that declare tracing.',
   },
 ];

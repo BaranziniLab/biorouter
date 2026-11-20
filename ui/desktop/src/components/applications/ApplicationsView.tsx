@@ -20,7 +20,7 @@ import { ReadableContent } from '../Layout/ReadableContent';
 import { fromUnixSeconds, rowTime, rowTimeTitle } from '../workflows/shared/rowTime';
 import {
   configuredBaseUrl,
-  deleteAgentDrafterApp,
+  deleteApplication,
   exportedMessage,
   exportNotesMessage,
   requireOk,
@@ -130,7 +130,7 @@ export default function ApplicationsView() {
       // The proof rides along although the route does not ask for it yet: the
       // list names the chat each app was built in, and a listing that names a
       // chat is gated like every other one (`routes::session_reach`). Sending it
-      // now keeps private-built apps' chats from silently reading "not recorded"
+      // now keeps private applications' chats from silently reading "not recorded"
       // the day the route starts filtering them.
       const res = await fetch(`${configuredBaseUrl()}/apps`, {
         headers: { ...(await secretHeader()), ...(await userActionHeaders()) },
@@ -145,7 +145,7 @@ export default function ApplicationsView() {
       // check lands. Refresh re-checks too, keeping the last answer meanwhile.
       void resolveChats(data);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to load apps');
+      setError(err instanceof Error ? err.message : 'Failed to load applications');
     } finally {
       setLoading(false);
     }
@@ -310,7 +310,7 @@ export default function ApplicationsView() {
     const app = appToDelete;
     setIsDeleting(true);
     try {
-      await deleteAgentDrafterApp(app.id);
+      await deleteApplication(app.id);
       setApps((prev) => prev.filter((a) => a.id !== app.id));
       toastSuccess({ title: copy.deleted(app.title) });
     } catch (err) {
@@ -459,7 +459,7 @@ export default function ApplicationsView() {
 }
 
 // ---------------------------------------------------------------------------
-// One built app, as a two-line row
+// One application, as a two-line row
 // ---------------------------------------------------------------------------
 interface ApplicationItemProps {
   app: AppManifest;
@@ -487,8 +487,8 @@ interface ApplicationItemProps {
  * is unavailable and says why in its own words ("Build chat deleted"), and the meta line says the
  * same at rest, so nobody has to open the menu to learn it. Refresh checks again.
  *
- * Delete lives HERE and nowhere else: deleting an Agent Drafter app removes its files from disk,
- * and the in-chat artifact card deliberately has no delete control (CLAUDE.md).
+ * Delete lives HERE and nowhere else: deleting an application removes its files from disk, and the
+ * in-chat artifact card deliberately has no delete control (CLAUDE.md).
  *
  * The kind badge carries the app's declared surface ("2 actions · 1 signal") as its help, in
  * Crew's ClassificationBadge pattern: the badge itself is the focusable trigger.
@@ -577,7 +577,7 @@ export function ApplicationItem({
             // A row of two runs, not one truncated line: the meta gives way (ellipsis) and the
             // note never does. As one `truncate` line, a long description pushed the note past
             // the line's end, where the ellipsis hid it (measured: the note at x 1390 against a
-            // line ending at 1130). `builtAppsExport.browser.test.tsx` pins it inside the line.
+            // line ending at 1130). `applicationsExport.browser.test.tsx` pins it inside the line.
             <p
               className="flex min-w-0 overflow-hidden whitespace-nowrap text-supporting text-text-muted"
               data-testid="app-row-meta"
@@ -664,7 +664,7 @@ function BrokenApplicationItem({
               machine string, read character by character, not a sentence written for the row
               (design.md D-33). It stays visible, since it is why the app is broken. Supporting,
               not `text-code`: both are 12px, and the code role's 20px leading would make this row
-              4px taller than its neighbours (builtAppsExport.browser.test.tsx). */}
+              4px taller than its neighbours (applicationsExport.browser.test.tsx). */}
           {reason && (
             <p
               className="min-w-0 break-all font-mono text-supporting text-text-muted"

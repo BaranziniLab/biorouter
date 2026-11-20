@@ -1,5 +1,5 @@
 //! BRSDK manifest types — the declarative, **deny-by-default** capability /
-//! guardrail / reliability / orchestration surface an Agent-Drafter app uses to
+//! guardrail / reliability / orchestration surface an application uses to
 //! switch on engine features.
 //!
 //! Every field defaults, so manifests written before BRSDK existed deserialize

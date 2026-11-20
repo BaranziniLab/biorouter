@@ -1,6 +1,6 @@
 // @vitest-environment node
 /**
- * Built apps and its export dialog, painted by Chromium: the new UI the built-apps work (#392)
+ * Applications and its export dialog, painted by Chromium: the new UI the applications work (#392)
  * brought into the redesign, measured where jsdom cannot see.
  *
  * The real `ApplicationsView` is bundled with esbuild and served from a real origin
@@ -141,7 +141,7 @@ const launchChromium = async (): Promise<Browser | null> => {
   return null;
 };
 
-describe('Built apps and its export dialog, in Chromium', () => {
+describe('Applications and its export dialog, in Chromium', () => {
   let browser: Browser | null = null;
   let script = '';
   let css = '';
@@ -149,7 +149,7 @@ describe('Built apps and its export dialog, in Chromium', () => {
   beforeAll(async () => {
     browser = await launchChromium();
     if (!browser) {
-      console.warn('No Chromium found: skipping the Built apps export tests.');
+      console.warn('No Chromium found: skipping the Applications export tests.');
       return;
     }
     const bundle = await build({
@@ -254,7 +254,7 @@ describe('Built apps and its export dialog, in Chromium', () => {
   async function shot(tab: Page, name: string) {
     if (!SHOTS) return;
     mkdirSync(SHOTS, { recursive: true });
-    await tab.screenshot({ path: resolve(SHOTS, `built-apps-${name}.png`) });
+    await tab.screenshot({ path: resolve(SHOTS, `applications-${name}.png`) });
   }
 
   /** Every distinct font size of a visible text run under `selector`. */

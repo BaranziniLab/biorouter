@@ -331,7 +331,7 @@ describe('ExportAppDialog', () => {
       vi.fn(async () => exported('cohort-explorer.zip')),
       true
     );
-    expect(screen.getByText(/Downloads the app as a \.zip/)).toBeInTheDocument();
+    expect(screen.getByText(/Downloads the application as a \.zip/)).toBeInTheDocument();
     await user.click(screen.getByRole('radio', { name: /^Full/ }));
     expect(screen.queryByRole('checkbox', { name: copy.includeBiorouter })).toBeNull();
     await user.click(screen.getByRole('button', { name: copy.export }));
@@ -447,12 +447,12 @@ describe('ApplicationsView export', () => {
   it('says why an export failed', async () => {
     exportApp.mockResolvedValue({
       status: 'failed',
-      message: "There is no app 'cohort-explorer'.",
+      message: "There is no application 'cohort-explorer'.",
     });
     await exportFromView();
     expect(toastError).toHaveBeenCalledWith({
       title: 'Cohort Explorer',
-      msg: "There is no app 'cohort-explorer'.",
+      msg: "There is no application 'cohort-explorer'.",
     });
   });
 });

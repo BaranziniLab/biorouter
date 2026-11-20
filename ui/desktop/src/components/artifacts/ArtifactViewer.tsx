@@ -552,7 +552,7 @@ export function iconForArtifact(
     if (!ext) return Folder;
     return FileText;
   }
-  // A `ui://` resource. An Agent Drafter app is the application entity, so it
+  // A `ui://` resource. An application is the application entity, so it
   // draws the registry's glyph, the one its transcript card draws (one entity,
   // one glyph; the card's own classifier decides). A figure or report (Auto
   // Visualiser) draws the figure glyph the tool row that made it draws (icons.md,
@@ -1589,7 +1589,7 @@ export default function ArtifactViewer({
   const openStandalone = async () => {
     if (activeArtifact.kind === 'html') {
       // Expand opens the offline preview in the user's default browser. Live
-      // Agent Drafter apps use the explicit launch link returned by the tool.
+      // applications use the explicit launch link returned by the tool.
       await window.electron.openArtifactInBrowser({
         html: visiblePreview.kind === 'html' ? visiblePreview.html : activeArtifact.html,
         title: activeArtifact.title,

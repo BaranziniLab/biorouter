@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import ts from 'typescript';
 
 /**
- * How the main process opens a built app in the browser and in the artifact panel (W2-HRD-1).
+ * How the main process opens an application in the browser and in the artifact panel (W2-HRD-1).
  *
  * Asserted against `main.ts`'s SOURCE, as `main.openPath.test.ts` does: nothing can import
  * `main.ts` under vitest. The decisions the handlers delegate to are covered behaviourally by

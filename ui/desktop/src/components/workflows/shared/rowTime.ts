@@ -4,7 +4,7 @@
  * "4d", then a short date ("Oct 7", with the year only when it is not this year). The full date
  * goes in the time's tooltip (`rowTimeTitle`). Sans face, tabular figures: never mono.
  *
- * Shared by the Workflows and Built apps rows. Pure, so it is tested without a DOM.
+ * Shared by the Workflows and Applications rows. Pure, so it is tested without a DOM.
  */
 export function rowTime(when: Date | null | undefined, now: Date = new Date()): string | null {
   if (!when || Number.isNaN(when.getTime())) return null;

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# Build 50 Biorouter apps with DIVERSE custom UIs (sliders, dropdowns, buttons,
+# Build 50 Biorouter applications with DIVERSE custom UIs (sliders, dropdowns, buttons,
 # toggles, chips, tabs, drag-drop, region maps) wired to the agent via br.run().
-# Authors via MiMo through the Agent Drafter tools, in batches.
+# Authors via MiMo through the Application Drafter tools, in batches.
 #
 # Usage: round2.sh author <id ...>     # drive MiMo to build the given app ids
 #        round2.sh ids                 # print all ids
@@ -68,7 +68,7 @@ ids() { for s in "${APPS[@]}"; do echo "${s%%|*}"; done; }
 author_one() {
   local spec="$1"; IFS='|' read -r id title exts ui persona <<< "$spec"
   local extline=""; [ "$exts" != "-" ] && extline=", extensions [\"${exts//,/\",\"}\"]"
-  local instr="Use the Agent Drafter tools to build a Biorouter app with a CUSTOM interactive UI (do NOT use the default chat panel). \
+  local instr="Use the Application Drafter tools to build a Biorouter app with a CUSTOM interactive UI (do NOT use the default chat panel). \
 (1) create_app with id \"$id\", title \"$title\", a one-sentence description, kind \"agentic\"$extline, and system_prompt: \"$persona\". \
 (2) update_app the index.html: build a UI featuring $ui, composed ONLY with Biorouter design-system classes (br-container, br-card, br-btn, br-select, br-slider, br-switch, br-check, br-chips/br-chip, br-tabs/br-tab, br-grid, br-row, br-dropzone, br-draglist/br-dragitem, br-mapgrid/br-region, br-badge). Include a results element <div class=\"br-output\" id=\"out\" data-placeholder=\"Results appear here\"></div>. Do NOT include any external <script>, <link>, CDN, or your own <style> colors. \
 (3) update_app src/main.ts: import { createApp } from \"./sdk\"; const br = createApp({ autoChat: false }); read the control values, compose a natural-language prompt from them, and call br.run(prompt, \"#out\") on the relevant change/click/drop events. \

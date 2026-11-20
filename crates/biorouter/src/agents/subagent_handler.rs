@@ -2146,7 +2146,7 @@ mod tests {
     /// The observable difference is the **LRU**, which `remove_session` pops and
     /// `deregister_agent_if_same` deliberately does not. A blunt teardown
     /// therefore evicts a cache entry the run never created. In production that
-    /// entry is the agent a consulted Agent Drafter worker got from an ordinary
+    /// entry is the agent a consulted Application Drafter worker got from an ordinary
     /// `get_agent` (`routes/apps.rs`), thrown away on every consult — and, worse,
     /// a plain remove would evict a *live* registration belonging to someone
     /// else, which is the whole reason release is identity-scoped.

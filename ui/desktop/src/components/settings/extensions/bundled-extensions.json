@@ -68,8 +68,8 @@
   {
     "id": "agent_drafter",
     "name": "agent_drafter",
-    "display_name": "Agent Drafter",
-    "description": "Build interactive artifacts, static pages or apps with an embedded Biorouter agent, and export them as standalone projects.",
+    "display_name": "Application Drafter",
+    "description": "Build static pages or interactive applications with an embedded Biorouter agent, and export them as standalone projects.",
     "enabled": true,
     "type": "builtin",
     "env_keys": [],

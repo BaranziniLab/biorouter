@@ -1,4 +1,4 @@
-//! Build pipeline for Agent Drafter apps.
+//! Build pipeline for applications.
 //!
 //! Apps are authored in TypeScript (`src/main.ts` importing `src/sdk.ts`) and
 //! bundled into a single browser-runnable `dist/app.js` with **esbuild**. esbuild
@@ -1419,7 +1419,7 @@ const LEGACY_FALLBACK_MARKER: &str = "/* Agent Drafter fallback bundle";
 impl BundleBanner {
     fn line(&self) -> String {
         let note = if self.builder == "fallback" {
-            " (Agent Drafter fallback bundle: esbuild was not available)"
+            " (Application Drafter fallback bundle: esbuild was not available)"
         } else {
             ""
         };

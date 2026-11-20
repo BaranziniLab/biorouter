@@ -1349,7 +1349,7 @@ impl UiBridge {
     /// handler (`app_call`). Without this the agent can simply *write the number*
     /// with `ui_patch_state` and narrate the change as if the app had made it —
     /// which is exactly what specs 011/013/014 did. Prose telling the model to
-    /// "call the action before you narrate it" is the instruction Agent Drafter
+    /// "call the action before you narrate it" is the instruction Application Drafter
     /// already generated, and it was ignored.
     pub fn owned_pointers(&self) -> Vec<(String, String)> {
         let Ok(s) = self.inner.surface_decl.lock() else {

@@ -12,7 +12,7 @@ static PERMISSION_MANAGER: LazyLock<Arc<PermissionManager>> =
     LazyLock::new(|| Arc::new(PermissionManager::new(Paths::config_dir())));
 
 /// Tools a chat must always put to a person before they run, in every
-/// permission mode. An Agent Drafter app names them in its manifest's
+/// permission mode. An application names them in its manifest's
 /// `guardrails.needs_approval`, and the app's socket registers them for the
 /// app's chat each time a page connects ([`set_session_always_confirm`]).
 ///

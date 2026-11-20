@@ -2463,7 +2463,7 @@ mod no_human_surface_tests {
     }
 }
 
-/// F-12: an Agent Drafter app page resolved a proof-backed approval with no
+/// F-12: an application page resolved a proof-backed approval with no
 /// proof at all. The page's JavaScript is written by the agent, so the app
 /// socket's `Approve` frame is a model approving its own request — and the only
 /// proof check lived in one HTTP route the socket does not pass through.

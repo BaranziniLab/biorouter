@@ -1012,7 +1012,7 @@ fn title_from_external_url(uri: &str) -> String {
         .unwrap_or_else(|| "Artifact link".to_string())
 }
 
-/// Extract live Agent Drafter launch targets from result metadata. A normal
+/// Extract live Application Drafter launch targets from result metadata. A normal
 /// `launch_app` result uses one path; `execute_code` can aggregate several.
 pub fn app_launch_notes(result: &rmcp::model::CallToolResult) -> Vec<ArtifactNote> {
     let Some(meta) = &result.meta else {

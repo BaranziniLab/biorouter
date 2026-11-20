@@ -4,7 +4,7 @@
  *
  * jsdom cannot see this defect: it never moves focus off a button that turns `disabled`, while
  * Chromium hands focus to `<body>` the moment it does. The Scheduler's Pause, Resume and Stop (on
- * a list row and in the detail band), the list's Refresh and the Built apps row's Launch were all
+ * a list row and in the detail band), the list's Refresh and the Applications row's Launch were all
  * `disabled` while their request ran, so a keyboard user who pressed Enter on one of them lost
  * their place and had to Tab in from the top. Measured in the running app: `document.activeElement`
  * was BODY after Enter on Resume and after Enter on Pause, on the row and in the band.
@@ -389,7 +389,7 @@ describe('keyboard focus survives a toggle (V3-R2-1)', () => {
     }
   });
 
-  it('keeps focus on a Built apps row’s Launch while the launch is out', async (ctx) => {
+  it('keeps focus on an Applications row’s Launch while the launch is out', async (ctx) => {
     if (!browser) return ctx.skip();
     const tab = await open('apps', fixed);
     try {
@@ -471,7 +471,7 @@ describe('keyboard focus survives a toggle (V3-R2-1)', () => {
       await fallsToBody('detail', 'button[aria-label="Pause"]', 'pause');
     });
 
-    it('on a Built apps row’s Launch', async (ctx) => {
+    it('on an Applications row’s Launch', async (ctx) => {
       if (!browser) return ctx.skip();
       await fallsToBody('apps', 'button[aria-label^="Launch "]', 'launch');
     });

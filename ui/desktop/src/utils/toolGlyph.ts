@@ -184,6 +184,8 @@ const DISPLAY_KEY_ALIASES: Record<string, string> = Object.fromEntries(
     [
       ['Biorouter Copilot', 'computercontroller'],
       ['Web & Documents', 'webdocuments'],
+      ['Application Drafter', 'agent_drafter'],
+      // Its name before 2026-11, still stored in saved chats and config files.
       ['Agent Drafter', 'agent_drafter'],
       ['Workspace Control', 'workspace'],
       ['Code Execution', 'code_execution'],

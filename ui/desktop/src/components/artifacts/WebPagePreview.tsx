@@ -100,7 +100,7 @@ export default function WebPagePreview({
   const viewId = viewIdRef.current;
   const browser = window.electron?.embeddedBrowser;
 
-  // Dictate into this app is shown only while an editable field in the app has focus
+  // Dictate into this application is shown only while an editable field in it has focus
   // (owner decision, 2026-11-10). It does not depend on Dictate into other apps.
   useEffect(() => {
     if (

@@ -579,7 +579,9 @@ fn an_apps_serve_whose_link_is_refused_stops_its_daemon_and_forgets_it() {
     // On the path under test: the daemon started, its key was recorded, and
     // only then did it refuse the link.
     assert!(
-        output.contains(&format!("would not open '{APP_ID}': it has no such app")),
+        output.contains(&format!(
+            "would not open '{APP_ID}': it has no such application"
+        )),
         "apps serve did not reach the daemon's refusal, so this test measured nothing:\n{output}"
     );
     assert!(

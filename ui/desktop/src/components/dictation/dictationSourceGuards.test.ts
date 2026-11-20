@@ -176,7 +176,7 @@ function handlerOpening(text: string, match: RegExpMatchArray) {
 /**
  * The windows a renderer to main dictation channel may hear from, by the check that admits each:
  * a window in `windowMap`, or one of the two windows `createAnywhereWindow` opens for Dictate to
- * clipboard and Dictate into this app (S15, S18): the hidden capture window and the review card.
+ * clipboard and Dictate into this application (S15, S18): the hidden capture window and the review card.
  */
 const SENDER_CHECKS = {
   app: '!isDictationSender(event)',

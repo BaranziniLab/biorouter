@@ -45,7 +45,7 @@ directly. Sessions are persisted in the **data** directory, not the config one:
 
 Capabilities are the tools compiled into Biorouter. **Developer**, **Biorouter Copilot**, **Web & Documents**, **Auto Visualiser**, **Code Execution**, **Extension Manager**,
 **Skills**, **Todo**, **Memory**, **Knowledge**, **Workspace Control**, and
-**Agent Drafter** are enabled by default. **Chat Recall** is disabled by default.
+**Application Drafter** are enabled by default. **Chat Recall** is disabled by default.
 Manage them in **Settings → Chat → Capabilities**.
 
 User-installed extensions are MCP servers added through `stdio` (external
@@ -248,8 +248,9 @@ See `docs/security/secret-storage.md`.
 
 The left sidebar leads with **Home** and **New chat**. Everything else sits
 behind a **Components** disclosure — collapsed by default, and remembered —
-holding **Workflows**, **Scheduler**, **Extensions**, **Skills**, **Knowledge**
-and **Built apps** (apps built with Agent Drafter). Below that is a **Recents**
+holding **Workflows**, **Scheduler**, **Extensions**, **Skills**, **Knowledge**,
+**Dictionary** and **Applications** (the applications Application Drafter built;
+before 2026-11 the capability was called Agent Drafter). Below that is a **Recents**
 list of recent chats with a **See all** link to the full session history, and
 **Settings** (providers, models, permissions, theme) is pinned at the bottom.
 Chat renders markdown, syntax-highlighted code and expandable tool-call

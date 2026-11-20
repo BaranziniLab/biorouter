@@ -368,7 +368,7 @@ export function createEmbeddedBrowser(
   const guardNavigation = (event: Electron.Event, url: string) => {
     if (managed && (!managed.isActive() || !isManagedAppNavigation(managed.scope, url))) {
       event.preventDefault();
-      push('This preview can only navigate within this app.');
+      push('This preview can only navigate within this application.');
       return;
     }
     if (!isNavigableEmbeddedUrl(url)) {
@@ -420,7 +420,7 @@ export function createEmbeddedBrowser(
   views.set(viewKey(window, viewId), entry);
   if (managed) {
     entry.releaseManagedView = managed.onRevoke(() => {
-      push('The app backend stopped. Reopen the app after the backend restarts.');
+      push('The application backend stopped. Reopen the application after the backend restarts.');
       destroyEmbeddedBrowser(window, viewId);
     });
   }
@@ -441,7 +441,9 @@ export function createEmbeddedBrowser(
             },
             (error: unknown) => {
               if (entryFor(window, viewId) === entry && !contents.isDestroyed()) {
-                push(error instanceof Error ? error.message : 'This app could not be opened.');
+                push(
+                  error instanceof Error ? error.message : 'This application could not be opened.'
+                );
               }
             }
           );
@@ -673,7 +675,7 @@ const MANAGED_APP_SITE_STORAGES: NonNullable<Electron.ClearStorageDataOptions['s
  * Everything the page stored goes, but not the app's access cookie (W2-HRD-1):
  * the daemon set it when the preview opened the app's one-time launch link, and
  * it is the preview's credential rather than the page's data. Clearing it made
- * the reload that follows answer "Open this app from Biorouter" until the
+ * the reload that follows answer "Open this application from Biorouter" until the
  * preview was closed and opened again, and that link cannot be opened a second
  * time. The access cookie is told apart by `HttpOnly`, which only a response can
  * set, so every cookie the page's own script wrote is still removed. The
@@ -757,7 +759,7 @@ const FOCUSED_EDITABLE_EXPRESSION = `(() => {
 })()`;
 
 /**
- * The isolated world the **Dictate into this app** focus check runs in (S15). World 0 is the
+ * The isolated world the **Dictate into this application** focus check runs in (S15). World 0 is the
  * page's own main world, where the app's script can replace `document.activeElement`, the
  * element constructors or `instanceof` itself and so decide the answer; 999 is the world
  * Electron gives a preload under context isolation. This id is used for nothing else, so the

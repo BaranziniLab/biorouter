@@ -47,7 +47,7 @@ describe('opening a live app’s link in the browser from the panel', () => {
   it('shows the main process’s reason when the app could not be opened', async () => {
     const openExternal = vi.fn(async () => ({
       ok: false,
-      message: 'This app no longer exists.',
+      message: 'This application no longer exists.',
     }));
     installElectronMock(openExternal);
     renderAppLink();
@@ -55,7 +55,7 @@ describe('opening a live app’s link in the browser from the panel', () => {
     expect(openExternal).toHaveBeenCalledWith(appLink);
     expect(toastError).toHaveBeenCalledWith({
       title: OPEN_IN_BROWSER_COPY.failedTitle,
-      msg: 'This app no longer exists.',
+      msg: 'This application no longer exists.',
     });
   });
 

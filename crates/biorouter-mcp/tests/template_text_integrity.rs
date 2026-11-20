@@ -1,4 +1,4 @@
-//! Guards the Agent Drafter templates against bytes that make the files
+//! Guards the Application Drafter templates against bytes that make the files
 //! unreviewable.
 //!
 //! A single NUL byte anywhere in a text file makes `grep`/`ripgrep` classify it

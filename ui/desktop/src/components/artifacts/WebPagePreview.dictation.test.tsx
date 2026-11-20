@@ -12,7 +12,7 @@ vi.mock('../dictation/CrewDictationButton', async (importOriginal) => ({
 }));
 
 /**
- * **Dictate into this app** (S15, PR-28). Owner decisions, 2026-11-10: the button is not
+ * **Dictate into this application** (S15, PR-28). Owner decisions, 2026-11-10: the button is not
  * rendered while nothing in the app is focused, and it works whether or not **Dictate into
  * other apps** is on, so the preview never asks for that switch.
  */
@@ -77,7 +77,7 @@ afterEach(() => {
   vi.clearAllMocks();
 });
 
-describe('Dictate into this app in the live preview', () => {
+describe('Dictate into this application in the live preview', () => {
   it('is not rendered while nothing in the app is focused', async () => {
     const { electron } = installElectron(stateAt(appUrl, true), { value: false });
     await mount();

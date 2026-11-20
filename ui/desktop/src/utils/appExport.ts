@@ -274,7 +274,7 @@ export async function exportAppToFolder(
   deps: AppExportDeps
 ): Promise<AppExportResult> {
   if (typeof appId !== 'string' || !APP_ID_PATTERN.test(appId)) {
-    return failed('That is not an app name.');
+    return failed('That is not an application name.');
   }
   const request = parseExportRequest(options);
   if (typeof request === 'string') return failed(request);

@@ -1647,7 +1647,7 @@ const daemonReattach = createDaemonReattachController({
  * The lifetime of every managed app preview on the shared daemon: aborted when that daemon is
  * lost, renewed when one answers. A shared daemon outlives this app, so its handle never
  * reports an exit, and a preview left open across a restart reached the new instance without
- * that instance's access cookie and showed its refusal ("Open this app from Biorouter").
+ * that instance's access cookie and showed its refusal ("Open this application from Biorouter").
  */
 let sharedAppPreviewLifetime = new AbortController();
 /** The instance `sharedAppPreviewLifetime` was opened for, once one has answered. */
@@ -1736,7 +1736,7 @@ const watchSharedDaemon = (link: SharedDaemonLink) => {
   link.onConnection((event) => {
     if (event.kind === 'lost') {
       log.warn(`[daemon] the attached instance was lost (${event.reason})`);
-      // Open previews show "The app backend stopped" and close, rather than reach a daemon
+      // Open previews show "The application backend stopped" and close, rather than reach a daemon
       // that is gone or, after a restart, one that does not know their cookie.
       sharedAppPreviewLifetime.abort();
       void daemonReattach.lost();
@@ -3282,7 +3282,7 @@ const appLinkToCopy = (window: BrowserWindow, appId: string) => ({
       message: `Copy a link to open “${appId}”?`,
       detail:
         'Your default browser is a snap, and its sandbox cannot read the page Biorouter uses to ' +
-        'open apps in it. Copy a link instead, and paste it into the browser’s address bar. ' +
+        'open applications in it. Copy a link instead, and paste it into the browser’s address bar. ' +
         'It works once, within five minutes.',
     });
     return response === 1;
@@ -3307,7 +3307,7 @@ const appLinkToCopy = (window: BrowserWindow, appId: string) => ({
 const openAppForWindow = async (window: BrowserWindow, appId: unknown): Promise<void> => {
   const daemon = windowDaemons.get(window.id);
   if (!daemon) throw new Error('The local daemon is not available.');
-  if (typeof appId !== 'string') throw new Error('That is not an app name.');
+  if (typeof appId !== 'string') throw new Error('That is not an application name.');
   // The listener learned at attach, for a daemon too old to name its own in the launch answer.
   const backend = daemon.result.managed ? await windowAppPreviewBackend(window) : undefined;
   const opener: DefaultBrowserOpener = {
@@ -3338,7 +3338,7 @@ const openAppForWindow = async (window: BrowserWindow, appId: unknown): Promise<
  * A link to one of this machine's apps is routed BEFORE the public-site path, which refuses
  * every literal IP and used to drop such a link with nothing but a log line. Such a link is
  * never handed to the browser as it is: the browser holds no access cookie, so the daemon would
- * answer "Open this app from Biorouter", and its port can be one an earlier run of the daemon
+ * answer "Open this application from Biorouter", and its port can be one an earlier run of the daemon
  * had. It names the app, which is opened through a fresh launch link (`openAppForWindow`), and
  * the answer says what went wrong, for the renderer to show. Any other URL answers nothing.
  */
@@ -3358,7 +3358,7 @@ ipcMain.handle('open-external', async (event, url: string) => {
           message:
             error instanceof Error && error.message
               ? error.message
-              : 'Could not open the app in your browser.',
+              : 'Could not open the application in your browser.',
         };
       }
     }
@@ -4388,7 +4388,7 @@ ipcMain.on('dictation:anywhere:capture-reply', (event, reply: unknown) => {
         (inserted) => {
           if (!inserted)
             void showAnywhereReview(
-              "Click into the app's text field, then use Dictate into this app.",
+              "Click into the application's text field, then use Dictate into this application.",
               typed.text
             );
         }

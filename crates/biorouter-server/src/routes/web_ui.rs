@@ -60,7 +60,7 @@
 //! appears. See `docs/deployment/serve-decisions.md` SD-10.
 //!
 //! One admission, and it is documents again rather than the API: the browser
-//! surface of this daemon's Agent Drafter apps (`auth::is_app_browser_get`: an
+//! surface of this daemon's applications (`auth::is_app_browser_get`: an
 //! app's page, bundle, assets and agent socket) accepts this cookie in place of
 //! the per-app access cookie `POST /apps/{id}/launch` hands out (W2-HRD-1). A
 //! browser holding it was handed the daemon secret with the shell, so this grants
@@ -408,7 +408,7 @@ async fn index(
     uri: Uri,
 ) -> Response<Body> {
     // The shell carries the daemon secret and is the same origin as every
-    // Agent Drafter app this daemon serves, whose code an agent wrote. Its
+    // application this daemon serves, whose code an agent wrote. Its
     // cookie (`Path=/`) rides along on any same-origin request, so before this
     // an app's script could `fetch('/')`, or frame `/`, and read the secret out
     // of the document. Fetch Metadata tells that apart from opening the shell,
@@ -545,7 +545,7 @@ const SHELL_CSP: &str =
 /// document, and for no frame of another origin.
 ///
 /// It is the browser's default made explicit, and it is half of a pair. Every
-/// document an Agent Drafter app serves on this origin sends
+/// document an application serves on this origin sends
 /// `microphone=(), camera=(), display-capture=()` (`routes::apps`,
 /// `APP_PERMISSIONS_POLICY`), because a browser grants the microphone to an
 /// origin, and the shell and every app share one (SD-14). In Chromium, an app

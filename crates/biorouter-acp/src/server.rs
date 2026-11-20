@@ -1406,7 +1406,7 @@ fn client_hides_dictate(client: Option<&str>) -> bool {
 }
 
 /// Default address for the ACP WebSocket server. Matches the default endpoint
-/// baked into the Agent Drafter runtime (`agent.js`), so exported agentic
+/// baked into the Application Drafter runtime (`agent.js`), so exported agentic
 /// artifacts connect with zero configuration.
 pub const DEFAULT_WS_ADDR: &str = "127.0.0.1:11577";
 

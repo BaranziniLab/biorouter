@@ -44,7 +44,7 @@ describe('CapabilitiesSection', () => {
     expect(screen.getByRole('switch', { name: 'Auto Visualiser' })).toBeChecked();
     expect(screen.getByRole('switch', { name: 'Code Execution' })).toBeChecked();
     expect(screen.getByRole('switch', { name: 'Biorouter Copilot' })).toBeChecked();
-    expect(screen.getByRole('switch', { name: 'Agent Drafter' })).toBeChecked();
+    expect(screen.getByRole('switch', { name: 'Application Drafter' })).toBeChecked();
     expect(screen.getByRole('switch', { name: 'Chat Recall' })).not.toBeChecked();
     expect(screen.getByRole('switch', { name: 'Crew' })).toBeChecked();
     expect(screen.getByRole('switch', { name: 'Decisions' })).toBeChecked();

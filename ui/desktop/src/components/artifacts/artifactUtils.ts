@@ -443,6 +443,10 @@ export function titleFromResourceUri(uri?: string): string | null {
       .map((part) => part.trim())
       .filter(Boolean);
   }
+  // `agent-drafter` is Application Drafter's legacy name, kept in its resource address
+  // (`ui://agent-drafter/<id>`) because saved chats hold it. The card is the application, so
+  // its title is the application's id alone, never the extension's retired name.
+  if (parts.length > 1 && /^agent[-_]drafter$/i.test(parts[0])) parts = parts.slice(1);
   if (parts.length === 0) return null;
   if (parts.some((part) => /\.[a-z0-9]+$/i.test(part))) return null;
 

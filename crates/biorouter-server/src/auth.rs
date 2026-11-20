@@ -493,7 +493,7 @@ fn failed_attempt_verdict(attempts: &mut Vec<Instant>, now: Instant) -> StatusCo
     StatusCode::UNAUTHORIZED
 }
 
-// --- Agent Drafter apps: the browser surface (W2-HRD-1) ---------------------
+// --- applications: the browser surface (W2-HRD-1) ---------------------
 //
 // A browser tab cannot send `X-Secret-Key`, so an app's page, bundle and agent
 // socket take a credential a browser can carry: a per-app access cookie, set by
@@ -1056,24 +1056,24 @@ fn app_needs_a_secure_address() -> Response {
 }
 
 const APP_NEEDS_A_SECURE_ADDRESS_HTML: &str =
-    "<!doctype html><meta charset=utf-8><title>Biorouter app</title>\
+    "<!doctype html><meta charset=utf-8><title>Biorouter application</title>\
      <body style=\"font:15px system-ui;margin:3rem auto;max-width:32rem\">\
-     <h1 style=\"font-size:1.2rem\">Apps open only on this machine or over HTTPS</h1>\
+     <h1 style=\"font-size:1.2rem\">Applications open only on this machine or over HTTPS</h1>\
      <p>This address does not provide the secure browser request information Biorouter needs. \
      At a plain-HTTP network address a browser \
-     cannot keep one app's page from reading another's, or the Biorouter page itself, so \
-     apps are not opened at such an address.</p>\
+     cannot keep one application's page from reading another's, or the Biorouter page itself, so \
+     applications are not opened at such an address.</p>\
      <p>Reach Biorouter through an SSH tunnel and open it as <code>localhost</code>, or put \
      an HTTPS proxy in front of it. Use a current browser, and preserve \
      <code>Sec-Fetch-*</code> headers through the proxy. The browser interface requires the same protection.</p>";
 
 const APP_ACCESS_REFUSED_HTML: &str =
-    "<!doctype html><meta charset=utf-8><title>Biorouter app</title>\
+    "<!doctype html><meta charset=utf-8><title>Biorouter application</title>\
      <body style=\"font:15px system-ui;margin:3rem auto;max-width:32rem\">\
-     <h1 style=\"font-size:1.2rem\">Open this app from Biorouter</h1>\
-     <p>An app's address works only in the browser Biorouter opened it in, and only until \
-     Biorouter restarts. Open the app again from its preview in the chat, from Applications, \
-     or with <code>biorouter apps open</code> and the app's name.</p>";
+     <h1 style=\"font-size:1.2rem\">Open this application from Biorouter</h1>\
+     <p>An application's address works only in the browser Biorouter opened it in, and only \
+     until Biorouter restarts. Open the application again from its preview in the chat, from \
+     Applications, or with <code>biorouter apps open</code> and the application's name.</p>";
 
 /// Paths served without the `X-Secret-Key` header. Each one carries its own
 /// gate; the list is a predicate rather than a chain of `||` inside
@@ -2226,7 +2226,10 @@ mod tests {
         ] {
             let (status, body) = get(page, mode, dest).await;
             assert_eq!(status, StatusCode::FORBIDDEN, "{mode:?} {dest:?}");
-            assert!(body.contains("Open this app from Biorouter"), "{body}");
+            assert!(
+                body.contains("Open this application from Biorouter"),
+                "{body}"
+            );
             assert!(!body.contains("reached the app route"));
         }
         // What a page loads beside itself is not a page.

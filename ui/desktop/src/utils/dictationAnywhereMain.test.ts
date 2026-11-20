@@ -3,7 +3,7 @@ import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 /**
- * Owner decision, 2026-11-10: **Dictate into this app** works whether or not **Dictate into
+ * Owner decision, 2026-11-10: **Dictate into this application** works whether or not **Dictate into
  * other apps** is on; the switch governs the tray item and the global shortcut only. Electron
  * main cannot be loaded in jsdom, so these read its source; `dictationAnywhere.test.ts` covers
  * the functions it calls.

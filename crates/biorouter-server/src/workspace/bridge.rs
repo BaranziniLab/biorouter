@@ -1,5 +1,5 @@
 //! BR-71 §4.3: the daemon→GUI workspace command channel. One bridge per GUI
-//! WINDOW (Agent Drafter's `UiBridge` is per app session — same anatomy, one
+//! WINDOW (Application Drafter's `UiBridge` is per app session — same anatomy, one
 //! level up): generation-guarded attach/detach, a pending map for blocking
 //! round trips, cancel_all on disconnect, and the window's last layout echo.
 

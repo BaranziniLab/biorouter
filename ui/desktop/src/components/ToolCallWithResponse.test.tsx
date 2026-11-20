@@ -63,9 +63,9 @@ describe('summarizeToolCall', () => {
     expect(
       summarizeToolCall({
         name: 'web__search_query',
-        arguments: { search_query: [{ q: 'Biorouter agent drafter guardrails' }] },
+        arguments: { search_query: [{ q: 'Biorouter application drafter guardrails' }] },
       })
-    ).toBe('Searching for Biorouter agent drafter guardrails');
+    ).toBe('Searching for Biorouter application drafter guardrails');
 
     expect(
       summarizeToolCall({
@@ -743,7 +743,7 @@ describe('summarizeToolCall', () => {
           ],
         },
       })
-    ).toBe('Running Agent Drafter build app → Agent Drafter smoke app');
+    ).toBe('Running Application Drafter build app → Application Drafter smoke app');
   });
 
   it('does not repeat identical action descriptions in a coordinated label', () => {
@@ -1593,15 +1593,15 @@ describe('ToolCallWithResponse executed-call transparency', () => {
 
     fireEvent.click(
       screen
-        .getByText('Stopped running Agent Drafter build app → Agent Drafter smoke app')
+        .getByText('Stopped running Application Drafter build app → Application Drafter smoke app')
         .closest('button') as HTMLElement
     );
-    expect(screen.getByText('1. Agent Drafter build app')).toHaveAttribute(
+    expect(screen.getByText('1. Application Drafter build app')).toHaveAttribute(
       'title',
       'Tool: agent_drafter/build_app'
     );
-    expect(screen.getByText('2. Agent Drafter configure app (uses 1)')).toBeInTheDocument();
-    expect(screen.getByText('3. Agent Drafter smoke app (uses 2)')).toBeInTheDocument();
+    expect(screen.getByText('2. Application Drafter configure app (uses 1)')).toBeInTheDocument();
+    expect(screen.getByText('3. Application Drafter smoke app (uses 2)')).toBeInTheDocument();
     // "Steps" is the well's section label; a numbered placeholder is "Step 1".
     expect(screen.queryByText(/(?:Step \d|Update task|Operation no\.)/)).not.toBeInTheDocument();
     expect(screen.queryByText(/agent_drafter\//)).not.toBeInTheDocument();

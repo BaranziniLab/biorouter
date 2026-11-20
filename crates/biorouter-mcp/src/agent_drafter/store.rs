@@ -1,4 +1,4 @@
-//! On-disk artifact store for Agent Drafter.
+//! On-disk artifact store for Application Drafter.
 //!
 //! Each artifact is a directory under the store root containing a
 //! `manifest.json` plus the artifact's own files (entry HTML, CSS, JS, …).

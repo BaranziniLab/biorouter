@@ -65,7 +65,7 @@ export const INITIAL_ANYWHERE_STATE: AnywhereState = {
 
 /**
  * Whether the **Dictate into other apps** switch governs a source: it governs the tray
- * item and the global shortcut. **Dictate into this app** in the preview starts whether
+ * item and the global shortcut. **Dictate into this application** in the preview starts whether
  * or not the switch is on (owner decision, 2026-11-10).
  */
 export function switchGovernsSource(source: AnywhereSource | null): boolean {

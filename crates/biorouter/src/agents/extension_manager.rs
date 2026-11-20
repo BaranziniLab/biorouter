@@ -6759,13 +6759,22 @@ mod tests {
             ("Skills", "skills"),
             ("Todo", "todo"),
             ("Web & Documents", "webdocuments"),
-            ("Agent Drafter", "agent_drafter"),
+            ("Application Drafter", "agent_drafter"),
             ("Crew", "crew"),
         ] {
             let target = resolve_bundled_extension(label).expect(label);
             assert_eq!(target.key(), id);
             assert_eq!(target.display_name(), label);
         }
+    }
+
+    /// A chat, a workflow or a `/ext:` marker written before the rename still names the
+    /// extension by its retired label, which reduces to the key it kept.
+    #[test]
+    fn the_retired_application_drafter_label_still_resolves() {
+        let target = resolve_bundled_extension("Agent Drafter").expect("legacy label");
+        assert_eq!(target.key(), "agent_drafter");
+        assert_eq!(target.display_name(), "Application Drafter");
     }
 
     #[test]

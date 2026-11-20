@@ -96,7 +96,7 @@ pub(super) fn attach_effective_tool_rosters(
         // Same idiom, third capability. Skills' prose names seven operations,
         // and `get_extensions_info` — which is what puts that prose in EVERY
         // turn's system prompt — is filtered by `allowed_extension_keys` and
-        // never by the conversation's effective roster. An Agent-Drafter app
+        // never by the conversation's effective roster. An application
         // agent is granted `searchSkills` + `loadSkill` and read instructions
         // for five more that answer with a refusal.
         //
@@ -1607,7 +1607,7 @@ mod tests {
     ///
     /// `get_extensions_info` — which is what puts that prose in the system
     /// prompt of every turn — is filtered by `allowed_extension_keys` and never
-    /// by `available_tools`, so an Agent-Drafter app agent granted
+    /// by `available_tools`, so an application agent granted
     /// `searchSkills` + `loadSkill` read instructions for five more operations
     /// and called tools that answer with a refusal. Nothing else catches it:
     /// the roster is correct, the dispatch is correct, and only the prompt lies.

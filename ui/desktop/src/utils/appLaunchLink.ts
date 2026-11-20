@@ -21,7 +21,7 @@ const LAUNCH_TIMEOUT_MS = 15_000;
 
 const APP_ID = /^[A-Za-z0-9_-]{1,128}$/;
 
-const UNEXPECTED = 'The app backend answered with an unexpected app address.';
+const UNEXPECTED = 'The application backend answered with an unexpected application address.';
 
 /** The hosts a launch link on the daemon's own listener may name: this machine's. */
 const LOOPBACK_HOSTS = new Set(['127.0.0.1', 'localhost', '[::1]']);
@@ -36,7 +36,7 @@ function daemonBase(baseUrl: string): string {
   try {
     url = new URL(baseUrl);
   } catch {
-    throw new Error('The app backend has no usable address.');
+    throw new Error('The application backend has no usable address.');
   }
   if (
     (url.protocol !== 'http:' && url.protocol !== 'https:') ||
@@ -45,7 +45,7 @@ function daemonBase(baseUrl: string): string {
     url.search ||
     url.hash
   ) {
-    throw new Error('The app backend has no usable address.');
+    throw new Error('The application backend has no usable address.');
   }
   return `${url.origin}${url.pathname.replace(/\/+$/, '')}`;
 }
@@ -74,7 +74,7 @@ const PROXY_REFUSALS = new Set(['daemon_restarted', 'daemon_unavailable']);
 
 /** The sentence for a launch the daemon (or the proxy in front of it) refused with `response`. */
 async function refusalSentence(response: Response): Promise<string> {
-  if (response.status === 404) return 'This app no longer exists.';
+  if (response.status === 404) return 'This application no longer exists.';
   if (response.status === 401 || response.status === 403) {
     return "Biorouter's background service refused this window's connection. Quit and reopen Biorouter.";
   }
@@ -92,7 +92,7 @@ async function refusalSentence(response: Response): Promise<string> {
       return body.message.trim().slice(0, 300);
     }
   }
-  return 'The app backend would not open this app.';
+  return 'The application backend would not open this application.';
 }
 
 /**
@@ -141,8 +141,8 @@ export async function requestAppLaunch(
   fetchImpl: typeof fetch = fetch,
   signal?: AbortSignal
 ): Promise<AppLaunch> {
-  if (!APP_ID.test(appId)) throw new Error('That is not an app name.');
-  if (!secretKey) throw new Error('This app cannot be opened from here.');
+  if (!APP_ID.test(appId)) throw new Error('That is not an application name.');
+  if (!secretKey) throw new Error('This application cannot be opened from here.');
   const base = daemonBase(baseUrl);
   let response: Response;
   try {
@@ -155,7 +155,7 @@ export async function requestAppLaunch(
         : AbortSignal.timeout(LAUNCH_TIMEOUT_MS),
     });
   } catch {
-    throw new Error('The app backend did not answer. Try opening the app again.');
+    throw new Error('The application backend did not answer. Try opening the application again.');
   }
   if (!response.ok) throw new Error(await refusalSentence(response));
   const body = (await response.json().catch(() => null)) as {

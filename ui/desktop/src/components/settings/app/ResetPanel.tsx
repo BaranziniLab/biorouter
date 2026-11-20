@@ -32,8 +32,8 @@ type CategoryDefinition = {
 export const RESET_CATEGORIES: CategoryDefinition[] = [
   {
     id: 'applications',
-    title: 'Built apps',
-    description: 'Delete every app created with Agent Drafter.',
+    title: 'Applications',
+    description: 'Delete every application created with Application Drafter.',
     countKey: 'applications',
     countLabel: 'built',
   },

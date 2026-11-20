@@ -545,7 +545,7 @@ pub fn export_to_dir(
     replace: bool,
 ) -> Result<ExportReport, ExportError> {
     validate_artifact_id(id)
-        .map_err(|_| ExportError::BadRequest(format!("'{id}' is not an app id.")))?;
+        .map_err(|_| ExportError::BadRequest(format!("'{id}' is not an application id.")))?;
     let state = validate_target(target, id, store_root, access, replace)?;
     let (Some(parent), Some(name)) = (target.parent(), target.file_name()) else {
         return Err(ExportError::BadRequest(
@@ -677,10 +677,12 @@ fn prepare(
     mode: ExportMode,
 ) -> Result<(ArtifactStore, Manifest, PathBuf, ExportReport), ExportError> {
     validate_artifact_id(id)
-        .map_err(|_| ExportError::BadRequest(format!("'{id}' is not an app id.")))?;
+        .map_err(|_| ExportError::BadRequest(format!("'{id}' is not an application id.")))?;
     let store = ArtifactStore::new(store_root.to_path_buf());
     if !store.exists(id) {
-        return Err(ExportError::NotFound(format!("There is no app '{id}'.")));
+        return Err(ExportError::NotFound(format!(
+            "There is no application '{id}'."
+        )));
     }
     let mut manifest = store.load_manifest(id).map_err(|e| {
         ExportError::Unexportable(format!("The manifest of '{id}' could not be read: {e}"))
@@ -705,14 +707,14 @@ fn prepare(
                  built, and the daemon that opens it tries again"
                     .to_string()
             } else {
-                "the app's bundle could not be built; the daemon that opens it tries again"
+                "the application's bundle could not be built; the daemon that opens it tries again"
                     .to_string()
             })
         }
         Ok(_) => {}
-        Err(error) => report
-            .notes
-            .push(format!("the app's bundle could not be checked ({error})")),
+        Err(error) => report.notes.push(format!(
+            "the application's bundle could not be checked ({error})"
+        )),
     }
     if let Ok(fresh) = store.load_manifest(id) {
         manifest = fresh;
@@ -729,10 +731,12 @@ fn build_export(
     out: &Path,
 ) -> Result<ExportReport, ExportError> {
     validate_artifact_id(id)
-        .map_err(|_| ExportError::BadRequest(format!("'{id}' is not an app id.")))?;
+        .map_err(|_| ExportError::BadRequest(format!("'{id}' is not an application id.")))?;
     let store = ArtifactStore::new(store_root.to_path_buf());
     if !store.exists(id) {
-        return Err(ExportError::NotFound(format!("There is no app '{id}'.")));
+        return Err(ExportError::NotFound(format!(
+            "There is no application '{id}'."
+        )));
     }
     // The lint runs before anything is built or written: an app the harness
     // refuses is not exported unless a person chose to export it anyway.
@@ -762,7 +766,7 @@ fn build_export(
     }
     if !errors.is_empty() {
         report.notes.push(format!(
-            "exported despite {} harness error(s); the app may not work until they are fixed",
+            "exported despite {} harness error(s); the application may not work until they are fixed",
             errors.len()
         ));
     }
@@ -774,7 +778,7 @@ fn build_export(
         let rel = export_path_for(&file.rel);
         if rel != file.rel {
             report.notes.push(format!(
-                "the app's own '{}' is in {rel}: the export writes its own file by that name",
+                "the application's own '{}' is in {rel}: the export writes its own file by that name",
                 file.rel
             ));
         }
@@ -794,7 +798,8 @@ fn build_export(
     }
     if bundle.is_empty() && manifest.kind == ArtifactKind::Agentic {
         report.notes.push(
-            "the app has no built bundle yet; the daemon that opens it builds one".to_string(),
+            "the application has no built bundle yet; the daemon that opens it builds one"
+                .to_string(),
         );
     }
 
@@ -853,7 +858,7 @@ fn open_app_dir(store: &ArtifactStore, id: &str) -> Result<PathBuf, ExportError>
                  and export again."
             ))
         } else {
-            io_error("could not open the app", error)
+            io_error("could not open the application", error)
         }
     })
 }
@@ -894,7 +899,7 @@ fn collect_app_files(
 ) -> Result<Vec<Collected>, ExportError> {
     let mut out = Vec::new();
     walk_app(app_dir, app_dir, 0, &mut out, report)
-        .map_err(|e| io_error("could not read the app's files", e))?;
+        .map_err(|e| io_error("could not read the application's files", e))?;
     if out.len() > MAX_APP_FILES {
         return Err(ExportError::Unexportable(format!(
             "The app has more than {MAX_APP_FILES} files; export the ones it needs from its \
@@ -903,7 +908,7 @@ fn collect_app_files(
     }
     if !out.iter().any(|file| file.rel == manifest.entry) {
         return Err(ExportError::Unexportable(format!(
-            "The app's entry file '{}' is missing or is a link.",
+            "The application's entry file '{}' is missing or is a link.",
             manifest.entry
         )));
     }
@@ -937,9 +942,9 @@ fn walk_app(
         }
         if kind.is_dir() {
             if depth == 0 && name == "workspace" {
-                report
-                    .skipped
-                    .push("workspace/: the app's runtime data stays on this machine".to_string());
+                report.skipped.push(
+                    "workspace/: the application's runtime data stays on this machine".to_string(),
+                );
                 continue;
             }
             // The bundle travels on its own (`built_bundle`): only what the
@@ -1147,7 +1152,7 @@ fn validate_target(
             crate::paths::config_dir(),
             "Biorouter's configuration folder",
         ),
-        (store_root.to_path_buf(), "the app store"),
+        (store_root.to_path_buf(), "the application store"),
     ];
     if let Some(knowledge) = access.knowledge_root() {
         protected.push((knowledge, "the knowledge store"));
@@ -1247,7 +1252,7 @@ const CODE_LOAD_DIRS: &[&str] = &["node_modules", "site-packages", "dist-package
 /// a hidden folder or a folder code is imported from. The rest
 /// of the sentence after "target_dir <path> ".
 ///
-/// ⚠ This is the `export_app` tool's rule only. A chat with Agent Drafter and
+/// ⚠ This is the `export_app` tool's rule only. A chat with Application Drafter and
 /// no developer shell could otherwise write launcher scripts and the app's
 /// files into a new folder anywhere the account can write, such as a Python
 /// `site-packages` under Homebrew. The desktop's Export writes where the
@@ -1859,7 +1864,7 @@ fn stage_daemon_bundle_with_probe(
     let esbuild = bundle::packaged_esbuild(daemon).ok_or_else(|| {
         io::Error::new(
             io::ErrorKind::NotFound,
-            "the selected daemon has no packaged esbuild; it cannot rebuild apps on a fresh machine",
+            "the selected daemon has no packaged esbuild; it cannot rebuild applications on a fresh machine",
         )
     })?;
     if !is_native_esbuild(&esbuild)? {
