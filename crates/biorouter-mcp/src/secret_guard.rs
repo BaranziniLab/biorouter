@@ -87,6 +87,19 @@ pub const DEFAULT_SECRET_PATTERNS: &[&str] = &[
     // The shared daemon's user-action key, saved by whoever started the daemon so the desktop
     // app and `biorouter crew` can connect without asking the person for anything.
     "**/daemon/user-action-key.json",
+    // BB-25: the cookie jars that hold a person's logins. Chrome's own (macOS
+    // `Library/Application Support/Google/Chrome/<profile>`, Windows `Google/Chrome/User Data`,
+    // Linux `.config/google-chrome`) with its saved passwords and payment data beside them, and
+    // the Biorouter Browser's profile, which holds what a Chrome import set.
+    "**/Google/Chrome/**/Cookies",
+    "**/Google/Chrome/**/Login Data",
+    "**/Google/Chrome/**/Login Data For Account",
+    "**/Google/Chrome/**/Web Data",
+    "**/google-chrome/**/Cookies",
+    "**/google-chrome/**/Login Data",
+    "**/google-chrome/**/Login Data For Account",
+    "**/google-chrome/**/Web Data",
+    "**/Partitions/biorouter-embedded-browser/**/Cookies",
 ];
 
 /// Object keys whose string values are treated as file paths and scanned in
@@ -1100,6 +1113,55 @@ mod tests {
         ] {
             assert!(!g.is_denied(Path::new(ordinary)), "{ordinary}");
             assert!(!g.is_denied(&fake.home.join(ordinary)), "~/{ordinary}");
+        }
+    }
+
+    /// BB-25: the cookie and password stores of Chrome and of the Biorouter Browser's own profile.
+    const BROWSER_STORES: &[&str] = &[
+        "Library/Application Support/Google/Chrome/Default/Cookies",
+        "Library/Application Support/Google/Chrome/Default/Network/Cookies",
+        "Library/Application Support/Google/Chrome/Profile 1/Login Data",
+        "Library/Application Support/Google/Chrome/Default/Login Data For Account",
+        "Library/Application Support/Google/Chrome/Default/Web Data",
+        ".config/google-chrome/Default/Cookies",
+        ".config/google-chrome/Profile 2/Login Data",
+        ".config/google-chrome/Default/Web Data",
+        "AppData/Local/Google/Chrome/User Data/Default/Network/Cookies",
+        "Library/Application Support/Biorouter/Partitions/biorouter-embedded-browser/Cookies",
+        "Library/Application Support/Biorouter/Partitions/biorouter-embedded-browser/Network/Cookies",
+    ];
+
+    #[test]
+    fn bb_25_browser_cookie_and_password_stores_are_on_the_floor() {
+        let fake = FakeHome::new();
+        let g = fake.guard();
+        for store in BROWSER_STORES {
+            assert!(g.is_denied(&fake.home.join(store)), "~/{store}");
+        }
+        // Chrome's other files, and files merely called Cookies elsewhere, stay readable.
+        for ordinary in [
+            "Library/Application Support/Google/Chrome/Default/Bookmarks",
+            "Library/Application Support/Google/Chrome/Default/Preferences",
+            "Library/Application Support/Google/Chrome/Local State",
+            "Library/Application Support/Biorouter/biorouter-browser/bookmarks.json",
+            "project/Cookies",
+            "project/src/cookies/index.ts",
+            "notes/Login Data.md",
+        ] {
+            assert!(!g.is_denied(&fake.home.join(ordinary)), "~/{ordinary}");
+        }
+        let (g, env) = (fake.guard(), fake.env());
+        for command in [
+            "cat ~/Library/Application\\ Support/Google/Chrome/Default/Cookies",
+            "sqlite3 \"$HOME/Library/Application Support/Google/Chrome/Default/Login Data\" .dump",
+            "cp ~/.config/google-chrome/Default/Cookies /tmp/c",
+            "cd ~/.config/google-chrome/Default && sqlite3 'Web Data' .tables",
+            "cat ~/Library/Application\\ Support/Biorouter/Partitions/biorouter-embedded-browser/Cookies",
+        ] {
+            assert!(
+                scan_command(&g, &env, command).is_some(),
+                "reached a browser store: {command}"
+            );
         }
     }
 

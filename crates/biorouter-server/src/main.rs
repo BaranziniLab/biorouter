@@ -67,6 +67,15 @@ enum Commands {
         #[arg(value_parser = clap::value_parser!(McpCommand))]
         server: McpCommand,
     },
+    /// Print the key a browser's saved cookies are encrypted with (BB-23).
+    ///
+    /// The desktop app runs this only when the person imports Chrome logins into the Biorouter
+    /// Browser; the operating system asks the person before the key is read.
+    #[command(hide = true)]
+    BrowserKey {
+        #[arg(long, value_parser = ["chrome"])]
+        source: String,
+    },
 }
 
 /// ⚠ **Not `#[tokio::main]`.** That macro builds a runtime with tokio's default
@@ -105,6 +114,17 @@ async fn async_main() -> anyhow::Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
+        Commands::BrowserKey { source } => {
+            // No logging, configuration or network: one line of hex on stdout, or an exit code.
+            let source = biorouter::browser_key::KeySource::parse(&source)
+                .ok_or_else(|| anyhow::anyhow!("unknown key source"))?;
+            let code = biorouter::browser_key::run(
+                source,
+                &mut std::io::stdout().lock(),
+                &mut std::io::stderr().lock(),
+            );
+            std::process::exit(code);
+        }
         Commands::Agent { exit_with_parent } => {
             // R-31: on Windows, move the app folder out of the one earlier
             // releases used, before logging creates its first directory there.
@@ -167,6 +187,29 @@ fn tune_allocator() {
 
 #[cfg(not(all(feature = "jemalloc", not(target_os = "windows"))))]
 fn tune_allocator() {}
+
+#[cfg(test)]
+mod browser_key_tests {
+    use clap::{CommandFactory, Parser};
+
+    /// BB-23: the key helper takes exactly one known source and stays out of `--help`.
+    #[test]
+    fn the_key_helper_takes_a_known_source_and_is_hidden() {
+        let parsed =
+            super::Cli::try_parse_from(["biorouterd", "browser-key", "--source", "chrome"])
+                .expect("chrome is a source");
+        assert!(matches!(
+            parsed.command,
+            super::Commands::BrowserKey { ref source } if source == "chrome"
+        ));
+        assert!(
+            super::Cli::try_parse_from(["biorouterd", "browser-key", "--source", "brave"]).is_err()
+        );
+        assert!(super::Cli::try_parse_from(["biorouterd", "browser-key"]).is_err());
+        let help = super::Cli::command().render_help().to_string();
+        assert!(!help.contains("browser-key"), "{help}");
+    }
+}
 
 #[cfg(test)]
 mod version_tests {

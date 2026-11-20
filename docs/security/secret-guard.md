@@ -44,6 +44,17 @@ starts the service writes it with mode 0600 in a 0700 directory, and the service
 it exits. The name stops a model's casual read. The computer belongs to its user, so the design
 does not try to stop an agent the user runs from acting as them. `runtime.json` is not on the floor.
 
+Since 2026-11-20 it also names the cookie and password stores of Google Chrome and of the
+Biorouter Browser (BB-25 in [the built-in browser](../desktop-ui/built-in-browser.md)): `Cookies`,
+`Login Data`, `Login Data For Account` and `Web Data` under a `Google/Chrome/` folder (macOS
+`~/Library/Application Support/Google/Chrome/`, Windows `…/Google/Chrome/User Data/`) or a
+`google-chrome/` folder (Linux `~/.config/google-chrome/`), at any profile depth, and `Cookies`
+under the browser's own partition, `Partitions/biorouter-embedded-browser/`. These hold a person's
+signed in sessions, saved passwords and payment data, which is what the browser's Chrome import
+takes care never to read (passwords) or to let leave the app (cookie values). Chrome's other
+files (`Bookmarks`, `Preferences`, `Local State`) and any file merely called `Cookies` elsewhere
+stay readable. Like the rest of the floor, this stops an accident, not a determined program.
+
 The floor is not only the agent's. Crew's local file registration
 ([`crates/biorouter-server/src/crew/local_files.rs`](../../crates/biorouter-server/src/crew/local_files.rs))
 refuses an upload source or a download destination the floor names (Q3-01), consulting only the
