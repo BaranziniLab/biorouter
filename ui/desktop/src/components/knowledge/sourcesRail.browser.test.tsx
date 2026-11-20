@@ -430,6 +430,37 @@ describe('the Sources rail, the real tree in Chromium (R-33)', () => {
     },
     CASE_TIMEOUT
   );
+
+  // Owner, 2026-11-19: the footer's rule ran the rail's full width, so beside the graph canvas
+  // (an inset panel with 16px of air before it) it ended in that air. It is inset like everything
+  // else in the rail: the rule spans exactly the dropzone's width, at both steps.
+  it(
+    'insets the footer’s rule to the dropzone’s edges',
+    async (ctx) => {
+      if (!browser) return ctx.skip();
+      for (const width of [900, 812]) {
+        const tab = await open(width);
+        try {
+          const m = await measure(tab);
+          const rule = await tab.evaluate(
+            () =>
+              getComputedStyle(
+                document.querySelector('[data-testid="knowledge-ingest-rail"]')!.lastElementChild!
+              ).borderTopWidth
+          );
+          expect(rule, `${width}px: the footer keeps its rule over the scrolling body`).toBe('1px');
+          expect(m.footer.left, `${width}px: rule starts with the dropzone`).toBe(m.zone.left);
+          expect(m.footer.right, `${width}px: rule ends with the dropzone`).toBe(m.zone.right);
+          expect(m.digest.left, `${width}px: Digest stays on the dropzone's edge`).toBe(
+            m.zone.left
+          );
+        } finally {
+          await tab.close();
+        }
+      }
+    },
+    CASE_TIMEOUT
+  );
   /** The colour Chromium painted at one viewport pixel, read back from a screenshot. */
   async function pixel(tab: Page, x: number, y: number): Promise<number[]> {
     const png = await tab.screenshot({ clip: { x, y, width: 1, height: 1 } });

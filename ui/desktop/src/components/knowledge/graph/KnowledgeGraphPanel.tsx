@@ -4,6 +4,7 @@ import { AlertCircle, Sparkles } from '../../icons/app-icons';
 import type { Graph, GraphEdge, GraphNode } from '../../../api/types.gen';
 import { Button } from '../../ui/button';
 import { EmptyState } from '../../ui/empty-state';
+import { Note } from '../../ui/note';
 import { Spinner } from '../../ui/spinner';
 import { knowledgeCopy } from '../copy';
 import { useResolvedTheme } from '../../../contexts/ThemeContext';
@@ -52,9 +53,17 @@ interface Props {
  * user is reading, in order to redraw the same graph, is a regression disguised
  * as feedback.
  *
- * ⚠ **A flush column, not a card** (spec 3.12). The pane used to be a bordered,
- * rounded box beside the Sources card; the workspace now fills edge to edge
- * under the band and the columns divide by Crew's inset hairline.
+ * **The canvas is an inset panel, with no line around it** (owner, 2026-11-19).
+ * It sits 16px in from the column's sides and foot on the container radius, the
+ * Sources dropzone's own spacing and corner, so the page reads as rounded
+ * panels on one ground. It used to run flush to the column edges as a
+ * square-cornered fill with a hairline across its top (the facet strip's bottom
+ * border), the one sharp shape on a page of rounded ones. The fill and the air
+ * around it divide the canvas from the filter bar now, so the strip draws no
+ * rule (design.md 9.11). Under the strip the canvas starts at the strip's foot,
+ * so the bar sits centred between the band and the canvas; with no strip (an
+ * empty base, an error, the first load) it keeps 16px on all four sides.
+ * `.br-knowledge-canvas` in `main.css` carries the inset and the corner.
  */
 export function KnowledgeGraphPanel({
   kbId,
@@ -84,19 +93,31 @@ export function KnowledgeGraphPanel({
   const nodesById = useMemo(() => new Map((graph?.nodes ?? []).map((n) => [n.id, n])), [graph]);
   const facetResult = useMemo(() => (graph ? applyFacets(graph, facets) : null), [graph, facets]);
   const active = facetsActive(facets);
+  // Whether the filter bar is above the canvas, which decides the canvas's top inset.
+  const stripShown = hasNodes && !!model && !!facetResult;
 
   return (
     <div className="relative flex h-full w-full min-w-0 flex-1 flex-col overflow-hidden bg-background-default">
+      {/* The read-only preview is a standing condition, so it is the app's one in-place notice
+          (`Note`): a rounded wash inset on the canvas's 16px edge, where it was a square
+          full-bleed strip across the top of the column. */}
       {previewSha && (
-        <div className="flex flex-none items-center justify-between gap-2 bg-wash-warning px-3 py-2 text-supporting text-text-warning">
-          <span>Previewing commit {previewSha.slice(0, 7)}: read-only</span>
-          <Button variant="ghost" size="sm" onClick={onClearPreview}>
-            Exit preview
-          </Button>
-        </div>
+        <Note
+          tone="warning"
+          role="status"
+          testId="knowledge-graph-preview-note"
+          className="mx-4 mt-4 flex-none"
+          action={
+            <Button variant="ghost" size="sm" onClick={onClearPreview}>
+              Exit preview
+            </Button>
+          }
+        >
+          Previewing commit {previewSha.slice(0, 7)}: read-only
+        </Note>
       )}
 
-      {hasNodes && model && facetResult && (
+      {stripShown && model && facetResult && (
         <GraphFacetStrip
           model={model}
           mode={mode}
@@ -111,7 +132,11 @@ export function KnowledgeGraphPanel({
       {/* canvas + detail rail. The rail only exists at the widest step; below
           it the same legend renders as the dismissible card inside the canvas. */}
       <div className="flex min-h-0 flex-1">
-        <div className="br-ground-recessed relative min-h-0 min-w-0 flex-1 overflow-hidden bg-background-muted">
+        <div
+          data-testid="knowledge-graph-ground"
+          data-below-strip={stripShown ? 'true' : undefined}
+          className="br-knowledge-canvas br-ground-recessed relative min-h-0 min-w-0 flex-1 overflow-hidden bg-background-muted"
+        >
           {/* Two absolutely-stacked opacity layers, never a swap: loading out at
             `--dur-fast`, content in at `--dur-med`. */}
           <div
