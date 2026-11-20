@@ -118,6 +118,35 @@ pub fn classify_agent_error(e: &anyhow::Error) -> TurnAbortCode {
     TurnAbortCode::ProviderFailure { kind }
 }
 
+/// #549: whether `e` says the session store is out of space, the one store
+/// failure a headless run may outlive
+/// (`crate::session::session_manager::deferred_writes`).
+///
+/// Exhausted storage only: SQLite `SQLITE_FULL` (13) or `SQLITE_IOERR` (10,
+/// with any of its extended codes), or an I/O error of kind
+/// [`std::io::ErrorKind::StorageFull`], anywhere in the chain. A constraint
+/// violation, a closed pool, a decode error, a schema fault or any other I/O
+/// error is not, and still aborts the turn as
+/// [`TurnAbortCode::SessionStore`]. Read from the typed error, never from its
+/// text.
+pub fn is_storage_exhausted(e: &anyhow::Error) -> bool {
+    e.chain().any(|cause| {
+        if let Some(store) = cause.downcast_ref::<sqlx::Error>() {
+            return match store {
+                sqlx::Error::Database(database) => database
+                    .code()
+                    .and_then(|code| code.parse::<i32>().ok())
+                    .is_some_and(|code| matches!(code & 0xff, 10 | 13)),
+                sqlx::Error::Io(io) => io.kind() == std::io::ErrorKind::StorageFull,
+                _ => false,
+            };
+        }
+        cause
+            .downcast_ref::<std::io::Error>()
+            .is_some_and(|io| io.kind() == std::io::ErrorKind::StorageFull)
+    })
+}
+
 /// A turn that ended without doing its work, as an `Error` — so it can travel
 /// through the CLI's existing `anyhow::Result` plumbing without changing every
 /// signature, and be recovered at the top with `downcast_ref` to pick the exit
@@ -268,6 +297,35 @@ mod tests {
         assert_eq!(json["reason"], "signed_stream_truncated");
         let back: TurnAbortCode = serde_json::from_value(json).unwrap();
         assert_eq!(back, truncated);
+    }
+
+    /// #549: only exhausted storage counts, read from the typed error, and it
+    /// is still a session-store failure to every caller that does not ask.
+    #[test]
+    fn only_exhausted_storage_is_storage_exhausted() {
+        let full = anyhow::Error::new(sqlx::Error::Io(std::io::Error::new(
+            std::io::ErrorKind::StorageFull,
+            "no space",
+        )))
+        .context("Failed to add message to session");
+        assert!(is_storage_exhausted(&full));
+        assert_eq!(classify_agent_error(&full), TurnAbortCode::SessionStore);
+        let bare_io = anyhow::Error::new(std::io::Error::new(
+            std::io::ErrorKind::StorageFull,
+            "no space",
+        ));
+        assert!(is_storage_exhausted(&bare_io));
+
+        for other in [
+            anyhow::Error::new(sqlx::Error::PoolClosed),
+            anyhow::Error::new(sqlx::Error::Io(std::io::Error::other(
+                "database or disk is full",
+            ))),
+            anyhow::Error::new(sqlx::Error::RowNotFound),
+            anyhow::anyhow!("database or disk is full"),
+        ] {
+            assert!(!is_storage_exhausted(&other), "{other:#}");
+        }
     }
 
     #[test]

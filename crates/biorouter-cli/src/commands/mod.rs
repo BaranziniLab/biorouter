@@ -17,6 +17,7 @@ pub mod knowledge;
 pub mod models;
 pub mod needs_terminal;
 pub mod project;
+pub mod run_report;
 pub mod schedule;
 pub mod serve;
 pub mod serve_restart;

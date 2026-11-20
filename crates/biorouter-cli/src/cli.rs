@@ -381,6 +381,20 @@ pub struct RunBehavior {
         hide = true
     )]
     pub scheduled_job_id: Option<String>,
+
+    /// #535: files the run must leave behind. Only `run` flattens this struct,
+    /// so neither `biorouter session` nor an interactive continuation can see
+    /// it.
+    #[arg(
+        long = "require-file",
+        value_name = "PATH",
+        action = clap::ArgAction::Append,
+        value_parser = clap::builder::NonEmptyStringValueParser::new(),
+        conflicts_with = "interactive",
+        help = "Require a non-empty file when the run ends (repeatable)",
+        long_help = "Require PATH to be a non-empty regular file when the run ends. While it is missing or empty, the agent is sent back to work, up to BIOROUTER_DONE_GATE_MAX_ITERATIONS times (default 3). A run that still ends without it exits with status 4 and names it in missing_files. A relative PATH resolves against the session's working directory. Repeat the flag for several files."
+    )]
+    pub require_files: Vec<String>,
 }
 
 /// The provider and model a NEW session row would run with.
@@ -3186,6 +3200,7 @@ async fn handle_shared_run(
         ("--render-workflow", input.render_workflow),
         ("--no-session", behavior.no_session),
         ("--scheduled-job-id", behavior.scheduled_job_id.is_some()),
+        ("--require-file", !behavior.require_files.is_empty()),
     ])?;
     let mut options =
         shared_conversation_options(identifier, behavior.resume, session, extensions, model)?;
@@ -3731,6 +3746,10 @@ async fn handle_run_command(
     if run_behavior.interactive {
         session.interactive(input_config.contents).await
     } else if let Some(contents) = input_config.contents {
+        // #535: only a headless run, and only this run, gets the gate.
+        session.require_files(run_behavior.require_files).await?;
+        // #549: and only a headless run outlives a full session store.
+        session.defer_store_writes_when_full();
         let session_start = std::time::Instant::now();
         let session_type = if workflow.is_some() {
             "workflow"
@@ -3748,8 +3767,15 @@ async fn handle_run_command(
         let result = session.headless(contents).await;
         // A run its supervision stopped ended normally; only its exit
         // status says so (H-6).
+        // So did one that ended without a required file (#535) or with rows
+        // its store could not save (#549): the work or the record is
+        // incomplete, the run is not.
         let ended_normally = result.as_ref().map_or_else(
-            |e| e.is::<crate::commands::supervision_stop::SupervisionStopped>(),
+            |e| {
+                e.is::<crate::commands::supervision_stop::SupervisionStopped>()
+                    || e.is::<crate::commands::run_report::DeliverablesMissing>()
+                    || e.is::<crate::commands::run_report::StoreIncomplete>()
+            },
             |_| true,
         );
         log_session_completion(&session, session_start, session_type, ended_normally).await;
@@ -5932,6 +5958,51 @@ mod issue_539_input_tests {
             Some("CALLER_SYSTEM")
         );
         assert!(workflow.is_none());
+    }
+}
+
+#[cfg(test)]
+mod issue_535_cli_tests {
+    use super::*;
+
+    /// #535: `--require-file` is a repeatable flag of `run` only, refused
+    /// beside `--interactive` (whose continuation reuses the agent), never a
+    /// `session` option, and never empty.
+    #[test]
+    fn require_file_is_a_repeatable_headless_run_flag() {
+        let parsed = Cli::try_parse_from([
+            "biorouter",
+            "run",
+            "--text",
+            "go",
+            "--require-file",
+            "answer.txt",
+            "--require-file",
+            "trace.md",
+        ])
+        .unwrap();
+        match parsed.command {
+            Some(Command::Run { run_behavior, .. }) => assert_eq!(
+                run_behavior.require_files,
+                vec!["answer.txt".to_string(), "trace.md".to_string()]
+            ),
+            _ => panic!("parsed as run"),
+        }
+        assert!(Cli::try_parse_from([
+            "biorouter",
+            "run",
+            "--text",
+            "go",
+            "--interactive",
+            "--require-file",
+            "answer.txt",
+        ])
+        .is_err());
+        assert!(Cli::try_parse_from(["biorouter", "session", "--require-file", "a.txt"]).is_err());
+        assert!(
+            Cli::try_parse_from(["biorouter", "run", "--text", "go", "--require-file", ""])
+                .is_err()
+        );
     }
 }
 

@@ -17,6 +17,7 @@ pub use diagnostics::{generate_diagnostics, get_system_info, SystemInfo};
 pub use extension_data::{
     EnabledExtensionsState, ExtensionData, ExtensionState, TodoItem, TodoState, TodoStatus,
 };
+pub use session_manager::deferred_writes::{DeferredWritesGuard, DeferredWritesStatus};
 pub use session_manager::{
     ActivityWindow, DailyActivity, DecisionUsageSubtotal, ModelUsageRow, RequestUsage, Session,
     SessionInsights, SessionManager, SessionSummary, SessionType, SessionUpdateBuilder,

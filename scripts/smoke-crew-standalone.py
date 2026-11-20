@@ -22,6 +22,11 @@ PROMPT = ('Reply with exactly CREW_STANDALONE_NO_INVOCATION_OK. Do not call any 
           'Do not make Crew requests, discover connections, use grants, read files '
           'or channel messages, or add explanations. This asks only for a fixed '
           'synthetic response; it does not ask you to report which tools you have.')
+# What `biorouter run` reports about how its turn ended (#540): every line may
+# carry `ts`, and `complete` may carry these beside `total_tokens`. Nothing in
+# them is free text, and this contract allows only an ordinary end with no tool
+# call.
+COMPLETION_REPORT = {'stop_reason', 'actions', 'tool_calls', 'wall_s'}
 LIMITATIONS = {'effective_model_roster': 'NOT OBSERVABLE',
                'forged_call_denial': 'NOT OBSERVABLE',
                'separate_rust_evidence_required': True}
@@ -54,11 +59,23 @@ def validate_trace(output):
         require(not completed, 'event after completion')
         event = json.loads(line, object_pairs_hook=unique_fields)
         require(isinstance(event, dict), 'invalid stream event')
+        stamp = event.pop('ts', 0)
+        require(type(stamp) is int and stamp >= 0, 'invalid stream timestamp')
         if event.get('type') == 'complete':
-            require(set(event) == {'type', 'total_tokens'}, 'unexpected completion payload')
+            require({'type', 'total_tokens'} <= set(event)
+                    and set(event) <= {'type', 'total_tokens'} | COMPLETION_REPORT,
+                    'unexpected completion payload')
             tokens = event['total_tokens']
             require(tokens is None or (type(tokens) is int and tokens >= 0),
                     'invalid completion token count')
+            require(event.get('stop_reason', 'end_turn') == 'end_turn',
+                    'the turn did not end on its own')
+            require(event.get('tool_calls', 0) == 0 and type(event.get('tool_calls', 0)) is int,
+                    'invalid or nonzero completion tool call count')
+            actions = event.get('actions', 0)
+            require(type(actions) is int and actions >= 0, 'invalid completion action count')
+            wall = event.get('wall_s', 0)
+            require(type(wall) in (int, float) and wall >= 0, 'invalid completion wall time')
             completed = True
             continue
         require(event.get('type') == 'message' and set(event) == {'type', 'message'},
