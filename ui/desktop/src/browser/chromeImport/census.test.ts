@@ -51,6 +51,9 @@ describe('the Chrome import census (BB-21)', () => {
       .map(relative)
       .sort();
     expect(users).toEqual([
+      // The secret guard names the helper only to refuse any command that runs it (S1).
+      'crates/biorouter-mcp/src/secret_guard.rs',
+      'crates/biorouter-mcp/src/secret_guard/resolve.rs',
       'crates/biorouter-server/src/main.rs',
       'crates/biorouter/src/browser_key.rs',
     ]);

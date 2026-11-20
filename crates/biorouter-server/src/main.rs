@@ -67,10 +67,12 @@ enum Commands {
         #[arg(value_parser = clap::value_parser!(McpCommand))]
         server: McpCommand,
     },
-    /// Print the key a browser's saved cookies are encrypted with (BB-23).
+    /// Print the key a browser's saved cookies are encrypted with, masked with the request on
+    /// standard input (BB-23).
     ///
     /// The desktop app runs this only when the person imports Chrome logins into the Biorouter
-    /// Browser; the operating system asks the person before the key is read.
+    /// Browser; the operating system asks the person before the key is read. It refuses any
+    /// caller but the desktop app's main process (`biorouter::browser_key::caller`).
     #[command(hide = true)]
     BrowserKey {
         #[arg(long, value_parser = ["chrome"])]
@@ -120,6 +122,7 @@ async fn async_main() -> anyhow::Result<()> {
                 .ok_or_else(|| anyhow::anyhow!("unknown key source"))?;
             let code = biorouter::browser_key::run(
                 source,
+                &mut std::io::stdin().lock(),
                 &mut std::io::stdout().lock(),
                 &mut std::io::stderr().lock(),
             );

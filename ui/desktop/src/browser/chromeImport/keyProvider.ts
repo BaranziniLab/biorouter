@@ -1,4 +1,5 @@
 import { spawn } from 'node:child_process';
+import { randomBytes } from 'node:crypto';
 import {
   deriveChromeKey,
   LINUX_ITERATIONS,
@@ -22,9 +23,21 @@ import type { Platform } from './profiles';
  * to run while `BIOROUTER_DISABLE_KEYRING` is set anyway.
  */
 
-export type KeyFailure = 'not-allowed' | 'not-found' | 'key-store-off' | 'unsupported' | 'failed';
+export type KeyFailure =
+  | 'not-allowed'
+  | 'not-found'
+  | 'key-store-off'
+  | 'unsupported'
+  | 'not-from-app'
+  | 'failed';
 
-export type KeyResult = { ok: true; keys: CookieKeys } | { ok: false; reason: KeyFailure };
+/**
+ * `missing`: the keys came back, but one version's key could not be read (Linux `v11`, while
+ * `v10` derives from Chrome's fixed password), so its cookies will be skipped; the summary says why.
+ */
+export type KeyResult =
+  | { ok: true; keys: CookieKeys; missing?: KeyFailure }
+  | { ok: false; reason: KeyFailure };
 
 export type KeyProvider = (needed: ReadonlySet<CookieKeyVersion>) => Promise<KeyResult>;
 
@@ -36,15 +49,23 @@ const EXIT_REASONS: Record<number, KeyFailure> = {
   4: 'not-found',
   5: 'not-allowed',
   6: 'unsupported',
+  7: 'not-from-app',
 };
+
+/** The one-time mask's length, the key's: 16 bytes (`REQUEST_LEN` in `browser_key.rs`). */
+const MASK_BYTES = 16;
 
 /** The person may take a while with the operating system's prompt. */
 export const HELPER_TIMEOUT_MS = 5 * 60 * 1000;
 
 /**
  * Run `biorouterd browser-key --source chrome` and read the one line of hex it writes.
- * Standard error is drained and dropped: it holds a sentence at most, never a value, and the
- * importer reports the reason from the exit code.
+ *
+ * The helper answers only this process (it checks its parent, `browser_key.rs`), and only with a
+ * one-time request: a fresh random mask written on its standard input. It answers the key XOR
+ * that mask, so the key itself never crosses the pipe, and this function unmasks it. Standard
+ * error is drained and dropped: it holds a sentence at most, never a value, and the importer
+ * reports the reason from the exit code.
  */
 export function runKeyHelper(
   binary: string,
@@ -58,17 +79,23 @@ export function runKeyHelper(
       clearTimeout(timer);
       resolve(result);
     };
+    const mask = randomBytes(MASK_BYTES);
     let child: ReturnType<typeof spawn>;
     try {
       child = spawn(binary, ['browser-key', '--source', 'chrome'], {
-        stdio: ['ignore', 'pipe', 'pipe'],
+        stdio: ['pipe', 'pipe', 'pipe'],
         env: options.env ?? process.env,
         windowsHide: true,
       });
     } catch {
+      mask.fill(0);
       resolve({ ok: false, reason: 'failed' });
       return;
     }
+    // A helper that exits before reading its request closes the pipe; that is its refusal,
+    // reported by its exit code, not an error of this process.
+    child.stdin?.on('error', () => {});
+    child.stdin?.end(Buffer.from(mask));
     const chunks: Buffer[] = [];
     let size = 0;
     child.stdout?.on('data', (chunk: Buffer) => {
@@ -87,7 +114,9 @@ export function runKeyHelper(
         if (code === 0) {
           const line = output.toString('latin1').trim();
           if (/^[0-9a-f]{32}$/.test(line)) {
-            finish({ ok: true, key: Buffer.from(line, 'hex') });
+            const key = Buffer.from(line, 'hex');
+            for (let index = 0; index < key.length; index++) key[index] ^= mask[index];
+            finish({ ok: true, key });
             return;
           }
           finish({ ok: false, reason: 'failed' });
@@ -96,6 +125,7 @@ export function runKeyHelper(
         finish({ ok: false, reason: EXIT_REASONS[code ?? -1] ?? 'failed' });
       } finally {
         output.fill(0);
+        mask.fill(0);
         for (const chunk of chunks) chunk.fill(0);
       }
     });

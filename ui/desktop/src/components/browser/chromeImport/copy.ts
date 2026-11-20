@@ -55,6 +55,8 @@ const LOGINS_SENTENCE: Record<Exclude<ChromeImportLogins, 'imported' | 'not-chos
   'not-allowed': 'Logins were not imported because access was not allowed.',
   'not-found': 'Logins were not imported because Chrome’s key was not found.',
   'key-store-off': 'Logins were not imported because the system key store is turned off.',
+  'not-from-app':
+    'Logins were not imported because only an installed Biorouter app can read Chrome’s key.',
   failed: 'Logins were not imported because Chrome’s key could not be read.',
 };
 

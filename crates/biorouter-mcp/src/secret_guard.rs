@@ -692,6 +692,12 @@ impl DeniedAccess {
                  reads, because the command nests shells too deeply or names more links than it \
                  can follow. Split it into simpler commands."
             ),
+            resolve::Reason::BrowserKeyHelper => "The command is blocked: it runs `biorouterd \
+                 browser-key`, the helper that reads the key to the person's Chrome logins for \
+                 the desktop app's Import from Chrome. Only the Biorouter app runs it, when the \
+                 person imports from Chrome in Settings. Do not run it in any other way; if the \
+                 task needs the person's Chrome logins, ask them to import from Chrome themselves."
+                .to_string(),
         }
     }
 }
@@ -1161,6 +1167,75 @@ mod tests {
             assert!(
                 scan_command(&g, &env, command).is_some(),
                 "reached a browser store: {command}"
+            );
+        }
+    }
+
+    /// BB-23: the browser-key helper reads the key to the person's Chrome cookies, silently once
+    /// the Keychain prompt was answered with Always Allow, so an agent's shell never runs it, in
+    /// any spelling the guard can read. Searching the code for it stays possible.
+    #[test]
+    fn bb_23_the_browser_key_helper_is_refused_in_every_spelling() {
+        let fake = FakeHome::new();
+        let (g, env) = (fake.guard(), fake.env());
+        let refused = [
+            "biorouterd browser-key --source chrome",
+            "/Applications/Biorouter.app/Contents/Resources/bin/biorouterd browser-key --source chrome",
+            "~/repo/target/debug/biorouterd browser-key --source=chrome | xxd",
+            "BIOROUTERD browser-key --source chrome",
+            "C:\\Program Files\\Biorouter\\resources\\bin\\biorouterd.exe browser-key --source chrome",
+            "env FOO=1 biorouterd browser-key --source chrome",
+            "exec nohup biorouterd browser-key --source chrome > /tmp/key",
+            "\"biorouterd\" 'browser-key' --source chrome",
+            "bio\"rou\"terd brow'ser'-key --source chrome",
+            "biorouterd browser\\-key --source chrome",
+            "B=biorouterd; $B browser-key --source chrome",
+            "K=browser-key; biorouterd \"$K\" --source chrome",
+            "sh -c 'biorouterd browser-key --source chrome'",
+            "bash -lc \"cd /tmp && biorouterd browser-key --source chrome\"",
+            "eval 'biorouterd browser-key --source chrome'",
+            "alias k='biorouterd browser-key'; k --source chrome",
+            "biorouterd $(echo browser-key) --source chrome",
+            "cp \"$(which biorouterd)\" /tmp/x && /tmp/x browser-key --source chrome",
+            "/tmp/renamed browser-key --source chrome",
+            "echo browser-key --source chrome | xargs /tmp/renamed",
+            "python3 -c \"import subprocess; subprocess.run(['biorouterd','browser-key','--source','chrome'])\"",
+            "cat <<EOF | sh\nbiorouterd browser-key --source chrome\nEOF",
+            "cargo run -p biorouter-server --bin biorouterd -- browser-key --source chrome",
+        ];
+        for command in refused {
+            let denied = g
+                .find_denied_access_in(json!({ "command": command }).as_object().unwrap(), &env)
+                .unwrap_or_else(|| panic!("ran the browser-key helper: {command}"));
+            assert!(
+                denied.message().contains("Only the Biorouter app runs it"),
+                "{command}: {}",
+                denied.message()
+            );
+            assert!(
+                g.find_denied_in_command(command, &fake.home, &env)
+                    .is_some(),
+                "the Developer shell's own check missed: {command}"
+            );
+        }
+        assert!(g
+            .find_denied_in_code(
+                "system(\"biorouterd browser-key --source chrome\")",
+                &fake.home,
+                &env
+            )
+            .is_some());
+        for ordinary in [
+            "rg browser-key crates/",
+            "grep -rn 'browser-key' docs/desktop-ui/built-in-browser.md",
+            "cargo test -p biorouter-server --bin biorouterd browser_key_tests",
+            "biorouterd --version",
+            "ps aux | grep biorouterd",
+            "biorouter session list --source mine",
+        ] {
+            assert!(
+                scan_command(&g, &env, ordinary).is_none(),
+                "refused an ordinary command: {ordinary}"
             );
         }
     }

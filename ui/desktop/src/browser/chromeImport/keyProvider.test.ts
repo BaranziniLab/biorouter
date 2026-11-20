@@ -20,12 +20,23 @@ function fakeHelper(body: string): string {
 }
 
 describe.skipIf(process.platform === 'win32')('running the key helper (BB-23)', () => {
-  it('reads one line of hex and asks for the chrome source', async () => {
+  // The helper answers the key XOR the one-time mask main writes on its standard input. A fake
+  // whose key is all zeros therefore answers with the mask itself.
+  const ECHO_MASK = `od -An -tx1 -N16 | tr -d ' \\n'; echo`;
+
+  it('sends a one-time mask on standard input and unmasks the answer (S1)', async () => {
     const helper = fakeHelper(
-      '[ "$1 $2 $3" = "browser-key --source chrome" ] || exit 9\necho 00112233445566778899aabbccddeeff'
+      `[ "$1 $2 $3" = "browser-key --source chrome" ] || exit 9\n${ECHO_MASK}`
     );
-    const result = await runKeyHelper(helper);
-    expect(result.ok && result.key.toString('hex')).toBe('00112233445566778899aabbccddeeff');
+    const first = await runKeyHelper(helper);
+    expect(first.ok && first.key.toString('hex')).toBe('00'.repeat(16));
+    // A fresh mask each run: what crosses the pipe is never the key.
+    const seen = fakeHelper(`{ ${ECHO_MASK}; } | tee ${path.join(dir, 'wire')}`);
+    const second = await runKeyHelper(seen);
+    expect(second.ok && second.key.toString('hex')).toBe('00'.repeat(16));
+    const wire = fs.readFileSync(path.join(dir, 'wire'), 'utf8').trim();
+    expect(wire).toMatch(/^[0-9a-f]{32}$/);
+    expect(wire).not.toBe('00'.repeat(16));
   });
 
   it('maps each refusal to its reason', async () => {
@@ -34,6 +45,7 @@ describe.skipIf(process.platform === 'win32')('running the key helper (BB-23)', 
       [4, 'not-found'],
       [5, 'not-allowed'],
       [6, 'unsupported'],
+      [7, 'not-from-app'],
       [1, 'failed'],
     ];
     for (const [code, reason] of cases) {

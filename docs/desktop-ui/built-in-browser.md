@@ -810,18 +810,54 @@ operating system's and Biorouter never avoids, suppresses or answers it.
 The key is read by a short lived helper, `biorouterd browser-key --source chrome`, a hidden
 subcommand of the signed daemon binary that Electron main starts with a private pipe. It reads the
 password through the `keyring` crate already in the tree (the `apple-native` backend on macOS,
-`sync-secret-service` on Linux), derives the AES key, writes the 16 key bytes to its standard output
-and exits. Main decrypts in memory and overwrites the key buffer when the import ends.
+`sync-secret-service` on Linux), derives the AES key, writes it masked to its standard output
+and exits. Main unmasks and decrypts in memory and overwrites the key buffer when the import ends.
+
+**Only Electron main may run it** (fix round of 2026-11-20, S1). **Always Allow** means that from
+then on anything that runs this signed binary as the person reads the key without a prompt, an
+agent's shell included. Two layers keep the key with the app:
+
+- The secret guard refuses any command that names the helper, in any spelling it can read
+  ([the secret guard](../security/secret-guard.md), "The Chrome key helper"). That stops a model
+  that was told to run it.
+- The helper refuses every caller but the desktop app's main process, before it touches the key
+  store or its input (`browser_key::caller`). It asks the kernel for its parent process. On macOS
+  the parent must be the main executable of an app bundle (`<app>.app/Contents/MacOS/`, not a
+  helper app nested inside one) and must satisfy Biorouter's Developer ID team requirement, the
+  check the privacy auth helper already uses (`privacy::system_auth_peer::pid_is_ours`). The
+  packaged app's Electron fuses (no `ELECTRON_RUN_AS_NODE`, no `NODE_OPTIONS`, no inspector, asar
+  integrity, app only from the asar) mean no code but the app's own can run in that process, and
+  the app starts the helper only inside an import the person confirmed in main's own dialog
+  (BB-21). On Linux the parent must be the executable of the helper's own system install
+  (`<install>/resources/bin/biorouterd` beside `<install>/<app>`), both owned by root and writable
+  by nobody else, which a copy an agent makes never is. A development build of `biorouterd`
+  (`debug_assertions`, never shipped) also accepts a development Electron under
+  `node_modules/electron/dist/`, so `just run-dev` can import; a release build of the backend run
+  under an unpackaged Electron (`just run-ui`) cannot read the key, and its summary says so.
+- The key never crosses the pipe in the clear: main writes a fresh 16 byte random mask on the
+  helper's standard input and the helper writes the key XOR that mask, as hex. A run without
+  main's mask is refused before the key store is read, so the key cannot land in a terminal, a log
+  or a file even by accident.
+
+What this does not stop, and the design does not claim to: someone who can inject code into the
+signed app, or who holds the signing key. On Linux the Secret Service lets any process of the
+person read Chrome's item (`secret-tool lookup application chrome`), so there the helper adds no
+exposure and the parent check is consistency rather than protection. The design rule that a
+person's own computer is theirs still holds; the layers keep a model, prompted or injected, from
+reaching a key the person allowed only for Biorouter's import.
 
 Why a helper and not `/usr/bin/security find-generic-password`: if the person chooses **Always
 Allow** in the prompt, macOS remembers the choice for the requesting program. For the signed
 `biorouterd` that is Biorouter. For `/usr/bin/security` it would be every script on the computer.
 
 - **Deny** in the prompt ends the import of logins cleanly; bookmarks, history and settings still
-  import, and the summary says logins were not imported because access was not allowed.
+  import, and the summary says logins were not imported because access was not allowed. On Linux,
+  a `v11` key that cannot be read still leaves the `v10` logins importable, and the summary says
+  some logins were not imported and why (L5).
 - The helper refuses to run when `BIOROUTER_DISABLE_KEYRING=true`. Every automated test runs with
   that set and injects a fixture key provider instead, so no test can ever show a Keychain prompt or
-  read a real key.
+  read a real key. Its caller check comes first, so a test process, never the app's main process,
+  is refused even before that.
 - The helper never prints the password, never logs, and has no network access.
 
 ### Linux and Windows (BB-24)

@@ -94,6 +94,7 @@ export type ChromeImportLogins =
   | 'not-allowed'
   | 'not-found'
   | 'key-store-off'
+  | 'not-from-app'
   | 'failed';
 
 export type ChromeImportSummary = {
