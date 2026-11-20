@@ -30149,6 +30149,26 @@
           },
           {
             "type": "object",
+            "description": "#535: pass when `path` names a regular file of at least one byte (a\nsymbolic link is followed). A missing path, an empty file, a directory\nand anything else that is not a regular file each fail with their own\nreason. A relative `path` resolves as for\n[`FileExists`](SuccessCheck::FileExists). Says nothing about what the\nfile contains.",
+            "required": [
+              "path",
+              "type"
+            ],
+            "properties": {
+              "path": {
+                "type": "string",
+                "description": "The regular file that must hold at least one byte."
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "FileNonEmpty"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
             "description": "BR-48: run `command` and pass when its combined stdout+stderr contains\n`substring`. Unlike [`Shell`](SuccessCheck::Shell), the exit status is\nignored — this checks the *content* of the output (e.g. `0 failed`,\n`PASS`, a coverage percentage).",
             "required": [
               "command",

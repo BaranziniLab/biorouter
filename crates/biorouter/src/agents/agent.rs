@@ -5252,6 +5252,11 @@ pub struct Agent {
     /// A tool that is absent from the tool list cannot be called; prose competing
     /// with an available tool loses.
     pub(super) subagent_tool_enabled: AtomicBool,
+    /// #535: a done gate for one session, set by a headless caller
+    /// ([`Agent::set_session_done_gate`]), read once per reply in place of the
+    /// global one. On the Agent rather than in `SessionConfig`, which is built
+    /// as a literal at too many sites, and never in the generator frame.
+    session_done_gates: std::sync::Mutex<HashMap<String, crate::agents::done_gate::DoneGateConfig>>,
     dictionary_learning: AtomicBool,
     /// The provider each chat's current turn uses, as the chat extractor stamps an
     /// observation with it (DD-57). `reply_internal` pins it once it has chosen the
@@ -6727,6 +6732,7 @@ impl Agent {
             sub_workflows: Mutex::new(HashMap::new()),
             subagent_runtime_sessions: Mutex::new(HashSet::new()),
             subagent_tool_enabled: AtomicBool::new(true),
+            session_done_gates: std::sync::Mutex::new(HashMap::new()),
             dictionary_learning: AtomicBool::new(true),
             dictionary_turn_origin: std::sync::Mutex::new(HashMap::new()),
             credentials_refused: AtomicBool::new(false),
@@ -11789,6 +11795,51 @@ impl Agent {
         self.subagent_tool_enabled.store(enabled, Ordering::Relaxed);
     }
 
+    /// #535: give `session_id` a done gate of its own (`biorouter run
+    /// --require-file`), used by its replies in place of the global
+    /// `BIOROUTER_DONE_GATE` one; `None` removes it. Keyed by session, so no
+    /// other chat on this agent, and no subagent it starts, is affected.
+    pub fn set_session_done_gate(
+        &self,
+        session_id: &str,
+        config: Option<crate::agents::done_gate::DoneGateConfig>,
+    ) {
+        let mut gates = self
+            .session_done_gates
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        match config {
+            Some(config) => {
+                gates.insert(session_id.to_string(), config);
+            }
+            None => {
+                gates.remove(session_id);
+            }
+        }
+    }
+
+    /// [`resolve_reply_loop_policy`] with this session's own done gate, when it
+    /// has one ([`Self::set_session_done_gate`]). Synchronous, and the lock is
+    /// released before it returns, so the generator holds nothing across an
+    /// await.
+    fn resolve_reply_loop_policy_for_session(
+        &self,
+        effort: ReasoningEffort,
+        session_config: &SessionConfig,
+    ) -> ReplyLoopPolicy {
+        let session_gate = self
+            .session_done_gates
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(&session_config.id)
+            .cloned();
+        let mut policy = resolve_reply_loop_policy(effort, session_config);
+        if let Some(gate) = session_gate {
+            policy.done_gate_config = gate;
+        }
+        policy
+    }
+
     pub fn set_dictionary_learning(&self, enabled: bool) {
         self.dictionary_learning.store(enabled, Ordering::Release);
     }
@@ -15421,7 +15472,7 @@ impl Agent {
                 stall_config,
                 mistake_config,
                 mut budget,
-            } = resolve_reply_loop_policy(effort, &session_config);
+            } = self.resolve_reply_loop_policy_for_session(effort, &session_config);
             // BR-47: consecutive post-edit reflections this reply. Bounded by
             // `post_edit_diag_config.max_reflections` so a file that never parses
             // clean cannot wedge the turn — mirrors the PostToolUse block cap. Reset
@@ -17809,7 +17860,7 @@ impl Agent {
                                 let (feedback, published) = persist_steering_message(
                                     &session_manager,
                                     &session_config.id,
-                                    crate::agents::done_gate::gate_instruction(&failures),
+                                    done_gate_config.instruction(&failures),
                                 ).await?;
                                 if let Some(published) = published {
                                     yield published;
@@ -32267,6 +32318,42 @@ mod max_turns_setting_tests {
                 "stored BIOROUTER_MAX_TURNS {stored} must not be a limit"
             );
         }
+    }
+
+    /// #535: a session's own done gate replaces the global one for that
+    /// session's replies only; every other session keeps the global gate, and
+    /// clearing it restores the global gate.
+    #[tokio::test]
+    async fn a_session_done_gate_applies_to_its_session_only() {
+        crate::config::with_config_overrides(
+            HashMap::from([("BIOROUTER_DONE_GATE".to_string(), "false".to_string())]),
+            async {
+                let agent = Agent::new();
+                let mine = session_without_limit();
+                let mut other = session_without_limit();
+                other.id = "another-chat".to_string();
+                let gate =
+                    crate::agents::done_gate::DoneGateConfig::required_files(
+                        &["answer.txt".into()],
+                    );
+                agent.set_session_done_gate(&mine.id, Some(gate));
+
+                let policy =
+                    agent.resolve_reply_loop_policy_for_session(ReasoningEffort::Normal, &mine);
+                assert!(policy.done_gate_config.is_active());
+                assert!(policy.done_gate_config.required_files_mode);
+                let elsewhere =
+                    agent.resolve_reply_loop_policy_for_session(ReasoningEffort::Normal, &other);
+                assert!(!elsewhere.done_gate_config.is_active());
+                assert!(!elsewhere.done_gate_config.required_files_mode);
+
+                agent.set_session_done_gate(&mine.id, None);
+                let cleared =
+                    agent.resolve_reply_loop_policy_for_session(ReasoningEffort::Normal, &mine);
+                assert!(!cleared.done_gate_config.is_active());
+            },
+        )
+        .await;
     }
 
     #[tokio::test]

@@ -8558,6 +8558,12 @@ export type SuccessCheck = {
     type: 'FileExists';
 } | {
     /**
+     * The regular file that must hold at least one byte.
+     */
+    path: string;
+    type: 'FileNonEmpty';
+} | {
+    /**
      * The shell command whose output is inspected.
      */
     command: string;
