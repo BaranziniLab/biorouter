@@ -25,7 +25,7 @@ Open Computer Use
   Licence:   MIT
   Copyright: Copyright (c) 2026 Leo
   Upstream:  https://github.com/iFurySt/open-codex-computer-use
-  Version:   0.3.5, pinned at commit 547b4ffb8ed731a8f16486e6d8a3b215484267d3
+  Version:   1.1.5, pinned at commit 8ec5cdbce8e76d20dd59bc867343079098ef6613
   Licence text and notice:
     in this repository   vendor/computer-use/{LICENSE,NOTICE}
     in an installed app  beside the helper binary, inside the payload
@@ -44,6 +44,12 @@ Open Computer Use
   distributed. It was extracted from another vendor's shipped application, and
   MIT covers upstream's own work rather than somebody else's artwork. The
   cursor Biorouter ships is drawn procedurally by its own build script.
+
+  Upstream's macOS code includes parts it derives from Cua Driver (MIT,
+  Copyright (c) 2025 Cua AI, Inc.) and yabai (MIT, Copyright (c) 2019 Åsmund
+  Vikane). Both licence texts are in vendor/computer-use/NOTICE and ship in the
+  payload. Upstream's optional WebP encoder, libwebp, is not built into
+  Biorouter's helper.
 
 
 llama.cpp

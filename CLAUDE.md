@@ -2679,8 +2679,22 @@ throwaway copy at build time, which is what keeps an upstream update tractable.
 before the bytes become build input. `scripts/check-vendored-computer-use.sh` is the CI
 guard and also asserts every vendored file is **committable** — repo-wide `.gitignore`
 rules matched 15 of them on the first attempt. Ten upstream files are deliberately
-excluded as third-party extracted artwork that MIT does not cover; they are docs, not
-build inputs, and the build is byte-identical without them.
+excluded as third-party extracted artwork that MIT does not cover, and three more are
+docs about that vendor's archives or carry a photograph of unknown origin
+(`EXCLUDED` in `scripts/vendor-computer-use-source.py`); none is a build input.
+The pin is upstream **1.1.5** (`8ec5cdb`, patch set `biorouter-4`, 2026-11-20). Two of
+its patches exist because upstream 1.1 grew past Biorouter's contract: `0006-offline-build`
+drops the remote libwebp package from `Package.swift` (it would make the build fetch from
+the network; WebP output is unavailable, PNG and JPEG remain), and `0007-biorouter-contract`
+makes MCP advertise and accept only the ten tools below with their old arguments
+(upstream's `query`, `select_text`, `include_ax`, `include_screenshot`, `window_placement`
+and `key_method` stay out, and Locked Use, which unlocks a locked Mac through a root
+broker, is removed from the app agent and its CLI; on Windows a key chord such as
+`ctrl+s` uses real keys under the host's global-input consent, since window messages cannot
+carry modifiers and the contract has no `key_method`). The daemon points
+`OPEN_COMPUTER_USE_CONFIG_FILE` at a missing file so upstream's `~/.config/ocu/config.json`
+cannot change the helper. Upstream 1.1.5 hides the PowerShell console itself, so the old
+`0003-windows-console` patch is gone.
 ⚠ The staged copy gets its own `git init`, and that line is load-bearing: `git apply`
 resolves against the repository containing the working directory, and the staging
 directory lives inside BioRouter's, where `target/` is ignored. Without it the edits to

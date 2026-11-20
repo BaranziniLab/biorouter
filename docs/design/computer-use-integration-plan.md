@@ -2,6 +2,8 @@
 
 Status: implementation in progress. Revised 2026-09-17 for the user-approved clean replacement: one native Biorouter Copilot capability, no legacy desktop tools or compatibility aliases. See [implementation status](computer-use-implementation-status.md) for evidence and remaining gates.
 
+Since 2026-11-20 the helper pins upstream Open Computer Use 1.1.5 (`8ec5cdbce8e76d20dd59bc867343079098ef6613`, patch set `biorouter-4`) for the 1.94.6 release. The investigation below was done against 0.3.5 and its links name that commit; the ten-tool contract it describes is unchanged. What 1.1.5 brought, and what Biorouter's patches leave out (`query`, `select_text`, the observation and keyboard options, Locked Use), is in [`vendor/computer-use/README.md`](../../vendor/computer-use/README.md) and the 2026-11-20 entry of the implementation status.
+
 ## Recommendation
 
 Make Open Computer Use (OCU) the default desktop-automation engine of one unified **Biorouter Copilot** capability. Keep `computercontroller` as its internal capability ID, with an entirely native tool contract. Ship a pinned native helper with every release package. Users should not need npm, Node, Go, Swift, git, or an extension-install step to use the shipped feature.
