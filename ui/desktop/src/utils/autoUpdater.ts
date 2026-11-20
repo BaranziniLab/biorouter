@@ -47,7 +47,27 @@ const confirmRestartWhileDictating = (): Promise<boolean> =>
 
 let updateAvailable = false;
 let trayRef: Tray | null = null;
-let isTrayChatWindow: (win: BrowserWindow) => boolean = () => false;
+/**
+ * Tells main's chat windows from the dictation windows (the hidden capture window, a dismissed
+ * review card, the indicator), which nothing here may bring forward or count as open
+ * (`menuBarReveal.ts`). Main registers it at startup ({@link setChatWindowPredicate}) and again
+ * with the tray ({@link setTrayRef}). Unset, no window counts as a chat window.
+ */
+let isChatWindow: ((win: BrowserWindow) => boolean) | null = null;
+
+/** The chat windows that are open, in `getAllWindows()` order. */
+function chatWindows(): BrowserWindow[] {
+  const predicate = isChatWindow;
+  return predicate ? menuBarWindows(BrowserWindow.getAllWindows(), predicate) : [];
+}
+
+/** Open a chat window on `view`, from the most recent folder, as the tray's items do. */
+function openChatWindow(view?: string): void {
+  const recentDirs = loadRecentDirs();
+  const openDir = recentDirs.length > 0 ? recentDirs[0] : null;
+  if (view) ipcMain.emit('create-chat-window', {}, undefined, openDir, undefined, undefined, view);
+  else ipcMain.emit('create-chat-window', {}, undefined, openDir);
+}
 let trayMenu: Menu | null = null;
 let isUsingGitHubFallback = false;
 let githubUpdateInfo: {
@@ -830,11 +850,10 @@ function startUpdateDownload(version: string): Promise<string | null> {
   return download;
 }
 
-/** A window to show an update failure in, when the install closed them all. */
+/** A window to show an update failure in, when the install closed every chat window. */
 function openWindowIfNone(): void {
-  if (BrowserWindow.getAllWindows().length > 0) return;
-  const recentDirs = loadRecentDirs();
-  ipcMain.emit('create-chat-window', {}, undefined, recentDirs[0] ?? null);
+  if (chatWindows().length > 0) return;
+  openChatWindow();
 }
 
 interface UpdaterEvent {
@@ -964,16 +983,19 @@ function updateTrayIcon(hasUpdate: boolean, opts?: { force?: boolean }) {
   updateTrayMenu(hasUpdate);
 }
 
-// Function to open settings and scroll to update section
+/**
+ * Bring a chat window forward on Settings' update section, or open one on Settings when no chat
+ * window is open. Only a chat window: the first window may be the hidden dictation capture window.
+ */
 export function openUpdateSettings() {
-  const windows = BrowserWindow.getAllWindows();
-  if (windows.length > 0) {
-    const mainWindow = windows[0];
-    mainWindow.show();
-    mainWindow.focus();
-    // Send message to open settings and scroll to update section
-    mainWindow.webContents.send('set-view', 'settings', 'update');
+  const windows = chatWindows();
+  if (windows.length === 0) {
+    openChatWindow('settings');
+    return;
   }
+  const mainWindow = windows[0];
+  revealFromMenuBar(mainWindow, process.platform);
+  mainWindow.webContents.send('set-view', 'settings', 'update');
 }
 
 // Export function to update tray menu
@@ -998,11 +1020,9 @@ export function updateTrayMenu(hasUpdate: boolean) {
   // Helper: bring the chat windows forward, then navigate to a view.
   // If no chat window is open, create one first.
   const showAndNavigate = (view: string) => {
-    const windows = menuBarWindows(BrowserWindow.getAllWindows(), isTrayChatWindow);
+    const windows = chatWindows();
     if (windows.length === 0) {
-      const recentDirs = loadRecentDirs();
-      const openDir = recentDirs.length > 0 ? recentDirs[0] : null;
-      ipcMain.emit('create-chat-window', {}, undefined, openDir);
+      openChatWindow();
       return;
     }
     windows.forEach((win) => revealFromMenuBar(win, process.platform));
@@ -1071,11 +1091,16 @@ export function popUpTrayMenu() {
   }
 }
 
-// Export functions to manage tray reference. `isChatWindow` tells main's chat windows from the
+/** Main's chat-window test, for every path here that reveals or counts windows. */
+export function setChatWindowPredicate(predicate: (win: BrowserWindow) => boolean): void {
+  isChatWindow = predicate;
+}
+
+// Export functions to manage tray reference. `chatWindow` tells main's chat windows from the
 // dictation windows, which the menu items must not bring forward (`menuBarReveal.ts`).
-export function setTrayRef(tray: Tray, isChatWindow: (win: BrowserWindow) => boolean) {
+export function setTrayRef(tray: Tray, chatWindow: (win: BrowserWindow) => boolean) {
   trayRef = tray;
-  isTrayChatWindow = isChatWindow;
+  setChatWindowPredicate(chatWindow);
   // Update icon based on current update status
   updateTrayIcon(updateAvailable);
 }

@@ -199,6 +199,46 @@ describe('the tray menu brings chat windows forward', () => {
     expect(h.emitted).toEqual([['create-chat-window', {}, undefined, '/work']]);
   });
 
+  it('Check for Updates opens Settings in a chat window, never the hidden capture window', async () => {
+    const capture = fakeWindow(2, { visible: false });
+    const chat = fakeWindow(1, { minimized: true });
+    chatIds.add(1);
+    h.windows = [capture, chat];
+    await clickTrayItem('darwin', 'Check for Updates');
+    expect(capture.calls).toEqual([]);
+    expect(capture.sent).toEqual([]);
+    expect(chat.calls).toEqual(['restore', 'show', 'focus']);
+    expect(chat.sent).toEqual([['set-view', 'settings', 'update']]);
+  });
+
+  it('Check for Updates opens a chat window on Settings when only dictation windows are left', async () => {
+    const capture = fakeWindow(2, { visible: false });
+    h.windows = [capture];
+    await clickTrayItem('darwin', 'Check for Updates');
+    expect(capture.calls).toEqual([]);
+    expect(h.emitted).toEqual([
+      ['create-chat-window', {}, undefined, '/work', undefined, undefined, 'settings'],
+    ]);
+  });
+
+  it('the app menu’s Check for Updates uses the predicate main registered, with no tray', async () => {
+    onPlatform('win32');
+    const mod = await import('./autoUpdater');
+    const capture = fakeWindow(2, { visible: false });
+    const chat = fakeWindow(1);
+    h.windows = [capture, chat];
+    mod.openUpdateSettings();
+    // Nothing registered: no window counts as a chat window, so none is shown.
+    expect(capture.calls).toEqual([]);
+    expect(chat.calls).toEqual([]);
+    h.emitted = [];
+    mod.setChatWindowPredicate((win) => win.id === 1);
+    mod.openUpdateSettings();
+    expect(capture.calls).toEqual([]);
+    expect(chat.calls).toEqual(['focus']);
+    expect(chat.sent).toEqual([['set-view', 'settings', 'update']]);
+  });
+
   it('skips a chat window that is being destroyed', async () => {
     const closing = fakeWindow(1);
     closing.destroyed = true;

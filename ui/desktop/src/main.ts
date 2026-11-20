@@ -170,6 +170,7 @@ import {
   openUpdateSettings,
   popUpTrayMenu,
   registerUpdateIpcHandlers,
+  setChatWindowPredicate,
   setTrayRef,
   setupAutoUpdater,
   updateTrayMenu,
@@ -1008,7 +1009,7 @@ if (
       }
 
       // Only focus existing windows for non-bot/workflow URLs
-      const existingWindows = BrowserWindow.getAllWindows();
+      const existingWindows = menuBarWindows(BrowserWindow.getAllWindows(), isChatWindow);
       if (existingWindows.length > 0) {
         const mainWindow = existingWindows[0];
         if (mainWindow.isMinimized()) {
@@ -1053,7 +1054,7 @@ let pendingBrxtFilePath: string | null = null;
  * leave the user with a window.
  */
 async function ensureWindowAfterDeepLink(openDir?: string | null) {
-  if (BrowserWindow.getAllWindows().length > 0) return;
+  if (menuBarWindows(BrowserWindow.getAllWindows(), isChatWindow).length > 0) return;
   log.warn('[Main] Deep link produced no window; opening a plain one instead');
   await createNewWindow(app, openDir || undefined);
 }
@@ -1097,8 +1098,8 @@ async function handleProtocolUrl(url: string) {
     }
     await ensureWindowAfterDeepLink(openDir);
   } else {
-    // For other URL types, reuse existing window if available
-    const existingWindows = BrowserWindow.getAllWindows();
+    // For other URL types, reuse an existing chat window if available
+    const existingWindows = menuBarWindows(BrowserWindow.getAllWindows(), isChatWindow);
     if (existingWindows.length > 0) {
       firstOpenWindow = existingWindows[0];
       if (firstOpenWindow.isMinimized()) {
@@ -1230,7 +1231,7 @@ app.on('open-url', async (_event, url) => {
     pendingDeepLink = url;
     log.info('[Main] Stored pending deep link for processing after React ready:', url);
 
-    const existingWindows = BrowserWindow.getAllWindows();
+    const existingWindows = menuBarWindows(BrowserWindow.getAllWindows(), isChatWindow);
     if (existingWindows.length > 0) {
       firstOpenWindow = existingWindows[0];
       if (firstOpenWindow.isMinimized()) firstOpenWindow.restore();
@@ -1435,6 +1436,13 @@ let appConfig = {
 };
 
 const windowMap = new Map<number, BrowserWindow>();
+/**
+ * A chat window, as opposed to the dictation windows (the hidden capture window, a dismissed review
+ * card, the indicator), which are BrowserWindows too. Every path that brings Biorouter forward or
+ * asks whether a window is open uses this one test (`utils/menuBarReveal.ts`).
+ */
+const isChatWindow = (win: BrowserWindow): boolean => windowMap.has(win.id);
+setChatWindowPredicate(isChatWindow);
 const copilotPermissionSettings = new CopilotPermissionSettings();
 const biorouterdClients = new Map<number, Client>();
 /**
@@ -2855,7 +2863,7 @@ const createTray = () => {
 
   try {
     tray = new Tray(iconPath);
-    setTrayRef(tray, (win) => windowMap.has(win.id));
+    setTrayRef(tray, isChatWindow);
     updateTrayMenu(getUpdateAvailable());
 
     if (process.platform === 'win32' || process.platform === 'darwin') {
@@ -2874,7 +2882,7 @@ const createTray = () => {
 };
 
 const showWindow = async () => {
-  const windows = menuBarWindows(BrowserWindow.getAllWindows(), (win) => windowMap.has(win.id));
+  const windows = menuBarWindows(BrowserWindow.getAllWindows(), isChatWindow);
 
   if (windows.length === 0) {
     log.info('No chat window is open, creating a new one...');
@@ -6613,8 +6621,8 @@ ipcMain.handle('brxt:uninstall', async (_event, { extensionName }: { extensionNa
 });
 
 function handleBrxtFileOpen(filePath: string) {
-  // Find the main window (or store for when one is ready)
-  const win = BrowserWindow.getAllWindows().find((w) => !w.isDestroyed());
+  // Find a chat window (or store for when one is ready); a dictation window cannot install it
+  const win = menuBarWindows(BrowserWindow.getAllWindows(), isChatWindow)[0];
   if (win) {
     win.webContents.send('open-brxt-file', filePath);
     win.focus();
@@ -7510,12 +7518,15 @@ const createNewWindow = async (app: App, dir?: string | null) => {
   return await createChat(app, undefined, openDir);
 };
 
+/**
+ * **Focus Biorouter Window** (⌘⌥G) and hiding the Dock icon: the chat windows come forward, the
+ * newest gets the input focus, and with none open a new one opens. Never a dictation window, which
+ * is hidden on purpose and would otherwise be shown, or counted as the open window.
+ */
 const focusWindow = () => {
-  const windows = BrowserWindow.getAllWindows();
+  const windows = menuBarWindows(BrowserWindow.getAllWindows(), isChatWindow);
   if (windows.length > 0) {
-    windows.forEach((win) => {
-      win.show();
-    });
+    windows.forEach((win) => revealFromMenuBar(win, process.platform));
     windows[windows.length - 1].webContents.send('focus-input');
   } else {
     createNewWindow(app);
@@ -8351,7 +8362,9 @@ async function appMain() {
   buildApplicationMenu();
 
   app.on('activate', () => {
-    if (BrowserWindow.getAllWindows().length === 0) {
+    // The Dock icon with no chat window open opens one, even while a hidden dictation window
+    // (the capture window, a review card, the indicator) is still alive.
+    if (menuBarWindows(BrowserWindow.getAllWindows(), isChatWindow).length === 0) {
       createNewWindow(app);
     }
   });
