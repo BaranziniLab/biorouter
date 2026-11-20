@@ -37,7 +37,7 @@ export const CAPABILITIES: CapabilityMeta[] = [
     key: 'computercontroller',
     label: 'Biorouter Copilot',
     description:
-      'View and control desktop apps for an approved task. You allow each task from its chat, and Stop stays above the composer.',
+      'Look at and use the apps on this computer. You allow it from the chat, to look and control or only to look, and Stop stays above the composer.',
     defaultEnabled: true,
   },
   {
