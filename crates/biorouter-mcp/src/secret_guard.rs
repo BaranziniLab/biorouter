@@ -637,6 +637,7 @@ pub struct DeniedAccess {
     /// What it resolved to, when that differs usefully from `shown`.
     pub resolved: Option<PathBuf>,
     reason: resolve::Reason,
+    heredoc: Option<resolve::BodyReading>,
 }
 
 impl DeniedAccess {
@@ -645,6 +646,7 @@ impl DeniedAccess {
             shown: shown.to_string(),
             resolved: None,
             reason: resolve::Reason::Pattern,
+            heredoc: None,
         }
     }
 
@@ -657,7 +659,7 @@ impl DeniedAccess {
             }
             _ => format!("'{}'", self.shown),
         };
-        match self.reason {
+        let refusal = match self.reason {
             resolve::Reason::Pattern => format!(
                 "Access to {target} is blocked: it matches a secret/credential deny pattern \
                  (.env, private key, cloud or provider credentials). The check does not depend \
@@ -679,6 +681,21 @@ impl DeniedAccess {
                  reads, because the command nests shells too deeply or names more links than it \
                  can follow. Split it into simpler commands."
             ),
+        };
+        // #546: a model that wrote the body as text looks for the word among
+        // its commands and finds nothing, so say where it was.
+        match self.heredoc {
+            None => refusal,
+            Some(resolve::BodyReading::Script) => format!(
+                "{refusal} The word is inside a here-document body, which the guard reads as a \
+                 script this command may run. If the body is the content of a file, write it in \
+                 a call of its own as `cat > FILE <<'EOF'`, with the delimiter quoted, so the \
+                 body is read as file content."
+            ),
+            Some(resolve::BodyReading::Data) => format!(
+                "{refusal} The word is inside a here-document body written to a file. The guard \
+                 still reads such a body, because the file can be run later."
+            ),
         }
     }
 }
@@ -689,6 +706,7 @@ impl From<resolve::Finding> for DeniedAccess {
             shown: finding.shown,
             resolved: finding.path,
             reason: finding.reason,
+            heredoc: finding.heredoc,
         }
     }
 }
@@ -2217,6 +2235,54 @@ mod tests {
     /// `res$IHS[…]` is refused whenever the body is read as a script this
     /// command runs, which makes it a probe for whether a body was classified
     /// as data.
+    /// Item 5 of #546: a refusal for a word inside a here-document body says
+    /// so, and says how the body was read, so a model that wrote the body as
+    /// text is not left looking for the word among its commands.
+    #[test]
+    fn issue546_a_refusal_from_a_body_says_it_came_from_the_body() {
+        let fake = FakeHome::new();
+        let (g, env) = (fake.guard(), fake.env());
+        let message = |command: &str| {
+            let args = json!({ "command": command });
+            let from_dispatch = g
+                .find_denied_access_in(args.as_object().unwrap(), &env)
+                .unwrap_or_else(|| panic!("allowed: {command:?}"))
+                .message();
+            let from_shell = g
+                .find_denied_in_command(command, &fake.project, &env)
+                .unwrap_or_else(|| panic!("the shell's own check allowed: {command:?}"))
+                .message();
+            assert_eq!(from_dispatch, from_shell, "{command:?}");
+            from_dispatch
+        };
+        let r = ISSUE546_R_BODY;
+
+        // Read as a script: another command in the input could run the file.
+        let script = message(&format!("cat > a.R <<'EOF'\n{r}EOF\nRscript a.R\n"));
+        assert!(script.contains("here-document body"), "{script}");
+        assert!(script.contains("reads as a script"), "{script}");
+        assert!(script.contains("`cat > FILE <<'EOF'`"), "{script}");
+        let unquoted = message(&format!("cat > a.R <<EOF\n{r}EOF\n"));
+        assert!(unquoted.contains("reads as a script"), "{unquoted}");
+
+        // Read as file content, and still refused for a protected path.
+        let data = message("cat > notes.md <<'EOF'\n~/.aws/credentials\nEOF\n");
+        assert!(
+            data.contains("here-document body written to a file"),
+            "{data}"
+        );
+        assert!(!data.contains("reads as a script"), "{data}");
+
+        // A word outside every body keeps the plain message.
+        for command in [
+            "cat ~/.aws/credentials",
+            "cat > notes.md <<'EOF'\nordinary prose\nEOF\ncd ~/.aws && cat credentials\n",
+        ] {
+            let outside = message(command);
+            assert!(!outside.contains("here-document"), "{command:?}: {outside}");
+        }
+    }
+
     const ISSUE546_R_BODY: &str =
         "res <- data.frame(IHS = c(1, Inf))\nres$IHS[is.finite(res$IHS)]\n";
 

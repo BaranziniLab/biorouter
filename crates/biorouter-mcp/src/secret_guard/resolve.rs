@@ -133,6 +133,19 @@ pub(crate) struct Finding {
     /// What it resolved to, when it resolved to something.
     pub path: Option<PathBuf>,
     pub reason: Reason,
+    /// The word was in a here-document body, read this way (#546). The
+    /// refusal says so, because the model wrote the body as text and would
+    /// otherwise look for the word among its commands.
+    pub heredoc: Option<BodyReading>,
+}
+
+/// How the here-document body that held a refused word was read.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum BodyReading {
+    /// As a script this command may run (any body that is not data).
+    Script,
+    /// As the content of a file ([`data_heredocs`]).
+    Data,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -390,6 +403,7 @@ impl<'a> Resolver<'a> {
                 shown: shorten(script),
                 path: None,
                 reason: Reason::TooComplex,
+                heredoc: None,
             });
         }
         let tokens = lex::lex_for(script, self.windows_lexing);
@@ -480,16 +494,23 @@ impl<'a> Resolver<'a> {
                 self.check_word(target, state, &word_text(target))?;
             }
             if let Some(body) = &redirect.body {
-                if redirect.data {
-                    self.read_data_body(body, state)?;
+                let (read, reading) = if redirect.data {
+                    (self.read_data_body(body, state), BodyReading::Data)
                 } else {
                     // A here-document is either data or a script (`bash
                     // <<EOF`, `cat <<EOF | sh`, `ssh host <<EOF`). Read it as
                     // both, and as code read from stdin (`python3 - <<EOF`).
-                    self.nested(body, state)?;
-                    self.scan_code_in(body, state)?;
-                    self.scan_code_strings(body, state)?;
-                }
+                    let read = self
+                        .nested(body, state)
+                        .and_then(|()| self.scan_code_in(body, state))
+                        .and_then(|()| self.scan_code_strings(body, state));
+                    (read, BodyReading::Script)
+                };
+                // The outermost body wins: it is the one the caller wrote.
+                read.map_err(|finding| Finding {
+                    heredoc: Some(reading),
+                    ..finding
+                })?;
             }
         }
         if args.is_empty() {
@@ -1508,6 +1529,7 @@ impl<'a> Resolver<'a> {
             shown: shorten(shown),
             path,
             reason,
+            heredoc: None,
         }
     }
 }
