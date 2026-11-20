@@ -335,7 +335,7 @@
       erow('Auto Visualiser', 'Data visualization and UI generation tools.', false) +
       erow('Memory', 'Teach Biorouter your preferences as you go.', true) +
       erow('Knowledge', 'Personal, LLM-maintained knowledge bases backed by markdown folders and git history.', true) +
-      erow('Agent Drafter', 'Build interactive artifacts and export them as standalone projects.', false) +
+      erow('Application Drafter', 'Build interactive applications and export them as standalone projects.', false) +
       '</div>';
     return win('extensions', {}, main);
   };

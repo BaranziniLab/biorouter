@@ -380,7 +380,7 @@ sudo dnf install ./biorouter-cli-*-1.x86_64.rpm</code></pre></li>
   <thead><tr><th>Capability</th><th>In a browser</th></tr></thead>
   <tbody>
     <tr><td>Chat, history, extensions, skills, knowledge bases and workflows</td><td>Yes. Private chats and knowledge bases are listed only when the configured model is private.</td></tr>
-    <tr><td>Several chats at once, workspace control, built apps and their agents</td><td>Yes</td></tr>
+    <tr><td>Several chats at once, workspace control, applications and their agents</td><td>Yes</td></tr>
     <tr><td>Stop, and Stop &amp; send</td><td>Yes</td></tr>
     <tr><td>Steering a turn while it runs</td><td>No. What you type waits and is sent when the turn ends.</td></tr>
     <tr><td>A subagent's own tab</td><td>Read only.</td></tr>
@@ -423,7 +423,7 @@ sudo dnf install ./biorouter-cli-*-1.x86_64.rpm</code></pre></li>
     <tr><td><code>setup-path</code></td><td>Put <code>biorouter</code> on your PATH.</td></tr>
     <tr><td><code>term</code></td><td>One chat per terminal window, and <code>@biorouter</code> or <code>@g</code> to ask from the prompt with your recent commands as context. Add <code>eval "$(biorouter term init zsh)"</code> to <code>~/.zshrc</code>; <code>term init</code> also takes <code>bash</code>, <code>fish</code> and <code>powershell</code>.</td></tr>
     <tr><td><code>project</code></td><td>Continue in your last project folder. <code>projects</code> lists recent ones to pick from.</td></tr>
-    <tr><td><code>apps</code></td><td>Open an app the agent built in your browser: <code>apps list</code>, then <code>apps open ID</code> or <code>apps serve ID</code>. See <a href="#apps">Built apps</a>.</td></tr>
+    <tr><td><code>apps</code></td><td>Open an application the agent built in your browser: <code>apps list</code>, then <code>apps open ID</code> or <code>apps serve ID</code>. See <a href="#apps">Applications</a>.</td></tr>
     <tr><td><code>crew</code></td><td>Crew workspaces from a terminal. See <a href="#crew">Crew</a>.</td></tr>
     <tr><td><code>mcp</code></td><td>A bundled MCP server over standard input and output, for a host to start: <code>autovisualiser</code>, <code>computercontroller</code>, <code>webdocuments</code>, <code>developer</code> or <code>memory</code>.</td></tr>
     <tr><td><code>acp</code></td><td>An Agent Client Protocol server for editors such as Zed. <code class="code-token">--ws</code> serves a WebSocket on <code>127.0.0.1:11577</code>.</td></tr>

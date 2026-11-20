@@ -43,7 +43,7 @@ the prefix `WS-`. Both schemes are local to this folder.
 | R-12 | The chat interface (messages, tool calls, cards) is redesigned, not only Home. |
 | R-13 | The composer follows the same principles: monospace only for code, consistent icons, a compact footer. |
 | R-14 | Crew is the reference design. It is not redesigned; its design language is applied to the rest of the app. |
-| R-15 | Workflows, Scheduler, Extensions, Skills, Knowledge and Built apps follow Crew's language. |
+| R-15 | Workflows, Scheduler, Extensions, Skills, Knowledge and Applications follow Crew's language. |
 | R-16 | Knowledge keeps its view structure and interaction logic, with a much simpler look. |
 | R-17 | Settings is redesigned to be minimal and clean. |
 | R-18 | Toggles and other controls share one consistent style across the app. |
@@ -142,7 +142,7 @@ the prefix `WS-`. Both schemes are local to this folder.
 | WS-CHAT | R-12, R-13 | Messages, tool call rows, cards, the composer on Home and in chats. |
 | WS-PREVIEW | R-10 | The artifact preview panel and its motion. |
 | WS-USAGE | R-11 | The usage dashboard on Home. |
-| WS-VIEWS-A | R-15 | Workflows, Scheduler, Built apps, shared page chrome. |
+| WS-VIEWS-A | R-15 | Workflows, Scheduler, Applications, shared page chrome. |
 | WS-VIEWS-B | R-15, R-16 | Extensions and the marketplace, Skills, Knowledge. |
 | WS-SETTINGS | R-17, R-03 | Every Settings section. |
 | WS-MOTION | R-09 | Tabs, search, dialogs, window open and close, outside the files above. |

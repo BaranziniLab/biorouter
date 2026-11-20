@@ -113,7 +113,7 @@ Primary implementation: `crates/biorouter/src/tool_inspection.rs`, `crates/bioro
 
 ## Vault substitution occurs at leaf MCP dispatch
 
-The model sees symbolic placeholders. Plaintext is attached only after inspection and only for an allow-listed Agent Drafter app's leaf MCP (Model Context Protocol) arguments.
+The model sees symbolic placeholders. Plaintext is attached only after inspection and only for an allow-listed application's leaf MCP (Model Context Protocol) arguments.
 
 > **Rendered in the HTML.** A provisioning-and-substitution diagram: an application manifest allow-list, a per-application AES key in the operating-system keyring, and encrypted workspace files combine into in-memory `VaultRefs`; during a turn the model emits a symbolic placeholder that inspectors also see, and only `apply_vault` at leaf MCP dispatch substitutes plaintext. Caption: provisioning creates VaultRefs; only leaf MCP dispatch consumes them.
 
@@ -123,7 +123,7 @@ The model sees symbolic placeholders. Plaintext is attached only after inspectio
 
 **Residual boundary.** The leaf tool receives plaintext by design. A tool that echoes its arguments can expose a secret in its result, so result handling and tool trust remain part of the security model.
 
-> **Vault creation is capability-gated.** It applies to BRSDK Agent Drafter apps only when encryption support is enabled and the app manifest declares at least one name in `agent.capabilities.vault.encrypted`. Other agents do not receive a `VaultRefs` map.
+> **Vault creation is capability-gated.** It applies to BRSDK applications only when encryption support is enabled and the app manifest declares at least one name in `agent.capabilities.vault.encrypted`. Other agents do not receive a `VaultRefs` map.
 
 Primary implementation: `crates/biorouter-server/src/routes/apps.rs`, `crates/biorouter-mcp/src/agent_drafter/vault.rs`, `crates/biorouter/src/agents/vault_refs.rs`
 

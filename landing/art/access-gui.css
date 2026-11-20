@@ -320,7 +320,7 @@
   position: absolute; left: 0; right: 0; top: var(--y);
   height: 1px; background: var(--line);
 }
-/* Bars: a pale body under a 2px cap, as the Built apps tile draws a series.
+/* Bars: a pale body under a 2px cap, as the Applications tile draws a series.
    They grow in turn, left to right. */
 [data-art="access-gui"] .acc-gui-bar {
   position: absolute; bottom: 0;

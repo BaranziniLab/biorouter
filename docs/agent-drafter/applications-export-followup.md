@@ -1,6 +1,6 @@
-# Built apps export followup
+# Applications export followup
 
-Coordinator acceptance completed October 11, 2026; see the [integrated verification ledger](built-apps-hardening-verification.md). The lane checkpoints below preserve investigation history; their pending integration checks are superseded by that ledger.
+Coordinator acceptance completed October 11, 2026; see the [integrated verification ledger](applications-hardening-verification.md). The lane checkpoints below preserve investigation history; their pending integration checks are superseded by that ledger.
 
 Worktree: `/Users/wgu/Desktop/BioRouter/.claude/worktrees/built-apps-export-followup`  
 Branch: `codex/built-apps-export-followup`  
@@ -34,7 +34,7 @@ No Cargo build or test jobs were launched here; the coordinator owns the shared 
 
 ## Coordinator checks
 
-Run the combined Agent Drafter suite after integrating the matching HTTP/desktop shipped-entry changes:
+Run the combined Application Drafter suite after integrating the matching HTTP/desktop shipped-entry changes:
 
 ```bash
 cargo fmt --all
@@ -79,7 +79,7 @@ Validation performed without Cargo jobs:
 - Independent security review reproduced the chained-ID defect before correction, then confirmed the corrected actual Node mapping. It also used an AWK shim to edit the installed manifest after snapshot parsing and confirmed that Bash's byte comparison rejects publication while retaining that edit. Source review found no additional blocker in privacy/owner floors or secret handling.
 - Direct Rust formatting and Node syntax checks passed; `git diff --check` is clean. The Rust test `generated_launchers_import_full_payload_through_authenticated_daemon` executes the fixture with Node in the native unit suite, and an early Rust-workflow step runs it on macOS, Linux and Windows before expensive compilation.
 
-The coordinator must still run the integrated Agent Drafter tests and repeat the native Full/fat recipient launch to show a catalogue-registered, rebound knowledge capability. Test archives are synthetic HTTP-fixture bytes; the coordinator owns actual `.brkb` import acceptance. The recipe uses a fresh `BIOROUTER_PATH_ROOT` and never repurposes HOME.
+The coordinator must still run the integrated Application Drafter tests and repeat the native Full/fat recipient launch to show a catalogue-registered, rebound knowledge capability. Test archives are synthetic HTTP-fixture bytes; the coordinator owns actual `.brkb` import acceptance. The recipe uses a fresh `BIOROUTER_PATH_ROOT` and never repurposes HOME.
 
 The first Windows PowerShell 5.1 CI run passed the digest fixture and Node payload backend, then failed to locate the expected PowerShell receipt directory. The prior partial-failure output assertion passed, showing the payload installer ran; the log did not expose the actual PowerShell source directory or digest. A fixture-only diagnostic checkpoint now prints PowerShell version, source path, source digest and payload state, and retains all lifecycle assertions with captured launcher diagnostics on a missing state. Portable PowerShell 7.6.6 still passes. Windows 8.3 path spelling (`RUNNER~1`) versus expanded script paths is the current hypothesis, awaiting actual Windows diagnostic evidence; no production behavior is changed on that hypothesis.
 

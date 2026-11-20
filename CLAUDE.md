@@ -274,7 +274,7 @@ The detailed manual steps and the reasoning behind each invariant follow.
 | `biorouter` | — | Core agent library: main agent loop, LLM providers, MCP extension manager, session/conversation state, workflow execution, scheduling |
 | `biorouter-server` | `biorouterd` | Axum REST API + WebSocket server; routes in `src/routes/`; OpenAPI spec generated via utoipa |
 | `biorouter-cli` | `biorouter` | Interactive CLI; subcommands in `src/commands/` |
-| `biorouter-mcp` | — | Built-in MCP servers (Developer, Biorouter Copilot, Web & Documents, Memory, Auto Visualiser, Knowledge, Agent Drafter, DataSQL, Files, Compute). Also hosts `active_work.rs`, which is *not* a server but the process-global registry of long-running work (background shell jobs + running subagents) that `GET /active_work` reads |
+| `biorouter-mcp` | — | Built-in MCP servers (Developer, Biorouter Copilot, Web & Documents, Memory, Auto Visualiser, Knowledge, Application Drafter, DataSQL, Files, Compute). Also hosts `active_work.rs`, which is *not* a server but the process-global registry of long-running work (background shell jobs + running subagents) that `GET /active_work` reads |
 | `biorouter-sandbox` | — | Capability-scoped sandboxed execution (`docker.rs`, `seatbelt.rs`, `local.rs`, `environment.rs`, `shell_sandbox/`); a leaf crate with no engine deps |
 | `biorouter-acp` | — | Agent Communication Protocol for multi-agent orchestration |
 | `biorouter-bench` | — | Benchmarking harness |
@@ -356,7 +356,7 @@ is not dead code.
 - **`contexts/`** — React Context for global state
 - **`workflow/`** — Workflow builder UI
 - **`components/knowledge/`**: the Knowledge route, under the sidebar's
-  Components disclosure (between Skills and Built apps). Provides KB selector
+  Components disclosure (between Skills and Applications). Provides KB selector
   with cmd-K-style palette, ingest panel (dropzone / paste text with URL extraction / staged
   list), and live SSE-streamed digestion progress via `useIngestStream`.
 
@@ -1035,7 +1035,7 @@ was removed to make it true:
   installs the repair listener.
 - **What reaches the panel:**
   1. `ui://` embedded resources from tool responses — Auto Visualiser figures and
-     reports, and Agent Drafter app preview cards (`create_app`, `configure_app`,
+     reports, and application preview cards (`create_app`, `configure_app`,
      `update_app`, `build_app`, `launch_app`, `preview_app` all return one).
   2. Files a tool call created, read off the call's **arguments** —
      `text_editor` (`write`/`str_replace`/`insert`/`undo_edit`, never `view`; ⚠ this
@@ -1109,7 +1109,7 @@ was removed to make it true:
     Tailwind, so only a real browser catches this class of bug; sweep the panel
     with the harness (`.artifact-harness`) across md / csv / json / yaml / xml /
     R / py / sql / css / sh / toml / rs / ts after touching the code view.
-- **No delete control on in-chat artifact cards.** Deleting an Agent Drafter app
+- **No delete control on in-chat artifact cards.** Deleting an application
   is destructive (removes files from disk) and lives only in the **Applications**
   tab (`ApplicationsView.tsx`) — never on the in-chat card in `MCPUIResourceRenderer`,
   where a stray click would nuke an app. The card opens the panel, and that is all
@@ -1688,11 +1688,27 @@ gone, along with its exemption from the secret-key middleware; see
 - **Tests:** `cargo test -p biorouter-mcp --lib autovisualiser` (happy paths,
   edge cases, escaping, lenient enum parsing).
 
-### Agent Drafter (BioRouter apps) — agent-driven UI + export
+### Application Drafter (Biorouter applications) — agent-driven UI + export
 
-`agent_drafter` builds **BioRouter apps**: a TypeScript front-end wired to a real
+`agent_drafter` builds **Biorouter applications**: a TypeScript front-end wired to a real
 per-app agent over `GET /apps/<id>/agent`. Full design in
 [`docs/agent-drafter/apps-platform-design.md`](docs/agent-drafter/apps-platform-design.md).
+
+- ⚠ **Names (owner ruling, 2026-11-19).** A person or a model reads **Application Drafter**
+  for the extension, **Applications** for the sidebar entry, its page and the Reset row, and
+  **application** for the thing it builds. They replaced "Agent Drafter" and "Built apps".
+  Only the label moved: the key `agent_drafter`, the tool names (`agent_drafter__create_app`),
+  the in-process `appcontrol` server, the MCP server name `biorouter-agent-drafter`, the store
+  `~/.config/biorouter/agent_drafter/`, the resource address `ui://agent-drafter/<id>`, the
+  `/apps` routes, the `biorouter apps` subcommand and the folders `docs/agent-drafter/` and
+  `scripts/agent-drafter*/` keep the old spelling, because saved configurations, per-chat tool
+  overrides, transcripts and exported applications depend on them. The old label still
+  resolves (`resolve_bundled_extension`), a stored one is projected to the new label on read
+  (`rename_application_drafter` in `config/extensions.rs`), and a card is titled by the
+  application id, not by the address host (`titleFromResourceUri`). "App SDK" and "Apps SDK"
+  stay as the SDK's name, and "app" stays as the short form in the developer SDK docs and the
+  model-facing tool text, which the drafter's instructions define. Never write the old names in
+  new copy.
 
 - **Apps SDK v2** — the typed two-way surface (app contract, shared state doc,
   catalog + `ui_patch`, `br.kb`/`br.model`, theme packs, archetypes, standalone
@@ -1984,7 +2000,7 @@ and the capability itself by [`docs/extensions/built-in/workspace.md`](docs/exte
 **five** conditions. The generic `subagent` tool is offered only when all of them
 hold:
 
-1. `subagent_tool_enabled` — Agent-Drafter apps with declared worker profiles set
+1. `subagent_tool_enabled` — applications with declared worker profiles set
    this false, so `consult` stays the one delegation mechanism.
 2. **Completely Autonomous** mode (`BioRouterMode::Auto`).
 3. The bound model's name does **not** start with `gemini`.
@@ -2173,7 +2189,7 @@ replaced a standalone `biorouter-headless` binary and its Linux tarball, both de
   breaks the terminal silently — one never prompts on the desktop's daemon, the other prompts a
   `serve` user for a key that does not exist. Pinned from both sides.
 - **Proof of a person is checked at the resolution choke point, not at one route.** Every door
-  that answers a parked decision — the HTTP route, an Agent Drafter app's WebSocket, ACP, the
+  that answers a parked decision — the HTTP route, an application's WebSocket, ACP, the
   CLI prompt, the TUI modal, an ancestor agent's relay — passes a `DecisionAuthority` into
   `PendingUserActions::resolve_matching`, which refuses an *allow* on a proof-backed
   `ToolApproval` from a surface that cannot prove a person acted. It is a newtype with a
@@ -2268,7 +2284,7 @@ replaced a standalone `biorouter-headless` binary and its Linux tarball, both de
   address is still refused, because Chrome sends no Fetch Metadata there. ⚠ Chrome sends no Fetch
   Metadata on a WebSocket handshake ANYWHERE, so a handshake counts when its `Origin` is `https`
   (`is_a_websocket_upgrade_from_an_https_page`); without that arm every app's agent socket was
-  refused behind an HTTPS proxy. Built apps under a prefix: the page gets `<base href="./">`, the
+  refused behind an HTTPS proxy. Applications under a prefix: the page gets `<base href="./">`, the
   launch bounce goes to `./`, the app cookie carries no `Path`, and `sdk.ts` reads the prefix off
   its own address (`proxyPrefix`). Don't reintroduce a root-absolute `/apps/{id}/` in any of them.
 - **Tests:** `cargo test -p biorouter-server --lib -- routes::web_ui routes::shell` (the `--`

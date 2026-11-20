@@ -104,8 +104,8 @@ edit files at all.
 - Private and public chats retain separate observations and grants. A shared physical desktop
   can expose content left visible; acknowledge a private-to-public handoff before capture.
 
-### `files_server` / `compute_server` (Agent Drafter app sandboxes)
-- **Use for:** file and shell/Python work **scoped to a built app's sandbox**.
+### `files_server` / `compute_server` (Application sandboxes)
+- **Use for:** file and shell/Python work **scoped to an application's sandbox**.
 - **Don't:** use them as general file/shell tools for the user's own workspace — that
   is `developer`'s job.
 

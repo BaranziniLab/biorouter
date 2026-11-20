@@ -82,7 +82,7 @@ config.yaml.bak.*
 
 # Packaged extension artifacts (build output, not product source)
 *.brxt
-# The Agent Drafter stress test writes generated apps here; the run is
+# The Application Drafter stress test writes generated apps here; the run is
 # resumable, so this stays even while the directory is absent.
 biorouter-testing-apps/
 

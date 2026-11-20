@@ -1,6 +1,6 @@
-# Built apps security and lifecycle followup
+# Applications security and lifecycle followup
 
-Coordinator acceptance completed October 11, 2026; see the [integrated verification ledger](built-apps-hardening-verification.md). The lane checkpoints below preserve investigation history; their pending integration checks are superseded by that ledger.
+Coordinator acceptance completed October 11, 2026; see the [integrated verification ledger](applications-hardening-verification.md). The lane checkpoints below preserve investigation history; their pending integration checks are superseded by that ledger.
 
 Worktree: `/Users/wgu/Desktop/BioRouter/.claude/worktrees/built-apps-security-followup`.
 Branch: `codex/built-apps-security-followup`.

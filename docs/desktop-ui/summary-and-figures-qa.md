@@ -692,7 +692,7 @@ resources or explicit informed user approval; no unrelated files were removed.
 - Meaningful Codex and Claude Code tasks, accepted steering of a still-running
   child, subsequent child work, and parent collection remain required. Use the
   child's actual audited Knowledge/Skills/Extension Manager tools; parent
-  Agent Drafter support does not grant a child native shell/editor access.
+  Application Drafter support does not grant a child native shell/editor access.
 - Current-source dashboard initialization, decoder recovery, file navigation and
   live preview behavior still need rebuilt-app Luna verification. Recorded
   successful Soul ingestion and Meditation (including pending/completion UI)

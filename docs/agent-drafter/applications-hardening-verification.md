@@ -1,4 +1,4 @@
-# Built apps hardening verification
+# Applications hardening verification
 
 Implementation and native acceptance completed October 11, 2026. Merge readiness is
 recorded by the [current PR checks](https://github.com/BaranziniLab/biorouter/pull/392/checks)
@@ -13,10 +13,10 @@ readiness correction is `d74b2985d`. The main checkout and original QA profile w
 
 Four isolated worktrees contributed reviewed fixes:
 
-- [Security and lifecycle](built-apps-security-followup.md)
-- [Export and recipient synchronization](built-apps-export-followup.md)
-- [Build and browser serving](built-apps-build-followup.md)
-- [Desktop navigation, authentication and file writes](built-apps-desktop-followup.md)
+- [Security and lifecycle](applications-security-followup.md)
+- [Export and recipient synchronization](applications-export-followup.md)
+- [Build and browser serving](applications-build-followup.md)
+- [Desktop navigation, authentication and file writes](applications-desktop-followup.md)
 
 ## Completed verification
 
@@ -27,7 +27,7 @@ acceptance are distinct evidence. Only observed results are marked passed below.
 | ------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Interrupted reviews                   | All 21 findings have implementation dispositions in the four reports, with independent followup review.                                                                                                                                                                                                                                                                          |
 | Combined required gates               | Nine completed `CARGO_BUILD_JOBS=2 just check-everything` runs passed, most recently at `d74b2985d`: formatter, strict clippy, UI lint, schema, version, brand, capability naming, cross drift and both registry checks.                                                                                                                                                         |
-| Agent Drafter Rust namespace          | 369 passed, 2 ignored, 1,434 filtered after the knowledge-import correction. This filtered run does not claim coverage of the other crates.                                                                                                                                                                                                                                      |
+| Application Drafter Rust namespace          | 369 passed, 2 ignored, 1,434 filtered after the knowledge-import correction. This filtered run does not claim coverage of the other crates.                                                                                                                                                                                                                                      |
 | Full workspace Rust diagnostic rerun  | Core 4,726 passed / 2 ignored; ACP 17; bench 1; Crew 23; CLI 766; sandbox 21; server library 975 passed / 1 ignored; daemon binary 902 passed / 1 ignored. MCP had 1,795 passed / 6 ignored and one legacy fat-export fixture failure, subsequently corrected. Final platform-wide CI is tracked at the current PR head.                                                         |
 | Full UI Vitest checkpoint             | [Run at `21b770408`](https://github.com/BaranziniLab/biorouter/actions/runs/38121608515): 754 files, 10,553 tests passed, 19 skipped; 400.97 seconds. A later Crew startup race was corrected without removing assertions; that file passed 53 tests and the previously failing case passed again. Final full-suite status belongs to the current PR head.                       |
 | Focused UI checks                     | Export tests: 14 passed; captured-credential tests: 15 passed; source console census: 31 passed; repository UI Prettier check passed.                                                                                                                                                                                                                                            |

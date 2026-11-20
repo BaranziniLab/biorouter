@@ -1,11 +1,11 @@
 # BioRouter Apps SDK v2 reference
 
-> **What this is.** The human-facing developer reference for **BioRouter apps**: the manifest schema, the `br.*` client runtime, the agent-facing `ui_*` tools and widget catalog, the WebSocket frame protocol, the security model, the export format, and the test gates.
+> **What this is.** The human-facing developer reference for **Biorouter applications**: the manifest schema, the `br.*` client runtime, the agent-facing `ui_*` tools and widget catalog, the WebSocket frame protocol, the security model, the export format, and the test gates.
 > **Status:** Current. It documents what actually ships in this build, and flags the pieces that are only partially realised in the [shipped-state summary](#what-is-and-is-not-shipped) below.
-> **Audience:** developers authoring or editing a BioRouter app, and developers working on Agent Drafter itself.
-> **Version key.** *v1* is the original Agent Drafter shape — a generated front-end that flattens its controls into one English prompt and streams markdown back. *v2* is the current, additive surface described here: typed actions, shared state, a component catalog, platform APIs and worker profiles. Every v1 manifest, frame and API still works unchanged; v2 fields are all optional. *v2.1* labels work deliberately deferred (see the design doc).
+> **Audience:** developers authoring or editing a Biorouter application, and developers working on Application Drafter itself.
+> **Version key.** *v1* is the original Application Drafter shape — a generated front-end that flattens its controls into one English prompt and streams markdown back. *v2* is the current, additive surface described here: typed actions, shared state, a component catalog, platform APIs and worker profiles. Every v1 manifest, frame and API still works unchanged; v2 fields are all optional. *v2.1* labels work deliberately deferred (see the design doc).
 
-A BioRouter app is a TypeScript front-end (`src/main.ts` plus `index.html`) wired to a *real* per-app BioRouter agent over a WebSocket. The app is authored by the Agent Drafter agent through the `create_app` / `update_app` / `build_app` tools, and it is driven live by its own runtime agent, which calls `ui_*` tools to write into the page. Reach for an app rather than ordinary desktop chat when you want a persistent, purpose-built interface — a graph explorer, a dashboard, a workbench — instead of a transcript. Because `export_app` produces a project humans read and edit, this reference describes the runtime from the author's side as well as the agent's.
+A Biorouter application is a TypeScript front-end (`src/main.ts` plus `index.html`) wired to a *real* per-app BioRouter agent over a WebSocket. The app is authored by the Application Drafter agent through the `create_app` / `update_app` / `build_app` tools, and it is driven live by its own runtime agent, which calls `ui_*` tools to write into the page. Reach for an app rather than ordinary desktop chat when you want a persistent, purpose-built interface — a graph explorer, a dashboard, a workbench — instead of a transcript. Because `export_app` produces a project humans read and edit, this reference describes the runtime from the author's side as well as the agent's.
 
 The *behaviour* below is verified against the code:
 
@@ -19,7 +19,7 @@ The *intent* behind each pillar lives in the [Apps SDK v2 design](v2-design.md);
 
 ## Dictation in apps
 
-Apps do not receive microphone access. In the Biorouter desktop preview, click into the app's text field, then use **Dictate into this app** in the preview toolbar; the button appears only while a text field in the app has focus, and works whether or not **Dictate into other apps** is on. The app receives text only. You can also use **Dictate to clipboard** in Biorouter, or `biorouter dictate --copy`, and paste. Your system's own dictation works without the Biorouter dictionary.
+Apps do not receive microphone access. In the Biorouter desktop preview, click into the app's text field, then use **Dictate into this application** in the preview toolbar; the button appears only while a text field in the app has focus, and works whether or not **Dictate into other apps** is on. The app receives text only. You can also use **Dictate to clipboard** in Biorouter, or `biorouter dictate --copy`, and paste. Your system's own dictation works without the Biorouter dictionary.
 
 In a browser without the Biorouter desktop app, dictate in Biorouter's composer and copy the text, or use your system's dictation. App pages cannot open the microphone. The preview button ships only after M-15 shows that text reaches the focused app field; if M-15 fails, this section must use MSG-APPS-NO-PREVIEW instead.
 
@@ -141,7 +141,7 @@ The manifest is `manifest.json`. Every v2 field is optional and defaults to v1 b
 
 ### Annotated example
 
-Only the Agent Drafter–specific blocks are shown.
+Only the Application Drafter–specific blocks are shown.
 
 ```jsonc
 {
@@ -713,7 +713,7 @@ export.json                   # full mode, or a bundled daemon
 - **No chat id.** `session_id` names a chat on the author's machine. On another machine it names nothing, or an unrelated chat.
 - **The launchers are executable** (`run.command`, `run.sh`, `biorouter-launch.sh`, and a bundled daemon), in the folder the tool writes, in each zip entry's unix mode, and after the desktop unpacks the zip.
 
-The tool's `target_dir` must be an absolute path to a folder that does not exist or is empty, and it may not be a link. Because a model picks it, it must also be a folder of the user's own: below Desktop, Documents or Downloads (each resolved through links), and never inside Biorouter's configuration folder, the app store, the knowledge store, a hidden folder, or a folder code is imported from by name (`node_modules`, `site-packages`, `dist-packages`). Without that rule, a chat with Agent Drafter and no shell could write files into a Python package folder or `~/Library`. To export anywhere else, the person uses the Applications view, where they pick the folder themselves.
+The tool's `target_dir` must be an absolute path to a folder that does not exist or is empty, and it may not be a link. Because a model picks it, it must also be a folder of the user's own: below Desktop, Documents or Downloads (each resolved through links), and never inside Biorouter's configuration folder, the app store, the knowledge store, a hidden folder, or a folder code is imported from by name (`node_modules`, `site-packages`, `dist-packages`). Without that rule, a chat with Application Drafter and no shell could write files into a Python package folder or `~/Library`. To export anywhere else, the person uses the Applications view, where they pick the folder themselves.
 
 `replace: true` accepts a non-empty folder only when it is an earlier export of the same app (its `manifest.json` names the app and it has `biorouter-launch.sh`) and it holds nothing the export does not write. The README invites editing an export where it is, so an earlier export that has gained a `.git`, `node_modules`, a `package-lock.json` or any other file of the user's own is refused; files a file manager leaves (`.DS_Store`, `Thumbs.db`, `desktop.ini`) do not count. The folder is built beside the target and renamed into place, so a failed export leaves nothing half-written and a replaced export keeps no stale file. The earlier export is never deleted: it is kept beside the new one as `<folder>.replaced-<date>-<time>`, and the tool's answer names it. The desktop asks before replacing a folder that already has files in it, and moves the old folder to the Trash.
 
@@ -785,7 +785,7 @@ The in-SDK capability re-consent screen the design describes is not built. `expo
 | `cargo test -p biorouter-mcp --test ui_example_apps` | the example UI apps emit `ui` frames deterministically |
 | `cargo test -p biorouter-server --lib routes::apps` | WS frames, mid-turn dispatch, bridge rebind, parked `ui_ask`, KB grants, provider-class routing |
 | `node scripts/agent-drafter/ui-control-harness.mjs` | **SDK v2 self-test**: bundles the real `sdk.ts`, mounts it in jsdom against a mock daemon, and asserts state/bindings, `ui_patch`, signals, `app_call`, `br.call`, `br.kb` (including a knowledge-only `data:knowledge` grant), `br.model`, theme/layout, presence, `wsToken`, and the default chat's resumed history and error line. Needs esbuild + jsdom (`BIOROUTER_ESBUILD_BIN` / `BIOROUTER_JSDOM_DIR`, or a checkout with `ui/desktop/node_modules`). |
-| `node scripts/agent-drafter/ui-control-harness.mjs --app <dir> [--port 8899]` | serve a built app for a real browser to drive via `/__emit` + `/__frames` |
+| `node scripts/agent-drafter/ui-control-harness.mjs --app <dir> [--port 8899]` | serve an application for a real browser to drive via `/__emit` + `/__frames` |
 | `ui/desktop/scripts/appcheck/check-ui-app.mjs` | drives a real agent and asserts `ui` frames arrive |
 
 Example apps live under `scripts/agent-drafter-apps/examples/ui/` (`install-examples.sh`).
@@ -794,6 +794,6 @@ Example apps live under `scripts/agent-drafter-apps/examples/ui/` (`install-exam
 
 - [Apps SDK v2 design](v2-design.md) — the nine-pillar rationale behind every surface documented here, including the pieces still design-only.
 - [Apps SDK v2 phase roadmap](v2-phase-roadmap.md) — the order in which these features land, and what each phase must prove before it ships.
-- [BioRouter Apps platform design](../agent-drafter/apps-platform-design.md) — the subsystem overview of Agent Drafter, and where this reference sits within it.
+- [BioRouter Apps platform design](../agent-drafter/apps-platform-design.md) — the subsystem overview of Application Drafter, and where this reference sits within it.
 - [Auto Visualiser capability](../extensions/built-in/auto-visualiser.md) — the `render_*` tools `ui_figure` embeds into an app panel.
-- [Agent Drafter 100-app test-drive runbook](../agent-drafter/testing/app-test-drive-runbook.md) — how to exercise an authored app end-to-end in a browser.
+- [Application Drafter 100-app test-drive runbook](../agent-drafter/testing/app-test-drive-runbook.md) — how to exercise an authored app end-to-end in a browser.

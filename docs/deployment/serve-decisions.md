@@ -1197,7 +1197,7 @@ A request that carries neither header is served as before. The shell's response 
 predicate `auth::is_document_navigation`.
 
 **Why.** The shell embeds the daemon's secret, and its cookie is `Path=/`, so it rides along on
-every request to this origin. Every Agent Drafter app this daemon serves lives on the same origin,
+every request to this origin. Every application this daemon serves lives on the same origin,
 and an app's code is written by an agent, so an app's script could `fetch('/')` and read the
 secret out of the document. With it, the page could call any API route from the person's browser,
 with the served cookie's operator standing (SD-10) attached, and send the secret off the machine
@@ -1271,7 +1271,7 @@ configurable-http-proxy and jupyter-server-proxy.
    to its path. `BIOROUTER_PUBLIC_URL` in the shell is read when the flag is absent. The address
    must be `https` unless it names this machine, and only a daemon that serves the interface reads
    the variable, because the desktop application hands its daemon its whole environment.
-4. **Built apps work under the prefix too.** An app's page is served with `<base href="./">`
+4. **Applications work under the prefix too.** An app's page is served with `<base href="./">`
    (it is only ever served at `/apps/{id}/`), its launch link moves the browser to `./`, and its
    access cookie carries no `Path`, so the browser scopes it to the address it redeemed the link
    at. The App SDK reads the prefix off its own page's address, in front of `/apps/{id}/`, for its
@@ -1411,7 +1411,7 @@ running it can make.
 > **First part (2026-11-05).** The header ruling landed before a served page could ask for the
 > microphone. The browser dictation ruling below completes this record with PR-21.
 
-**Ruling.** Every document an Agent Drafter app serves carries
+**Ruling.** Every document an application serves carries
 `Permissions-Policy: microphone=(), camera=(), display-capture=()`: the app's page and its build
 failure page (`routes::apps::app_page_response`), every file under its `dist/` and `assets/`
 (`with_app_file_csp`), its figure frame (`figure_frame`) and its launch bounce (`launch_bounce`).

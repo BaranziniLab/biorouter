@@ -639,7 +639,7 @@ Private standing means the user action proof, a private capability the request s
 | ACP stdio (S12) | through the tools | as the tools | suggestions only, in every mode | never | public only |
 | ACP `--ws` | no capability | no | no | no | public only |
 | Crew (S14) | the member's own sidebar | the member's own sidebar | the member's own sidebar; Crew scoped chats cannot call `dictionary__*` | the member's own sidebar | public by default; private terms for one recording after MSG-PRIVATE-TERMS (O-8, O-21) |
-| Agent Drafter apps (S15) | no | no | no; manifests refuse the capability | no | public by default; the desktop preview's `external` target takes private terms for one recording after MSG-PRIVATE-TERMS (O-8) |
+| Applications (S15) | no | no | no; manifests refuse the capability | no | public by default; the desktop preview's `external` target takes private terms for one recording after MSG-PRIVATE-TERMS (O-8) |
 | **Dictate to clipboard** (S18) | n/a | n/a | n/a | n/a | public by default; private terms for one recording after MSG-PRIVATE-TERMS, never for an agent (O-8) |
 
 ### Routes
@@ -1195,7 +1195,7 @@ In a Claude Code or Codex chat the capability's three tools reach the coding age
 |---|---|
 | A fresh configuration | `default_enabled: false` |
 | Crew scoped chats | `authorize_session_tool` permits only `crew__` and `todo__` tools [C `crates/biorouter/src/crew/mod.rs:4232`] |
-| Agent Drafter app sessions | manifests refuse it (`UnarmedExtension::Platform`); `routes/apps.rs::configure_agent` sets `Agent.dictionary_learning = false` |
+| Application sessions | manifests refuse it (`UnarmedExtension::Platform`); `routes/apps.rs::configure_agent` sets `Agent.dictionary_learning = false` |
 | ACP `--ws` | `run_ws` refuses `--with-builtin dictionary` and sets `dictionary_learning = false` |
 | ACP stdio | offered, suggestions only, no extractor |
 | SubAgent, Scheduled, Hidden and Terminal sessions | removed from the model's tools and refused at dispatch, beside `is_workspace_tool_refused_for` [C `crates/biorouter/src/agents/agent.rs`] |
@@ -1321,7 +1321,7 @@ PR-20 builds the page on the desktop behind `isBrowserSurface()`; PR-21 removes 
 
 ### Placement and reveal rules
 
-- `componentItems` in `ui/desktop/src/components/BioRouterSidebar/AppSidebar.tsx` [C] gains `{type: 'item', path: '/dictionary', label: 'Dictionary', icon: ENTITY_ICONS.dictionary}` after **Knowledge** and before **Built apps**. The comment "The six destinations behind the `Components` disclosure." becomes seven. Its test id is `sidebar-dictionary-button`.
+- `componentItems` in `ui/desktop/src/components/BioRouterSidebar/AppSidebar.tsx` [C] gains `{type: 'item', path: '/dictionary', label: 'Dictionary', icon: ENTITY_ICONS.dictionary}` after **Knowledge** and before **Applications**. The comment "The six destinations behind the `Components` disclosure." becomes seven. Its test id is `sidebar-dictionary-button`.
 - `components/icons/app-icons.tsx` gains `export const Dictionary = light(_BookA)` (`BookA` exists in the pinned `lucide-react` [C]); `EntityKind` and `ENTITY_ICONS` in `components/icons/entity-icons.ts` gain `dictionary`. The glyph is not reused for memory or knowledge.
 - `App.tsx` gains the route before `*`.
 - The Components disclosure is collapsed by default [C `readStoredComponentsExpanded`]. After the first verified model install the page writes `biorouter:sidebar-components-expanded` = `true` once and sets `biorouter:dictionary-revealed`; a later collapse sticks. As built in PR-20 the sidebar does this: it reads the dictation status store (never loads it, so mounting the sidebar sends nothing), and the first time that store holds a usable model (`hasUsableModel`: the active model installed) with the dictionary allowed, it writes both keys and opens the group. "Verified" is the daemon's: a model counts as installed only after its SHA-256 matched, by **Install** or **Rescan**. A profile that already had a model before PR-20 reveals once, on the first status read after the update. When storage cannot be read the reveal does not run, rather than running at every launch.

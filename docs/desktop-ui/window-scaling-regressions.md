@@ -209,7 +209,7 @@ the paragraph below.
 
 **The component views joined on 2026-09-07 too**, and they are the reason the
 document-shaped bullet above lost its examples: Workflows, Extensions, Skills
-and Built apps were the views that bullet named, and the prediction it made
+and Built apps (now Applications) were the views that bullet named, and the prediction it made
 about them did not survive being looked at. None of them
 grows a column or a card per 100px of window. Each is a list of rows — a
 workflow's name and its seven hover actions, an extension's name and its

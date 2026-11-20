@@ -24,7 +24,7 @@ These capabilities ship with Biorouter. Some are backed by bundled MCP servers a
 | **Memory** | Remembers user preferences across sessions | Enabled |
 | **Auto Visualiser** | Automatically generates data visualizations in conversations | Enabled |
 | **Knowledge** | Personal, LLM-maintained knowledge bases backed by markdown and git history | Enabled |
-| **Agent Drafter** | Builds interactive artifacts and exports them as standalone projects | Enabled |
+| **Application Drafter** | Builds interactive applications and exports them as standalone projects | Enabled |
 
 The table follows the current capability registry in
 `ui/desktop/src/components/settings/capabilities/capabilities.ts`.

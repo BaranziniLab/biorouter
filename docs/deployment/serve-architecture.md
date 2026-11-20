@@ -44,7 +44,7 @@ and reverse-proxying everything else. Three properties follow from removing that
 are the main reason the change is worth making.
 
 **WebSockets work at all.** `/ui/workspace` (workspace control) and `/apps/{id}/agent` (an
-Agent Drafter app's live agent socket) are daemon routes. Reached on the daemon's own origin
+application's live agent socket) are daemon routes. Reached on the daemon's own origin
 they need nothing added. Through the old proxy they could not work, and the client's
 retry-with-backoff meant they failed silently rather than reporting it.
 

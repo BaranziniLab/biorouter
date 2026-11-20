@@ -130,7 +130,7 @@ human, symmetrically.
    the session level first and works headless (CLI, server-only, GUI closed). The GUI
    attaches as a renderer of that truth. A tool call never *requires* a GUI to succeed —
    it degrades to the session-level effect and says so in its result.
-2. **Reuse the proven agent→UI machinery.** Agent Drafter already ships an in-process MCP
+2. **Reuse the proven agent→UI machinery.** Application Drafter already ships an in-process MCP
    server whose tools push frames over a socket to a page, with a rebindable bridge
    registry and a blocking human round-trip
    (`crates/biorouter-mcp/src/agent_drafter/control.rs`,
@@ -193,7 +193,7 @@ the **Memory** MCP server (categorized long-term facts, not transcripts,
 
 ### 3.3 Agent→UI control — the pattern donor
 
-Agent Drafter's `appcontrol` server is the proven template, reused wholesale (pattern, not
+Application Drafter's `appcontrol` server is the proven template, reused wholesale (pattern, not
 code-sharing-by-force):
 
 - In-process MCP server injected idempotently by name via
@@ -211,11 +211,11 @@ code-sharing-by-force):
 
 BR-71 builds a sibling, `WorkspaceBridge`, with the same anatomy but a different scope:
 one bridge **per GUI window** (not per app session), carrying workspace commands instead of
-widget trees. Agent Drafter itself is untouched.
+widget trees. Application Drafter itself is untouched.
 
 Also relevant precedents: the knowledge subagent loop streams every step of a
 tool-embedded agent over SSE (`routes/knowledge.rs:1028-1079`, `SubAgentEvent`) — proof
-that live sub-agent transparency fits the existing stack; Agent Drafter `consult` worker
+that live sub-agent transparency fits the existing stack; Application Drafter `consult` worker
 profiles (`control.rs:4021`, `apps.rs:1748`) are named, capability-scoped worker agents
 whose *browser-driven* turns are already streamed and stamped — but whose *agent-driven*
 consults are opaque, the same gap in miniature; and the ACP crate
@@ -612,7 +612,7 @@ and a GUI is attached):
 `BIOROUTER_SUBAGENT_BACKGROUND` handles (`subagent_handle.rs`) compose unchanged: a
 background child is simply a live tab whose parent isn't parked on it.
 
-Out of scope for BR-71 but deliberately enabled by it: routing Agent Drafter `consult`
+Out of scope for BR-71 but deliberately enabled by it: routing Application Drafter `consult`
 worker turns through the same observation plane, and exposing workspace observation over
 ACP.
 
@@ -746,7 +746,7 @@ than deleted: the question is what makes the answer legible.
    the model no tab was opened so it cannot claim otherwise. Subagent spawns resolve the
    setting before claiming a visible-tab slot, so announce-only children never consume
    the decision-26 cap.
-2. **`workspace_send_prompt wait:"final_message"` vs. Agent Drafter `consult`.**
+2. **`workspace_send_prompt wait:"final_message"` vs. Application Drafter `consult`.**
    **Unified — decision 13, done in Task 41.** `consult` was not re-expressed as a
    workspace *tool call*; it kept its own contract (name, params, depth-1, per-profile
    timeout, blocking answer, error envelopes) and was moved onto this spine underneath:
