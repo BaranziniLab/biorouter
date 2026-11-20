@@ -95,8 +95,13 @@ export type BrowserAgentResult = {
     screenshot_path?: string;
     tabs?: BrowserAgentTabInfo[];
     person_interacted?: boolean;
-    /** A click admitted under observe whose target is not a plain link: nothing happened. */
+    /**
+     * An operation admitted under observe that needs the act grant (a click on anything but a
+     * plain link to the page's own origin, an open, a back, forward or reload): nothing happened.
+     */
     needs_act_grant?: boolean;
+    /** How `open` ended (L1): the page loaded, the network policy refused it, or it failed. */
+    load?: 'loaded' | 'blocked' | 'failed';
     error_kind?: string;
   };
 };

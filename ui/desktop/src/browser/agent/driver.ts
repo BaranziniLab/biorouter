@@ -2,7 +2,7 @@ import type { BrowserWindow, WebContents } from 'electron';
 import log from 'electron-log';
 import {
   agentBrowserTab,
-  agentBrowserTabError,
+  agentBrowserTabLoad,
   agentBrowserTabs,
   beginAgentInput,
   closeAgentBrowserTab,
@@ -722,16 +722,30 @@ async function opOpen(ctx: Context): Promise<BrowserAgentResult> {
     url,
     ctx.request.tier
   );
-  if (!navigation.ok) throw new OpFailure(navigation.reason);
+  if (!navigation.ok) {
+    throw new OpFailure(navigation.reason, { load: navigation.blocked ? 'blocked' : 'failed' });
+  }
   await settleNavigation(ctx.contents, ctx.state, before, 3_000, ctx.deadline - 1_000, ctx.signal);
-  const error = agentBrowserTabError(ctx.window, ctx.info.viewId);
-  if (error && ctx.contents.getURL() !== url && !ctx.contents.getURL().startsWith(url)) {
-    throw new OpFailure(`${hostOf(url)} did not open: ${error}`);
+  // L1: the outcome of the load itself, not of the request to load. A refused or failed load
+  // still commits Chromium's error page at the address, so the address alone proves nothing.
+  const load = agentBrowserTabLoad(ctx.window, ctx.info.viewId);
+  if (load.state === 'blocked') {
+    throw new OpFailure(
+      `${hostOf(url)} was not opened: the browser's network policy refused it. ${load.reason}`,
+      { load: 'blocked', navigated: true, refs_invalidated: true }
+    );
+  }
+  if (load.state === 'failed') {
+    throw new OpFailure(`${hostOf(url)} did not load: ${load.reason}`, {
+      load: 'failed',
+      navigated: true,
+      refs_invalidated: true,
+    });
   }
   return {
     ok: true,
     detail: `opened ${hostOf(ctx.contents.getURL() || url)}`,
-    data: { navigated: true, refs_invalidated: true },
+    data: { navigated: true, refs_invalidated: true, load: 'loaded' },
   };
 }
 

@@ -1800,15 +1800,16 @@ export async function navigateAgentBrowserTab(
   viewId: string,
   url: string,
   tier: 'public' | 'private'
-): Promise<{ ok: true } | { ok: false; reason: string }> {
+): Promise<{ ok: true } | { ok: false; reason: string; blocked: boolean }> {
   const entry = entryFor(window, viewId);
   if (!entry?.agentSession || entry.view.webContents.isDestroyed()) {
-    return { ok: false, reason: 'The tab is gone.' };
+    return { ok: false, reason: 'The tab is gone.', blocked: false };
   }
   if (!isNavigableEmbeddedUrl(url)) {
     return {
       ok: false,
       reason: 'Only http and https addresses without credentials can be opened.',
+      blocked: true,
     };
   }
   const parsed = new URL(url);
@@ -1816,23 +1817,25 @@ export async function navigateAgentBrowserTab(
   const cls =
     literalHostClass(host) ?? (await resolveHostClass(host).catch(() => null))?.cls ?? null;
   if (cls === null) {
-    return { ok: false, reason: `${parsed.hostname} could not be found.` };
+    return { ok: false, reason: `${parsed.hostname} could not be found.`, blocked: false };
   }
   if (cls !== 'public' && tier !== 'private') {
     return {
       ok: false,
       reason: `${parsed.hostname} is a local or private network address, which a chat on a public model may not open (privacy tiers). The person can open it, or use a private model.`,
+      blocked: true,
     };
   }
   if (isReservedLocalPort(defaultPort(parsed)) && cls === 'loopback') {
     return {
       ok: false,
       reason: `${parsed.host} belongs to Biorouter itself, so the browser does not open it.`,
+      blocked: true,
     };
   }
   await prepareEmbeddedNetwork(entry.view.webContents.session);
   if (entryFor(window, viewId) !== entry || entry.view.webContents.isDestroyed()) {
-    return { ok: false, reason: 'The tab closed.' };
+    return { ok: false, reason: 'The tab closed.', blocked: false };
   }
   entry.record.personNavigation = cls !== 'public' && tier === 'private';
   entry.error = null;
@@ -1868,11 +1871,27 @@ export function controlAgentBrowserTab(
   return true;
 }
 
-/** The last load error the bar shows for a tab (a refused local address, a certificate error). */
-export function agentBrowserTabError(window: BrowserWindow, viewId: string): string | null {
+/**
+ * How an agent tab's last load ended (L1): `blocked` when the network policy refused the address
+ * (the proxy's refusal of a local or reserved destination), `failed` when Chromium reported an
+ * error (no answer, a certificate error, a refused connection), else `loaded`. A note that is not
+ * about the load (a denied permission, a blocked popup) is not a failure.
+ */
+export type AgentTabLoad =
+  | { state: 'loaded' }
+  | { state: 'blocked'; reason: string }
+  | { state: 'failed'; reason: string };
+
+export function agentBrowserTabLoad(window: BrowserWindow, viewId: string): AgentTabLoad {
   const entry = entryFor(window, viewId);
-  if (!entry) return null;
-  return entry.error ?? (entry.notice ? entry.notice.text : null);
+  if (!entry || entry.view.webContents.isDestroyed()) {
+    return { state: 'failed', reason: 'the tab closed' };
+  }
+  if (entry.notice?.kind === 'local-blocked' || entry.notice?.kind === 'local-reserved') {
+    return { state: 'blocked', reason: entry.notice.text };
+  }
+  if (entry.error) return { state: 'failed', reason: entry.error };
+  return { state: 'loaded' };
 }
 
 /**

@@ -1,6 +1,7 @@
 import { _electron as electron, expect, test, type ElectronApplication } from '@playwright/test';
 import { build } from 'esbuild';
 import fs from 'node:fs';
+import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 // The fixture site is plain CommonJS so it also runs with `node` by hand.
@@ -396,6 +397,33 @@ test('waits for text, gives up at its timeout, and a cancel stops a slow load', 
   const cancelled = await slow;
   expect(cancelled.ok).toBe(false);
   expect(cancelled.detail).toContain('canceled');
+});
+
+test('an open reports how the load ended, not only that it was asked for (L1)', async () => {
+  const loaded = await agent('open', { url: site.url('publicA', '/article') });
+  expect(loaded.ok, loaded.detail).toBe(true);
+  expect(loaded.data?.load).toBe('loaded');
+
+  // A port nothing listens on: the request goes out, and the load fails.
+  const closedPort = await new Promise<number>((resolve) => {
+    const probe = net.createServer().listen(0, '127.0.0.1', () => {
+      const { port } = probe.address() as net.AddressInfo;
+      probe.close(() => resolve(port));
+    });
+  });
+  const failed = await agent('open', { url: `http://site-a.test:${closedPort}/nothing` });
+  expect(failed.ok).toBe(false);
+  expect(failed.data?.load).toBe('failed');
+  expect(failed.detail).toContain('did not load');
+
+  // A private chat may open a local address, but the daemon's own port is refused by policy.
+  const refused = await agent(
+    'open',
+    { url: `http://127.0.0.1:${site.reservedPort}/` },
+    { tier: 'private' }
+  );
+  expect(refused.ok).toBe(false);
+  expect(refused.data?.load).toBe('blocked');
 });
 
 test('opens a private network page only for a private chat (BB-06, BB-20)', async () => {
