@@ -747,8 +747,9 @@ The flow:
    are selected by default, with a search box and **Select all** and **Select none**.
 4. **Import.** One line says what comes next on macOS: "macOS will ask to allow access to Chrome Safe
    Storage. Choose Allow." Then Electron main asks the person itself, in a native dialog it owns:
-   "Import from Chrome (Work)?", with what will be imported. Only **Import** there starts the
-   import, and nothing in the profile but its name is read before that answer (S3 of the fix
+   "Import from Chrome (Work)?", with what will be imported. Only a click on **Import** there
+   starts the import: **Cancel** is the default button, so a stray Return or Escape cancels. Nothing
+   in the profile but its name is read before that answer (S3 of the fix
    round: a page cannot answer a native dialog, so a compromised or buggy renderer cannot start an
    import alone). Then the operating system's prompt appears (BB-23).
 5. **Summary.** What was imported, with counts, how many cookies were left out (expired,

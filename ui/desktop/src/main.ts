@@ -6049,6 +6049,9 @@ ipcMain.handle('biorouter-browser-import:sites', (event, payload: { profileId?: 
  * S3: the import's own confirmation, a native dialog this process shows over the window that
  * asked. A page cannot answer it, so a compromised or buggy renderer cannot start an import
  * alone; the service reads nothing from the profile but its name before the answer.
+ *
+ * Cancel is the default button as well as the cancel one, so a stray Return (or Escape) never
+ * starts an import: only a click on **Import** does.
  */
 async function confirmChromeImport(
   owner: BrowserWindow,
@@ -6058,7 +6061,7 @@ async function confirmChromeImport(
   const { response } = await dialog.showMessageBox(owner, {
     type: 'question',
     buttons: ['Cancel', text.confirmLabel],
-    defaultId: 1,
+    defaultId: 0,
     cancelId: 0,
     noLink: true,
     message: text.message,

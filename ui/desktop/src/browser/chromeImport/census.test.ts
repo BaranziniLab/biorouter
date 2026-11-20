@@ -114,4 +114,13 @@ describe('the Chrome import census (BB-21)', () => {
     expect(confirm.slice(0, 600)).toMatch(/dialog\.showMessageBox\(owner,/);
     expect(confirm.slice(0, 600)).toMatch(/return response === 1;/);
   });
+
+  it('the native confirmation defaults to Cancel, so a stray Return does not import', () => {
+    const main = fs.readFileSync(path.join(DESKTOP, 'src/main.ts'), 'utf8');
+    const confirm = main.slice(main.indexOf('async function confirmChromeImport'));
+    const options = confirm.slice(0, confirm.indexOf('});'));
+    expect(options).toMatch(/buttons: \['Cancel', text\.confirmLabel\]/);
+    expect(options).toMatch(/defaultId: 0,/);
+    expect(options).toMatch(/cancelId: 0,/);
+  });
 });
