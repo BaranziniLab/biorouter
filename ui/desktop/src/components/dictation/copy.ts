@@ -125,6 +125,8 @@ export const DICTATION_MESSAGES = {
     "Biorouter's menu bar icon is off, so Dictate to clipboard is not in its menu. Choose a shortcut below, or turn on Show in menu bar in Settings > App.",
   'MSG-CLIPBOARD-EXPLAIN':
     'Dictate to clipboard puts the text on your system clipboard. After that it is outside Biorouter: any program on this computer can read it, including an agent with shell access in any chat; clipboard managers may keep it; Universal Clipboard or Windows cloud clipboard may sync it to your other devices; and the app you paste into decides where it goes. Your private dictionary terms are used only for a recording you start with Include my private terms.',
+  'MSG-SHORTCUT-HELP':
+    'A key combination that starts and stops Dictate to clipboard from any app. Leave it empty for none.',
   'MSG-CLIPBOARD-COPIED': 'Copied <n> words. Paste with <key>.',
   'MSG-CLIPBOARD-NOTHING': 'Nothing was heard, so the clipboard was not changed.',
   'MSG-CLIPBOARD-ECHO':

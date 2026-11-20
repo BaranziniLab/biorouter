@@ -1073,7 +1073,10 @@ function AnywhereSettingsRows({
       shortcut: nextShortcut,
       disclosureShown,
     });
-    if (next) setSnapshot(next);
+    if (next) {
+      setSnapshot(next);
+      setShortcut(next.shortcut ?? '');
+    }
   };
   const enable = async () => {
     if (!available || !modelReady || snapshot.captureAllowed === false) return;
@@ -1087,11 +1090,14 @@ function AnywhereSettingsRows({
       });
       if (result.response !== 0) return;
     }
-    await change(
-      true,
-      snapshot.shortcut || (snapshot.tray ? null : DEFAULT_ANYWHERE_SHORTCUT),
-      true
-    );
+    // A shortcut is saved, and so registered, when none is: off macOS the suggested key
+    // combination, and on macOS only without the menu bar icon, where the fn key (Use fn in
+    // other apps) is the suggested way in. GNOME on Wayland cannot register one at all.
+    const suggested =
+      snapshot.gnomeWayland || (window.electron.platform === 'darwin' && snapshot.tray)
+        ? null
+        : DEFAULT_ANYWHERE_SHORTCUT;
+    await change(true, snapshot.shortcut || suggested, true);
   };
   return (
     <>
@@ -1123,16 +1129,13 @@ function AnywhereSettingsRows({
         />
       </SettingRow>
       {snapshot.enabled && (
-        <SettingRow
-          label="Dictation shortcut"
-          help="Turn the shortcut on to start and stop Dictate to clipboard from another app."
-        >
+        <SettingRow label="Dictation shortcut" help={dictationMessage('MSG-SHORTCUT-HELP')}>
           <Input
             machine
             aria-label="Dictation shortcut"
             value={shortcut}
             disabled={snapshot.gnomeWayland}
-            placeholder={DEFAULT_ANYWHERE_SHORTCUT}
+            placeholder="None"
             onChange={(event) => setShortcut(event.target.value)}
             onBlur={() => void change(true, shortcut || null)}
           />

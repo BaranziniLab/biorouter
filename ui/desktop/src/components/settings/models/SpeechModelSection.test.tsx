@@ -1142,6 +1142,36 @@ describe('Dictate into other apps', () => {
     await waitFor(() => expect(control).toHaveAttribute('aria-checked', 'false'));
   });
 
+  // The shortcut used to be saved only when the menu bar icon was missing, while the field showed
+  // the suggestion as grey placeholder text: it read as set and was never registered, so
+  // Ctrl+Alt+Shift+D did nothing on Windows and Linux.
+  it('off macOS, turning on registers the suggested shortcut, and the field shows it as its value', async () => {
+    Object.assign(window.electron, { platform: 'win32' });
+    const { set } = bridge(anywhere({ disclosureShown: true }));
+    const user = userEvent.setup();
+    await renderSection();
+    await user.click(
+      await screen.findByRole('switch', { name: DICTATION_ACTIONS.dictateIntoOtherApps })
+    );
+    await waitFor(() =>
+      expect(set).toHaveBeenCalledWith({
+        enabled: true,
+        shortcut: 'CommandOrControl+Alt+Shift+D',
+        disclosureShown: true,
+      })
+    );
+    const field = await screen.findByRole('textbox', { name: 'Dictation shortcut' });
+    expect(field).toHaveValue('CommandOrControl+Alt+Shift+D');
+  });
+
+  it('an empty shortcut field says None rather than showing a shortcut that is not set', async () => {
+    bridge(anywhere({ enabled: true, disclosureShown: true }));
+    await renderSection();
+    const field = await screen.findByRole('textbox', { name: 'Dictation shortcut' });
+    expect(field).toHaveValue('');
+    expect(field).toHaveAttribute('placeholder', 'None');
+  });
+
   it('is disabled while no speech model is ready', async () => {
     serve(status());
     bridge(anywhere());
