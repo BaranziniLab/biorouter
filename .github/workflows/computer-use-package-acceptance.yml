@@ -1,9 +1,10 @@
 name: Biorouter Copilot installed packages
+# Release-format candidates on every platform, installed, with the installed
+# engine's manifest, identity, version and readiness probe checked without any
+# capture (AD-21 in docs/design/copilot-agent-desktop.md). It builds full
+# packages, so it runs on dispatch, as a release gate, not on every pull request.
 'on':
   workflow_dispatch: null
-  push:
-    branches:
-      - codex/computer-use-package-ci
 permissions:
   contents: read
 concurrency:

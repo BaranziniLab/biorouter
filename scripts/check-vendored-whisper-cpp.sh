@@ -29,8 +29,8 @@
 #      examples/) cannot be blessed by regenerating the manifest. Inside the subset it can:
 #      there, a regenerated manifest is a change to review in the diff of
 #      source-manifest.json.
-#   4. No file is gitignored. The Copilot helper's vendored tree, vendor/computer-use/, hit
-#      15 ignored files on its first attempt; an ignored file verifies on the machine that
+#   4. No file is gitignored. The retired Open Computer Use tree (vendor/computer-use/,
+#      removed in 1.94.6) hit 15 ignored files on its first attempt; an ignored file verifies on the machine that
 #      vendored it and never reaches a fresh clone.
 #   5. Every file under source/ is exempt from end-of-line conversion (`-text` in
 #      .gitattributes), or a Windows checkout rewrites bytes nobody edited and the

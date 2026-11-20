@@ -3,7 +3,14 @@
 # The capability is called "Biorouter Copilot" wherever a person can read it. It
 # is NOT "Computer Use" -- that was its previous name -- it is not "Computer
 # Controller" -- that was the previous, removed capability -- and it is not
-# "Codex Computer Use" or "Open Computer Use", which are upstream's.
+# "Codex Computer Use" or "Open Computer Use", which were upstream's.
+#
+# Its engine is agent-desktop (AD-01 in docs/design/copilot-agent-desktop.md), and
+# a person or a model never reads that name either: it may appear only in
+# developer documentation, NOTICE, the vendor tree, build scripts and CI, never in
+# the interface, a consent card, a tool description or model instructions (rule 7).
+# Open Computer Use, the engine before it, was retired in 1.94.6; its name may
+# appear in sources only as retired (rule 3).
 #
 # The file is still named check-computer-use-naming.sh, and the workflow step
 # that runs it is still matched by that path in AGENTS.md, the
@@ -25,12 +32,12 @@
 #     Title-Case phrase only, so none of them can be caught by accident.
 #   * the generic industry term in lower case ("allow computer use with
 #     {model}"). Same reason: the phrase is matched case-sensitively.
-#   * "BioRouter Computer Use.app", the macOS helper bundle. macOS keys
-#     Accessibility and Screen Recording grants on the bundle identifier and
-#     path, so renaming it would silently revoke every existing user's grants.
-#   * upstream's own name. `vendor/computer-use/`, the vendored
-#     `OpenComputerUse*` sources and the NOTICE file that attributes them are the
-#     upstream project's identity, and the licence requires that attribution.
+#   * "BioRouter Computer Use.app", the retired engine's macOS bundle. Only the
+#     migration that ends a copy of it still running after an update names it
+#     (AD-19), by its exact path. The engine's bundle is "Biorouter Copilot.app".
+#   * upstream's own name. `vendor/agent-desktop/`, its sources and the NOTICE
+#     file that attributes them are the upstream project's identity, and the
+#     licence requires that attribution.
 #   * migration copy that names an OLD name AS old, e.g. "This legacy Computer
 #     Controller tool was removed" or "formerly Computer Use". Telling a user
 #     what their old thing was called is the entire point of that message, so
@@ -155,12 +162,13 @@ if [ -n "$offenders" ]; then
   status=1
 fi
 
-# 3. Upstream's name presented as ours. Attribution lives in the NOTICE file and
-#    under third_party/, both excluded above.
+# 3. The retired engine (AD-18). Open Computer Use left Biorouter in 1.94.6, so a
+#    source may name it only as retired, former or replaced: migration code that
+#    ends a copy still running after an update, or a refusal of its old arguments.
 offenders=$(printf '%s\n' "$sources" | xargs grep -n 'Open Computer Use' 2>/dev/null \
-  | grep -vi 'includes\|upstream\|third.party\|attribut\|pinned\|based on' || true)
+  | grep -viE 'retired|former|replaced|previous|legacy' || true)
 if [ -n "$offenders" ]; then
-  echo "Biorouter Copilot naming: 'Open Computer Use' is upstream's name; attribute it, do not adopt it:" >&2
+  echo "Biorouter Copilot naming: Open Computer Use was retired in 1.94.6; name it only as retired:" >&2
   printf '%s\n' "$offenders" | strip_prefix >&2
   status=1
 fi
@@ -224,6 +232,26 @@ prompt_sources=$(git ls-files crates/biorouter/src/prompts crates/biorouter/src/
 offenders=$(printf '%s\n' "$prompt_sources" | xargs grep -niE 'computer[[:space:]-]*controller|open[[:space:]]+computer[[:space:]]+use' 2>/dev/null || true)
 if [ -n "$offenders" ]; then
   echo "Biorouter Copilot naming: agent-facing prompts must name the capability only as Biorouter Copilot:" >&2
+  printf '%s\n' "$offenders" >&2
+  status=1
+fi
+
+# 7. The engine's name never reaches a person or a model (AD-08, AD-18): not in
+#    the interface, not in a prompt or built-in skill. Comments are code, not
+#    copy, so lines that are comments are left out, and so is a link to the design
+#    document, whose file name carries the engine's name. Tool descriptions and
+#    the server instructions are held to the same rule by a unit test in
+#    computer_use/contract.rs (every_tool_description_and_the_instructions_never_name_the_engine).
+copy_sources=$(git ls-files 'ui/desktop/src/*.ts' 'ui/desktop/src/*.tsx' \
+  crates/biorouter/src/prompts crates/biorouter/src/agents/builtin_skills \
+  | grep -v '^ui/desktop/src/web/' | grep -v '^ui/desktop/src/api/' \
+  | grep -vE '\.test\.tsx?$')
+offenders=$(printf '%s\n' "$copy_sources" | xargs grep -niE 'agent[ -]desktop' 2>/dev/null \
+  | grep -vE '^[^:]+:[0-9]+:[[:space:]]*(//|\*|/\*|\{/\*|#)' \
+  | grep -v 'copilot-agent-desktop\.md' || true)
+if [ -n "$offenders" ]; then
+  echo "Biorouter Copilot naming: the engine's name (agent-desktop) is for developers only;" >&2
+  echo "a person and a model read 'Biorouter Copilot':" >&2
   printf '%s\n' "$offenders" >&2
   status=1
 fi

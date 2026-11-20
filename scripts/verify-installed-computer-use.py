@@ -386,7 +386,7 @@ def check(cli, helper, target, expected_status, expected_backends, report_path):
     agents = owned_app_agents(helper / manifest['executable']) if sys.platform == 'darwin' else nullcontext()
     with agents, tempfile.TemporaryDirectory(prefix='biorouter-installed-check-') as isolated:
         env = dict(os.environ, BIOROUTER_PATH_ROOT=isolated, BIOROUTER_DISABLE_KEYRING='true')
-        for key in ['BIOROUTER_COMPUTER_USE_DIR', 'OPEN_COMPUTER_USE_DISABLE_APP_AGENT_PROXY']:
+        for key in ['BIOROUTER_COMPUTER_USE_DIR']:
             env.pop(key, None)
         # `report_path.parent` is `target/package-acceptance/`, which the
         # workflow uploads with `if-no-files-found: error`. The isolated dir

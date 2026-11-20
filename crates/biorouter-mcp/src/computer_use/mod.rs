@@ -11,6 +11,7 @@ mod linux;
 pub mod manifest;
 mod plan;
 mod render;
+pub mod retired;
 mod runner;
 #[cfg(windows)]
 mod windows_job;
