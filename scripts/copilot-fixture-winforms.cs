@@ -192,11 +192,15 @@ public static class BiorouterCopilotFixture
             source.DoDragDrop(DragText, DragDropEffects.Copy);
         };
 
+        // 60 rows (1,500 characters) still scroll in this 260 px box, and the text stays under the
+        // 2,048 characters agent-desktop's Windows adapter reads a value up to. A longer value is
+        // read as unknown, and a text field whose value is unknown is never proven unique, so every
+        // reference to it is refused (AMBIGUOUS_TARGET, identity_not_unique) and scroll never runs.
         var scroller = new TextBox();
         scroller.Name = "FixtureScroll"; scroller.AccessibleName = "FixtureScroll";
         scroller.Multiline = true; scroller.ReadOnly = true; scroller.ScrollBars = ScrollBars.Vertical;
         var lines = new StringBuilder();
-        for (int i = 0; i < 400; i++) lines.AppendFormat("Fixture scroll row {0:0000}\r\n", i);
+        for (int i = 0; i < 60; i++) lines.AppendFormat("Fixture scroll row {0:0000}\r\n", i);
         scroller.Text = lines.ToString();
         scroller.SetBounds(20, 306, 460, 260);
 

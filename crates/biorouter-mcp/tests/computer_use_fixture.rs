@@ -451,8 +451,10 @@ async fn copilot_drives_the_fixture_app_through_its_own_tools() {
     fixture.expect("dropped", json!(DRAG_TEXT)).await;
     println!("PASS drag between windows: the dragged text lands in the other window");
 
-    // Scroll a long text by reference. A snapshot that could not prove its references unique
-    // in time is refused as ambiguous, and the advice is to observe again: do that, twice at most.
+    // Scroll a long text by reference. A snapshot that could not read the window in full in time
+    // says so, its references may be refused as ambiguous, and the advice is to observe again: do
+    // that, twice at most. Any other ambiguous refusal is refused again by every observation (on
+    // Windows, a text field whose text the engine cannot compare), so it fails here at once.
     let mut attempt = 0;
     loop {
         let window = copilot
@@ -474,8 +476,10 @@ async fn copilot_drives_the_fixture_app_through_its_own_tools() {
         }
         println!("scroll refused on attempt {attempt}; the whole observation was:\n{window}");
         attempt += 1;
+        let read_in_part = window.contains("could not be read in full")
+            || window.contains("answered only part of its window");
         assert!(
-            scrolled.text.contains("AMBIGUOUS_TARGET") && attempt < 3,
+            scrolled.text.contains("AMBIGUOUS_TARGET") && read_in_part && attempt < 3,
             "scroll was refused: {}",
             scrolled.text
         );

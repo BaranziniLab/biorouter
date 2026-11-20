@@ -35,6 +35,9 @@ window, "Biorouter Copilot Fixture Drop", holds a text field `FixtureDrop` that 
 text. The state file records the field, what was applied, the checkbox, the password field's
 length (never its text), the list order, the dropped text, the scroll position and whether the
 pointer's left button is down; the Windows fixture also records any console window that appeared.
+The Windows fixture's long text is 60 rows, 1,500 characters: agent-desktop's Windows adapter reads
+a value longer than 2,048 characters as unknown, and a text field whose value is unknown is never
+proven unique, so every reference to it is refused as `AMBIGUOUS_TARGET` (`identity_not_unique`).
 
 ## What a drive checks
 
