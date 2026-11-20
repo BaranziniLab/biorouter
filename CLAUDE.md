@@ -1514,7 +1514,13 @@ value's *location* is as load-bearing as the number.
   a time, and it hangs above the composer card. That is the app's one pointer
   rule, "hover peeks, click pins" (`design.md` D-43; `docs/desktop-ui/shared-controls.md`,
   "Hover and click"). A new readout uses that card, never a `Tooltip`
-  (`docs/desktop-ui/shared-controls.md`, "Composer footer cards").
+  (`docs/desktop-ui/shared-controls.md`, "Composer footer cards"). The working
+  folder is a control, not a readout (owner, 2026-11-19): like the model chip, its
+  hover shows the dark label `Tooltip` and its click does the job in one step,
+  opening the folder chooser while the chat is empty; once the chat has a message
+  the folder is fixed, the click opens the folder access card instead, and the
+  daemon refuses a working-folder change (`docs/desktop-ui/shared-controls.md`,
+  "The folder chip").
   The card's classes live in one module,
   `composer/composerCard.ts`, and Home renders the
   same `ChatInput`, so the two never differ. Its surface,
