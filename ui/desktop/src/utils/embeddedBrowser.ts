@@ -1247,7 +1247,7 @@ export function createEmbeddedBrowser(
 
   if (managed) {
     entry.releaseManagedView = managed.onRevoke(() => {
-      entry.error = 
+      entry.error =
         'The application backend stopped. Reopen the application after the backend restarts.';
       pushState(entry);
       destroyEmbeddedBrowser(window, viewId);
