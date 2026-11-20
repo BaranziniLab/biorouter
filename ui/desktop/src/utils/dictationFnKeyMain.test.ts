@@ -46,8 +46,10 @@ describe('the fn key setting', () => {
   });
 
   it('starts the helper with no environment, and stops it and the indicator at quit', () => {
+    // windowsHide is stated for the console-window census, which reads every
+    // spawn site without knowing this helper is macOS-only.
     expect(source).toContain(
-      "spawn: (file) => spawn(file, [], { stdio: ['pipe', 'pipe', 'ignore'], env: {} })"
+      "spawn(file, [], { stdio: ['pipe', 'pipe', 'ignore'], env: {}, windowsHide: true })"
     );
     const quit = slice("app.on('will-quit', async () => {", 'clearAnywhereReview();');
     expect(quit).toContain('fnKeyService?.dispose();');
