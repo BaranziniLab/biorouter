@@ -2522,6 +2522,8 @@ struct Issue542Reply {
     aborted: bool,
     stored: Vec<Message>,
     effect: String,
+    /// The text of every user-visible message the reply yielded to the client.
+    shown: Vec<String>,
 }
 
 async fn issue_542_reply(provider: Arc<Issue542Provider>) -> Issue542Reply {
@@ -2553,9 +2555,16 @@ async fn issue_542_reply(provider: Arc<Issue542Provider>) -> Issue542Reply {
                 .unwrap();
             tokio::pin!(stream);
             let mut aborted = false;
+            let mut shown = Vec::new();
             tokio::time::timeout(Duration::from_secs(10), async {
                 while let Some(event) = stream.next().await {
-                    aborted |= matches!(event.unwrap(), AgentEvent::TurnAborted { .. });
+                    let event = event.unwrap();
+                    if let AgentEvent::Message(message) = &event {
+                        if message.is_user_visible() {
+                            shown.push(message.as_concat_text());
+                        }
+                    }
+                    aborted |= matches!(event, AgentEvent::TurnAborted { .. });
                 }
             })
             .await
@@ -2574,6 +2583,7 @@ async fn issue_542_reply(provider: Arc<Issue542Provider>) -> Issue542Reply {
                 aborted,
                 stored,
                 effect,
+                shown,
             }
         },
     )
@@ -2592,20 +2602,39 @@ async fn issue_542_empty_and_whitespace_replies_get_one_hidden_corrective_attemp
             .iter()
             .any(|message| message.as_concat_text().contains("finished")));
         let sent = provider.sent.lock().unwrap();
+        // The corrective note's own words (`EMPTY_REPLY_NOTE` in `agents/agent.rs`).
+        const NOTE: &str = "your previous reply was empty";
+        let says_note =
+            |message: &Message| message.as_concat_text().to_ascii_lowercase().contains(NOTE);
         // The request normalizer merges consecutive user turns (Bedrock
         // Converse, for one, requires alternating roles), so when the empty
         // reply answered the person's own message the note reaches the model
-        // inside that turn. What keeps it hidden is the row it is stored as.
+        // inside that turn. What keeps it hidden is the row it is stored as,
+        // and that it is never yielded to the client.
+        assert!(
+            !sent[0].iter().any(says_note),
+            "the first request carries no note"
+        );
+        let carrying: Vec<&Message> = sent[1]
+            .iter()
+            .filter(|message| says_note(message))
+            .collect();
+        assert_eq!(
+            carrying.len(),
+            1,
+            "the retried request carries the note once"
+        );
+        assert_eq!(carrying[0].role, rmcp::model::Role::User);
         assert!(sent[1].iter().any(|message| message
             .as_concat_text()
-            .to_ascii_lowercase()
-            .contains("empty")));
-        assert!(reply.stored.iter().any(|message| !message.is_user_visible()
-            && message.is_agent_visible()
-            && message
-                .as_concat_text()
-                .to_ascii_lowercase()
-                .contains("empty")));
+            .contains("Complete the synthetic task.")));
+        let stored_notes: Vec<&Message> = reply
+            .stored
+            .iter()
+            .filter(|message| says_note(message))
+            .collect();
+        assert_eq!(stored_notes.len(), 1, "the note is stored once");
+        assert!(!stored_notes[0].is_user_visible() && stored_notes[0].is_agent_visible());
         assert!(reply
             .stored
             .iter()
@@ -2614,6 +2643,14 @@ async fn issue_542_empty_and_whitespace_replies_get_one_hidden_corrective_attemp
                 .as_concat_text()
                 .to_ascii_lowercase()
                 .contains("reply was empty")));
+        assert!(
+            reply
+                .shown
+                .iter()
+                .all(|text| !text.to_ascii_lowercase().contains("reply was empty")),
+            "the note never reached the client: {:?}",
+            reply.shown
+        );
     }
 }
 
