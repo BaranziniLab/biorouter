@@ -151,10 +151,13 @@ worth knowing:
   always refused that; the shell now agrees with it.
 - A command that merely *names* a protected file — a commit message, an `echo` into
   `.gitignore`, `ls -l ~/.ssh/id_ed25519` — is refused, because the literal pass sees the name.
-  The literal pass judges each word of a command line, script or prose value. It takes the
-  whole value as one more path only for a path argument or a single word: until issue #522 it
-  also took a whole command line as one path, so `cat config/.env.example | head` was refused
-  because the text after its last `/` matches `.env.*`.
+  The literal pass judges each word of a value, and the whole value as one more path, except
+  for a command line of several words, whose words the resolver reads: until issue #522 it took
+  a whole command line as one path too, so `cat config/.env.example | head` was refused because
+  the text after its last `/` matches `.env.*`. Prose keeps the whole-value candidate, because an
+  unknown tool may take a path with spaces (`/keys/My Server.pem`) under a key that does not
+  look like one, so a template mentioned in prose and followed by more words is still refused
+  there unless the tool is one of those under "Free text" below.
 - A project `.biorouterignore` rule applies to files that do not exist yet: with `*.log` in it,
   `cmd > build.log` is refused.
 

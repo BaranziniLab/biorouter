@@ -1308,6 +1308,12 @@ struct ScannedCall<'a> {
     free_text: Option<FreeTextFields>,
 }
 
+impl<'a> ScannedCall<'a> {
+    fn new(call: &'a CallToolRequestParams, free_text: Option<FreeTextFields>) -> Self {
+        Self { call, free_text }
+    }
+}
+
 /// Sanitizes a string by replacing invalid characters with underscores.
 /// Valid characters match [a-zA-Z0-9_-]
 pub fn normalize(input: &str) -> String {
@@ -3990,10 +3996,7 @@ impl ExtensionManager {
             )
             .await?;
 
-        let scanned = ScannedCall {
-            call: &tool_call,
-            free_text,
-        };
+        let scanned = ScannedCall::new(&tool_call, free_text);
         self.authorize_dispatch_boundaries(session_id, &client_name, &ext_class, cap, scanned)
             .await?;
 

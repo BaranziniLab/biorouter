@@ -460,8 +460,8 @@ impl SecretGuard {
     /// Every string also gets the literal whitespace-token pass the guard has
     /// always made, now without the `exists()` gate. It is IO-free and it is
     /// what keeps this change from permitting anything the old scan refused.
-    /// The whole string is one more literal candidate for a path argument, and
-    /// for any other value only when it is a single word (see [`Whole`]).
+    /// The whole string is one more literal candidate, except for a command
+    /// line of several words, whose words the resolver reads (see [`Whole`]).
     ///
     /// This scan does not know which tool it is reading, so prose keeps the
     /// separator rule even where a tool never opens it. The dispatch boundary,
@@ -617,10 +617,10 @@ impl SecretGuard {
                 return;
             }
         }
-        let whole = if kind == KeyKind::Path {
-            Whole::Always
-        } else {
+        let whole = if kind == KeyKind::Command {
             Whole::OnlyOneWord
+        } else {
+            Whole::Always
         };
         self.legacy_scan(s, pathlike_key, whole, found);
         if found.is_some() || kind != KeyKind::Path {
@@ -752,13 +752,16 @@ impl From<resolve::Finding> for DeniedAccess {
 /// Whether [`SecretGuard::legacy_scan`] also takes the whole string as one
 /// path.
 ///
-/// A path argument can hold spaces, so its whole value is one candidate. A
-/// command line, a script or prose is several words: each word is a candidate
-/// of its own (and a command is also read by the resolver, which keeps a
-/// quoted path with spaces together), while the whole text names no file. It
-/// used to be judged as one anyway, which refused `cat config/.env.example |
-/// head` because the text after its last `/`, `.env.example | head`, matches
+/// A command line or a script is several words. Each word is a candidate of
+/// its own, and the resolver reads the command as the shell will, keeping a
+/// quoted path with spaces together, so the whole line names no file. It used
+/// to be judged as one anyway, which refused `cat config/.env.example | head`
+/// because the text after its last `/`, `.env.example | head`, matches
 /// `**/.env.*` (issue #522). Every word of it is still judged.
+///
+/// Any other value keeps the whole-string candidate: a path argument can hold
+/// spaces, and so can a path an unknown tool takes under a key that does not
+/// look like one (`/keys/My Server.pem`), where no single word matches.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Whole {
     Always,
@@ -2367,7 +2370,7 @@ mod issue522_guard_tests {
             );
             for benign in [
                 "configuration/notes.md copy still needs the user",
-                "configuration/.env.example copy still needs the user",
+                "the user still copies configuration/.env.example",
             ] {
                 let args = serde_json::Map::from_iter([(key.to_string(), json!(benign))]);
                 assert!(
@@ -2579,6 +2582,18 @@ mod issue522_template_resolution {
                     .is_some(),
                 "{command}"
             );
+        }
+    }
+
+    /// Only a command line loses the whole-string candidate: an unknown tool
+    /// may take a path with spaces under a key that does not look like one.
+    #[test]
+    fn issue522_prose_keeps_the_whole_value_as_one_candidate() {
+        let root = tempfile::tempdir().unwrap();
+        let guard = SecretGuard::for_dir(root.path());
+        for value in ["/keys/My Server.pem", "config/.env.example copy"] {
+            let args = serde_json::Map::from_iter([("attachment".to_string(), json!(value))]);
+            assert!(guard.find_denied_access(&args).is_some(), "{value}");
         }
     }
 
