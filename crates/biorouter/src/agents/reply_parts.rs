@@ -252,6 +252,7 @@ pub(super) fn attach_effective_tool_rosters(
     available_tools: &[Tool],
     directly_callable_tools: &[Tool],
 ) {
+    let browser_offered = browser_tools_offered(available_tools);
     for info in extensions_info {
         info.tool_roster_known = true;
         let prefix = format!("{}__", info.name);
@@ -320,6 +321,45 @@ pub(super) fn attach_effective_tool_rosters(
         {
             info.instructions =
                 crate::agents::skills_extension::instructions_for_operations(&info.available_tools);
+        }
+        // AD-16: Copilot's instructions send web pages to the Biorouter Browser's tools, which
+        // this roster may not offer (a subagent, a scheduled run, the CLI, `serve`, a chat that
+        // switched the browser off). Worded for the roster, as the arms above are.
+        if info.name == COPILOT_EXTENSION_KEY {
+            info.instructions = biorouter_mcp::computer_use::contract::routing_for_roster(
+                &info.instructions,
+                browser_offered,
+            );
+        }
+    }
+}
+
+/// Biorouter Copilot's extension key, kept from its legacy name for saved configuration.
+const COPILOT_EXTENSION_KEY: &str = "computercontroller";
+
+fn browser_tools_offered(tools: &[Tool]) -> bool {
+    tools
+        .iter()
+        .any(|tool| crate::security::browser_use::is_reserved_browser_name(&tool.name))
+}
+
+/// AD-16 for the tool list itself: Copilot's `get_app_state` description points at
+/// `browser_open`. Worded for the roster the model is given, so a roster with no browser tool
+/// does not name one. Pass the whole roster, never one extension's slice.
+pub(crate) fn route_copilot_for_roster(tools: &mut [Tool]) {
+    let browser_offered = browser_tools_offered(tools);
+    let prefix = format!("{COPILOT_EXTENSION_KEY}__");
+    for tool in tools
+        .iter_mut()
+        .filter(|tool| tool.name.starts_with(&prefix))
+    {
+        let routed = tool.description.as_deref().map(|description| {
+            biorouter_mcp::computer_use::contract::routing_for_roster(description, browser_offered)
+        });
+        if let Some(routed) = routed {
+            if tool.description.as_deref() != Some(routed.as_str()) {
+                tool.description = Some(routed.into());
+            }
         }
     }
 }
@@ -1836,6 +1876,56 @@ mod tests {
     /// `searchSkills` + `loadSkill` read instructions for five more operations
     /// and called tools that answer with a refusal. Nothing else catches it:
     /// the roster is correct, the dispatch is correct, and only the prompt lies.
+    /// AD-16: Copilot's instructions and its `get_app_state` description send web pages to the
+    /// Biorouter Browser's tools. Where the roster offers none (a subagent, a scheduled run, the
+    /// CLI, `serve`, a chat that switched the browser off), both say the same rule without
+    /// naming them; where it offers them, both are unchanged.
+    #[test]
+    fn copilot_names_browser_tools_only_where_the_roster_offers_them() {
+        use crate::agents::extension::ExtensionInfo;
+        use biorouter_mcp::computer_use::contract;
+
+        let copilot_tools = || {
+            contract::tools()
+                .into_iter()
+                .map(|mut tool| {
+                    tool.name = format!("computercontroller__{}", tool.name).into();
+                    tool
+                })
+                .collect::<Vec<Tool>>()
+        };
+        let browser = Tool::new("browser__browser_open", "open", object!({"type": "object"}));
+        let prose = |tools: &[Tool]| {
+            let mut entries = vec![ExtensionInfo::capability(
+                "computercontroller",
+                &contract::instructions(),
+                false,
+            )];
+            attach_effective_tool_rosters(&mut entries, tools, tools);
+            entries.remove(0).instructions
+        };
+        let description = |tools: &[Tool]| {
+            let mut tools = tools.to_vec();
+            route_copilot_for_roster(&mut tools);
+            tools
+                .into_iter()
+                .find(|tool| tool.name == "computercontroller__get_app_state")
+                .and_then(|tool| tool.description)
+                .unwrap()
+                .to_string()
+        };
+
+        let without = copilot_tools();
+        let mut with = copilot_tools();
+        with.push(browser);
+        assert!(!prose(&without).contains("browser_"), "{}", prose(&without));
+        assert!(prose(&without).contains(contract::ROUTING_SENTENCE_WITHOUT_BROWSER));
+        assert!(!description(&without).contains("browser_"));
+        assert_eq!(prose(&with), contract::instructions());
+        assert!(description(&with).contains("for a web page use browser_open"));
+        assert!(description(&with).contains(contract::ROUTING_SENTENCE));
+    }
+
     #[test]
     fn the_skills_capability_advertises_only_the_operations_this_conversation_can_call() {
         use crate::agents::extension::ExtensionInfo;

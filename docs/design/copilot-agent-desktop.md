@@ -669,6 +669,14 @@ The first clause of the two tools a model reads first carries the route: `browse
 native apps or the person's own browser window") and `get_app_state` ("native applications; for a
 web page use browser_open").
 
+Where the model is offered no `browser_*` tool (a subagent, a scheduled run, the CLI in its own
+process, `biorouter serve`, or a chat that switched the browser off), Copilot's instructions, the
+`get_app_state` description and `system.md` keep the rule without naming those tools: they say the
+browser is not offered in this chat and send the plain text of a public page to `webdocuments`
+`web_scrape` (`ROUTING_SENTENCE_WITHOUT_BROWSER`, applied by `contract::routing_for_roster` to
+the roster the model is given). `system.md`'s Biorouter Browser section is left out there too. The
+three prompt snapshots list no browser, so they show that form.
+
 ### Biorouter's own window is refused, not only discouraged
 
 The browser design left Copilot on Biorouter's window as guidance, because a Copilot grant is the

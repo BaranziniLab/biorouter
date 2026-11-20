@@ -216,6 +216,10 @@ struct SystemPromptContext {
     extension_resource_tools_directly_callable: bool,
     skill_load_available: bool,
     knowledge_search_available: bool,
+    /// The Biorouter Browser's tools are on the roster, so the Copilot section may send web
+    /// pages to them (AD-16). False in a subagent, a scheduled run, the CLI, `serve`, or a chat
+    /// that switched the browser off.
+    browser_tools_available: bool,
     developer_shell_available: bool,
     developer_text_editor_available: bool,
     /// The tool is on the model's OWN tool list this turn, as opposed to
@@ -626,6 +630,7 @@ fn build_system_prompt_context(
             && capability_has_direct_tool(&capabilities, "extensionmanager", "read_resource");
     let skill_load_available = capability_has_tool(&capabilities, "skills", "loadSkill");
     let knowledge_search_available = capability_has_tool(&capabilities, "knowledge", "kb_search");
+    let browser_tools_available = capability_has_tool(&capabilities, "browser", "browser_open");
 
     let developer_shell_available = capability_has_tool(&capabilities, "developer", "shell");
     let developer_text_editor_available =
@@ -671,6 +676,7 @@ fn build_system_prompt_context(
         extension_resource_tools_directly_callable,
         skill_load_available,
         knowledge_search_available,
+        browser_tools_available,
         current_date_time: manager.fixed_timestamp.clone().unwrap_or(live_clock),
         biorouter_mode,
         is_autonomous: biorouter_mode == BioRouterMode::Auto,
@@ -1523,6 +1529,42 @@ mod tests {
             .with_extension(capability_with_tools("knowledge", &["kb_search"]))
             .build();
         assert!(knowledge_with_search.contains("built-in **Soul**"));
+    }
+
+    /// AD-16: the Copilot section sends web pages to the Biorouter Browser's tools only where
+    /// the roster offers them. A subagent, a scheduled run, the CLI or `serve` gets the same
+    /// rule without a pointer to tools it does not have, and no Browser section.
+    #[test]
+    fn the_copilot_section_names_browser_tools_only_where_they_are_offered() {
+        let manager = PromptManager::with_timestamp(DateTime::<Utc>::from_timestamp(0, 0).unwrap());
+        let copilot = || capability_with_tools("computercontroller", &["get_app_state"]);
+
+        let with_browser = manager
+            .builder()
+            .with_extension(copilot())
+            .with_extension(capability_with_tools("browser", &["browser_open"]))
+            .build();
+        assert!(
+            with_browser.contains("use the Biorouter Browser\n(browser_* tools)"),
+            "{with_browser}"
+        );
+        assert!(with_browser.contains("## Biorouter Browser"));
+
+        for unavailable in [
+            vec![copilot()],
+            vec![copilot(), capability_with_tools("browser", &[])],
+        ] {
+            let prompt = manager
+                .builder()
+                .with_extensions(unavailable.into_iter())
+                .build();
+            assert!(!prompt.contains("browser_*"), "{prompt}");
+            assert!(!prompt.contains("## Biorouter Browser"), "{prompt}");
+            assert!(
+                prompt.contains("The\nBiorouter Browser is not offered in this chat"),
+                "{prompt}"
+            );
+        }
     }
 
     #[test]

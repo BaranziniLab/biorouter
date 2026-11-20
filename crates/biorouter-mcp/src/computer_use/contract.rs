@@ -32,6 +32,37 @@ and file dialogs on this computer. For anything on a web page (open, search, rea
 drag, download) use the Biorouter Browser (browser_* tools). Use Copilot on a web browser only \
 when the person asks for their own browser window, tabs or profile.";
 
+/// AD-16 where the model is offered no `browser_*` tool: a subagent, a scheduled run, the CLI in
+/// its own process, `biorouter serve`, or a chat that switched the browser off. The same rule,
+/// without sending the model to tools it does not have.
+pub const ROUTING_SENTENCE_WITHOUT_BROWSER: &str = "Biorouter Copilot operates native apps, the \
+operating system and file dialogs on this computer. The Biorouter Browser is not offered in this \
+chat: for the plain text of a public page use webdocuments web_scrape, or tell the person the \
+browser is not available here. Use Copilot on a web browser only when the person asks for their \
+own browser window, tabs or profile.";
+
+/// `get_app_state`'s pointer to the browser, and its form where no browser tool is offered.
+const WEB_PAGE_HINT: &str = "Native applications only; for a web page use browser_open.";
+const WEB_PAGE_HINT_WITHOUT_BROWSER: &str = "Native applications only.";
+
+/// Copilot's text (its instructions or a tool's description) worded for a roster that does, or
+/// does not, offer the Biorouter Browser's tools. Each wording maps onto the other, so text
+/// already worded for either roster can be passed again.
+pub fn routing_for_roster(text: &str, browser_offered: bool) -> String {
+    [
+        (ROUTING_SENTENCE, ROUTING_SENTENCE_WITHOUT_BROWSER),
+        (WEB_PAGE_HINT, WEB_PAGE_HINT_WITHOUT_BROWSER),
+    ]
+    .into_iter()
+    .fold(text.to_owned(), |text, (with, without)| {
+        if browser_offered {
+            text.replace(without, with)
+        } else {
+            text.replace(with, without)
+        }
+    })
+}
+
 /// What Copilot can never touch, said the same way in the instructions and in refusals.
 pub const NOT_CONTROLLABLE_SENTENCE: &str = "Biorouter's own windows, password fields and system \
 security prompts are not controllable. Never launch an app with debugging options and never \
@@ -264,7 +295,7 @@ fn observe_definitions() -> Vec<Definition> {
         ),
         (
             "get_app_state",
-            format!("Observe a native application's window as lines of references (such as @s1abc:e4), roles, names and values, optionally with a screenshot. Native applications only; for a web page use browser_open. Observe before acting and again after anything changes; act only on references from the latest observation. {ROUTING_SENTENCE}"),
+            format!("Observe a native application's window as lines of references (such as @s1abc:e4), roles, names and values, optionally with a screenshot. {WEB_PAGE_HINT} Observe before acting and again after anything changes; act only on references from the latest observation. {ROUTING_SENTENCE}"),
             json!({
                 "app": app(app_name),
                 "window_id": window_id(),
@@ -489,6 +520,29 @@ mod tests {
         assert!(instructions().starts_with(ROUTING_SENTENCE));
         assert!(ROUTING_SENTENCE.contains("use the Biorouter Browser (browser_* tools)"));
         assert!(ROUTING_SENTENCE.contains("drag"));
+    }
+
+    /// Where the model is offered no `browser_*` tool, Copilot's instructions and its
+    /// `get_app_state` description still route web pages away from Copilot, without naming
+    /// browser tools the model does not have. Both wordings map onto each other.
+    #[test]
+    fn the_route_names_no_browser_tool_where_none_is_offered() {
+        let description = tools()
+            .into_iter()
+            .find(|t| t.name == "get_app_state")
+            .unwrap()
+            .description
+            .unwrap()
+            .to_string();
+        for text in [instructions(), description] {
+            let without = routing_for_roster(&text, false);
+            assert!(!without.contains("browser_"), "{without}");
+            assert!(without.contains(ROUTING_SENTENCE_WITHOUT_BROWSER));
+            assert!(without.contains("their own browser window, tabs or profile"));
+            assert_eq!(routing_for_roster(&without, false), without);
+            assert_eq!(routing_for_roster(&without, true), text);
+            assert_eq!(routing_for_roster(&text, true), text);
+        }
     }
 
     #[test]

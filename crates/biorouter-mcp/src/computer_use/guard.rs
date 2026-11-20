@@ -20,7 +20,8 @@ pub struct AppFacts {
 pub const BIOROUTER_REFUSAL: &str =
     "That is Biorouter itself. Biorouter Copilot never observes or \
 controls Biorouter's own windows, because they show other chats and Biorouter's own approval \
-controls. For a web page use the browser_* tools; otherwise ask the person.";
+controls. For a web page use the browser_* tools where this chat offers them; otherwise ask the \
+person.";
 
 pub const SECURITY_PROMPT_REFUSAL: &str = "That is a system security or password prompt. \
 Biorouter Copilot never observes or controls those; ask the person to answer it themselves.";

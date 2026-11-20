@@ -10897,7 +10897,9 @@ impl Agent {
                 &extension_targets,
             )
             .await;
-        let (tools, granted) = self.keep_a_crew_grants_tool_limit(session_id, tools).await;
+        let (mut tools, granted) = self.keep_a_crew_grants_tool_limit(session_id, tools).await;
+        // The bridge's own roster decides how Copilot's `get_app_state` names the browser.
+        crate::agents::reply_parts::route_copilot_for_roster(&mut tools);
         // Gate B-1 refuses a granted chat both, so the plan holds neither.
         let delegation_available = delegation_available && !granted;
         let bug_report_available = bug_report_available && !granted;
@@ -12143,8 +12145,15 @@ impl Agent {
     /// schemas. Every model-facing caller — the turn's tool list, a subagent's,
     /// the prompt builders — uses this one.
     pub async fn list_tools(&self, session_id: &str, extension_name: Option<String>) -> Vec<Tool> {
-        self.list_tools_for(session_id, extension_name, ToolAudience::Model)
-            .await
+        let whole_roster = extension_name.is_none();
+        let mut tools = self
+            .list_tools_for(session_id, extension_name, ToolAudience::Model)
+            .await;
+        // Only the whole list can say whether the browser is offered beside Copilot.
+        if whole_roster {
+            crate::agents::reply_parts::route_copilot_for_roster(&mut tools);
+        }
+        tools
     }
 
     /// The tool list as the PERMISSION EDITOR will show it — Settings →
