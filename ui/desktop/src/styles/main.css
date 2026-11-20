@@ -4795,7 +4795,44 @@ body:has(.biorouter-modal-surface [data-slot='select-content'][data-state='open'
 .biorouter-modal-surface.br-knowledge-drawer > .br-knowledge-pane-header {
   background-color: var(--sidebar);
 }
+/* The drawer keeps its rounded corners under that band. The modal surface rounds every corner on
+   `--radius-container`, but the header's ground is square and painted over the top-left one, so a
+   drawer was rounded at the foot and square at the head (owner, 2026-11-19). Clipping to the
+   surface's own shape is what the node and edge cards already do (`overflow-hidden` beside their
+   `rounded-container`); every list inside a drawer scrolls in its own box, so nothing needs to
+   overflow it. */
+.br-knowledge-drawer {
+  overflow: hidden;
+}
 /* @ws WS-KNOWLEDGE end: pane header */
+
+/* @ws WS-KNOWLEDGE begin: graph canvas */
+/* The graph canvas is an inset panel (owner, 2026-11-19): 16px in from the graph column's sides
+   and foot, on `--radius-container`, the Sources dropzone's own inset (the rail's `p-4`) and its
+   own corner, so the workspace reads as rounded panels on the page ground. It used to run flush to
+   the column's edges as a square fill with a hairline across its top, the one square shape on the
+   page. Under the facet strip (`data-below-strip`) it starts at the strip's foot, which centres
+   the 32px controls between the band and the canvas, 6px either side; with no strip above it (an
+   empty base, an error, the first load) it keeps 16px on all four sides, like the dropzone. The
+   `overflow: hidden` beside it (a utility on the element) clips the graph, the node and edge
+   cards and the loading layers to the corner.
+   Authored, because the inset and the corner are the fix and must not depend on class scanning.
+   Measured in `knowledge/knowledgeCanvas.browser.test.tsx`. */
+.br-knowledge-canvas {
+  margin: 16px;
+  border-radius: var(--radius-container);
+}
+
+.br-knowledge-canvas[data-below-strip='true'] {
+  margin-top: 0;
+}
+
+/* The canvas's focusable box (`ForceGraphCanvas`) takes the same corner, so its inset focus ring
+   runs round the corner instead of being cut off by the canvas's clip. */
+.br-knowledge-graph-surface {
+  border-radius: var(--radius-container);
+}
+/* @ws WS-KNOWLEDGE end: graph canvas */
 
 @container br-knowledge-pane (min-width: 860px) {
   .br-knowledge-tabs {

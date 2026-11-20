@@ -688,10 +688,13 @@ export function IngestPanel() {
           came to mount underneath it and read as a dead button. As a flex
           sibling of the scroller it occupies its own space and can occlude
           nothing, which is why the runtime footer-inset measurement this file
-          used to carry is gone. */}
+          used to carry is gone.
+          Its rule is inset 16px like everything else in the rail (`mx-4`, owner
+          2026-11-19): full width it ran into the 16px of air beside the graph
+          canvas and ended there, a line ending nowhere. */}
       <div
         ref={footerRef}
-        className="flex-none border-t border-border-subtle bg-background-default p-4"
+        className="mx-4 flex-none border-t border-border-subtle bg-background-default py-4"
       >
         {/* One column the width of the rail, and no wider than a button needs to be (V3-12): on the
             narrow Sources tab the rail is the whole pane, and a full-width coral bar was the heaviest

@@ -132,8 +132,10 @@ export function GraphFacetStrip({ model, mode, facets, onChange, passing, total,
     <div
       data-testid="knowledge-graph-facets"
       // 44px, the band height every strip in the app shares (spec 3.12), not a
-      // fourth height of its own.
-      className="flex h-chrome flex-none items-center gap-2 border-b border-border-subtle bg-background-default px-4"
+      // fourth height of its own. No bottom rule: the canvas under it is an inset
+      // rounded fill, so the fill and the air divide the two (design.md 9.11), and a
+      // hairline there ran along the canvas's top edge (owner, 2026-11-19).
+      className="flex h-chrome flex-none items-center gap-2 bg-background-default px-4"
     >
       {/* ⚠ **NOTHING SCROLLS AND NOTHING WRAPS** (R-09). This row used to be an
           `overflow-x-auto` scroller, and the failure it produced is on record:

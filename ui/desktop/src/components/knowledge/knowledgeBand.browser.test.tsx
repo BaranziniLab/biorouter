@@ -40,6 +40,7 @@ const TOKENS = `:root {
   --background-medium: #ecece9;
   --background-muted: #f4f4f2;
   --radius-inner: 4px;
+  --radius-container: 12px;
   --dur-fast-min: 95ms;
   --ease-out: cubic-bezier(0.24, 1, 0.4, 1);
 }
@@ -98,6 +99,24 @@ function paneHeaderCss(): string {
     '/* @ws WS-KNOWLEDGE begin: pane header */',
     '/* @ws WS-KNOWLEDGE end: pane header */'
   );
+}
+
+/** The rule that opens at `begin` in `main.css`, through its matching brace. */
+function block(main: string, begin: string): string {
+  const from = main.indexOf(begin);
+  if (from < 0) throw new Error(`block not found in main.css: ${begin}`);
+  let depth = 0;
+  for (let at = main.indexOf('{', from); at < main.length; at++) {
+    if (main[at] === '{') depth++;
+    if (main[at] === '}' && --depth === 0) return main.slice(from, at + 1);
+  }
+  throw new Error(`unbalanced block in main.css: ${begin}`);
+}
+
+/** The modal surface itself: the ground, the hairline edge and the container corner every sheet has. */
+function modalSurfaceShapeCss(): string {
+  const main = readFileSync(resolve(here, '../../styles/main.css'), 'utf8');
+  return block(main, '.biorouter-modal-surface {');
 }
 
 /**
@@ -450,6 +469,47 @@ describe('the Knowledge band in a real layout engine', () => {
       });
       expect(ground.sidebar).not.toBe('rgba(0, 0, 0, 0)');
       expect(ground.header).toBe(ground.sidebar);
+    } finally {
+      await tab.close();
+    }
+  });
+
+  // Owner, 2026-11-19: the modal surface rounds all four corners, and the header band's square
+  // ground painted over the top one, so a drawer was rounded at its foot and square at its head.
+  it('rounds the drawer at its head as at its foot: the header band is clipped to the corner', async (ctx) => {
+    if (!browser) return ctx.skip();
+    const tab = await browser.newPage({ viewport: { width: 800, height: 600 } });
+    try {
+      await tab.setContent(
+        drawerPage(`${modalSurfaceShapeCss()}\n${modalSurfaceCss()}\n${paneHeaderCss()}`)
+      );
+      // A backdrop no surface paints, so whatever shows at a corner is the drawer's own doing.
+      await tab.evaluate(() => {
+        document.body.style.background = '#ff00ff';
+      });
+      const d = (await box(tab, '#drawer'))!;
+      expect(
+        await tab.evaluate(
+          () => getComputedStyle(document.getElementById('drawer')!).borderTopLeftRadius
+        )
+      ).toBe('12px');
+      const pixel = async (x: number, y: number) => {
+        const shot = await tab.screenshot({ clip: { x, y, width: 1, height: 1 } });
+        return tab.evaluate(async (b64) => {
+          const img = new Image();
+          img.src = 'data:image/png;base64,' + b64;
+          await img.decode();
+          const c = document.createElement('canvas');
+          c.width = c.height = 1;
+          const g = c.getContext('2d')!;
+          g.drawImage(img, 0, 0);
+          return Array.from(g.getImageData(0, 0, 1, 1).data.slice(0, 3));
+        }, shot.toString('base64'));
+      };
+      const backdrop = [255, 0, 255];
+      // Just inside each left corner's bounding square, outside its 12px arc.
+      expect(await pixel(d.left + 1, d.bottom - 2), 'foot corner').toEqual(backdrop);
+      expect(await pixel(d.left + 1, d.top + 1), 'head corner').toEqual(backdrop);
     } finally {
       await tab.close();
     }

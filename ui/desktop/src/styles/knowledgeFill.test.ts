@@ -233,11 +233,12 @@ const EDGES: Record<string, string[]> = {
   'KBSelector/KBSelectorMenu.tsx': ['border-border-subtle'], // a rule inside the popover
   'changelog/ChangeLogDrawer.tsx': ['border-border-subtle'], // the pinned filter row over the list
   'lint/LintDrawer.tsx': ['border-border-subtle'], // the pinned counts row over the list
-  'graph/GraphFacetStrip.tsx': ['border-border-subtle'], // the 44px strip's bottom edge
-  'graph/GraphLegend.tsx': ['border-border-subtle', 'border-text-muted'], // the rail's divider; a dashed mark
+  // The facet strip draws no bottom edge and the legend rail no divider: the canvas between them is
+  // an inset rounded fill, so the air and the fill divide them (owner, 2026-11-19).
+  'graph/GraphLegend.tsx': ['border-text-muted'], // a dashed mark
   'graph/NodePreview.tsx': ['border-border-subtle'], // a floating card
   'graph/EdgePreview.tsx': ['border-border-subtle'], // a floating card
-  'graph/ForceGraphCanvas.tsx': ['border-border-subtle'], // a hidden probe that reads the token
+  'graph/ForceGraphCanvas.tsx': ['border-border-subtle'], // a 0-width probe that reads the token
 };
 
 function walk(dir: string): string[] {
