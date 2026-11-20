@@ -1943,6 +1943,14 @@ impl ExtensionManager {
             status.public_model != cap.tier().is_private(),
             "Biorouter Copilot caller differs from the approved model destination"
         );
+        // A call with no live grant raises the card, which only a window holding the chat
+        // shows: refuse now where none does, instead of waiting 900 s for nobody. A grant the
+        // person already gave keeps working for the rest of the request, as before. With no
+        // person at all (a scheduled run, `/agent/call_tool`) `permit_for` refuses with its own
+        // sentence.
+        if status.grant.is_none() && !crate::user_surface::no_human_surface() {
+            computer_use::refuse_unless_a_window_holds(session_id)?;
+        }
         let needed = computer_use::grant_for_call(tool, arguments);
         Ok(Some(
             self.computer_use
@@ -5347,6 +5355,89 @@ mod tests {
         );
     }
 
+    /// A desktop host on which no window holds any chat, answering `browser_route_refusal`
+    /// with its refusal; everything else is `NullServices`. Installing it refuses the Biorouter
+    /// Browser and Biorouter Copilot alike, so a test that does holds both
+    /// `serial(workspace_services)` and Copilot's `test_serial`.
+    struct OffScreenHost(crate::workspace_services::BrowserChannelError);
+
+    #[async_trait::async_trait]
+    impl crate::workspace_services::WorkspaceServices for OffScreenHost {
+        fn gui_attached(&self) -> bool {
+            true
+        }
+        fn layout_snapshot(&self) -> Option<serde_json::Value> {
+            None
+        }
+        fn is_turn_active(&self, session_id: &str) -> bool {
+            crate::workspace_services::NullServices.is_turn_active(session_id)
+        }
+        fn cancel_turn(&self, session_id: &str) -> Option<String> {
+            crate::workspace_services::NullServices.cancel_turn(session_id)
+        }
+        fn begin_turn(
+            &self,
+            session_id: &str,
+            cancel: CancellationToken,
+        ) -> Result<Box<dyn crate::workspace_services::WorkspaceTurnLease>, String> {
+            crate::workspace_services::NullServices.begin_turn(session_id, cancel)
+        }
+        async fn stop_agent(&self, session_id: &str) -> Result<(), String> {
+            crate::workspace_services::NullServices
+                .stop_agent(session_id)
+                .await
+        }
+        async fn start_detached_turn(
+            &self,
+            session_id: &str,
+            message: crate::conversation::message::Message,
+        ) -> Result<String, String> {
+            crate::workspace_services::NullServices
+                .start_detached_turn(session_id, message)
+                .await
+        }
+        async fn start_session(
+            &self,
+            working_dir: std::path::PathBuf,
+            extensions: Option<Vec<String>>,
+            knowledge_bases: Vec<String>,
+            primary: crate::workspace_services::KbPrimaryChoice,
+        ) -> Result<String, String> {
+            crate::workspace_services::NullServices
+                .start_session(working_dir, extensions, knowledge_bases, primary)
+                .await
+        }
+        fn set_knowledge_bases(
+            &self,
+            session_id: &str,
+            kbs: &[String],
+            primary: crate::workspace_services::KbPrimaryChoice,
+        ) -> Result<crate::workspace_services::KbSelectionView, String> {
+            crate::workspace_services::NullServices.set_knowledge_bases(session_id, kbs, primary)
+        }
+        fn knowledge_selection(
+            &self,
+            session_id: &str,
+        ) -> crate::workspace_services::KbSelectionView {
+            crate::workspace_services::NullServices.knowledge_selection(session_id)
+        }
+        async fn gui_command(
+            &self,
+            frame: serde_json::Value,
+            wait_result: bool,
+        ) -> Result<serde_json::Value, String> {
+            crate::workspace_services::NullServices
+                .gui_command(frame, wait_result)
+                .await
+        }
+        fn browser_route_refusal(
+            &self,
+            _session_id: &str,
+        ) -> Option<crate::workspace_services::BrowserChannelError> {
+            Some(self.0.clone())
+        }
+    }
+
     /// BB-10 and BB-17: a chat no window holds (one driven by `biorouter session send` or
     /// `workspace_send_prompt`) is refused at once with the operation's own sentence, and no
     /// consent card is asked for. Before, it parked for the whole 900 s approval wait for a
@@ -5358,84 +5449,17 @@ mod tests {
         use crate::privacy::ProviderTier;
         use crate::providers::base::{Provider, ProviderMetadata, ProviderUsage};
         use crate::security::browser_use::BrowserGrant;
-        use crate::workspace_services::{
-            BrowserChannelError, KbPrimaryChoice, KbSelectionView, NullServices, WorkspaceServices,
-            WorkspaceTurnLease,
-        };
+        use crate::workspace_services::{BrowserChannelError, NullServices};
 
+        // The host below refuses Copilot too, so no Copilot test may run beside it.
+        let _copilot = crate::security::computer_use::tests::test_serial()
+            .lock()
+            .await;
         struct Overrides;
         impl Drop for Overrides {
             fn drop(&mut self) {
                 crate::workspace_services::clear_test_override();
                 crate::agents::browser_extension::set_available_for_tests(None);
-            }
-        }
-
-        /// A desktop host on which no window holds the chat; everything else is
-        /// `NullServices`.
-        struct Unseen;
-        #[async_trait::async_trait]
-        impl WorkspaceServices for Unseen {
-            fn gui_attached(&self) -> bool {
-                true
-            }
-            fn layout_snapshot(&self) -> Option<serde_json::Value> {
-                None
-            }
-            fn is_turn_active(&self, session_id: &str) -> bool {
-                NullServices.is_turn_active(session_id)
-            }
-            fn cancel_turn(&self, session_id: &str) -> Option<String> {
-                NullServices.cancel_turn(session_id)
-            }
-            fn begin_turn(
-                &self,
-                session_id: &str,
-                cancel: CancellationToken,
-            ) -> Result<Box<dyn WorkspaceTurnLease>, String> {
-                NullServices.begin_turn(session_id, cancel)
-            }
-            async fn stop_agent(&self, session_id: &str) -> Result<(), String> {
-                NullServices.stop_agent(session_id).await
-            }
-            async fn start_detached_turn(
-                &self,
-                session_id: &str,
-                message: crate::conversation::message::Message,
-            ) -> Result<String, String> {
-                NullServices.start_detached_turn(session_id, message).await
-            }
-            async fn start_session(
-                &self,
-                working_dir: std::path::PathBuf,
-                extensions: Option<Vec<String>>,
-                knowledge_bases: Vec<String>,
-                primary: KbPrimaryChoice,
-            ) -> Result<String, String> {
-                NullServices
-                    .start_session(working_dir, extensions, knowledge_bases, primary)
-                    .await
-            }
-            fn set_knowledge_bases(
-                &self,
-                session_id: &str,
-                kbs: &[String],
-                primary: KbPrimaryChoice,
-            ) -> Result<KbSelectionView, String> {
-                NullServices.set_knowledge_bases(session_id, kbs, primary)
-            }
-            fn knowledge_selection(&self, session_id: &str) -> KbSelectionView {
-                NullServices.knowledge_selection(session_id)
-            }
-            async fn gui_command(
-                &self,
-                frame: serde_json::Value,
-                wait_result: bool,
-            ) -> Result<serde_json::Value, String> {
-                NullServices.gui_command(frame, wait_result).await
-            }
-            fn browser_route_refusal(&self, _session_id: &str) -> Option<BrowserChannelError> {
-                Some(BrowserChannelError::ChatNotOnScreen)
             }
         }
 
@@ -5496,7 +5520,9 @@ mod tests {
         let cap = crate::privacy::CallCapability::for_test_restricted();
         let cancel = CancellationToken::new();
         crate::agents::browser_extension::set_available_for_tests(Some(true));
-        crate::workspace_services::set_for_tests(Some(Arc::new(Unseen)));
+        crate::workspace_services::set_for_tests(Some(Arc::new(OffScreenHost(
+            BrowserChannelError::ChatNotOnScreen,
+        ))));
         let _overrides = Overrides;
         // A request is running and bound to this model, as at the start of a turn, so without
         // the check the call would park for the card.
@@ -11026,6 +11052,100 @@ mod tests {
         );
         let status = manager.computer_use_status("secret-chat").await.unwrap();
         assert!(!status.requested, "no approval card was raised");
+    }
+
+    /// Copilot's card is shown only by a window that holds the chat, so a chat no window holds
+    /// (`biorouter session send`, `workspace_send_prompt`, a subagent whose tab is closed) is
+    /// refused at once and raises no card. Before, the call waited the whole 900 s approval
+    /// wait for an answer nobody could give. A host that cannot tell keeps the wait, and a
+    /// grant the person already gave keeps working when the chat leaves the screen.
+    #[tokio::test]
+    #[serial_test::serial(workspace_services)]
+    async fn a_copilot_call_from_a_chat_no_window_holds_is_refused_before_the_card() {
+        use crate::security::computer_use::{CHAT_NOT_ON_SCREEN, NO_WINDOW};
+        use crate::workspace_services::{BrowserChannelError, NullServices};
+
+        let _serial = crate::security::computer_use::tests::test_serial()
+            .lock()
+            .await;
+        struct Override;
+        impl Drop for Override {
+            fn drop(&mut self) {
+                crate::workspace_services::clear_test_override();
+            }
+        }
+        let _override = Override;
+        let (_dir, manager, _provider) = manager_bound_to(crate::privacy::ProviderTier::Public);
+        let client = Arc::new(GatedMockClient::default());
+        manager
+            .add_mock_extension("computercontroller".into(), client.clone())
+            .await;
+        let _task = manager.computer_use.task_guard();
+        manager.bind_computer_use_task("unseen-chat").await.unwrap();
+        let observe = || {
+            manager.dispatch_tool_call(
+                "unseen-chat",
+                copilot_call("get_app_state", serde_json::json!({"app":"TextEdit"})),
+                crate::privacy::CallCapability::for_test_restricted(),
+                CancellationToken::new(),
+            )
+        };
+
+        for (host, sentence) in [
+            (BrowserChannelError::ChatNotOnScreen, CHAT_NOT_ON_SCREEN),
+            (BrowserChannelError::NoDesktop, NO_WINDOW),
+        ] {
+            crate::workspace_services::set_for_tests(Some(Arc::new(OffScreenHost(host))));
+            let refused = tokio::time::timeout(Duration::from_secs(2), observe())
+                .await
+                .expect("refused at once, not parked for the card")
+                .err()
+                .expect("refused");
+            assert!(refused.to_string().contains(sentence), "{refused}");
+            let status = manager.computer_use_status("unseen-chat").await.unwrap();
+            assert!(!status.requested, "no card was raised");
+            assert!(
+                client.seen_grant.lock().unwrap().is_none(),
+                "nothing reached the desktop"
+            );
+        }
+
+        // Control: a host that cannot tell keeps the wait, so the check was the cause.
+        crate::workspace_services::set_for_tests(Some(Arc::new(NullServices)));
+        let admission = observe();
+        tokio::pin!(admission);
+        assert!(
+            tokio::time::timeout(Duration::from_millis(5), &mut admission)
+                .await
+                .is_err(),
+            "the card is waited for where the host cannot tell"
+        );
+        let status = manager.computer_use_status("unseen-chat").await.unwrap();
+        assert!(status.requested, "the card was raised");
+        manager
+            .approve_computer_use(
+                "unseen-chat",
+                &status.challenge_id,
+                crate::security::computer_use::ComputerUseGrant::Act,
+            )
+            .await
+            .unwrap();
+        let admitted = admission.await.unwrap();
+        client.release.notify_one();
+        admitted.result.await.unwrap();
+
+        // The person allowed it in a window, then the chat left the screen: the grant they
+        // gave still holds for the rest of the request.
+        crate::workspace_services::set_for_tests(Some(Arc::new(OffScreenHost(
+            BrowserChannelError::ChatNotOnScreen,
+        ))));
+        let again = tokio::time::timeout(Duration::from_secs(2), observe())
+            .await
+            .expect("a held grant is not waited for")
+            .expect("a held grant is not refused");
+        client.release.notify_one();
+        again.result.await.unwrap();
+        manager.computer_use.revoke();
     }
 
     /// Stop while a native call is in flight, then let the client answer `Ok`

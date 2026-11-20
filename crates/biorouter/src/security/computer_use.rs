@@ -31,6 +31,34 @@ use crate::agents::types::SharedProvider;
 pub struct ModeForbidsComputerUse;
 
 pub const APPROVAL_REQUIRED: &str = "COMPUTER_USE_APPROVAL_REQUIRED";
+
+/// Said where a call would raise Copilot's card in a chat that no Biorouter window holds: one
+/// driven by `biorouter session send` or `workspace_send_prompt`, a subagent whose tab is not
+/// open, an app's chat. Only a window that holds the chat shows the card.
+pub const CHAT_NOT_ON_SCREEN: &str = "Biorouter Copilot asks the person in this chat before it \
+looks at or controls the desktop, and this chat is not open in a Biorouter window, so nobody can \
+answer. Nothing was done. Ask the person to open this chat and send the request there.";
+
+/// The same, where no Biorouter window is attached to this backend at all.
+pub const NO_WINDOW: &str = "Biorouter Copilot asks the person in this chat before it looks at \
+or controls the desktop, and no Biorouter window is open to ask in. Nothing was done. Tell the \
+person Copilot needs this chat open in Biorouter.";
+
+/// Refuse at once, before a card is raised, when no window holds the chat, by the routing rule
+/// the Biorouter Browser asks (`WorkspaceServices::browser_route_refusal`, BB-10). Without it
+/// such a chat waited the whole 900 s approval wait for a card nobody could see. A host that
+/// cannot tell (the CLI's own process, which asks at its own prompt) keeps the wait.
+pub(crate) fn refuse_unless_a_window_holds(session_id: &str) -> Result<()> {
+    use crate::workspace_services::BrowserChannelError;
+    match crate::workspace_services::get()
+        .and_then(|services| services.browser_route_refusal(session_id))
+    {
+        None => Ok(()),
+        Some(BrowserChannelError::NoDesktop) => bail!(NO_WINDOW),
+        Some(_) => bail!(CHAT_NOT_ON_SCREEN),
+    }
+}
+
 /// Biorouter Copilot's thirteen tools (AD-08), defined once in `biorouter-mcp`.
 pub const TOOLS: &[&str] = &biorouter_mcp::computer_use::contract::TOOL_NAMES;
 

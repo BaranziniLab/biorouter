@@ -215,6 +215,9 @@ pub trait WorkspaceServices: Send + Sync {
     /// answers the wait is shown only by a window that holds the chat, so a chat no window
     /// holds (driven through `/reply` by `biorouter session send` or `workspace_send_prompt`)
     /// parked for the whole 900 s approval wait before the operation was refused anyway.
+    /// Biorouter Copilot asks it too, before raising its card
+    /// (`security::computer_use::refuse_unless_a_window_holds`), because its card is shown the
+    /// same way.
     ///
     /// The default answers `None`, which keeps the wait: a host that cannot tell must not
     /// refuse a call the window might have answered.
