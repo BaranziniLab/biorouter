@@ -65,6 +65,27 @@ describe('the setup popover', () => {
     ).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Retry' }));
     expect(activation.retryActivation).toHaveBeenCalledTimes(1);
+    // Inline in the sentence's own size, so its line is not taller than the others.
+    expect(screen.getByRole('button', { name: 'Retry' })).toHaveClass('h-auto', 'text-supporting');
+  });
+  it('draws the command in an install refusal as code', () => {
+    const status = speechStatus(
+      {
+        active_model: null,
+        install: {
+          allowed: false,
+          reason:
+            'Dictation is not set up on this server. Ask the person who runs it to run `biorouter dictation install`.',
+        },
+      },
+      turbo
+    );
+    render(
+      <SetupPopover status={status} progress={null} onNotNow={vi.fn()} onMoreInSettings={vi.fn()} />
+    );
+    const line = screen.getByText(/Dictation is not set up on this server/);
+    expect(line.textContent).not.toContain('`');
+    expect(line.querySelector('code')).toHaveTextContent('biorouter dictation install');
   });
   it('shows when the server kept a different saved choice', () => {
     activation.savedChoiceDiffered = true;

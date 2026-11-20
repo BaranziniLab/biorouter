@@ -261,7 +261,7 @@ function SpeechModelRows({ status }: { status: DictationStatus }) {
       ) : null}
       {sectionRefusal ? (
         <Note tone="warning" icon={AlertTriangle} testId="speech-install-refusal" className="mb-2">
-          {sectionRefusal}
+          <InlineCodeText text={sectionRefusal} />
         </Note>
       ) : null}
 

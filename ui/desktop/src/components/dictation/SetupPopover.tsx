@@ -174,11 +174,14 @@ export function SetupPopover({ status, progress, onNotNow, onMoreInSettings }: S
         <p className="br-dictation-setup__warning" role="alert">
           {activation.activationFailed
             ? DICTATION_LABELS.activationSaveFailed
-            : DICTATION_LABELS.activationChoicePending}
+            : DICTATION_LABELS.activationChoicePending}{' '}
+          {/* Inline, in the sentence's own size, as the composer's notice actions are: the 14px
+              control rung made the line it sat on taller, or wrapped onto a line of its own. */}
           <Button
             type="button"
             size="xs"
             variant="link"
+            className="h-auto px-0 text-supporting"
             onClick={() => void activation.retryActivation()}
           >
             {activation.activationFailed ? DICTATION_ACTIONS.retry : DICTATION_ACTIONS.saveChoice}
@@ -192,7 +195,7 @@ export function SetupPopover({ status, progress, onNotNow, onMoreInSettings }: S
       ) : null}
       {status && !status.install.allowed && status.install.reason ? (
         <p className="br-dictation-setup__warning" role="status">
-          {status.install.reason}
+          <InlineCodeText text={status.install.reason} />
         </p>
       ) : null}
       {installing && (
