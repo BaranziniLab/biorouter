@@ -255,6 +255,16 @@ async fn writes_are_admitted_for_listable_rows_and_stamped_with_standing() {
     assert!(row("PHD2", EntryTier::Private).is_some());
 }
 
+/// Turn chat suggestions off in the shared store, as the host would at its terminal.
+fn suggestions_off() {
+    dictionary_store::open_store()
+        .write(|file| {
+            file.settings.learn_from_chats = false;
+            Ok(())
+        })
+        .unwrap();
+}
+
 /// DD-38: tier changes are the host's, refused before the id is read; raising the
 /// settings is refused with the option named, and lowering is admitted.
 /// On `serve`, turning suggestions on stays the host's (MSG-DICTIONARY-HOST-SETTINGS), and
@@ -265,6 +275,8 @@ async fn writes_are_admitted_for_listable_rows_and_stamped_with_standing() {
 #[serial]
 async fn suggestions_on_serve_are_turned_on_at_the_terminal_and_scanned_from_the_browser() {
     let app = daemon().await;
+    // A new store has suggestions on (owner, 2026-11-19); the host turned them off.
+    suggestions_off();
     let (status, body) = post(
         &app,
         "/dictionary/settings",
@@ -346,6 +358,9 @@ async fn tier_changes_and_raised_settings_are_the_hosts() {
     }
     assert_eq!(row("EPAS1", EntryTier::Public).unwrap().rev, 1);
 
+    // The add created the store, which starts with suggestions on (owner, 2026-11-19); the
+    // host turned them off, so turning them on is a raise.
+    suggestions_off();
     for (raise, option) in [
         (json!({"agent_writes": "add"}), "--agent-writes add"),
         (json!({"learn_from_chats": true}), "--learn-from-chats on"),

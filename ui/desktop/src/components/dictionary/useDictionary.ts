@@ -492,16 +492,31 @@ export function learnFromChatsGate(settings: DictionarySettings | null): {
   disabled: boolean;
   reason: string | null;
 } {
+  return switchGate(settings, settings?.learn_from_chats === true, '--learn-from-chats on');
+}
+
+/**
+ * The same gate for **Suggest dictionary words from my chats**, the `dictionary` capability:
+ * turning it on is a raise, turning it off always works (DD-56).
+ */
+export function suggestFromChatsGate(settings: DictionarySettings | null): {
+  disabled: boolean;
+  reason: string | null;
+} {
+  return switchGate(settings, settings?.suggest_from_chats === true, '--suggest-from-chats on');
+}
+
+/** A settings switch that is `on` now; `option` fills the reason's `<option>`. */
+function switchGate(
+  settings: DictionarySettings | null,
+  on: boolean,
+  option: string
+): { disabled: boolean; reason: string | null } {
   const authority = settings?.authority ?? null;
   if (!settings || !authority) return { disabled: true, reason: null };
-  if (settings.learn_from_chats || authority.raise_settings.allowed) {
-    return { disabled: false, reason: null };
-  }
+  if (on || authority.raise_settings.allowed) return { disabled: false, reason: null };
   const reason = authority.raise_settings.reason?.trim();
-  return {
-    disabled: true,
-    reason: reason ? fillMessage(reason, { option: '--learn-from-chats on' }) : null,
-  };
+  return { disabled: true, reason: reason ? fillMessage(reason, { option }) : null };
 }
 
 export function acceptTerms(ids: readonly string[]): Promise<Outcome<{ accepted: number }>> {

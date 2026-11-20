@@ -9,6 +9,13 @@ use biorouter::security::dictionary_store::store::{
 fn extraction_requires_the_setting_and_two_chats() {
     let dir = tempfile::tempdir().unwrap();
     let dictionary = DictionaryStore::open(dir.path().to_path_buf());
+    // A new store has the setting on (owner, 2026-11-19); the person turned it off.
+    dictionary
+        .write(|file| {
+            file.settings.learn_from_chats = false;
+            Ok(())
+        })
+        .unwrap();
     let item = |session_id, text| Observation {
         session_id,
         text,

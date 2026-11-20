@@ -2384,10 +2384,14 @@ binary, from `BaranziniLab/biorouter-models`.
   the owner kept on 2026-11-10 (O-43). Crew, the clipboard and the app preview use public terms
   unless the person includes private terms for one recording; ACP is public only. The `dictionary`
   capability is off in a fresh configuration, and the workspace doors refuse it by name. The chat
-  extractor ships off (`LEARN_FROM_CHATS_DEFAULT = false` in
-  `crates/biorouter-dictation/src/store/schema.rs`), because its precision gate M-21 waits for the
-  owner's own labels (O-44). A row left out changes no field of a response. All of it is accident
-  prevention for cooperative actors: a shell can still read `dictionary.json`.
+  extractor is on in a new store (`LEARN_FROM_CHATS_DEFAULT = true` in
+  `crates/biorouter-dictation/src/store/schema.rs`, owner 2026-11-19, replacing O-44's off); a
+  store that saved its setting keeps it, and nothing is read from chats until the dictionary file
+  exists, because `extractor::admission_stamp` counts a missing file as off. Its switch, the
+  `agent_writes` select, the capability switch and **Find words** are Settings rows
+  (`settings/models/DictionarySettingsRows.tsx`); the Dictionary page holds the words alone. A row
+  left out changes no field of a response. All of it is accident prevention for cooperative
+  actors: a shell can still read `dictionary.json`.
 - **Where the tests run.** Every dictation integration binary runs in `rust.yml`'s offline step,
   with no line in its exclusion table; a test that needs a real model or the network is `#[ignore]`
   in the same binary (`dictation_accuracy`, `model_download_live`, `dictation_extractor_precision`),

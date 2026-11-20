@@ -101,7 +101,7 @@ pub fn msg_installed(id: &str, path: &Path) -> String {
 
 /// MSG-SUGGEST-KEPT: a later install given `--suggest-from-chats` or
 /// `--no-suggest-from-chats` keeps the choice the first install recorded (DD-56).
-pub const MSG_SUGGEST_KEPT: &str = "This install keeps your earlier choice about suggesting dictionary words from your chats; to change it, run `biorouter dictionary settings --suggest-from-chats` with on or off, or use Suggest dictionary words from my chats on the Dictionary page.";
+pub const MSG_SUGGEST_KEPT: &str = "This install keeps your earlier choice about suggesting dictionary words from your chats; to change it, run `biorouter dictionary settings --suggest-from-chats` with on or off, or use Suggest dictionary words from my chats in Settings.";
 
 /// MSG-CONFIRM-INSTALL.
 pub fn msg_confirm_install(id: &str) -> String {
@@ -1857,7 +1857,7 @@ mod tests {
             (msg_already_found("m", "user", p), "m is already installed (user, /m/x.bin)."),
             (msg_already_in("m", folder), "m is already installed in /m."),
             (msg_installed("m", p), "Installed m (/m/x.bin)."),
-            (MSG_SUGGEST_KEPT.into(), "This install keeps your earlier choice about suggesting dictionary words from your chats; to change it, run `biorouter dictionary settings --suggest-from-chats` with on or off, or use Suggest dictionary words from my chats on the Dictionary page."),
+            (MSG_SUGGEST_KEPT.into(), "This install keeps your earlier choice about suggesting dictionary words from your chats; to change it, run `biorouter dictionary settings --suggest-from-chats` with on or off, or use Suggest dictionary words from my chats in Settings."),
             (msg_confirm_install("m"), "Download and install m?"),
             (msg_confirm_terminal("install", "m"), "Installing a speech model needs your confirmation at a terminal. To install without one, run: biorouter dictation install --yes m"),
             (msg_confirm_terminal("remove", "m"), "Removing a speech model needs your confirmation at a terminal. To remove it without one, run: biorouter dictation remove --yes m"),

@@ -477,7 +477,7 @@ fn a_managed_rule_against_agent_writes_keeps_the_capability_off_at_install() {
 }
 
 /// MSG-SUGGEST-KEPT.
-const MSG_SUGGEST_KEPT: &str = "This install keeps your earlier choice about suggesting dictionary words from your chats; to change it, run `biorouter dictionary settings --suggest-from-chats` with on or off, or use Suggest dictionary words from my chats on the Dictionary page.";
+const MSG_SUGGEST_KEPT: &str = "This install keeps your earlier choice about suggesting dictionary words from your chats; to change it, run `biorouter dictionary settings --suggest-from-chats` with on or off, or use Suggest dictionary words from my chats in Settings.";
 
 /// DD-56: a later verified install given either flag keeps the recorded choice and says
 /// so, naming the switch that changes it (MSG-SUGGEST-KEPT). The first install's flag and

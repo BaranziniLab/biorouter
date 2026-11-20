@@ -1,6 +1,6 @@
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { MemoryRouter } from 'react-router-dom';
+import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { DictionaryEntryView } from '../../api';
 import { BROWSER_SURFACE_MARKER } from '../../utils/surface';
@@ -257,10 +257,8 @@ describe('the page', () => {
     expect(within(suggested).queryByTestId('dictionary-row-accept')).toBeNull();
     expect(within(suggested).getByTestId('dictionary-row-dismiss')).toBeDisabled();
     await userEvent.click(within(suggested).getByTestId('dictionary-row-dismiss'));
-    expect(screen.getByTestId('dictionary-agent-writes')).toBeDisabled();
-    expect(
-      screen.getByRole('checkbox', { name: 'Suggest dictionary words from my chats' })
-    ).toBeDisabled();
+    // The settings it used to close here moved to Settings, which closes them the same way
+    // (`DictionarySettingsRows.test.tsx`).
     expect(api.addDictionaryEntry).not.toHaveBeenCalled();
     expect(api.editDictionaryEntry).not.toHaveBeenCalled();
     expect(api.deleteDictionaryEntry).not.toHaveBeenCalled();
@@ -685,178 +683,6 @@ describe('a waiting row’s answers', () => {
   });
 });
 
-describe('Find words in my recent chats', () => {
-  const on = (overrides: Parameters<typeof settings>[0] = {}) =>
-    api.getDictionarySettings.mockResolvedValue(
-      answer(200, settings({ learn_from_chats: true, ...overrides }))
-    );
-
-  it('is offered only while Suggest words from my messages is on', async () => {
-    renderPage();
-    await screen.findByTestId('dictionary-learn-from-chats');
-    expect(screen.queryByTestId('dictionary-scan-start')).toBeNull();
-    expect(api.getDictionarySuggestionScan).not.toHaveBeenCalled();
-  });
-
-  it('is offered, under the switch, once suggestions are on', async () => {
-    on();
-    renderPage();
-    const start = await screen.findByTestId('dictionary-scan-start');
-    expect(start).toHaveTextContent('Find words in my recent chats');
-    expect(start).toBeEnabled();
-    expect(
-      within(screen.getByTestId('dictionary-learn-from-chats-group')).getByTestId(
-        'dictionary-scan-start'
-      )
-    ).toBe(start);
-    // Read once on mount, so a scan another window started shows here.
-    await waitFor(() => expect(api.getDictionarySuggestionScan).toHaveBeenCalledTimes(1));
-    expect(api.getDictionarySuggestionScan).toHaveBeenCalledWith(
-      expect.objectContaining({ headers: { 'X-User-Action': 'proof' } })
-    );
-  });
-
-  it('is not offered to a caller that may not write', async () => {
-    on({
-      authority: {
-        ...settings().authority,
-        write: { allowed: false, reason: 'This host does not allow dictionary edits.' },
-      },
-    });
-    renderPage();
-    await screen.findByTestId('dictionary-learn-from-chats');
-    expect(screen.queryByTestId('dictionary-scan-start')).toBeNull();
-  });
-
-  it('shows its progress with Stop, then how it ended, and reads the listing again', async () => {
-    on();
-    api.startDictionarySuggestionScan.mockResolvedValue(
-      answer(200, scan({ state: 'running', chats_read: 0, chats_total: 3, words_found: 1 }))
-    );
-    renderPage();
-    const start = await screen.findByTestId('dictionary-scan-start');
-    await waitFor(() => expect(api.getDictionarySuggestionScan).toHaveBeenCalledTimes(1));
-    api.getDictionarySuggestionScan.mockImplementation(async () => {
-      // The scan queued a suggestion; only a listing read after it ends can show it.
-      rows = [entry({ written: 'HIF1A', status: 'suggested', source: 'auto' })];
-      return answer(
-        200,
-        scan({ state: 'finished', chats_read: 3, chats_total: 3, words_found: 2 })
-      );
-    });
-    fireEvent.click(start);
-    const status = screen.getByTestId('dictionary-scan-status');
-    await waitFor(() =>
-      expect(status).toHaveTextContent('Reading chat 1 of 3, 1 word found so far')
-    );
-    expect(status).toHaveAttribute('aria-live', 'polite');
-    expect(status).toHaveClass('text-text-muted');
-    expect(screen.queryByTestId('dictionary-scan-start')).toBeNull();
-    expect(screen.getByTestId('dictionary-scan-stop')).toHaveTextContent('Stop');
-    expect(screen.queryByText('HIF1A')).toBeNull();
-    expect(api.startDictionarySuggestionScan).toHaveBeenCalledWith(
-      expect.objectContaining({ headers: { 'X-User-Action': 'proof' } })
-    );
-    const listed = api.listDictionaryEntries.mock.calls.length;
-
-    await waitFor(
-      () =>
-        expect(screen.getByTestId('dictionary-scan-status')).toHaveTextContent(
-          'Read 3 chats. 2 new words to review.'
-        ),
-      { timeout: 3000 }
-    );
-    expect(await screen.findByText('HIF1A')).toBeInTheDocument();
-    expect(api.listDictionaryEntries.mock.calls.length).toBeGreaterThan(listed);
-    expect(screen.getByTestId('dictionary-scan-start')).toBeEnabled();
-  });
-
-  it('says so when a scan finds nothing', async () => {
-    on();
-    api.startDictionarySuggestionScan.mockResolvedValue(
-      answer(200, scan({ state: 'finished', chats_read: 1, chats_total: 1, words_found: 0 }))
-    );
-    renderPage();
-    fireEvent.click(await screen.findByTestId('dictionary-scan-start'));
-    await waitFor(() =>
-      expect(screen.getByTestId('dictionary-scan-status')).toHaveTextContent(
-        'Read 1 chat. No new words found.'
-      )
-    );
-  });
-
-  it('stops when asked and says where it stopped', async () => {
-    on();
-    const running = scan({ state: 'running', chats_read: 1, chats_total: 40, words_found: 1 });
-    api.startDictionarySuggestionScan.mockResolvedValue(answer(200, running));
-    api.stopDictionarySuggestionScan.mockResolvedValue(answer(200, running));
-    renderPage();
-    const start = await screen.findByTestId('dictionary-scan-start');
-    await waitFor(() => expect(api.getDictionarySuggestionScan).toHaveBeenCalledTimes(1));
-    api.getDictionarySuggestionScan.mockResolvedValue(
-      answer(200, scan({ state: 'stopped', chats_read: 12, chats_total: 40, words_found: 2 }))
-    );
-    fireEvent.click(start);
-    const stop = await screen.findByTestId('dictionary-scan-stop');
-    fireEvent.click(stop);
-    await waitFor(() =>
-      expect(api.stopDictionarySuggestionScan).toHaveBeenCalledWith(
-        expect.objectContaining({ headers: { 'X-User-Action': 'proof' } })
-      )
-    );
-    // It stops after the chat it is reading; Stop is not offered twice.
-    await waitFor(() => expect(screen.getByTestId('dictionary-scan-stop')).toBeDisabled());
-    await waitFor(
-      () =>
-        expect(screen.getByTestId('dictionary-scan-status')).toHaveTextContent(
-          'Stopped after 12 of 40 chats. 2 new words to review.'
-        ),
-      { timeout: 3000 }
-    );
-    expect(api.stopDictionarySuggestionScan).toHaveBeenCalledTimes(1);
-  });
-
-  it('shows the daemon’s sentence for a refused start, in muted ink', async () => {
-    on();
-    const message =
-      'Turn on Suggest words from my messages first, then find words in your recent chats.';
-    api.startDictionarySuggestionScan.mockResolvedValue(
-      answer(409, { code: 'suggestions_off', message })
-    );
-    renderPage();
-    fireEvent.click(await screen.findByTestId('dictionary-scan-start'));
-    await waitFor(() =>
-      expect(screen.getByTestId('dictionary-scan-status')).toHaveTextContent(message)
-    );
-    expect(screen.getByTestId('dictionary-scan-status')).toHaveClass('text-text-muted');
-    expect(screen.getByTestId('dictionary-scan-start')).toBeEnabled();
-  });
-
-  it('shows a scan another window started, and a failure in muted ink', async () => {
-    on();
-    api.getDictionarySuggestionScan.mockResolvedValueOnce(
-      answer(200, scan({ state: 'running', chats_read: 3, chats_total: 10, words_found: 0 }))
-    );
-    api.getDictionarySuggestionScan.mockResolvedValue(
-      answer(200, scan({ state: 'failed', chats_read: 5, chats_total: 10, words_found: 0 }))
-    );
-    renderPage();
-    await waitFor(() =>
-      expect(screen.getByTestId('dictionary-scan-status')).toHaveTextContent(
-        'Reading chat 4 of 10, 0 words found so far'
-      )
-    );
-    await waitFor(
-      () =>
-        expect(screen.getByTestId('dictionary-scan-status')).toHaveTextContent(
-          'Biorouter could not finish reading your chats.'
-        ),
-      { timeout: 3000 }
-    );
-    expect(screen.getByTestId('dictionary-scan-status')).toHaveClass('text-text-muted');
-  });
-});
-
 describe('the offer to turn suggestions off', () => {
   const offer = () =>
     api.getDictionarySettings.mockResolvedValue(
@@ -877,7 +703,8 @@ describe('the offer to turn suggestions off', () => {
   it('is not shown while the person keeps most suggestions', async () => {
     api.getDictionarySettings.mockResolvedValue(answer(200, settings({ learn_from_chats: true })));
     renderPage();
-    await screen.findByTestId('dictionary-learn-from-chats');
+    await screen.findByText(DICTIONARY_MESSAGES['MSG-EMPTY']);
+    await waitFor(() => expect(api.getDictionarySettings).toHaveBeenCalled());
     expect(screen.queryByTestId('dictionary-back-off')).toBeNull();
   });
 
@@ -934,231 +761,79 @@ describe('the offer to turn suggestions off', () => {
   });
 });
 
-describe('agent dictionary settings', () => {
-  it('sits in the list column, the same measure and gutter as the rows above', async () => {
+/**
+ * The page holds the words alone (owner, 2026-11-19): how they are found is in Settings
+ * (`settings/models/DictionarySettingsRows.test.tsx`), and the page's `⋯` menu opens it.
+ */
+describe('the page holds the words alone', () => {
+  function SettingsProbe() {
+    const location = useLocation();
+    return <div data-testid="settings-probe">{JSON.stringify(location.state)}</div>;
+  }
+
+  function renderWithSettings() {
+    return render(
+      <MemoryRouter initialEntries={['/dictionary']}>
+        <Routes>
+          <Route path="/dictionary" element={<DictionaryView />} />
+          <Route path="/settings" element={<SettingsProbe />} />
+        </Routes>
+      </MemoryRouter>
+    );
+  }
+
+  it('shows no settings and no scan, even with suggestions on', async () => {
+    api.getDictionarySettings.mockResolvedValue(
+      answer(200, settings({ learn_from_chats: true, suggest_from_chats: true }))
+    );
     rows = [entry({ written: 'EPAS1' })];
     renderPage();
-    const bar = await screen.findByTestId('dictionary-agent-settings');
-    const column = bar.closest<HTMLElement>('.biorouter-readable-content');
-    const listColumn = screen
-      .getByTestId('dictionary-groups')
-      .closest<HTMLElement>('.biorouter-readable-content');
-    expect(column).not.toBeNull();
-    expect(column).not.toBe(listColumn);
-    expect(column).toHaveAttribute('data-size', listColumn!.getAttribute('data-size'));
-    expect(column).toHaveAttribute('data-size', 'chat');
-    expect(column!.classList.contains('px-6')).toBe(true);
-    expect(listColumn!.classList.contains('px-6')).toBe(true);
-    // The rule spans the column and the first word sits on the rows' 12px text inset.
-    expect(bar.classList.contains('border-t')).toBe(true);
-    expect(bar.classList.contains('px-3')).toBe(true);
+    await screen.findByText('EPAS1');
+    await waitFor(() => expect(api.getDictionarySettings).toHaveBeenCalled());
+    for (const name of [
+      DICTIONARY_LABELS.agentSettings.title,
+      'Suggest dictionary words from my chats',
+      DICTIONARY_LABELS.agentSettings.learnFromChats,
+      DICTIONARY_LABELS.scan.find,
+    ]) {
+      expect(screen.queryByText(name), name).toBeNull();
+    }
+    expect(screen.queryByRole('checkbox')).toBeNull();
+    expect(screen.queryByTestId('dictionary-agent-settings')).toBeNull();
+    expect(screen.queryByTestId('dictionary-scan-start')).toBeNull();
+    expect(api.getDictionarySuggestionScan).not.toHaveBeenCalled();
   });
 
-  it('keeps controls closed while settings authority is pending', async () => {
-    api.getDictionarySettings.mockImplementation(() => new Promise(() => {}));
-    renderPage();
-    await screen.findByTestId('dictionary-view');
-    expect(screen.queryByTestId('dictionary-agent-writes')).toBeNull();
-    expect(
-      screen.queryByRole('checkbox', { name: 'Suggest dictionary words from my chats' })
-    ).toBeNull();
-    expect(
-      screen.queryByRole('checkbox', { name: DICTIONARY_LABELS.agentSettings.learnFromChats })
-    ).toBeNull();
-    expect(api.changeDictionarySettings).not.toHaveBeenCalled();
-    expect(api.activateDictionary).not.toHaveBeenCalled();
+  it('opens the dictionary rows in Settings from the ⋯ menu, its one link there', async () => {
+    renderWithSettings();
+    await screen.findByText(DICTIONARY_MESSAGES['MSG-EMPTY']);
+    await userEvent.click(screen.getByRole('button', { name: DICTIONARY_LABELS.pageMenu }));
+    const link = await screen.findByRole('menuitem', { name: DICTIONARY_LABELS.settingsLink });
+    expect(link).toHaveAttribute('data-testid', 'dictionary-settings-link');
+    await userEvent.click(link);
+    expect(await screen.findByTestId('settings-probe')).toHaveTextContent(
+      JSON.stringify({ section: 'dictionary' })
+    );
   });
 
-  it('blocks raises but allows a lower mode when the host denies raising settings', async () => {
-    api.getDictionarySettings.mockResolvedValue(
-      answer(
-        200,
-        settings({
-          authority: {
-            ...settings().authority,
-            raise_settings: { allowed: false, reason: 'Use the host command.' },
+  it('offers no settings link where managed policy turns the dictionary off', async () => {
+    resetDictationStoreForTests(
+      fakeStatusApi(() =>
+        speechStatus({
+          policy: {
+            ...speechStatus().policy,
+            managed: true,
+            dictionary: { allowed: false, reason: null },
           },
         })
-      )
+      ).api
     );
+    await refreshDictationStatus();
+    rows = [entry({ written: 'EPAS1' })];
     renderPage();
-    const mode = await screen.findByTestId('dictionary-agent-writes');
-    const activation = screen.getByRole('checkbox', {
-      name: 'Suggest dictionary words from my chats',
-    });
-    expect(mode).toBeEnabled();
-    expect(activation).toBeDisabled();
-    await userEvent.click(mode);
-    const add = await screen.findByRole('menuitemradio', { name: 'Add without asking' });
-    expect(add).toHaveAttribute('data-disabled');
-    fireEvent.click(add);
-    fireEvent.click(activation);
-    expect(api.changeDictionarySettings).not.toHaveBeenCalled();
-    expect(api.activateDictionary).not.toHaveBeenCalled();
-    await userEvent.click(screen.getByRole('menuitemradio', { name: 'Wait for my review' }));
-    await waitFor(() =>
-      expect(api.changeDictionarySettings).toHaveBeenCalledWith(
-        expect.objectContaining({ body: { agent_writes: 'suggest' } })
-      )
-    );
-  });
-
-  it('lets a known no-raise caller turn an enabled capability off', async () => {
-    api.getDictionarySettings.mockResolvedValue(
-      answer(
-        200,
-        settings({
-          suggest_from_chats: true,
-          authority: {
-            ...settings().authority,
-            raise_settings: { allowed: false, reason: 'Use the host command.' },
-          },
-        })
-      )
-    );
-    renderPage();
-    const activation = await screen.findByRole('checkbox', {
-      name: 'Suggest dictionary words from my chats',
-    });
-    expect(activation).toBeEnabled();
-    expect(activation).toBeChecked();
-    fireEvent.click(activation);
-    await waitFor(() =>
-      expect(api.activateDictionary).toHaveBeenCalledWith(
-        expect.objectContaining({ body: { suggest_from_chats: false } })
-      )
-    );
-  });
-
-  it('starts off and offers the person the activation switch', async () => {
-    renderPage();
-    const choice = await screen.findByRole('checkbox', {
-      name: 'Suggest dictionary words from my chats',
-    });
-    expect(choice).not.toBeChecked();
-    fireEvent.click(choice);
-    await waitFor(() =>
-      expect(api.activateDictionary).toHaveBeenCalledWith(
-        expect.objectContaining({ body: { suggest_from_chats: true } })
-      )
-    );
-  });
-
-  it('offers the chat extractor switch off, says why, and turns it on through the settings', async () => {
-    renderPage();
-    const learn = await screen.findByRole('checkbox', {
-      name: 'Suggest words from my messages',
-    });
-    expect(DICTIONARY_LABELS.agentSettings.learnFromChats).toBe('Suggest words from my messages');
-    expect(DICTIONARY_MESSAGES['MSG-LEARN-FROM-CHATS-HELP']).toBe(
-      'Biorouter looks for terms such as EPAS1 or UCSF in the messages you type in chats on public models, on this computer, and suggests a word once it shows up in two chats. You keep or dismiss each one, and a dismissed word is not suggested again.'
-    );
-    expect(learn).not.toBeChecked();
-    expect(learn).toBeEnabled();
-    expect(learn).toHaveAccessibleDescription(DICTIONARY_MESSAGES['MSG-LEARN-FROM-CHATS-HELP']);
-    // The InfoTip sits beside the label, never inside it, so a click on it toggles nothing.
-    expect(learn.closest('label')?.querySelector('[data-slot="info-tip-trigger"]')).toBeNull();
-    fireEvent.click(learn);
-    await waitFor(() =>
-      expect(api.changeDictionarySettings).toHaveBeenCalledWith(
-        expect.objectContaining({ body: { learn_from_chats: true } })
-      )
-    );
-    expect(api.activateDictionary).not.toHaveBeenCalled();
-  });
-
-  it('keeps the chat extractor switch from turning on when the host denies raising settings', async () => {
-    api.getDictionarySettings.mockResolvedValue(
-      answer(
-        200,
-        settings({
-          authority: {
-            ...settings().authority,
-            raise_settings: { allowed: false, reason: 'Use the host command.' },
-          },
-        })
-      )
-    );
-    renderPage();
-    const learn = await screen.findByRole('checkbox', {
-      name: DICTIONARY_LABELS.agentSettings.learnFromChats,
-    });
-    expect(learn).toBeDisabled();
-    fireEvent.click(learn);
-    expect(api.changeDictionarySettings).not.toHaveBeenCalled();
-  });
-
-  it('says why the chat extractor switch cannot be turned on, before the click', async () => {
-    api.getDictionarySettings.mockResolvedValue(
-      answer(
-        200,
-        settings({
-          authority: {
-            ...settings().authority,
-            raise_settings: {
-              allowed: false,
-              reason:
-                'Do this on the server: `biorouter dictionary settings <option>` (as the service user).',
-            },
-          },
-        })
-      )
-    );
-    renderPage();
-    const learn = await screen.findByRole('checkbox', {
-      name: DICTIONARY_LABELS.agentSettings.learnFromChats,
-    });
-    const reason =
-      'Do this on the server: `biorouter dictionary settings --learn-from-chats on` (as the service user).';
-    expect(learn).toBeDisabled();
-    expect(screen.getByTestId('dictionary-learn-from-chats-reason')).toHaveTextContent(reason);
-    expect(learn).toHaveAccessibleDescription(
-      `${DICTIONARY_MESSAGES['MSG-LEARN-FROM-CHATS-HELP']} ${reason}`
-    );
-  });
-
-  it('lets a known no-raise caller turn the chat extractor off', async () => {
-    api.getDictionarySettings.mockResolvedValue(
-      answer(
-        200,
-        settings({
-          learn_from_chats: true,
-          authority: {
-            ...settings().authority,
-            raise_settings: { allowed: false, reason: 'Use the host command.' },
-          },
-        })
-      )
-    );
-    renderPage();
-    const learn = await screen.findByRole('checkbox', {
-      name: DICTIONARY_LABELS.agentSettings.learnFromChats,
-    });
-    expect(learn).toBeChecked();
-    expect(learn).toBeEnabled();
-    fireEvent.click(learn);
-    await waitFor(() =>
-      expect(api.changeDictionarySettings).toHaveBeenCalledWith(
-        expect.objectContaining({ body: { learn_from_chats: false } })
-      )
-    );
-  });
-
-  it('shows the person all three agent write modes', async () => {
-    renderPage();
-    const choice = await screen.findByTestId('dictionary-agent-writes');
-    expect(choice).toBeEnabled();
-    await userEvent.click(choice);
-    expect(screen.getByRole('menuitemradio', { name: 'Wait for my review' })).toBeInTheDocument();
-    expect(
-      screen.getByRole('menuitemradio', { name: 'Add when I ask, suggest otherwise' })
-    ).toBeInTheDocument();
-    expect(screen.getByRole('menuitemradio', { name: 'Add without asking' })).toBeInTheDocument();
-    await userEvent.click(screen.getByRole('menuitemradio', { name: 'Wait for my review' }));
-    await waitFor(() =>
-      expect(api.changeDictionarySettings).toHaveBeenCalledWith(
-        expect.objectContaining({ body: { agent_writes: 'suggest' } })
-      )
-    );
+    await screen.findByText('EPAS1');
+    await userEvent.click(screen.getByRole('button', { name: DICTIONARY_LABELS.pageMenu }));
+    expect(await screen.findByTestId('dictionary-delete-all')).toBeInTheDocument();
+    expect(screen.queryByTestId('dictionary-settings-link')).toBeNull();
   });
 });

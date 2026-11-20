@@ -29,16 +29,22 @@ pub const USAGE_FILE: &str = "usage.json";
 /// The file every writer locks.
 pub const LOCK_FILE: &str = ".lock";
 
-/// `settings.learn_from_chats` in a new store: off.
+/// `settings.learn_from_chats` in a new store: on.
 ///
 /// Word suggestions from chats are a feature each person runs for themselves (owner,
-/// 2026-11-13, replacing the M-21 labelling gate of O-23 and O-44). It stays off until the
-/// person turns it on (O-44): with **Suggest words from my messages** on the Dictionary
-/// page or in Settings, or with `biorouter dictionary settings --learn-from-chats on`.
-/// Turning it on is a person's action, never an agent's. How well it picks words is then
-/// measured by that person's own **Keep** and **Dismiss**, kept in [`ChatLearning`] on this
-/// computer, and it suggests fewer words when most are dismissed.
-pub const LEARN_FROM_CHATS_DEFAULT: bool = false;
+/// 2026-11-13, replacing the M-21 labelling gate of O-23 and O-44). A new store starts with
+/// it on (owner, 2026-11-19, replacing O-44's off): the person turns it off with **Suggest
+/// words from my messages** in Settings, or with `biorouter dictionary settings
+/// --learn-from-chats off`. The field is always written, so a store that already saved its
+/// setting keeps it; only a store created after this default changed starts on. Turning it
+/// on again is a person's action, never an agent's. How well it picks words is measured by
+/// that person's own **Keep** and **Dismiss**, kept in [`ChatLearning`] on this computer, and
+/// it suggests fewer words when most are dismissed.
+///
+/// The extractor reads the settings of a store that exists (`extractor::admission_stamp`
+/// counts a missing file as off), so nothing is read from chats until the dictionary holds
+/// its first write: a term, an agent's suggestion or **Find words in my recent chats**.
+pub const LEARN_FROM_CHATS_DEFAULT: bool = true;
 
 /// The current time as the store writes it: whole seconds, so a timestamp reads
 /// `2026-11-04T17:02:11Z`.
@@ -685,6 +691,22 @@ mod tests {
             assert_eq!(AgentWrites::parse(mode.as_str()), Some(mode));
         }
         assert!(EntryTier::Private > EntryTier::Public);
+    }
+
+    /// A new store suggests words from the person's messages (owner, 2026-11-19), while a
+    /// store that already saved its setting keeps it: the field is always written, so an
+    /// existing `false` reads back as `false`.
+    #[test]
+    fn a_new_store_suggests_words_from_chats_and_a_saved_choice_is_kept() {
+        assert!(StoreSettings::default().learn_from_chats);
+        assert!(StoreFile::default().settings.learn_from_chats);
+        let mut saved = StoreFile::default();
+        saved.settings.learn_from_chats = false;
+        let reread = StoreFile::parse(&saved.to_bytes()).expect("the store parses");
+        assert!(!reread.settings.learn_from_chats);
+        assert!(String::from_utf8(saved.to_bytes())
+            .unwrap()
+            .contains("\"learn_from_chats\":false"));
     }
 
     #[test]

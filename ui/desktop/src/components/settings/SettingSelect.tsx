@@ -15,6 +15,8 @@ export interface SettingSelectOption<T extends string = string> {
   label: string;
   /** One muted line under the label inside the menu item; no trailing period. */
   description?: string;
+  /** Shown but not choosable, such as a raise the caller may not make. */
+  disabled?: boolean;
   testId?: string;
 }
 
@@ -99,6 +101,7 @@ export function SettingSelect<T extends string>({
             <DropdownMenuRadioItem
               key={option.value}
               value={option.value}
+              disabled={option.disabled}
               data-testid={option.testId}
             >
               {option.description ? (

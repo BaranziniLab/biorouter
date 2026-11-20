@@ -44,7 +44,7 @@ pub fn suggest_only_for_process() -> bool {
 
 pub const EXTENSION_KEY: &str = "dictionary";
 pub const ACTIVATION_VERSION_KEY: &str = "dictation_dictionary_activation_version";
-pub const ENABLE_REFUSAL: &str = "The Dictionary capability is turned on by you, with Suggest dictionary words from my chats on the Dictionary page.";
+pub const ENABLE_REFUSAL: &str = "The Dictionary capability is turned on by you, with Suggest dictionary words from my chats in Settings.";
 
 pub fn is_dictionary_name(name: &str) -> bool {
     crate::config::extensions::name_to_key(name) == EXTENSION_KEY

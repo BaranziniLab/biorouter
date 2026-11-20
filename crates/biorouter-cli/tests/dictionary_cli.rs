@@ -413,6 +413,7 @@ fn managed_dictionary_off_refuses_import_and_still_exports() {
 
 /// `settings` with no flag prints the three settings without a terminal; PR-23 added
 /// `suggest_from_chats`, the `dictionary` capability, which a fresh configuration has off.
+/// A new store suggests words from chats (owner, 2026-11-19).
 #[test]
 fn settings_print_without_a_terminal() {
     let root = sandbox();
@@ -420,7 +421,7 @@ fn settings_print_without_a_terminal() {
     assert!(output.status.success(), "{}", stderr(&output));
     assert_eq!(
         stdout(&output),
-        "agent_writes: on_request\nsuggest_from_chats: off\nlearn_from_chats: off\n"
+        "agent_writes: on_request\nsuggest_from_chats: off\nlearn_from_chats: on\n"
     );
 }
 
@@ -546,11 +547,19 @@ fn at_a_terminal(root: &Path, args: &[&str]) -> Output {
 }
 
 /// At a terminal, `suggestions scan` while suggestions are off answers MSG-SCAN-OFF and
-/// how to turn them on here (exit 1), and writes nothing.
+/// how to turn them on here (exit 1), and writes nothing. A new store has them on (owner,
+/// 2026-11-19), so the person turned them off first.
 #[cfg(unix)]
 #[test]
 fn suggestions_scan_says_to_turn_suggestions_on_first() {
     let root = sandbox();
+    store_at(root.path())
+        .write(|file| {
+            file.settings.learn_from_chats = false;
+            Ok(())
+        })
+        .unwrap();
+    let before = std::fs::read(store_file(root.path())).expect("the store was written");
     let output = at_a_terminal(root.path(), &["suggestions", "scan"]);
     assert_eq!(output.status.code(), Some(1), "{}", stderr(&output));
     let terminal = stderr(&output);
@@ -563,7 +572,11 @@ fn suggestions_scan_says_to_turn_suggestions_on_first() {
         "{terminal}"
     );
     assert!(stdout(&output).is_empty(), "{}", stdout(&output));
-    assert!(!store_file(root.path()).exists(), "nothing was written");
+    assert_eq!(
+        std::fs::read(store_file(root.path())).unwrap(),
+        before,
+        "nothing was written"
+    );
 }
 
 /// At a terminal with suggestions on, `suggestions scan` reads this account's session

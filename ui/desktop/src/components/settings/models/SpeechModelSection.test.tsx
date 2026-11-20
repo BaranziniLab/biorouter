@@ -17,9 +17,10 @@ import {
   resetDictationStoreForTests,
 } from '../../dictation/dictationStore';
 import { managedPolicySentences } from '../../privacy/ManagedPolicyNote';
-import { DICTIONARY_LABELS } from '../../dictionary/copy';
-import { answer, listing, settings } from '../../dictionary/dictionaryTestKit';
+import { DICTIONARY_LABELS, DICTIONARY_MESSAGES } from '../../dictionary/copy';
+import { answer, listing, scan, settings } from '../../dictionary/dictionaryTestKit';
 import { resetDictionaryStoreForTests } from '../../dictionary/useDictionary';
+import { resetSuggestionScanForTests } from '../../dictionary/useSuggestionScan';
 import { SETTINGS_SECTION_IDS } from '../settingsSections';
 import { speechModelsCopy as copy } from './copy';
 
@@ -41,14 +42,16 @@ vi.mock('../../dictionary/activationChoice', () => ({
   useDictionaryActivationChoice: () => activation,
 }));
 /**
- * The Dictionary routes the **Suggest words from my messages** row reads and writes, and the
- * host's provider a `serve` browser states with them (`userActionHeaders()`).
+ * The Dictionary routes the dictionary rows read and write, and the host's provider a `serve`
+ * browser states with them (`userActionHeaders()`). The scan's progress is read once the
+ * **Recent chats** row shows, while **Suggest words from my messages** is on.
  */
 const dictionaryApi = vi.hoisted(() => ({
   getDictionarySettings: vi.fn(),
   changeDictionarySettings: vi.fn(),
   listDictionaryEntries: vi.fn(),
   readConfig: vi.fn(),
+  getDictionarySuggestionScan: vi.fn(),
 }));
 vi.mock('../../../api', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../../api')>()),
@@ -254,10 +257,12 @@ beforeEach(() => {
   serve(status());
   models();
   resetDictionaryStoreForTests();
+  resetSuggestionScanForTests();
   dictionaryApi.getDictionarySettings.mockReset().mockResolvedValue(answer(200, settings()));
   dictionaryApi.changeDictionarySettings.mockReset().mockResolvedValue(answer(200, settings()));
   dictionaryApi.listDictionaryEntries.mockReset().mockResolvedValue(listing([]));
   dictionaryApi.readConfig.mockReset().mockResolvedValue({ data: null });
+  dictionaryApi.getDictionarySuggestionScan.mockReset().mockResolvedValue(answer(200, scan()));
 });
 
 afterEach(() => {
@@ -916,20 +921,43 @@ describe('Suggest words from my messages', () => {
   const learnSwitch = () =>
     screen.findByRole('switch', { name: DICTIONARY_LABELS.agentSettings.learnFromChats });
 
-  it('sits right after the Dictionary row, off, with its one-line help', async () => {
+  it('sits with the dictionary rows at the section’s end, off, with its catalog help', async () => {
     await renderSection();
     const toggle = await learnSwitch();
     expect(DICTIONARY_LABELS.agentSettings.learnFromChats).toBe('Suggest words from my messages');
     expect(toggle).not.toBeChecked();
     expect(toggle).toBeEnabled();
-    expect(screen.getByTestId('speech-dictionary').nextElementSibling).toBe(
-      screen.getByTestId('speech-learn-from-chats')
-    );
+    // The dictionary's rows are one group after Speed, headed by the Dictionary row
+    // (`DictionarySettingsRows.test.tsx` has the group's own tests).
+    const group = screen.getByTestId('settings-dictionary');
+    expect(group.firstElementChild).toBe(screen.getByTestId('speech-dictionary'));
+    expect(group).toContainElement(screen.getByTestId('speech-learn-from-chats'));
+    expect(screen.getByTestId('speech-speed').nextElementSibling).toBe(group);
     expect(
       screen.getByRole('button', { name: 'About Suggest words from my messages' })
-    ).toHaveAccessibleDescription(
-      'Find terms you type in chats on public models and suggest them for your dictionary.'
-    );
+    ).toHaveAccessibleDescription(DICTIONARY_MESSAGES['MSG-LEARN-FROM-CHATS-HELP']);
+  });
+
+  it('leaves the capability to the first install’s choice beside Install, so it has one control', async () => {
+    await renderSection();
+    await learnSwitch();
+    expect(screen.getByTestId('speech-suggest-from-chats')).toBeInTheDocument();
+    expect(screen.queryByRole('switch', { name: DICTATION_ACTIONS.suggestFromChats })).toBeNull();
+  });
+
+  it('offers the capability as a switch once a model is in use and the choice is made', async () => {
+    serve(status({ models: both(), active_model: TURBO }));
+    activation.showChoice = false;
+    try {
+      await renderSection();
+      await learnSwitch();
+      expect(screen.queryByTestId('speech-suggest-from-chats')).toBeNull();
+      expect(
+        screen.getByRole('switch', { name: DICTATION_ACTIONS.suggestFromChats })
+      ).toBeInTheDocument();
+    } finally {
+      activation.showChoice = true;
+    }
   });
 
   it('turns on through the Dictionary page’s own settings write, so both views agree', async () => {
