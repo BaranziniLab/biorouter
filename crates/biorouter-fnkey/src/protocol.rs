@@ -3,10 +3,12 @@
 //! The helper sees every key press on the Mac while it listens, so this module is
 //! where its privacy is decided: only three facts ever leave the process. The fn
 //! key went down, it came up, and some other key or modifier was pressed while it
-//! was down or within [`TAP_FOLLOW_MS`] of its release (only the first such key
-//! after each release, so a tap followed by typing is not read as half of a
-//! double-tap). No key code or character is ever written, and no other key's
-//! timing beyond that one.
+//! was down or within [`TAP_FOLLOW_MS`] of its release. While fn is held, every
+//! other key press is reported as `other` with its time; after a release only the
+//! first such key counts, so a tap followed by typing is not read as half of a
+//! double-tap. No key code or character is ever written, so a key's identity never
+//! leaves the process, and outside an fn hold no key's timing leaves beyond that
+//! first one.
 //! The app reads one JSON object per line (`ui/desktop/src/utils/fnKeyHelper.ts`,
 //! `parseFnHelperLine`), and writes one command per line back.
 
@@ -22,6 +24,39 @@ pub const OTHER_MODIFIERS: u64 = 0x0002_0000 | 0x0004_0000 | 0x0008_0000 | 0x001
 pub const FN_KEY_CODES: [i64; 2] = [63, 179];
 
 pub const PROTOCOL_VERSION: u32 = 1;
+
+/// `kCGEventKeyDown`.
+pub const EVENT_KEY_DOWN: u32 = 10;
+/// `kCGEventFlagsChanged`: a modifier, fn among them, went down or up.
+pub const EVENT_FLAGS_CHANGED: u32 = 12;
+/// `kCGEventTapDisabledByTimeout`: macOS turned the tap off because the callback was slow.
+pub const EVENT_TAP_DISABLED_BY_TIMEOUT: u32 = 0xFFFF_FFFE;
+/// `kCGEventTapDisabledByUserInput`: macOS turned the tap off while secure input was on.
+pub const EVENT_TAP_DISABLED_BY_USER_INPUT: u32 = 0xFFFF_FFFF;
+
+/// The events the tap asks for: key down and flags changed, nothing else (no key up,
+/// no mouse). The two disabled kinds arrive whatever the mask says.
+pub const EVENT_MASK: u64 = (1u64 << EVENT_KEY_DOWN) | (1u64 << EVENT_FLAGS_CHANGED);
+const _: () = assert!(EVENT_MASK == 0x1400);
+
+/// What the tap's callback does with an event kind.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EventClass {
+    /// macOS turned the tap off. The event pointer is NULL for these, so nothing may read it.
+    Disabled,
+    FlagsChanged,
+    KeyDown,
+    Ignore,
+}
+
+pub fn classify_event(kind: u32) -> EventClass {
+    match kind {
+        EVENT_TAP_DISABLED_BY_TIMEOUT | EVENT_TAP_DISABLED_BY_USER_INPUT => EventClass::Disabled,
+        EVENT_FLAGS_CHANGED => EventClass::FlagsChanged,
+        EVENT_KEY_DOWN => EventClass::KeyDown,
+        _ => EventClass::Ignore,
+    }
+}
 
 /// How long after fn is released the next key still counts as the gesture's
 /// business: the app's double-tap gap (`FN_DOUBLE_TAP_GAP_MS` in
@@ -126,6 +161,19 @@ impl FnTracker {
     /// released, is used.
     pub fn key_down(&mut self, at_ms: u64) -> Option<Signal> {
         self.other(at_ms)
+    }
+
+    /// macOS turned the tap off and it was turned on again, so the tracker was blind for
+    /// a while and may have missed fn's release. Forget everything it held, and report
+    /// fn up if it believed fn was down: a hold the app would otherwise keep recording
+    /// until some later modifier event ends, at worst, a hold early. A release the
+    /// tracker then sees is no change and reports nothing.
+    pub fn reset_after_blind_gap(&mut self) -> Option<Signal> {
+        let was_down = self.fn_down;
+        self.fn_down = false;
+        self.modifiers = 0;
+        self.released_at = None;
+        was_down.then_some(Signal::FnUp)
     }
 
     /// Another key or modifier: reported while fn is down, and once within
@@ -302,6 +350,49 @@ mod tests {
             vec![Signal::FnUp]
         );
         assert_eq!(tracker.key_down(LATER), None);
+    }
+
+    /// macOS turned the tap off while fn was down, so its release may have been missed:
+    /// the reset reports fn up once, and the tracker starts clean.
+    #[test]
+    fn a_reset_after_a_blind_gap_ends_a_hold_once() {
+        let mut tracker = FnTracker::new();
+        tracker.flags_changed(63, SECONDARY_FN, 100);
+        assert_eq!(tracker.reset_after_blind_gap(), Some(Signal::FnUp));
+        // Nothing is left of the hold or of a release window.
+        assert_eq!(tracker.key_down(200), None);
+        assert_eq!(tracker.reset_after_blind_gap(), None);
+        // The real release, seen after the reset, is no change.
+        assert_eq!(tracker.flags_changed(63, 0, 300), vec![]);
+        // And the next press is an ordinary fn down.
+        assert_eq!(
+            tracker.flags_changed(63, SECONDARY_FN, 400),
+            vec![Signal::FnDown]
+        );
+    }
+
+    #[test]
+    fn a_reset_with_fn_up_reports_nothing() {
+        assert_eq!(FnTracker::new().reset_after_blind_gap(), None);
+        let mut tracker = FnTracker::new();
+        tracker.flags_changed(63, SECONDARY_FN, 0);
+        tracker.flags_changed(63, 0, 10);
+        assert_eq!(tracker.reset_after_blind_gap(), None);
+        // The release window is gone too, so the next key is not reported.
+        assert_eq!(tracker.key_down(20), None);
+    }
+
+    #[test]
+    fn event_kinds_are_classified_as_the_callback_needs() {
+        assert_eq!(classify_event(0xFFFF_FFFE), EventClass::Disabled);
+        assert_eq!(classify_event(0xFFFF_FFFF), EventClass::Disabled);
+        assert_eq!(classify_event(12), EventClass::FlagsChanged);
+        assert_eq!(classify_event(10), EventClass::KeyDown);
+        for other in [0, 1, 2, 11, 13, 22, 0xFFFF_FFFD] {
+            assert_eq!(classify_event(other), EventClass::Ignore, "{other}");
+        }
+        // Key down and flags changed only: no key up (11), no mouse.
+        assert_eq!(EVENT_MASK, 0x1400);
     }
 
     #[test]

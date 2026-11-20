@@ -115,10 +115,16 @@ pub(crate) fn scan_proc(root: &Path, me: u32) -> Vec<(u32, u32)> {
 }
 
 /// The same answer from `ps`, for a host with no `/proc` (macOS).
+///
+/// `/bin/ps` by its full path with a cleared environment (`LC_ALL=C` alone), as the
+/// developer extension's background jobs run it: a `ps` earlier on `PATH`, or a locale that
+/// reshapes its columns, would otherwise decide what this warning says.
 #[cfg(unix)]
 fn scan_ps(me: u32) -> Vec<(u32, u32)> {
-    let Ok(output) = std::process::Command::new("ps")
+    let Ok(output) = std::process::Command::new("/bin/ps")
         .args(["-axww", "-o", "uid=,pid=,args="])
+        .env_clear()
+        .env("LC_ALL", "C")
         .stdin(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .output()
@@ -220,7 +226,8 @@ pub fn warning_before_saving(
         "Warning: `biorouter serve` is running as {servers}, not as this account. It reads \
          {}, and a key saved here goes to {} instead, where that server never looks. To set the \
          key it uses, run {run_as}, with the environment the service starts with (for example \
-         the same BIOROUTER_DISABLE_KEYRING).",
+         the same BIOROUTER_DISABLE_KEYRING). If that is not the server you mean, you can \
+         ignore this.",
         where_it_reads(first),
         saved_in.display(),
     ))
@@ -311,6 +318,17 @@ mod tests {
         assert_eq!(parse_ps(text, 998), vec![(4410, 501)]);
     }
 
+    /// The real `ps` scan, where one runs (`/bin/ps` with a cleared environment): it answers
+    /// without panicking, and never reports a process of the account it is told to leave out.
+    #[cfg(all(unix, not(target_os = "linux")))]
+    #[test]
+    fn the_ps_scan_runs_the_system_ps() {
+        let _ = scan_ps(u32::MAX);
+        // SAFETY: geteuid has no preconditions and cannot fail.
+        let me = unsafe { libc::geteuid() };
+        assert!(scan_ps(me).iter().all(|(_, uid)| *uid != me));
+    }
+
     #[cfg(unix)]
     #[test]
     fn this_account_is_found_in_the_user_database() {
@@ -352,6 +370,12 @@ mod tests {
         );
         assert!(
             warning.contains(&format!("`sudo -H -u biorouter {command}`")),
+            "{warning}"
+        );
+        // Any other account's `biorouter serve` matches, so on a shared host the server
+        // named may be someone else's: the warning says it can be ignored then.
+        assert!(
+            warning.ends_with("If that is not the server you mean, you can ignore this."),
             "{warning}"
         );
         let note = note_after_saving(&elsewhere).unwrap();

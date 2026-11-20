@@ -1428,9 +1428,9 @@ impl<'a> Resolver<'a> {
         // A known final name that is a conventional `.env` template (issue #522)
         // cannot end a floor path: the only floor pattern whose last component
         // reaches it is `**/.env.*`, and the template exceptions reopen exactly
-        // that name. Asked of the guard as well, so a `.biorouterignore` that
-        // denies the template again, or a spelling the guard does not reopen
-        // (`.env.Example`), still goes on to the comparison below.
+        // that name, in any case. Asked of the guard as well, so a
+        // `.biorouterignore` that denies the template again still goes on to the
+        // comparison below.
         if let Some(name) = suffix.last().and_then(|(tokens, _)| literal_of(tokens)) {
             if is_env_template_name(&name) && !self.guard.is_denied(Path::new(&name)) {
                 return Ok(());
@@ -1911,8 +1911,9 @@ fn literal_of(tokens: &[Tok]) -> Option<String> {
 }
 
 /// Whether `name` is one of the `.env` template names the floor reopens
-/// ([`super::DEFAULT_SECRET_TEMPLATE_EXCEPTIONS`]), for [`Resolver::tails`].
-fn is_env_template_name(name: &str) -> bool {
+/// ([`super::DEFAULT_SECRET_TEMPLATE_EXCEPTIONS`]), in any case, for
+/// [`Resolver::tails`] and [`super::SecretGuard::is_denied`].
+pub(super) fn is_env_template_name(name: &str) -> bool {
     static TEMPLATES: Lazy<Vec<Vec<Tok>>> = Lazy::new(|| {
         super::DEFAULT_SECRET_TEMPLATE_EXCEPTIONS
             .iter()

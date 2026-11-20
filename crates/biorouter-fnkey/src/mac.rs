@@ -9,8 +9,8 @@ use std::sync::atomic::{AtomicPtr, Ordering};
 use std::sync::Mutex;
 
 use crate::protocol::{
-    parse_command, permission_line, ready_line, signal_line, Command, FnTracker, Permission,
-    LISTENER_LOST_LINE,
+    classify_event, parse_command, permission_line, ready_line, signal_line, Command, EventClass,
+    FnTracker, Permission, EVENT_MASK, LISTENER_LOST_LINE,
 };
 
 type CFTypeRef = *const c_void;
@@ -26,10 +26,6 @@ type CGEventTapCallBack =
 const SESSION_EVENT_TAP: u32 = 1;
 const HEAD_INSERT_EVENT_TAP: u32 = 0;
 const TAP_OPTION_LISTEN_ONLY: u32 = 1;
-const EVENT_KEY_DOWN: u32 = 10;
-const EVENT_FLAGS_CHANGED: u32 = 12;
-const EVENT_TAP_DISABLED_BY_TIMEOUT: u32 = 0xFFFF_FFFE;
-const EVENT_TAP_DISABLED_BY_USER_INPUT: u32 = 0xFFFF_FFFF;
 const KEYBOARD_EVENT_KEYCODE: u32 = 9;
 const CF_STRING_ENCODING_UTF8: u32 = 0x0800_0100;
 const CF_NUMBER_SINT64_TYPE: isize = 4;
@@ -120,6 +116,12 @@ fn fn_usage() -> Option<i64> {
     let key = cf_string("AppleFnUsageType");
     let domain = cf_string("com.apple.HIToolbox");
     if key.is_null() || domain.is_null() {
+        for created in [key, domain] {
+            if !created.is_null() {
+                // SAFETY: created by `cf_string` above (the Create rule) and not used again.
+                unsafe { CFRelease(created) };
+            }
+        }
         return None;
     }
     // SAFETY: both strings were created above and are released below; the value is
@@ -149,20 +151,29 @@ extern "C" fn on_event(
     event: CGEventRef,
     _user_info: *mut c_void,
 ) -> CGEventRef {
-    match kind {
-        EVENT_TAP_DISABLED_BY_TIMEOUT | EVENT_TAP_DISABLED_BY_USER_INPUT => {
+    match classify_event(kind) {
+        // `event` is NULL for these: nothing below reads it.
+        EventClass::Disabled => {
             let tap = TAP.load(Ordering::Acquire);
             if !tap.is_null() {
                 // SAFETY: `tap` is the port this process created; it is never freed.
-                unsafe {
-                    CGEventTapEnable(tap, true);
-                    if !CGEventTapIsEnabled(tap) {
-                        emit(LISTENER_LOST_LINE);
-                    }
+                unsafe { CGEventTapEnable(tap, true) };
+                // The tap was blind while it was off and may have missed fn's release, which
+                // would leave the app holding fn until some later modifier event.
+                let signal = TRACKER
+                    .lock()
+                    .ok()
+                    .and_then(|mut tracker| tracker.reset_after_blind_gap());
+                if let Some(signal) = signal {
+                    emit(&signal_line(signal, now_ms()));
+                }
+                // SAFETY: as above.
+                if !unsafe { CGEventTapIsEnabled(tap) } {
+                    emit(LISTENER_LOST_LINE);
                 }
             }
         }
-        EVENT_FLAGS_CHANGED => {
+        EventClass::FlagsChanged => {
             // SAFETY: macOS hands the callback a valid event for its duration.
             let (key_code, flags, at_ms) = unsafe {
                 (
@@ -179,7 +190,7 @@ extern "C" fn on_event(
                 emit(&signal_line(signal, at_ms));
             }
         }
-        EVENT_KEY_DOWN => {
+        EventClass::KeyDown => {
             // SAFETY: as above.
             let at_ms = unsafe { CGEventGetTimestamp(event) } / 1_000_000;
             let signal = TRACKER
@@ -190,7 +201,7 @@ extern "C" fn on_event(
                 emit(&signal_line(signal, at_ms));
             }
         }
-        _ => {}
+        EventClass::Ignore => {}
     }
     // A listen-only tap's return value is ignored; the event passes unchanged.
     event
@@ -230,7 +241,6 @@ pub fn run() {
         wait_for_commands();
     }
 
-    let mask = (1u64 << EVENT_KEY_DOWN) | (1u64 << EVENT_FLAGS_CHANGED);
     // SAFETY: Input Monitoring was granted just above, so this does not prompt; the
     // callback is a plain function and the tap lives for the whole process.
     let tap = unsafe {
@@ -238,7 +248,7 @@ pub fn run() {
             SESSION_EVENT_TAP,
             HEAD_INSERT_EVENT_TAP,
             TAP_OPTION_LISTEN_ONLY,
-            mask,
+            EVENT_MASK,
             on_event,
             null_mut(),
         )
@@ -247,11 +257,24 @@ pub fn run() {
         emit(&ready_line(Permission::Granted, false, usage, now_ms()));
         wait_for_commands();
     }
+    // SAFETY: `tap` is the non-NULL port created above.
+    let source = unsafe { CFMachPortCreateRunLoopSource(std::ptr::null(), tap, 0) };
+    if source.is_null() {
+        // No source, no events: turn the tap off and give it back, and say the listener
+        // is not running, as for a tap that could not be created.
+        // SAFETY: `tap` was created above (the Create rule), nothing else holds it, and
+        // the callback never saw it, because `TAP` is still NULL.
+        unsafe {
+            CGEventTapEnable(tap, false);
+            CFRelease(tap.cast_const());
+        }
+        emit(&ready_line(Permission::Granted, false, usage, now_ms()));
+        wait_for_commands();
+    }
     TAP.store(tap, Ordering::Release);
     // SAFETY: the source and the run loop belong to this thread; nothing is freed
     // while the process runs.
     unsafe {
-        let source = CFMachPortCreateRunLoopSource(std::ptr::null(), tap, 0);
         CFRunLoopAddSource(CFRunLoopGetCurrent(), source, kCFRunLoopCommonModes);
         CGEventTapEnable(tap, true);
     }

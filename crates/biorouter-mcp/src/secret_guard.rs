@@ -102,6 +102,10 @@ pub const DEFAULT_SECRET_PATTERNS: &[&str] = &[
     "**/Partitions/biorouter-embedded-browser/**/Cookies",
 ];
 
+/// The floor line whose last component reaches a `.env` template's name, and so the only
+/// one [`SecretGuard::is_denied`] reopens a template spelled in another case against.
+const ENV_FAMILY_FLOOR: &str = "**/.env.*";
+
 /// Conventional `.env` templates, reopened on top of the floor (issue #522).
 ///
 /// `**/.env.*` above also matches the templates a repository commits next to
@@ -355,7 +359,7 @@ impl SecretGuard {
     /// textual descendant of the root.
     pub fn is_denied(&self, path: &Path) -> bool {
         if self.is_denied_as_spelled(path, path) {
-            return true;
+            return !self.is_a_template_spelled_in_another_case(path);
         }
         match path.to_str() {
             // The lowercase form is a second spelling to MATCH, never a second
@@ -368,6 +372,45 @@ impl SecretGuard {
             }
             _ => false,
         }
+    }
+
+    /// `.env.Example` and its kin (issue #522). The floor's `**/.env.*` and the
+    /// [`DEFAULT_SECRET_TEMPLATE_EXCEPTIONS`] that reopen `.env.example` are both
+    /// case-sensitive, like every gitignore pattern, so a template spelled with a
+    /// capital after `.env.` matched the floor and missed its exception: refused,
+    /// while `.ENV.EXAMPLE`, which the floor misses as spelled, was readable. On APFS
+    /// and NTFS that spelling opens the template itself.
+    ///
+    /// Reopened only when all three hold, so nothing a person wrote is overridden:
+    /// the name, lowercased, is a template; every matcher that denies the spelling
+    /// as written does so by the floor's own `**/.env.*` line, so no
+    /// `.biorouterignore` line matched it (a project's `.env.Example` stays
+    /// denied); and the whole path lowercased is not denied, so a rule that denies
+    /// the lowercase template (`.env.example`) still holds. `.env`, `.Env.local`
+    /// and `.env.Production` are no template and stay refused.
+    fn is_a_template_spelled_in_another_case(&self, path: &Path) -> bool {
+        let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+            return false;
+        };
+        if !name.chars().any(char::is_uppercase)
+            || !resolve::is_env_template_name(&name.to_lowercase())
+        {
+            return false;
+        }
+        let denied_only_by_the_env_floor = |matcher: &Gitignore| match matcher.matched(path, false)
+        {
+            ignore::Match::Ignore(glob) => {
+                glob.from().is_none() && glob.original() == ENV_FAMILY_FLOOR
+            }
+            ignore::Match::None | ignore::Match::Whitelist(_) => true,
+        };
+        if !denied_only_by_the_env_floor(&self.ignore)
+            || !denied_only_by_the_env_floor(&self.machine_wide)
+        {
+            return false;
+        }
+        path.to_str()
+            .is_some_and(|text| !self.is_denied_as_spelled(Path::new(&text.to_lowercase()), path))
     }
 
     /// `spelled` is matched against the patterns; `located` is the path whose
@@ -2044,6 +2087,70 @@ mod tests {
         assert!(!g.is_denied(Path::new("Notes.TXT")));
     }
 
+    /// Issue #522 follow-up: a `.env` template is readable whatever its case, and folding
+    /// case never reopens a real `.env` file or a template a person denied.
+    #[test]
+    fn a_template_spelled_in_another_case_is_readable_and_nothing_else_is() {
+        let dir = tempdir().unwrap();
+        let g = SecretGuard::for_dir(dir.path());
+        for template in [
+            ".env.example",
+            ".env.Example",
+            ".ENV.EXAMPLE",
+            ".Env.Sample",
+            "config/.Env.Sample",
+            "config/.env.Template",
+            ".env.Local.Example",
+            "/h/Project/.env.Dist",
+        ] {
+            assert!(!g.is_denied(Path::new(template)), "{template}");
+        }
+        for secret in [
+            ".env",
+            ".ENV",
+            ".Env",
+            ".Env.local",
+            ".env.Local",
+            ".env.Production",
+            ".ENV.PRODUCTION",
+            ".env.Example.bak",
+            "/h/.AWS/Credentials",
+        ] {
+            assert!(g.is_denied(Path::new(secret)), "{secret}");
+        }
+
+        // A project that denies the lowercase template keeps every spelling denied, and one
+        // that denies a capitalised spelling keeps that spelling denied.
+        let project = tempdir().unwrap();
+        std::fs::write(
+            project.path().join(".biorouterignore"),
+            ".env.example\n.env.Sample\n",
+        )
+        .unwrap();
+        let g = SecretGuard::for_dir(project.path());
+        for denied in [
+            ".env.example",
+            ".env.Example",
+            ".ENV.EXAMPLE",
+            ".env.Sample",
+        ] {
+            assert!(g.is_denied(Path::new(denied)), "{denied}");
+        }
+        assert!(!g.is_denied(Path::new(".env.Template")));
+
+        // The shell scan agrees with the guard.
+        let env = ShellEnv::with_vars([("HOME", dir.path().to_string_lossy().into_owned())]);
+        let scan = |command: &str| {
+            SecretGuard::for_dir(dir.path())
+                .find_denied_access_in(json!({ "command": command }).as_object().unwrap(), &env)
+                .map(|denied| denied.shown)
+        };
+        assert_eq!(scan("cat .env.Example"), None);
+        assert_eq!(scan("cat config/.Env.Sample"), None);
+        assert!(scan("cat .env.Local").is_some());
+        assert!(scan("cat .Env").is_some());
+    }
+
     #[test]
     #[cfg(unix)]
     fn is_denied_resolved_follows_a_symlink() {
@@ -2992,6 +3099,10 @@ mod issue522_template_resolution {
             "cp \"$UNSET_ROOT/config/.env.sample\" config/settings.txt",
             "cat \"$(pwd)/.env.production.example\"",
             "cat \"$(pwd)/.ENV.EXAMPLE\"",
+            // A template spelled with a capital after `.env.` is the template on APFS
+            // and NTFS; it used to be refused because the floor's exceptions are
+            // lowercase only.
+            "cat \"$UNSET_ROOT/.env.Example\"",
         ] {
             assert_eq!(command_denial(&guard, &env, command), None, "{command}");
         }
@@ -3000,7 +3111,9 @@ mod issue522_template_resolution {
             "cat \"$(git rev-parse --show-toplevel)/config/.env.local\"",
             "cat \"$UNSET_ROOT/.env.production\"",
             "cat \"$UNSET_ROOT/.env.example.bak\"",
-            "cat \"$UNSET_ROOT/.env.Example\"",
+            "cat \"$UNSET_ROOT/.env.Example.bak\"",
+            "cat \"$UNSET_ROOT/.env.Local\"",
+            "cat \"$UNSET_ROOT/.Env.Production\"",
             "cat \"$UNSET_ROOT/.env.example/id_rsa\"",
         ] {
             assert!(command_denial(&guard, &env, command).is_some(), "{command}");

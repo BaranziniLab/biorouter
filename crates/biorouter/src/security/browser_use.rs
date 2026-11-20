@@ -535,7 +535,7 @@ impl BrowserUseConsent {
     ) -> Result<BrowserPermit> {
         ensure!(
             !crate::user_surface::no_human_surface(),
-            "{APPROVAL_REQUIRED}: the Biorouter Browser runs within its approved chat request; an identity-free API call cannot use a chat's grant"
+            "{APPROVAL_REQUIRED}: no person is present to approve the Biorouter Browser here (a scheduled run, or an API call that is not a chat request), so it is unavailable; it runs only within a person's chat request"
         );
         if !self.execution_allowed.load(Ordering::Acquire) {
             return Err(ModeForbidsBrowser.into());

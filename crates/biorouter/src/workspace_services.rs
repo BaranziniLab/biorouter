@@ -206,6 +206,22 @@ pub trait WorkspaceServices: Send + Sync {
         let _ = (frame, session_id, deadline, cancel);
         Err(BrowserChannelError::NoDesktop)
     }
+
+    /// Why a Biorouter Browser operation for `session_id` could not reach a window right
+    /// now, by the same routing rule [`Self::gui_browser_request`] applies; `None` when a
+    /// window holds the chat, or when this host cannot tell.
+    ///
+    /// Asked BEFORE the consent wait (`ExtensionManager::admit_browser`). The card that
+    /// answers the wait is shown only by a window that holds the chat, so a chat no window
+    /// holds (driven through `/reply` by `biorouter session send` or `workspace_send_prompt`)
+    /// parked for the whole 900 s approval wait before the operation was refused anyway.
+    ///
+    /// The default answers `None`, which keeps the wait: a host that cannot tell must not
+    /// refuse a call the window might have answered.
+    fn browser_route_refusal(&self, session_id: &str) -> Option<BrowserChannelError> {
+        let _ = session_id;
+        None
+    }
 }
 
 /// Why a Biorouter Browser operation never reached a page, or never came back (BB-10).

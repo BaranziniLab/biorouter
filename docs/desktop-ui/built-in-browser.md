@@ -533,6 +533,11 @@ The agent drives only a tab the person can see.
   open anywhere, the operation fails with `ChatNotOnScreen`: "Biorouter's browser runs in this chat's
   side panel, and the chat is not on screen. Ask the person to open the chat." The model may fall back
   to `webdocuments` `web_scrape` for a public page, which needs no browser and no login.
+- A chat that no window holds (one driven by `biorouter session send` or `workspace_send_prompt`)
+  gets that answer before the consent card is asked for (`ExtensionManager::admit_browser` asks
+  `WorkspaceServices::browser_route_refusal`, the same routing rule the operation uses). Only a
+  window that holds the chat shows its card, so the call used to wait the full 900 s for an
+  approval nobody could give.
 - If the view is covered (BB-08 and the geometry rules), the operation waits up to 2 s for the cover
   to go and then fails with a retryable error.
 
@@ -550,16 +555,19 @@ cancels any browser operation in flight.
 | Surface | Behaviour |
 |---|---|
 | Desktop app, chat on screen | Full tool set |
-| Desktop app, chat not on screen | Tools advertised; operations fail with `ChatNotOnScreen` |
+| Desktop app, chat not on screen | Tools advertised; operations fail with `ChatNotOnScreen`, before the consent card when no window holds the chat |
 | `biorouter serve` (any browser tab) | Tools and instructions withheld from the roster, as SD-8 withholds tools whose only path is an approval the keyless daemon cannot grant; there is also no Electron to host a view |
 | CLI session in its own process | Withheld: no `WorkspaceServices`, so no window can ever be reached |
 | CLI attached to the desktop daemon (`session send`) | As the desktop app; approval appears only in the desktop window |
-| Subagent (`SessionType::SubAgent`) | Withheld in this version; a subagent's chat is never the one on screen |
+| Subagent (`SessionType::SubAgent`) | Withheld from the model's tool list, and refused at dispatch; a subagent's chat is never the one on screen |
+| Scheduled run, hidden or terminal session | Withheld from the model's tool list, and an older roster is not offered the browser either (L6 covers a person's own chat only); no window shows such a session, and a scheduled run has no person to approve the card |
 | Desktop app against an external backend | Works; the browser runs on the computer showing the app, not on the backend host (unlike Copilot, BB-17) |
 
 The roster decision is made once per process from a fact that does not change during a chat (the
 desktop launcher sets `BIOROUTER_DESKTOP_BROWSER=1` on the daemon it spawns), so the tool list stays
-stable and prompt caching is not disturbed.
+stable and prompt caching is not disturbed. The second filter, by session kind
+(`Agent::withhold_browser_tools_where_unattended`), reads a fact that does not change during a chat
+either. It narrows only the model's list; the permission editor still lists the tools.
 
 ## Working beside Biorouter Copilot
 

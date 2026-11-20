@@ -2025,12 +2025,29 @@ impl ExtensionManager {
             status.public_model != cap.tier().is_private(),
             "The Biorouter Browser caller differs from the approved model destination"
         );
+        Self::refuse_browser_unless_a_window_holds(session_id)?;
         let grant = browser_use::grant_for_call(tool, arguments);
         Ok(Some(
             self.browser_use
                 .permit(session_id, &self.provider, grant, cancel)
                 .await?,
         ))
+    }
+
+    /// BB-10 and BB-17: refuse at once, with the sentence the operation itself would have
+    /// returned, when no window holds the chat. Only a window that holds the chat polls its
+    /// consent, so without this a chat driven off screen (`biorouter session send`,
+    /// `workspace_send_prompt`) parked for the whole 900 s approval wait, then was stopped.
+    /// Asked before every wait, so it runs whether or not the grant is already held: the
+    /// operation would fail the same way after a held grant. A host that cannot tell (no
+    /// workspace services, or the default answer) keeps today's wait.
+    fn refuse_browser_unless_a_window_holds(session_id: &str) -> Result<()> {
+        match crate::workspace_services::get()
+            .and_then(|services| services.browser_route_refusal(session_id))
+        {
+            Some(refusal) => Err(anyhow::anyhow!(refusal.to_string())),
+            None => Ok(()),
+        }
     }
 
     /// The act grant for a call admitted under observe whose target turned out to need it
@@ -2042,6 +2059,7 @@ impl ExtensionManager {
         session_id: &str,
         cancel: &CancellationToken,
     ) -> Result<crate::security::browser_use::BrowserPermit> {
+        Self::refuse_browser_unless_a_window_holds(session_id)?;
         self.browser_use
             .permit(
                 session_id,
@@ -5314,6 +5332,207 @@ mod tests {
             crate::agents::browser_extension::UNKNOWN_CHAT_REFUSAL,
             "{error}"
         );
+    }
+
+    /// BB-10 and BB-17: a chat no window holds (one driven by `biorouter session send` or
+    /// `workspace_send_prompt`) is refused at once with the operation's own sentence, and no
+    /// consent card is asked for. Before, it parked for the whole 900 s approval wait for a
+    /// card only a window holding the chat would show, then was stopped. The control half
+    /// shows the wait itself is unchanged where the host cannot tell.
+    #[tokio::test]
+    #[serial_test::serial(workspace_services)]
+    async fn a_browser_call_from_a_chat_no_window_holds_is_refused_before_the_consent_wait() {
+        use crate::privacy::ProviderTier;
+        use crate::providers::base::{Provider, ProviderMetadata, ProviderUsage};
+        use crate::security::browser_use::BrowserGrant;
+        use crate::workspace_services::{
+            BrowserChannelError, KbPrimaryChoice, KbSelectionView, NullServices, WorkspaceServices,
+            WorkspaceTurnLease,
+        };
+
+        struct Overrides;
+        impl Drop for Overrides {
+            fn drop(&mut self) {
+                crate::workspace_services::clear_test_override();
+                crate::agents::browser_extension::set_available_for_tests(None);
+            }
+        }
+
+        /// A desktop host on which no window holds the chat; everything else is
+        /// `NullServices`.
+        struct Unseen;
+        #[async_trait::async_trait]
+        impl WorkspaceServices for Unseen {
+            fn gui_attached(&self) -> bool {
+                true
+            }
+            fn layout_snapshot(&self) -> Option<serde_json::Value> {
+                None
+            }
+            fn is_turn_active(&self, session_id: &str) -> bool {
+                NullServices.is_turn_active(session_id)
+            }
+            fn cancel_turn(&self, session_id: &str) -> Option<String> {
+                NullServices.cancel_turn(session_id)
+            }
+            fn begin_turn(
+                &self,
+                session_id: &str,
+                cancel: CancellationToken,
+            ) -> Result<Box<dyn WorkspaceTurnLease>, String> {
+                NullServices.begin_turn(session_id, cancel)
+            }
+            async fn stop_agent(&self, session_id: &str) -> Result<(), String> {
+                NullServices.stop_agent(session_id).await
+            }
+            async fn start_detached_turn(
+                &self,
+                session_id: &str,
+                message: crate::conversation::message::Message,
+            ) -> Result<String, String> {
+                NullServices.start_detached_turn(session_id, message).await
+            }
+            async fn start_session(
+                &self,
+                working_dir: std::path::PathBuf,
+                extensions: Option<Vec<String>>,
+                knowledge_bases: Vec<String>,
+                primary: KbPrimaryChoice,
+            ) -> Result<String, String> {
+                NullServices
+                    .start_session(working_dir, extensions, knowledge_bases, primary)
+                    .await
+            }
+            fn set_knowledge_bases(
+                &self,
+                session_id: &str,
+                kbs: &[String],
+                primary: KbPrimaryChoice,
+            ) -> Result<KbSelectionView, String> {
+                NullServices.set_knowledge_bases(session_id, kbs, primary)
+            }
+            fn knowledge_selection(&self, session_id: &str) -> KbSelectionView {
+                NullServices.knowledge_selection(session_id)
+            }
+            async fn gui_command(
+                &self,
+                frame: serde_json::Value,
+                wait_result: bool,
+            ) -> Result<serde_json::Value, String> {
+                NullServices.gui_command(frame, wait_result).await
+            }
+            fn browser_route_refusal(&self, _session_id: &str) -> Option<BrowserChannelError> {
+                Some(BrowserChannelError::ChatNotOnScreen)
+            }
+        }
+
+        struct Model;
+        #[async_trait::async_trait]
+        impl Provider for Model {
+            fn metadata() -> ProviderMetadata {
+                ProviderMetadata::empty()
+            }
+            fn get_name(&self) -> &str {
+                "browser-route-test"
+            }
+            fn get_model_config(&self) -> crate::model::ModelConfig {
+                crate::model::ModelConfig::new_or_fail("m1")
+            }
+            fn tier(&self) -> ProviderTier {
+                ProviderTier::Public
+            }
+            async fn complete_with_model(
+                &self,
+                _: &crate::model::ModelConfig,
+                _: &str,
+                _: &[crate::conversation::message::Message],
+                _: &[rmcp::model::Tool],
+            ) -> Result<
+                (crate::conversation::message::Message, ProviderUsage),
+                crate::providers::errors::ProviderError,
+            > {
+                unreachable!()
+            }
+        }
+
+        let root = tempfile::tempdir().unwrap();
+        let sessions = Arc::new(crate::session::SessionManager::new(
+            root.path().to_path_buf(),
+        ));
+        let manager = Arc::new(ExtensionManager::new(
+            Arc::new(tokio::sync::Mutex::new(Some(
+                Arc::new(Model) as Arc<dyn Provider>
+            ))),
+            Arc::clone(&sessions),
+        ));
+        let session = sessions
+            .create_session(
+                root.path().to_path_buf(),
+                "browser off screen".into(),
+                crate::session::session_manager::SessionType::User,
+            )
+            .await
+            .unwrap()
+            .id;
+        let config = ExtensionConfig::Platform {
+            name: crate::agents::browser_extension::EXTENSION_NAME.to_string(),
+            description: String::new(),
+            bundled: Some(true),
+            available_tools: Vec::new(),
+        };
+        let cap = crate::privacy::CallCapability::for_test_restricted();
+        let cancel = CancellationToken::new();
+        crate::agents::browser_extension::set_available_for_tests(Some(true));
+        crate::workspace_services::set_for_tests(Some(Arc::new(Unseen)));
+        let _overrides = Overrides;
+        // A request is running and bound to this model, as at the start of a turn, so without
+        // the check the call would park for the card.
+        let _task = manager.browser_use.task_guard();
+        manager.bind_browser_use_task(&session).await.unwrap();
+
+        let refused = tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            manager.admit_browser(
+                &session,
+                &config,
+                "browser__browser_snapshot",
+                None,
+                cap,
+                &cancel,
+            ),
+        )
+        .await
+        .expect("refused at once, not parked for the consent card");
+        let error = refused.expect_err("refused").to_string();
+        assert_eq!(error, BrowserChannelError::ChatNotOnScreen.to_string());
+        let act = tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            manager.browser_act_permit(&session, &cancel),
+        )
+        .await
+        .expect("the act grant is not waited for either");
+        assert!(act.is_err(), "no act permit for a chat no window holds");
+        let status = manager.browser_use_status(&session).await.unwrap();
+        assert_eq!(status.requested, None, "no consent card was asked for");
+        assert_eq!(status.state, "idle");
+
+        // Control: a host that cannot tell keeps today's wait, so the check was the cause.
+        crate::workspace_services::set_for_tests(Some(Arc::new(NullServices)));
+        let parked = tokio::time::timeout(
+            std::time::Duration::from_millis(100),
+            manager.admit_browser(
+                &session,
+                &config,
+                "browser__browser_snapshot",
+                None,
+                cap,
+                &cancel,
+            ),
+        )
+        .await;
+        assert!(parked.is_err(), "the consent wait is unchanged elsewhere");
+        let status = manager.browser_use_status(&session).await.unwrap();
+        assert_eq!(status.requested, Some(BrowserGrant::Observe));
     }
 
     /// BB-09 and BB-18: the `browser` key and the `browser__browser_*` names belong to the

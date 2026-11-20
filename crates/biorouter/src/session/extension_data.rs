@@ -800,10 +800,16 @@ impl EnabledExtensionsState {
 
     /// The capabilities this chat should be offered on top of its saved roster: each
     /// default-on capability the roster predates and that the person has on for every chat
-    /// (`machine`, the machine-wide enabled extensions). Never for a subagent, whose roster is
-    /// its runtime profile.
-    pub fn backfill(&self, machine: &[ExtensionConfig], subagent: bool) -> Vec<ExtensionConfig> {
-        if subagent {
+    /// (`machine`, the machine-wide enabled extensions). Only for a person's own chat
+    /// (`SessionType::User`): a subagent's roster is its runtime profile, and a scheduled run,
+    /// a hidden or a terminal session has no window that could host the Biorouter Browser,
+    /// the one capability on the list.
+    pub fn backfill(
+        &self,
+        machine: &[ExtensionConfig],
+        session_type: crate::session::session_manager::SessionType,
+    ) -> Vec<ExtensionConfig> {
+        if session_type != crate::session::session_manager::SessionType::User {
             return Vec::new();
         }
         BACKFILLED_CAPABILITIES
@@ -834,28 +840,42 @@ mod tests {
     /// chat whose roster this build wrote keeps whatever the person chose, including off.
     #[test]
     fn a_roster_that_predates_the_browser_is_offered_it_once() {
+        use crate::session::session_manager::SessionType;
+        let person = SessionType::User;
         let machine = vec![platform("developer"), platform("Browser"), platform("todo")];
         let old: EnabledExtensionsState =
             serde_json::from_value(json!({ "extensions": [] })).unwrap();
         assert!(old.offered.is_empty());
-        let offered = old.backfill(&machine, false);
+        let offered = old.backfill(&machine, person);
         assert_eq!(
             offered.iter().map(ExtensionConfig::key).collect::<Vec<_>>(),
             vec!["browser".to_string()]
         );
-        // Never into a subagent's profile, and never when the person turned it off everywhere.
-        assert!(old.backfill(&machine, true).is_empty());
+        // Only a person's own chat: never into a subagent's profile, a scheduled run, a hidden
+        // or a terminal session, none of which a window can show.
+        for kind in [
+            SessionType::SubAgent,
+            SessionType::Scheduled,
+            SessionType::Hidden,
+            SessionType::Terminal,
+        ] {
+            assert!(
+                old.backfill(&machine, kind).is_empty(),
+                "a {kind} session was offered the browser"
+            );
+        }
+        // And never when the person turned it off everywhere.
         assert!(old
-            .backfill(&[platform("developer"), platform("todo")], false)
+            .backfill(&[platform("developer"), platform("todo")], person)
             .is_empty());
 
         // A roster this build writes knows the browser: off in this chat stays off.
         let written = EnabledExtensionsState::new(vec![platform("developer")]);
         assert_eq!(written.offered, vec!["browser".to_string()]);
-        assert!(written.backfill(&machine, false).is_empty());
+        assert!(written.backfill(&machine, person).is_empty());
         let round_trip: EnabledExtensionsState =
             serde_json::from_value(written.to_value().unwrap()).unwrap();
-        assert!(round_trip.backfill(&machine, false).is_empty());
+        assert!(round_trip.backfill(&machine, person).is_empty());
 
         // Already there: nothing to add.
         let with_browser: EnabledExtensionsState =
@@ -864,7 +884,7 @@ mod tests {
             extensions: vec![platform("Browser")],
             ..with_browser
         };
-        assert!(with_browser.backfill(&machine, false).is_empty());
+        assert!(with_browser.backfill(&machine, person).is_empty());
     }
 
     fn checklist(markdown: &str) -> TodoState {

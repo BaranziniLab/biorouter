@@ -3088,6 +3088,169 @@ mod tests {
         );
     }
 
+    /// A credential store whose main entry can never be written. The fault's text must not
+    /// say "keyring": `is_keyring_availability_error` would route that to the file fallback
+    /// instead of failing the write.
+    struct StuckStore(std::sync::Arc<MapStore>);
+
+    impl KeyringBlobStore for StuckStore {
+        fn get(&self, username: &str) -> Result<String, keyring::Error> {
+            self.0.get(username)
+        }
+
+        fn set(&self, username: &str, value: &str) -> Result<(), keyring::Error> {
+            if username == KEYRING_USERNAME {
+                return Err(keyring::Error::Invalid(
+                    "synthetic".to_string(),
+                    "persistent write failure".to_string(),
+                ));
+            }
+            self.0.set(username, value)
+        }
+
+        fn delete(&self, username: &str) -> Result<(), keyring::Error> {
+            self.0.delete(username)
+        }
+    }
+
+    /// A credential store whose first main write lands, whose first stale-entry delete then
+    /// fails, and which afterwards answers every main write `Ok` without storing it: the
+    /// restore reports success while the old value never comes back.
+    struct LyingStore {
+        inner: std::sync::Arc<MapStore>,
+        main_writes: std::sync::atomic::AtomicUsize,
+        delete_failed: std::sync::atomic::AtomicBool,
+    }
+
+    impl KeyringBlobStore for LyingStore {
+        fn get(&self, username: &str) -> Result<String, keyring::Error> {
+            self.inner.get(username)
+        }
+
+        fn set(&self, username: &str, value: &str) -> Result<(), keyring::Error> {
+            if username == KEYRING_USERNAME
+                && self
+                    .main_writes
+                    .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+                    > 0
+            {
+                return Ok(());
+            }
+            self.inner.set(username, value)
+        }
+
+        fn delete(&self, username: &str) -> Result<(), keyring::Error> {
+            if username == Config::chunk_username(1)
+                && !self
+                    .delete_failed
+                    .swap(true, std::sync::atomic::Ordering::SeqCst)
+            {
+                return Err(keyring::Error::Invalid(
+                    "synthetic delete failure".to_string(),
+                    "one shot".to_string(),
+                ));
+            }
+            self.inner.delete(username)
+        }
+    }
+
+    /// When the write fails AND putting the old entries back fails, the commit cannot say
+    /// what is saved, and must say so: `IndeterminateSavedState`, never the write's own
+    /// error (which reads as "nothing changed"), and no cached secrets a later read could
+    /// trust. Both arms of `restore_raw_keyring` are covered: a restore write that fails,
+    /// and one that claims success while the read back shows the old value is not there.
+    #[test]
+    fn saved_secret_failure_with_failed_restore_is_indeterminate() {
+        if !crate::test_sandbox::in_a_process_of_its_own() {
+            return;
+        }
+        assert!(crate::config::test_binary_credentials::os_store_is_kept_off());
+        let old_blob = "{\"synthetic-old-key\":\"old-value\"}";
+
+        // The restore write itself fails.
+        let directory = tempfile::tempdir().unwrap();
+        let store = std::sync::Arc::new(MapStore::new());
+        store.set(KEYRING_USERNAME, old_blob).unwrap();
+        let mut config = Config::new(
+            directory.path().join("config.yaml"),
+            "synthetic-indeterminate",
+        )
+        .unwrap();
+        config.test_keyring_store = Some(std::sync::Arc::new(StuckStore(store.clone())));
+        let result = config.set_secret("synthetic-old-key", &"new-value");
+        assert!(
+            matches!(result, Err(ConfigError::IndeterminateSavedState)),
+            "{result:?}"
+        );
+        assert!(config.secrets_cache.lock().unwrap().is_none());
+        assert_eq!(
+            store.get(KEYRING_USERNAME).unwrap(),
+            old_blob,
+            "the stuck store never took the new value"
+        );
+
+        // The restore claims success, and the read back finds the new value still there.
+        let directory = tempfile::tempdir().unwrap();
+        let store = std::sync::Arc::new(MapStore::new());
+        store.set(KEYRING_USERNAME, old_blob).unwrap();
+        let lying = std::sync::Arc::new(LyingStore {
+            inner: store.clone(),
+            main_writes: std::sync::atomic::AtomicUsize::new(0),
+            delete_failed: std::sync::atomic::AtomicBool::new(false),
+        });
+        let mut config =
+            Config::new(directory.path().join("config.yaml"), "synthetic-lying").unwrap();
+        config.test_keyring_store = Some(lying.clone());
+        let result = config.set_secret("synthetic-old-key", &"new-value");
+        assert!(
+            matches!(result, Err(ConfigError::IndeterminateSavedState)),
+            "{result:?}"
+        );
+        assert!(lying
+            .delete_failed
+            .load(std::sync::atomic::Ordering::SeqCst));
+        assert!(
+            lying.main_writes.load(std::sync::atomic::Ordering::SeqCst) >= 2,
+            "the restore wrote the main entry back"
+        );
+        assert_ne!(
+            store.get(KEYRING_USERNAME).unwrap(),
+            old_blob,
+            "the precondition of this arm: the old value really is not back"
+        );
+        assert!(config.secrets_cache.lock().unwrap().is_none());
+
+        // A custom provider commit: the definition is put back even though the secret
+        // store's state cannot be told.
+        let directory = tempfile::tempdir().unwrap();
+        let store = std::sync::Arc::new(MapStore::new());
+        store.set(KEYRING_USERNAME, old_blob).unwrap();
+        let definition = directory
+            .path()
+            .join("custom_providers")
+            .join("synthetic.json");
+        std::fs::create_dir_all(definition.parent().unwrap()).unwrap();
+        std::fs::write(&definition, b"{\"name\":\"old\"}").unwrap();
+        let mut config = Config::new(
+            directory.path().join("config.yaml"),
+            "synthetic-indeterminate-provider",
+        )
+        .unwrap();
+        config.test_keyring_store = Some(std::sync::Arc::new(StuckStore(store.clone())));
+        let result = config.commit_custom_provider(
+            &definition,
+            Some(b"{\"name\":\"old\"}"),
+            Some(b"{\"name\":\"new\"}"),
+            Some(("synthetic-old-key", "new-value")),
+        );
+        assert!(
+            matches!(result, Err(ConfigError::IndeterminateSavedState)),
+            "{result:?}"
+        );
+        assert_eq!(std::fs::read(&definition).unwrap(), b"{\"name\":\"old\"}");
+        assert!(config.secrets_cache.lock().unwrap().is_none());
+    }
+
     #[test]
     fn saved_secret_replacement_preserves_fresh_unrelated_backing_values() {
         if !crate::test_sandbox::in_a_process_of_its_own() {

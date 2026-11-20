@@ -11777,11 +11777,12 @@ impl Agent {
             Some(state) => {
                 // L6: a default-on capability added after this chat's roster was saved (the
                 // Biorouter Browser) joins it now, unless the person has it off for every chat.
-                // Not persisted here, since opening a chat changes nothing in it; the roster
-                // records it, and marks it offered, the next time the roster is written.
+                // Only a person's own chat is offered it (`backfill` says why). Not persisted
+                // here, since opening a chat changes nothing in it; the roster records it, and
+                // marks it offered, the next time the roster is written.
                 let backfill = state.backfill(
                     &crate::config::extensions::get_enabled_extensions(),
-                    session.session_type == crate::session::session_manager::SessionType::SubAgent,
+                    session.session_type,
                 );
                 let mut extensions = state.extensions;
                 extensions.extend(backfill);
@@ -12229,24 +12230,42 @@ impl Agent {
 
     /// The Dictionary's tools reach the model only in a person's own chat (a `User`
     /// session) outside a Crew scope, with dictionary learning on (DD-51); an unreadable
-    /// Crew registry fails closed, as dispatch does.
+    /// Crew registry fails closed, as dispatch does. `session_type` is `None` when the
+    /// chat's row could not be read, which withholds them too.
     async fn withhold_dictionary_tools_where_unavailable(
         &self,
         session_id: &str,
+        session_type: Option<&SessionType>,
         prefixed_tools: &mut Vec<Tool>,
     ) {
-        let dictionary_allowed = self
-            .config
-            .session_manager
-            .get_session(session_id, false)
-            .await
-            .is_ok_and(|session| session.session_type == SessionType::User);
+        let dictionary_allowed = session_type == Some(&SessionType::User);
         let crew_scoped = match crate::crew::manager() {
             Ok(crew) => crew.is_scoped_session(session_id).await,
             Err(_) => true,
         };
         if !dictionary_allowed || crew_scoped || !self.dictionary_learning_enabled() {
             prefixed_tools.retain(|tool| !tool.name.starts_with("dictionary__"));
+        }
+    }
+
+    /// The Biorouter Browser's tools reach the model only in a person's own chat (BB-16).
+    /// A subagent, a scheduled run, a hidden or a terminal session is never the chat a
+    /// window shows, so no person could see the consent card or the page, and every call
+    /// would be refused. Offering them anyway cost every such roster fifteen tools that
+    /// could never work. The session kind never changes during a chat, so the roster stays
+    /// stable for prompt caching. A chat whose row could not be read (`None`) keeps them:
+    /// `ExtensionManager::admit_browser` refuses its calls, failing closed.
+    ///
+    /// ⚠ The model's list only. The permission editor still lists the tools, and the
+    /// dispatch refusals stay in place behind this, so a bridged or direct call is still
+    /// refused with its reason.
+    fn withhold_browser_tools_where_unattended(
+        session_type: Option<&SessionType>,
+        prefixed_tools: &mut Vec<Tool>,
+    ) {
+        if session_type.is_some_and(|kind| *kind != SessionType::User) {
+            prefixed_tools
+                .retain(|tool| !crate::security::browser_use::is_reserved_browser_name(&tool.name));
         }
     }
 
@@ -12295,8 +12314,25 @@ impl Agent {
         .unwrap_or_default();
 
         if matches!(audience, ToolAudience::Model) {
-            self.withhold_dictionary_tools_where_unavailable(session_id, &mut prefixed_tools)
-                .await;
+            // One read of the chat's kind, for both capabilities that only a person's own
+            // chat is offered.
+            let session_type = self
+                .config
+                .session_manager
+                .get_session(session_id, false)
+                .await
+                .ok()
+                .map(|session| session.session_type);
+            self.withhold_dictionary_tools_where_unavailable(
+                session_id,
+                session_type.as_ref(),
+                &mut prefixed_tools,
+            )
+            .await;
+            Self::withhold_browser_tools_where_unattended(
+                session_type.as_ref(),
+                &mut prefixed_tools,
+            );
         }
 
         // Revoking the injection is necessary but not sufficient. `subagent` is
@@ -27303,6 +27339,82 @@ mod tests {
             "the same chat without its Crew scope is offered the capability, so the scope \
              was what withheld it"
         );
+    }
+
+    /// BB-16: the Biorouter Browser's tools reach the model only in a person's own chat,
+    /// even on a desktop daemon where the browser is available. A subagent, a scheduled run,
+    /// a hidden or a terminal session is never the chat a window shows, so it was offered
+    /// fifteen tools whose every call was refused. The permission editor still lists them.
+    #[tokio::test]
+    #[serial_test::serial(workspace_services)]
+    async fn browser_tools_are_offered_only_in_a_persons_own_chat() {
+        struct Availability;
+        impl Drop for Availability {
+            fn drop(&mut self) {
+                crate::agents::browser_extension::set_available_for_tests(None);
+            }
+        }
+        crate::agents::browser_extension::set_available_for_tests(Some(true));
+        let _availability = Availability;
+
+        let temp = tempfile::TempDir::new().unwrap();
+        let sessions = Arc::new(crate::session::SessionManager::new(
+            temp.path().to_path_buf(),
+        ));
+        let agent = Agent::with_config(AgentConfig::new(
+            Arc::clone(&sessions),
+            Arc::new(crate::config::permission::PermissionManager::new(
+                temp.path().to_path_buf(),
+            )),
+            None,
+            crate::config::BioRouterMode::Auto,
+        ));
+        let target = crate::agents::extension_manager::resolve_bundled_extension("browser")
+            .expect("the Biorouter Browser is a bundled capability");
+        agent
+            .add_extension(target.into_config("browser session gate test".into()))
+            .await
+            .unwrap();
+        let offers_browser = |tools: &[Tool]| {
+            tools
+                .iter()
+                .any(|tool| tool.name.as_ref() == "browser__browser_open")
+        };
+
+        for kind in [
+            SessionType::User,
+            SessionType::SubAgent,
+            SessionType::Scheduled,
+            SessionType::Hidden,
+            SessionType::Terminal,
+        ] {
+            let session = sessions
+                .create_session(temp.path().to_path_buf(), format!("{kind} chat"), kind)
+                .await
+                .unwrap();
+            let model = agent.list_tools(&session.id, None).await;
+            if kind == SessionType::User {
+                assert!(
+                    offers_browser(&model),
+                    "a person's own chat is offered the browser"
+                );
+            } else {
+                assert!(
+                    !model
+                        .iter()
+                        .any(|tool| tool.name.starts_with("browser__browser_")),
+                    "a {kind} session was offered browser tools"
+                );
+            }
+            assert!(
+                offers_browser(
+                    &agent
+                        .list_tools_for_permission_settings(&session.id, None)
+                        .await
+                ),
+                "the permission editor still lists the browser's tools for a {kind} session"
+            );
+        }
     }
 
     /// PR-24 (DD-57): a Crew scoped chat teaches the dictionary nothing. Such a chat's turn
