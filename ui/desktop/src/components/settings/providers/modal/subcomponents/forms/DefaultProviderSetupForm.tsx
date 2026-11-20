@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState, useCallback } from 'react';
+import React, { useEffect, useMemo, useRef, useState, useCallback } from 'react';
 import { Input } from '../../../../../ui/input';
 import { SecretInput } from '../../../../../ui/secret-input';
 import { useConfig } from '../../../../../ConfigContext';
@@ -18,6 +18,7 @@ import { machineStringProps } from '../../../../config/machineString';
 import { providerSetupCopy } from '../../../copy';
 import { useHandFocusOnReady } from '../../../../models/dialogFocus';
 import { SavedProviderSecret } from './SavedProviderSecret';
+import { SECRET_MASK } from '../../../../../../utils/providerSecret';
 
 type ValidationErrors = Record<string, string>;
 
@@ -32,6 +33,8 @@ interface DefaultProviderSetupFormProps {
   setConfigValues: React.Dispatch<React.SetStateAction<Record<string, ConfigInput>>>;
   provider: ProviderDetails;
   validationErrors: ValidationErrors;
+  disabled?: boolean;
+  onSecretDraftCancel?: (key: string) => void;
 }
 
 // Frontend-side defaults per provider — ensures defaults show up immediately
@@ -160,6 +163,8 @@ export default function DefaultProviderSetupForm({
   setConfigValues,
   provider,
   validationErrors = {},
+  disabled = false,
+  onSecretDraftCancel,
 }: DefaultProviderSetupFormProps) {
   const parameters = useMemo(
     () => provider.metadata.config_keys || [],
@@ -171,36 +176,56 @@ export default function DefaultProviderSetupForm({
   // Re-render when the daemon's SD-18 answer arrives: `isHostOwnedProviderField` reads it.
   useProvidersAreHostManaged();
 
-  const loadConfigValues = useCallback(async () => {
-    setIsLoading(true);
-    try {
-      const values: { [k: string]: ConfigInput } = {};
+  const loadGenerationRef = useRef(0);
+  const loadConfigValues = useCallback(
+    async (generation: number) => {
+      setIsLoading(true);
+      try {
+        const values: { [k: string]: ConfigInput } = {};
 
-      for (const parameter of parameters) {
-        const configKey = `${parameter.name}`;
-        const configValue = (await read(configKey, parameter.secret || false)) as ConfigValue;
+        for (const parameter of parameters) {
+          const configKey = `${parameter.name}`;
+          const configValue = (await read(configKey, parameter.secret || false)) as ConfigValue;
+          if (generation !== loadGenerationRef.current) return;
 
-        if (configValue) {
-          values[parameter.name] = { serverValue: configValue };
-        } else {
-          const defaultValue = providerKeyDefault(provider.name, parameter);
-          if (defaultValue !== null) {
-            values[parameter.name] = { value: defaultValue };
+          if (configValue) {
+            values[parameter.name] = { serverValue: configValue };
+          } else {
+            const defaultValue = providerKeyDefault(provider.name, parameter);
+            if (defaultValue !== null) {
+              values[parameter.name] = { value: defaultValue };
+            }
           }
         }
+
+        if (generation !== loadGenerationRef.current) return;
+        setConfigValues((prev) => {
+          const merged = { ...prev };
+          for (const [key, loaded] of Object.entries(values)) {
+            merged[key] = {
+              ...loaded,
+              ...(prev[key]?.value !== undefined ? { value: prev[key].value } : {}),
+            };
+          }
+          return merged;
+        });
+      } finally {
+        if (generation === loadGenerationRef.current) setIsLoading(false);
       }
+    },
+    [parameters, provider.name, read, setConfigValues]
+  );
 
-      setConfigValues((prev) => ({
-        ...prev,
-        ...values,
-      }));
-    } finally {
-      setIsLoading(false);
-    }
-  }, [parameters, provider.name, read, setConfigValues]);
-
+  // Loaded once per mount; a load that finishes after unmount writes nothing. The dialog remounts
+  // the form for another provider (its `key`), so this never has to follow a dependency, and a
+  // `read` whose identity changes must not restart the load, and throw its progress away, on every
+  // render.
   useEffect(() => {
-    loadConfigValues();
+    const generation = ++loadGenerationRef.current;
+    void loadConfigValues(generation);
+    return () => {
+      loadGenerationRef.current += 1;
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -216,7 +241,7 @@ export default function DefaultProviderSetupForm({
     if (parameter.secret) {
       const serverValue = configValues[parameter.name]?.serverValue;
       if (typeof serverValue === 'object' && 'maskedValue' in serverValue) {
-        return serverValue.maskedValue;
+        return SECRET_MASK;
       }
     }
 
@@ -276,7 +301,7 @@ export default function DefaultProviderSetupForm({
         },
         placeholder: getPlaceholder(parameter),
         required: parameter.required,
-        disabled: hostOwned,
+        disabled: hostOwned || disabled,
         'aria-describedby': hostOwned ? HOST_OWNED_NOTE_ID : undefined,
         // Every parameter is a machine string (a command, an endpoint, a region, a profile name),
         // so none of them is spellchecked: Configure Claude Code opened with `claude` underlined
@@ -301,6 +326,15 @@ export default function DefaultProviderSetupForm({
               provider={provider.name}
               secretKey={parameter.name}
               label={getFieldName(parameter)}
+              value={configValues[parameter.name]?.value ?? ''}
+              onChange={(value) =>
+                setConfigValues((prev) => ({
+                  ...prev,
+                  [parameter.name]: { ...prev[parameter.name], value },
+                }))
+              }
+              disabled={hostOwned || disabled}
+              onCancelEdit={() => onSecretDraftCancel?.(parameter.name)}
               onRemoved={() =>
                 setConfigValues((prev) => ({ ...prev, [parameter.name]: { value: '' } }))
               }

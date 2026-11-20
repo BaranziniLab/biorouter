@@ -16,21 +16,26 @@ beforeEach(() => {
 });
 
 describe('saved provider key', () => {
-  it('shows a read-only preview and explains how to replace it', async () => {
+  it('shows one fixed read-only mask and explains local replacement without retrieval', () => {
     render(
       <SavedProviderSecret
         id="key"
         provider="google"
         secretKey="GOOGLE_API_KEY"
         label="API key"
+        value=""
+        onChange={vi.fn()}
         onRemoved={vi.fn()}
       />
     );
-    const input = await screen.findByDisplayValue('synt••••••••-key');
+    const input = screen.getByDisplayValue('••••••••');
     expect(input).toHaveAttribute('readonly');
-    expect(input).toHaveAccessibleDescription(/remove it first, then add a new one/i);
-    expect(screen.queryByRole('button', { name: /show/i })).toBeNull();
-    expect(mocks.preview).toHaveBeenCalledWith('google', 'GOOGLE_API_KEY');
+    expect(input).toHaveAccessibleDescription(
+      'Edit to replace this saved key. The saved value is never shown.'
+    );
+    expect(screen.getByRole('button', { name: 'Edit API key' })).toBeEnabled();
+    expect(screen.queryByRole('button', { name: /show api key/i })).toBeNull();
+    expect(mocks.preview).not.toHaveBeenCalled();
   });
 
   it('does not remove a key until confirmed and allows cancellation', async () => {
@@ -40,6 +45,8 @@ describe('saved provider key', () => {
         provider="google"
         secretKey="GOOGLE_API_KEY"
         label="API key"
+        value=""
+        onChange={vi.fn()}
         onRemoved={removed}
       />
     );
@@ -53,7 +60,7 @@ describe('saved provider key', () => {
     expect(mocks.remove).toHaveBeenCalledWith('GOOGLE_API_KEY');
   });
 
-  it('keeps the key read-only when deletion fails', async () => {
+  it('keeps the fixed saved-key mask when deletion fails', async () => {
     mocks.remove.mockRejectedValue(new Error('synthetic-sensitive-error'));
     const removed = vi.fn();
     render(
@@ -61,6 +68,8 @@ describe('saved provider key', () => {
         provider="google"
         secretKey="GOOGLE_API_KEY"
         label="API key"
+        value=""
+        onChange={vi.fn()}
         onRemoved={removed}
       />
     );
@@ -68,7 +77,8 @@ describe('saved provider key', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Remove API key' }));
     expect(await screen.findByRole('alert')).toHaveTextContent('Could not remove the key');
     expect(screen.queryByText(/synthetic-sensitive-error/)).toBeNull();
-    expect(screen.getByDisplayValue('synt••••••••-key')).toHaveAttribute('readonly');
+    expect(screen.getByDisplayValue('••••••••')).toHaveAttribute('readonly');
+    expect(mocks.preview).not.toHaveBeenCalled();
     expect(removed).not.toHaveBeenCalled();
   });
 
@@ -79,6 +89,8 @@ describe('saved provider key', () => {
         provider="google"
         secretKey="GOOGLE_API_KEY"
         label="API key"
+        value=""
+        onChange={vi.fn()}
         onRemoved={vi.fn()}
       />
     );

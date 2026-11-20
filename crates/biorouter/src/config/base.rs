@@ -91,6 +91,14 @@ pub enum ConfigError {
     LockError(String),
     #[error("Secret stored using file-based fallback")]
     FallbackToFileStorage,
+    /// A custom provider's definition changed on disk between the check of an
+    /// update and its commit, so the update was not written.
+    #[error("The saved provider changed while its credentials were being checked")]
+    StaleProviderState,
+    /// A save failed and what was saved before it could not be put back and
+    /// confirmed. Says nothing about the values involved.
+    #[error("The save failed and the previously saved state could not be confirmed")]
+    IndeterminateSavedState,
 }
 
 impl From<serde_json::Error> for ConfigError {
@@ -228,6 +236,88 @@ pub struct Config {
 enum SecretStorage {
     Keyring { service: String },
     File { path: PathBuf },
+}
+
+/// A file as one saved-state commit found it, so a failed commit can put it
+/// back byte for byte (see `Config::commit_saved_state`).
+#[derive(Clone)]
+enum SavedFile {
+    Absent,
+    Present(Vec<u8>),
+}
+
+impl SavedFile {
+    fn read(path: &Path) -> Result<Self, ConfigError> {
+        match std::fs::read(path) {
+            Ok(bytes) => Ok(Self::Present(bytes)),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(Self::Absent),
+            Err(error) => Err(error.into()),
+        }
+    }
+
+    fn bytes(&self) -> Option<&[u8]> {
+        match self {
+            Self::Absent => None,
+            Self::Present(bytes) => Some(bytes),
+        }
+    }
+
+    /// The secrets map a saved secrets file holds. Strict, unlike the read
+    /// path: a file that is not a map (a list, a scalar, unparsable text) is an
+    /// error rather than "no secrets", so a write never replaces secrets it
+    /// could not read. An absent or empty file holds none.
+    fn secret_values(&self) -> Result<HashMap<String, Value>, ConfigError> {
+        let Some(bytes) = self.bytes() else {
+            return Ok(HashMap::new());
+        };
+        let yaml: serde_yaml::Value = serde_yaml::from_slice(bytes)?;
+        match serde_json::to_value(yaml)? {
+            Value::Object(values) => Ok(values.into_iter().collect()),
+            Value::Null => Ok(HashMap::new()),
+            _ => Err(ConfigError::DeserializeError(
+                "the saved secrets file is not a map".to_string(),
+            )),
+        }
+    }
+
+    /// Put `path` back as this snapshot recorded it and read it back; `true`
+    /// only when the bytes match. A `private` file holds secrets, so it is
+    /// rewritten owner-only, as every secrets write is.
+    fn restore(&self, path: &Path, private: bool) -> bool {
+        let put_back = match self {
+            Self::Absent => match std::fs::remove_file(path) {
+                Ok(()) => Ok(()),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+                Err(error) => Err(error),
+            },
+            Self::Present(bytes) if private => match std::str::from_utf8(bytes) {
+                Ok(contents) => write_private_secrets_file(path, contents),
+                Err(_) => Err(std::io::Error::from(std::io::ErrorKind::InvalidData)),
+            },
+            Self::Present(bytes) => std::fs::write(path, bytes),
+        };
+        put_back.is_ok() && Self::read(path).is_ok_and(|now| now.bytes() == self.bytes())
+    }
+}
+
+/// A custom provider's definition file, as one saved-state commit changes it:
+/// `expected` is what the change was checked against (`None`: no file), and
+/// `replacement` what to write (`None`: leave it).
+struct DefinitionChange<'a> {
+    path: &'a Path,
+    expected: Option<&'a [u8]>,
+    replacement: Option<&'a [u8]>,
+}
+
+/// The secret store as one saved-state commit found it, before writing.
+enum SavedSecrets {
+    /// The secrets file this configuration uses.
+    File(SavedFile),
+    /// Every raw credential-store entry a secrets blob can occupy.
+    Keyring(Vec<Option<String>>),
+    /// The credential store could not be reached, so the fallback file is the
+    /// store, as it is for every read.
+    KeyringUnavailable(SavedFile),
 }
 
 /// Minimal username → value store interface over the OS keyring, so the
@@ -856,6 +946,13 @@ impl Config {
 
     pub fn path(&self) -> String {
         self.config_path.to_string_lossy().to_string()
+    }
+
+    /// The config file's path, for a caller that must read the file itself
+    /// rather than through the cache (see `routes::config_management`'s
+    /// config-read classifier).
+    pub fn path_ref(&self) -> &Path {
+        &self.config_path
     }
 
     /// The config file's contents, parsed once and reused until the file moves.
@@ -2168,6 +2265,328 @@ impl Config {
         Ok(result)
     }
 
+    /// Commit one prepared custom-provider definition and, when a new key was
+    /// typed, its credential, as one saved-state change (see
+    /// [`Self::commit_saved_state`]). The provider owner has already resolved
+    /// `definition_path`; a caller cannot point it anywhere else.
+    /// `expected_definition` is the file the update was checked against (`None`:
+    /// no file); a file that no longer matches refuses the commit with
+    /// [`ConfigError::StaleProviderState`] before anything is written.
+    pub(crate) fn commit_custom_provider(
+        &self,
+        definition_path: &Path,
+        expected_definition: Option<&[u8]>,
+        replacement_definition: Option<&[u8]>,
+        secret: Option<(&str, &str)>,
+    ) -> Result<(), ConfigError> {
+        let secret = secret.map(|(key, value)| (key, Value::String(value.to_string())));
+        self.commit_saved_state(
+            Some(DefinitionChange {
+                path: definition_path,
+                expected: expected_definition,
+                replacement: replacement_definition,
+            }),
+            secret,
+        )
+    }
+
+    /// Write an optional custom-provider definition and an optional secret, and
+    /// put back what was saved before when any part of it fails.
+    ///
+    /// What it promises, and what it does not:
+    ///
+    /// - The secret is merged into the store as it is SAVED now (the secrets
+    ///   file, or every raw credential-store entry), never into this process's
+    ///   cache, an environment variable or a task-local override, so a value
+    ///   another process saved since the cache filled is kept.
+    /// - A saved store that cannot be read as a map is refused, never treated as
+    ///   empty: a write must not replace secrets it failed to read.
+    /// - On failure the definition file, the secrets file and every raw
+    ///   credential entry (main and continuation) it may have touched are put
+    ///   back and read back. When that cannot be confirmed the error is
+    ///   [`ConfigError::IndeterminateSavedState`].
+    /// - With no secret the secret store is neither read nor written, so a
+    ///   metadata-only edit does not depend on an unrelated store.
+    /// - It orders writers in THIS process only (`guard`, plus `secrets_read`,
+    ///   so a cold reader cannot cache the store as it was before a write that
+    ///   has since landed). It is not atomic across a crash, and it does not
+    ///   exclude another process writing the same store.
+    fn commit_saved_state(
+        &self,
+        definition: Option<DefinitionChange<'_>>,
+        secret: Option<(&str, Value)>,
+    ) -> Result<(), ConfigError> {
+        let _guard = self.guard.lock().unwrap_or_else(|e| e.into_inner());
+
+        let saved_definition = match &definition {
+            Some(change) => {
+                let saved = SavedFile::read(change.path)?;
+                if saved.bytes() != change.expected {
+                    return Err(ConfigError::StaleProviderState);
+                }
+                Some(saved)
+            }
+            None => None,
+        };
+        let write_definition = || -> Result<(), ConfigError> {
+            if let Some(DefinitionChange {
+                path,
+                replacement: Some(contents),
+                ..
+            }) = &definition
+            {
+                if let Some(parent) = path.parent() {
+                    std::fs::create_dir_all(parent)?;
+                }
+                std::fs::write(path, contents)?;
+            }
+            Ok(())
+        };
+        let restore_definition = || match (&definition, &saved_definition) {
+            (Some(change), Some(saved)) => saved.restore(change.path, false),
+            _ => true,
+        };
+
+        let Some((key, value)) = secret else {
+            return match write_definition() {
+                Ok(()) => Ok(()),
+                Err(error) if restore_definition() => Err(error),
+                Err(_) => Err(ConfigError::IndeterminateSavedState),
+            };
+        };
+
+        let _secrets_read = self.secrets_read.lock().unwrap_or_else(|e| e.into_inner());
+        let snapshot = match &self.secrets {
+            SecretStorage::File { path } => SavedSecrets::File(SavedFile::read(path)?),
+            SecretStorage::Keyring { service } => match self.read_raw_keyring(service)? {
+                Some(entries) => SavedSecrets::Keyring(entries),
+                // Where every read goes when the credential store cannot be
+                // reached, so the write goes there too, and nothing is written
+                // over credential entries this commit could not read.
+                None => {
+                    SavedSecrets::KeyringUnavailable(SavedFile::read(&Self::secrets_file_path())?)
+                }
+            },
+        };
+        let mut values = match &snapshot {
+            SavedSecrets::File(saved) | SavedSecrets::KeyringUnavailable(saved) => {
+                saved.secret_values()?
+            }
+            SavedSecrets::Keyring(entries) => Self::keyring_entries_values(entries)?,
+        };
+        values.insert(key.to_string(), value);
+
+        // The fallback file as it was just before this commit wrote it, if it did.
+        let mut fallback_before: Option<SavedFile> = None;
+        let mut secret_write_started = false;
+        let committed = write_definition().and_then(|()| {
+            secret_write_started = true;
+            self.write_secret_values(&snapshot, &values, &mut fallback_before)
+        });
+        if committed.is_ok() {
+            if fallback_before.is_some() {
+                Self::select_file_storage_for_future_defaults();
+            }
+            *self.secrets_cache.lock().unwrap_or_else(|e| e.into_inner()) = Some(values);
+            return Ok(());
+        }
+
+        let mut restored = restore_definition();
+        if secret_write_started {
+            restored &= match (&snapshot, &self.secrets) {
+                (SavedSecrets::File(saved), SecretStorage::File { path }) => {
+                    saved.restore(path, true)
+                }
+                (SavedSecrets::Keyring(entries), SecretStorage::Keyring { service }) => {
+                    self.restore_raw_keyring(service, entries)
+                }
+                // The credential store was not written: only the fallback file was.
+                _ => true,
+            };
+            if let Some(saved) = &fallback_before {
+                restored &= saved.restore(&Self::secrets_file_path(), true);
+            }
+        }
+        *self.secrets_cache.lock().unwrap_or_else(|e| e.into_inner()) = None;
+        if restored {
+            committed
+        } else {
+            Err(ConfigError::IndeterminateSavedState)
+        }
+    }
+
+    /// Write `values` as the whole secrets map to the backend `snapshot` was
+    /// taken from. `fallback_before` receives the fallback file as it was when
+    /// this write falls back to it, so a failure can put it back.
+    fn write_secret_values(
+        &self,
+        snapshot: &SavedSecrets,
+        values: &HashMap<String, Value>,
+        fallback_before: &mut Option<SavedFile>,
+    ) -> Result<(), ConfigError> {
+        let write_fallback = |fallback_before: &mut Option<SavedFile>,
+                              saved: SavedFile|
+         -> Result<(), ConfigError> {
+            tracing::warn!("Keyring unavailable. Using file storage for secrets.");
+            *fallback_before = Some(saved);
+            write_private_secrets_file(
+                &Self::secrets_file_path(),
+                &serde_yaml::to_string(values)?,
+            )?;
+            Ok(())
+        };
+        match (&self.secrets, snapshot) {
+            (SecretStorage::File { path }, _) => {
+                write_private_secrets_file(path, &serde_yaml::to_string(values)?)?;
+                Ok(())
+            }
+            (SecretStorage::Keyring { .. }, SavedSecrets::KeyringUnavailable(saved)) => {
+                write_fallback(fallback_before, saved.clone())
+            }
+            (SecretStorage::Keyring { service }, _) => {
+                match self.keyring_write_blob(service, &serde_json::to_string(values)?) {
+                    Ok(()) => Ok(()),
+                    Err(error) if self.is_keyring_availability_error(&error.to_string()) => {
+                        write_fallback(
+                            fallback_before,
+                            SavedFile::read(&Self::secrets_file_path())?,
+                        )
+                    }
+                    Err(error) => Err(error.into()),
+                }
+            }
+        }
+    }
+
+    /// Run `operation` against the credential store this configuration writes
+    /// to: the OS store, or in a test the replacement the test installed.
+    fn with_keyring_store<T>(
+        &self,
+        service: &str,
+        operation: impl FnOnce(&dyn KeyringBlobStore) -> T,
+    ) -> T {
+        #[cfg(test)]
+        if let Some(store) = &self.test_keyring_store {
+            return operation(store.as_ref());
+        }
+        operation(&OsKeyringStore { service })
+    }
+
+    /// One raw credential entry, `None` when it is absent.
+    fn raw_keyring_entry(
+        store: &dyn KeyringBlobStore,
+        username: &str,
+    ) -> Result<Option<String>, keyring::Error> {
+        match store.get(username) {
+            Ok(value) => Ok(Some(value)),
+            Err(keyring::Error::NoEntry) => Ok(None),
+            Err(error) => Err(error),
+        }
+    }
+
+    /// The username of raw entry `index`: 0 is the main entry, the rest are the
+    /// continuation entries of a chunked blob.
+    fn keyring_entry_username(index: usize) -> String {
+        if index == 0 {
+            KEYRING_USERNAME.to_string()
+        } else {
+            Self::chunk_username(index)
+        }
+    }
+
+    /// Every raw entry a secrets blob can occupy (see
+    /// [`Self::keyring_entry_username`]), or `Ok(None)` when the credential
+    /// store cannot be reached at all.
+    ///
+    /// All of them, not only the ones the current header counts: a write
+    /// deletes stale continuation entries, so putting back a failed write needs
+    /// each one exactly as it was.
+    fn read_raw_keyring(&self, service: &str) -> Result<Option<Vec<Option<String>>>, ConfigError> {
+        self.with_keyring_store(service, |store| {
+            let main = match Self::raw_keyring_entry(store, KEYRING_USERNAME) {
+                Ok(main) => main,
+                Err(error) if self.is_keyring_availability_error(&error.to_string()) => {
+                    return Ok(None);
+                }
+                Err(error) => return Err(error.into()),
+            };
+            let mut entries = Vec::with_capacity(KEYRING_MAX_CHUNKS + 1);
+            entries.push(main);
+            for index in 1..=KEYRING_MAX_CHUNKS {
+                entries.push(Self::raw_keyring_entry(
+                    store,
+                    &Self::keyring_entry_username(index),
+                )?);
+            }
+            Ok(Some(entries))
+        })
+    }
+
+    /// The secrets map raw credential entries hold. Strict, unlike the read
+    /// path: a header that does not parse, a missing chunk, or a blob that is
+    /// not a map is an error, so a write never replaces secrets it could not
+    /// read.
+    fn keyring_entries_values(
+        entries: &[Option<String>],
+    ) -> Result<HashMap<String, Value>, ConfigError> {
+        let Some(main) = entries.first().and_then(Option::as_deref) else {
+            return Ok(HashMap::new());
+        };
+        let blob = match main.strip_prefix(KEYRING_CHUNK_MARKER) {
+            None => main.to_string(),
+            Some(count) => {
+                let count: usize = count.trim().parse().map_err(|_| {
+                    ConfigError::DeserializeError(
+                        "the saved credential store has an invalid chunk header".to_string(),
+                    )
+                })?;
+                entries
+                    .iter()
+                    .skip(1)
+                    .take(count.min(KEYRING_MAX_CHUNKS))
+                    .map(|chunk| {
+                        chunk.as_deref().ok_or_else(|| {
+                            ConfigError::DeserializeError(
+                                "the saved credential store is missing a chunk".to_string(),
+                            )
+                        })
+                    })
+                    .collect::<Result<String, _>>()?
+            }
+        };
+        match serde_json::from_str(&blob)? {
+            Value::Object(values) => Ok(values.into_iter().collect()),
+            _ => Err(ConfigError::DeserializeError(
+                "the saved credential store is not a map".to_string(),
+            )),
+        }
+    }
+
+    /// Put every raw credential entry back as `entries` recorded it, then read
+    /// each one back. `true` only when every entry matches.
+    fn restore_raw_keyring(&self, service: &str, entries: &[Option<String>]) -> bool {
+        self.with_keyring_store(service, |store| {
+            // Continuation entries before the main one, the order a write uses,
+            // so a restored header never names a chunk that is not back yet.
+            let mut restored = true;
+            for index in (1..entries.len()).chain(std::iter::once(0)) {
+                let username = Self::keyring_entry_username(index);
+                restored &= match &entries[index] {
+                    Some(value) => store.set(&username, value).is_ok(),
+                    None => matches!(
+                        store.delete(&username),
+                        Ok(()) | Err(keyring::Error::NoEntry)
+                    ),
+                };
+            }
+            restored
+                && entries.iter().enumerate().all(|(index, expected)| {
+                    Self::raw_keyring_entry(store, &Self::keyring_entry_username(index))
+                        .is_ok_and(|actual| &actual == expected)
+                })
+        })
+    }
+
     /// Set a secret value in the system keyring.
     ///
     /// This will store the value in a single JSON object in the system keyring,
@@ -2177,22 +2596,23 @@ impl Config {
     /// Note that this does not affect environment variables - those can only
     /// be set through the system environment.
     ///
+    /// The value is merged into the store as it is saved now, and a write that
+    /// fails puts back what was saved before (see [`Self::commit_saved_state`]).
+    ///
     /// # Errors
     ///
     /// Returns a ConfigError if:
     /// - There is an error accessing the keyring
     /// - There is an error serializing the value
+    /// - The saved store cannot be read as a map (it is left as it was)
     pub fn set_secret<V>(&self, key: &str, value: &V) -> Result<(), ConfigError>
     where
         V: Serialize,
     {
-        // Lock before reading to prevent race condition.
-        let _guard = self.guard.lock().unwrap();
-
-        let mut values = self.all_secrets()?;
-        values.insert(key.to_string(), serde_json::to_value(value)?);
-
-        self.persist_secrets(&values)
+        // Serialized before anything is read or written, so a value that cannot
+        // be serialized changes nothing.
+        let value = serde_json::to_value(value)?;
+        self.commit_saved_state(None, Some((key, value)))
     }
 
     /// Delete a secret from the system keyring.
@@ -2340,6 +2760,11 @@ impl Config {
         Ok(())
     }
 
+    /// Select file storage for Config instances created later in this process.
+    fn select_file_storage_for_future_defaults() {
+        std::env::set_var("BIOROUTER_DISABLE_KEYRING", "1");
+    }
+
     /// Check if an error string indicates a keyring availability issue that should trigger fallback
     fn is_keyring_availability_error(&self, error_str: &str) -> bool {
         // keyring::Error renders NoStorageAccess as "Couldn't access platform
@@ -2458,7 +2883,7 @@ impl Config {
         fallback_values: Option<&HashMap<String, Value>>,
     ) -> Result<T, ConfigError> {
         if self.is_keyring_availability_error(&keyring_err.to_string()) {
-            std::env::set_var("BIOROUTER_DISABLE_KEYRING", "1");
+            Self::select_file_storage_for_future_defaults();
             tracing::warn!("Keyring unavailable. Using file storage for secrets.");
 
             if let Some(values) = fallback_values {

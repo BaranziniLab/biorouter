@@ -65,8 +65,7 @@ pub mod xiaomi_mimo;
 pub mod zai;
 
 pub use destination_keys::is_destination_key;
-#[cfg(test)]
-pub(crate) use factory::builtin_provider_metadata;
+pub use factory::builtin_provider_metadata;
 pub(crate) use factory::create_from_persisted;
 pub use factory::{
     create, create_from_saved_session, create_with_default_model, create_with_named_model,

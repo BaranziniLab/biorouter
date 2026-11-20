@@ -202,7 +202,9 @@ describe('DefaultProviderSetupForm — secrets are masked', () => {
     const restoredField = restored.closest<HTMLElement>('[data-slot="field"]');
     expect(restoredField).not.toBeNull();
     await waitFor(() =>
-      expect(within(restoredField!).getByRole('button', { name: /\b(?:edit|replace)\b/i })).toHaveFocus()
+      expect(
+        within(restoredField!).getByRole('button', { name: /\b(?:edit|replace)\b/i })
+      ).toHaveFocus()
     );
     const restoredValues = onValues.mock.lastCall?.[0] as Record<string, ConfigInput> | undefined;
     expect(restoredValues?.GOOGLE_API_KEY?.serverValue).toEqual({ maskedValue: '••••••••' });
@@ -656,7 +658,9 @@ describe('CustomProviderForm for a provider with no key saved', () => {
     const restoredField = restored.closest<HTMLElement>('[data-slot="field"]');
     expect(restoredField).not.toBeNull();
     await waitFor(() =>
-      expect(within(restoredField!).getByRole('button', { name: /\b(?:edit|replace)\b/i })).toHaveFocus()
+      expect(
+        within(restoredField!).getByRole('button', { name: /\b(?:edit|replace)\b/i })
+      ).toHaveFocus()
     );
     expect(mocks.previewProviderSecret).not.toHaveBeenCalled();
     expect(mocks.removeConfig).not.toHaveBeenCalled();
@@ -848,7 +852,7 @@ describe('CustomProviderForm in a browser', () => {
     );
   }
 
-  it('requires removing the saved key before replacing it and moving the URL', async () => {
+  it('requires a locally typed replacement to move the URL without removing the saved key', async () => {
     document.documentElement.dataset.biorouterSurface = BROWSER_SURFACE_MARKER;
     const onSubmit = vi.fn();
     const { container } = edit(onSubmit);
@@ -859,19 +863,24 @@ describe('CustomProviderForm in a browser', () => {
     });
     fireEvent.click(screen.getByRole('button', { name: customProviderCopy.update }));
     expect(onSubmit).not.toHaveBeenCalled();
-    expect(screen.getByText(/Remove the saved key, then add a new key/)).toBeInTheDocument();
+    expect(screen.getByText('Type a new API key to change this URL.')).toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole('button', { name: 'Remove API key' }));
-    fireEvent.click(screen.getByRole('button', { name: 'Remove API key' }));
-    await waitFor(() =>
-      expect(container.querySelector('#api-key')).toHaveAttribute('type', 'password')
+    const editButton = screen.getByRole('button', { name: 'Edit API key' });
+    fireEvent.click(editButton);
+    const keyInput = container.querySelector('#api-key') as HTMLInputElement;
+    expect(keyInput).toHaveValue('');
+    expect(keyInput).toHaveAttribute('type', 'password');
+    fireEvent.change(keyInput, { target: { value: 'sk-typed' } });
+    fireEvent.click(screen.getByRole('button', { name: customProviderCopy.update }));
+
+    expect(onSubmit).toHaveBeenCalledWith(
+      expect.objectContaining({
+        api_url: 'https://elsewhere.example/v1',
+        api_key: 'sk-typed',
+      })
     );
-
-    fireEvent.change(container.querySelector('#api-key') as HTMLInputElement, {
-      target: { value: 'sk-typed' },
-    });
-    fireEvent.click(screen.getByRole('button', { name: customProviderCopy.save }));
-    expect(onSubmit).toHaveBeenCalled();
+    expect(mocks.removeConfig).not.toHaveBeenCalled();
+    expect(mocks.previewProviderSecret).not.toHaveBeenCalled();
   });
 
   it('keeps the saved key for an edit that does not move the URL', () => {

@@ -84,6 +84,54 @@ Crew device keys are the exception: they never go to `secrets.yaml`. On a comput
 credential store, Crew keeps them in an encrypted vault instead; see
 [Keep device keys in an encrypted vault](../crew/command-line.md#keep-device-keys-in-an-encrypted-vault).
 
+### A missing key while the keychain is turned off
+
+While `BIOROUTER_DISABLE_KEYRING` is set, Biorouter reads secrets from `secrets.yaml` only and
+never asks the system keychain, so a key saved in the desktop app's Settings (which saves to the
+keychain) is not found. The variable is often inherited from a shell or a service definition set
+up for a headless machine. A provider that cannot find its key then says which file it read, and
+gives the two ways to reach a key (issue #521):
+
+```text
+VERSA_BEDROCK_ACCESS_KEY_ID is not configured in the file store /Users/you/.config/biorouter/secrets.yaml.
+BIOROUTER_DISABLE_KEYRING is set, so the system keychain was not checked. Unset BIOROUTER_DISABLE_KEYRING
+to use keys saved in the system keychain, or run `biorouter configure` to add it to the file.
+```
+
+The CLI gives the same two remedies after any provider that fails to start while the variable is
+set, in place of its usual advice to check the system keychain. Biorouter does not look in the
+keychain to confirm the key is there, because a keychain read can raise a password prompt. Without
+the variable, the messages are unchanged.
+
+## How Settings shows a saved key
+
+*For end users.*
+
+A saved API key is never shown, in part or in full. The key field shows the same eight dots
+(`••••••••`) whatever the key is, there is no Show button for it, and nothing in the app can fetch
+the key back. To replace it, choose Edit (the pencil beside the field): the field becomes empty
+for the new key, and its Cancel puts the dots back and keeps the saved key. Save checks the
+new key with the provider before saving it, and when saving fails the key that worked before is
+put back. Remove key deletes the saved key after asking.
+
+*For developers.*
+
+- `POST /config/read` answers a secret with the fixed mask, `{"maskedValue": "••••••••"}`. For a
+  key asked for as plaintext (`is_secret: false`) it first classifies the key, reading the
+  definitions from disk: a key any built-in provider declares secret, a custom or bundled provider
+  names as its key, or an extension in `config.yaml` names in `env_keys` gets the mask; Biorouter's
+  own settings and keys a built-in provider declares plaintext are answered as themselves; any
+  other key is answered `null`, so an arbitrary environment variable cannot be read through the
+  route. Definitions that cannot be read refuse the read rather than treating the key as
+  plaintext.
+- No route returns a saved key or an environment value of one, in full or in part.
+- `Config::set_secret` merges the new value into the store as it is saved (the file, or every raw
+  credential entry), refuses a store it cannot read as a map, and puts back the previous file or
+  credential entries when the write fails. A custom provider's key and definition are written the
+  same way, and an edit that changes only its name, URL or models never reads or writes the
+  secret store. This orders writers inside one process only: it is not atomic across a crash, and
+  it does not exclude another process writing the same store.
+
 ## Developer builds: rebuilds re-prompt unless you sign
 
 *For developers working on BioRouter.*

@@ -160,7 +160,7 @@ export default function CustomProviderForm({
     if (!apiUrl) errors.apiUrl = 'API URL is required';
     if (!isLocalModel && !apiKey && !keepsSavedKey) errors.apiKey = 'API key is required';
     if (urlNeedsTypedKey && !apiKey && apiUrl !== initialData?.api_url) {
-      errors.apiKey = 'Remove the saved key, then add a new key to change this URL.';
+      errors.apiKey = 'Type a new API key to change this URL.';
     }
     if (!models) errors.models = 'At least one model is required';
 
@@ -319,6 +319,15 @@ export default function CustomProviderForm({
                 provider={savedKey?.provider}
                 secretKey={savedKey?.key}
                 label={customProviderCopy.apiKey}
+                value={apiKey}
+                onChange={setApiKey}
+                onCancelEdit={() => {
+                  setValidationErrors((current) => {
+                    const { apiKey: _apiKey, ...rest } = current;
+                    return rest;
+                  });
+                  setSubmitError(null);
+                }}
                 onRemoved={() => {
                   setRemovedSavedKey(true);
                   setApiKey('');

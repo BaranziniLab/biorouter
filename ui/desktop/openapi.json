@@ -1911,45 +1911,6 @@
         }
       }
     },
-    "/config/provider-secret/preview": {
-      "post": {
-        "tags": [
-          "super::routes::config_management"
-        ],
-        "operationId": "preview_provider_secret",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/PreviewProviderSecretRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "description": "A masked provider secret preview",
-            "content": {
-              "text/plain": {
-                "schema": {
-                  "type": "string"
-                }
-              }
-            }
-          },
-          "403": {
-            "description": "The request did not prove a desktop user action"
-          },
-          "404": {
-            "description": "The provider secret is unavailable"
-          },
-          "500": {
-            "description": "The provider secret could not be read"
-          }
-        }
-      }
-    },
     "/config/provider_setup": {
       "get": {
         "tags": [
@@ -25331,21 +25292,6 @@
             "type": "string"
           },
           "path": {
-            "type": "string"
-          }
-        }
-      },
-      "PreviewProviderSecretRequest": {
-        "type": "object",
-        "required": [
-          "provider",
-          "key"
-        ],
-        "properties": {
-          "key": {
-            "type": "string"
-          },
-          "provider": {
             "type": "string"
           }
         }
