@@ -461,7 +461,7 @@
    `.br-nav-list` puts between rows, so the scroll height and every drawn
    row's place are the same as with real rows. The Text size preference
    scales the row token and that 2px gap (`vite-plugins/fontScale.mjs`), but
-   not a `height`, so the 2px here says its scale itself: under Larger text a
+   not a `height`, so the 2px here says its scale itself: under Large text a
    line is 34.5px, and an unscaled 2px drifted 0.3px a line. */
 .br-chat-row-gap {
   flex: none;

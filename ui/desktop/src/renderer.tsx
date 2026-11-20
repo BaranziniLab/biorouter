@@ -26,6 +26,7 @@ import { readRegistryDownload } from './utils/registryDownloadResult';
 import { openAppInThisBrowser } from './utils/appLaunchLink';
 import { exportAppInThisBrowser } from './utils/appExportRequest';
 import { clearRetiredDictationSettings } from './utils/retiredDictationSettings';
+import { migrateLegacyFontSize } from './hooks/useFontSize';
 
 const App = lazy(() => import('./App'));
 const DictationCapturePage = lazy(() => import('./components/dictation/DictationCapturePage'));
@@ -611,6 +612,8 @@ if (needsHeadlessElectron || typeof window.appConfig === 'undefined') {
 
   // The deleted cloud dictation's provider choice (DD-89). Local only, so it needs no daemon.
   clearRetiredDictationSettings();
+  // A Text size saved by 1.94.5 or earlier, under the old key and names, moves to the new ones.
+  migrateLegacyFontSize();
 
   // Check if we're in the launcher view (doesn't need biorouterd connection)
   const isLauncher = window.location.hash === '#/launcher';

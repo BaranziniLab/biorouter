@@ -787,10 +787,11 @@ function FolderHeader({
 
 /**
  * The list's line pitch, read off a drawn row: its height and the gap its
- * list puts below it. Both scale with the Text size preference (30px at the
- * standard size, 34.5px under Larger text), so reading the lines in view at a
- * fixed 30px put them further down the list the further it was scrolled, until
- * the view showed only placeholder. The standard pitch when no row is drawn.
+ * list puts below it. Both scale with the Text size preference (30px at Small,
+ * 32.1px at Standard, the default, and 34.5px at Large), so reading the lines in
+ * view at a fixed 30px put them further down the list the further it was
+ * scrolled, until the view showed only placeholder. The unscaled pitch when no
+ * row is drawn.
  */
 export function measuredLinePitch(container: HTMLElement): number {
   const item = container.querySelector<HTMLElement>(

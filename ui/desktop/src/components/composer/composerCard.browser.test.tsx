@@ -433,7 +433,7 @@ describe('the chat composer card under the whole stylesheet (R-32)', () => {
       .process(css, { from: undefined })
       .then((result) => result.css));
 
-  /** `scale` sets the Text size preference's `--app-font-scale` (Larger text is 1.15). */
+  /** `scale` sets the Text size preference's `--app-font-scale` (Large text is 1.15). */
   async function open(mode: 'light' | 'dark', forcedColors = false, scale?: number): Promise<Page> {
     const tab = await browser!.newPage({ viewport: { width: 808, height: 1100 } });
     if (forcedColors) await tab.emulateMedia({ forcedColors: 'active' });
@@ -715,15 +715,15 @@ describe('the chat composer card under the whole stylesheet (R-32)', () => {
     }
   });
 
-  it('keeps the band and the composer bar under the height floor at Larger text', async (ctx) => {
+  it('keeps the band and the composer bar under the height floor at Large text', async (ctx) => {
     if (!browser) return ctx.skip();
     const tab = await open('light', false, 1.15);
     try {
       const bar = await tab.evaluate(
         () => document.getElementById('bar')!.getBoundingClientRect().height
       );
-      // The stylesheet really scaled: the bar is taller than at standard text.
-      expect(bar, `the Larger text bar measured ${bar}px`).toBeGreaterThan(
+      // The stylesheet really scaled: the bar is taller than at Small, the unscaled size.
+      expect(bar, `the Large text bar measured ${bar}px`).toBeGreaterThan(
         PANE_COMPOSER_BAR_HEIGHT + 2
       );
       expect(PANE_HEADER_HEIGHT + bar).toBeLessThan(PANE_MIN_HEIGHT);

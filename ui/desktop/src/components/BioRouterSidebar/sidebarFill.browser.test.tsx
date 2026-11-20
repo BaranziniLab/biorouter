@@ -1092,13 +1092,13 @@ describe('the app sidebar under the whole stylesheet (R-27)', () => {
     });
 
     /**
-     * The same list under the Larger text preference (`--app-font-scale` 1.15): the rows and the
+     * The same list under the Large text preference (`--app-font-scale` 1.15): the rows and the
      * list's 2px scale with the type (`vite-plugins/fontScale.mjs`), so a line is 34.5px, not 30.
      * Read at 30px, the lines in view came out 15% too far down the list, so from the middle on
      * the view showed placeholder where rows should be; and a placeholder that kept its 2px
      * unscaled drifted from the rows it stands for.
      */
-    it('keeps the rows near the viewport drawn under Larger text (V1-R2-2)', async (ctx) => {
+    it('keeps the rows near the viewport drawn under Large text (V1-R2-2)', async (ctx) => {
       if (!browser) return ctx.skip();
       const TOTAL = 400;
       const tab = await openLongList(TOTAL, { scale: 1.15 });

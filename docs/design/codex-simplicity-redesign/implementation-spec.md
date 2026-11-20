@@ -2443,7 +2443,8 @@ job.
     labels.
 - **Appearance:** Theme as a `SegmentedControl` (Light/Dark/System, with the test ids kept), Color
   palette as a `SegmentedControl` with swatches, and Text size as a `SegmentedControl`
-  (Standard/Large/Larger, replacing native radios).
+  (Standard/Large/Larger, replacing native radios; renamed Small/Standard/Large in 1.94.6, with
+  Standard, the middle option, the default).
 - **Privacy:**
   - **The locked content keeps its words and its placement.** That covers the DR-17 disclosure
     above the switch, the inline disable confirmation, the off strip and `data-privacy-panel`.
@@ -3069,8 +3070,9 @@ and 1100×760 in light and dark, plus one Alma Mater dark spot check.
 | WS-LANDING | Every page at 1440 and 390 (names from [landing], header) |
 
 **Type probe.** Run it in the renderer through CDP, with Settings > App > Text size on
-**Standard** (Large and Larger scale every px by design, `vite-plugins/fontScale.mjs`; at Large,
-check instead that nothing stayed unscaled, since inline `style={{fontSize}}` px is not scaled).
+**Small**, the unscaled size (called Standard before 1.94.6; Standard and Large scale every px by
+design, `vite-plugins/fontScale.mjs`; at Standard, check instead that nothing stayed unscaled,
+since inline `style={{fontSize}}` px is not scaled).
 Each workstream reports the size set for its screens. The set must be a subset of sans
 {12, 13, 14, 17, 24} plus mono {12, 13} (12 is the mono size for paths in tooltips, IDs and
 Crew's code-block language). Ignore `.katex` (math sizes are relative by design), text inside
