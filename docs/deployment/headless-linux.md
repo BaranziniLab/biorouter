@@ -108,6 +108,14 @@ for the wrong account is easy to see. Run it as the service account, then restar
 the running `serve` reads the new key. It refuses in an agent's shell: a key typed for an agent
 would pass through its model.
 
+When a `biorouter serve` on the host runs as another account, both this command and the
+interactive `biorouter configure` say so before anything is typed: the account and process, where
+that server reads its settings (that account's `~/.config/biorouter` by default), that a key saved
+now goes to this account's settings folder instead, and the `sudo -H -u <account>` line to run.
+`--secret-stdin` repeats the point after saving. They find the server in the process list, from
+each process's owner and command line only, never another account's environment or files, so a
+host that hides other accounts' processes (`/proc` mounted with `hidepid`) shows nothing.
+
 ### Credentials on a host with no desktop keyring
 
 Biorouter stores secrets in the operating system's credential store. A Linux host with no desktop

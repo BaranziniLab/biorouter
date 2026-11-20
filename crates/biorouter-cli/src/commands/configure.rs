@@ -115,6 +115,20 @@ pub async fn handle_configure_provider_secret(provider: String) -> anyhow::Resul
         })?;
     let accepted = secret_settings_taken(metadata)?;
 
+    // Gap 4 of #526: said before the key is typed, so a person on the wrong
+    // account can stop before saving it where the server never looks.
+    let elsewhere = super::serve_account::serving_elsewhere();
+    if let Some(warning) = super::serve_account::warning_before_saving(
+        &elsewhere,
+        &Paths::config_dir(),
+        &format!(
+            "biorouter configure --provider {} --secret-stdin",
+            metadata.name
+        ),
+    ) {
+        eprintln!("{warning}");
+    }
+
     let mut typed = if std::io::stdin().is_terminal() {
         super::needs_terminal::require(
             super::needs_terminal::prompt_can_run(),
@@ -153,6 +167,9 @@ pub async fn handle_configure_provider_secret(provider: String) -> anyhow::Resul
          reads the new key once it restarts.",
         Paths::config_dir().display()
     );
+    if let Some(note) = super::serve_account::note_after_saving(&elsewhere) {
+        eprintln!("{note}");
+    }
     if config.get_biorouter_provider().ok().as_deref() != Some(metadata.name.as_str()) {
         println!(
             "To use {}, choose it in the browser, or run `biorouter models set --provider {} \
@@ -474,6 +491,16 @@ where
 /// cliclack's bare `Error: not connected`.
 async fn configure(config: &Config, terminal: bool) -> anyhow::Result<()> {
     super::needs_terminal::require(terminal, CONFIGURE_NEEDS_A_TERMINAL)?;
+
+    // Gap 4 of #526: a `serve` running as another account reads that
+    // account's settings, not the ones this run writes.
+    if let Some(warning) = super::serve_account::warning_before_saving(
+        &super::serve_account::serving_elsewhere(),
+        &Paths::config_dir(),
+        "biorouter configure",
+    ) {
+        eprintln!("{warning}");
+    }
 
     if !config.exists() {
         handle_first_time_setup(config).await
