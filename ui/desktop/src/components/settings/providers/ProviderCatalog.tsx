@@ -370,6 +370,12 @@ export default function ProviderCatalog({
     isConfigured: boolean;
   } | null>(null);
   const customDialogGenerationRef = useRef(0);
+  /**
+   * Which provider the custom dialog was last opened for. Its `key`, so opening it for another
+   * provider starts from that provider's own state, and set only on open, so closing keeps the key
+   * and the dialog's exit motion.
+   */
+  const [customDialogFor, setCustomDialogFor] = useState('new');
 
   const handleProviderReady = useCallback((providerId: string, model?: string | null) => {
     setSwitchModelProvider(providerId);
@@ -590,6 +596,7 @@ export default function ProviderCatalog({
         if (generation !== customDialogGenerationRef.current) return;
 
         if (result.data) {
+          setCustomDialogFor(provider.name);
           setEditingProvider({
             id: provider.name,
             config: result.data.config,
@@ -871,6 +878,7 @@ export default function ProviderCatalog({
           <AddCustomProviderRow
             onClick={() => {
               customDialogGenerationRef.current += 1;
+              setCustomDialogFor('new');
               setEditingProvider(null);
               setShowCustomProviderModal(true);
             }}
@@ -1057,7 +1065,7 @@ export default function ProviderCatalog({
       </Tabs>
 
       <CustomProviderDialog
-        key={editingProvider?.id ?? 'new'}
+        key={customDialogFor}
         open={showCustomProviderModal}
         onOpenChange={(open) => {
           if (!open) handleCloseCustomModal();
