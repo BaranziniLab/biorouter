@@ -2370,6 +2370,22 @@ binary, from `BaranziniLab/biorouter-models`.
   plus `--disable-features=AudioServiceSandbox` on macOS, where the sandboxed audio service
   otherwise cannot read the WAV and the track is silence (RMS 0). Fake audio is not a physical
   microphone, and the checklist records the two apart.
+- **The fn key and the indicator (macOS).** Hold fn to talk, double-tap fn for hands-free
+  (`ui/desktop/src/utils/fnGesture.ts`; routing in `utils/dictationFnKey.ts`, the composer side in
+  `components/dictation/fnGestureClient.ts`). Electron cannot see fn, so `crates/biorouter-fnkey`, a
+  listen-only Quartz event tap with no dependencies, runs as the app's child while the shortcut is
+  on and writes only fn down, fn up and "another key while fn was down", each with the event's own
+  time. ⚠ It creates the tap only after `CGPreflightListenEventAccess` says Input Monitoring is
+  granted, because creating one without it makes macOS prompt; the prompt comes only from
+  **Open Input Monitoring** in Settings. Never add a code path, test or script that creates a tap or
+  calls `CGRequestListenEventAccess` unasked. The setting is `<config>/dictation/fn-key.json`,
+  written only by main, like `anywhere.json`. `ui/desktop/scripts/build-fn-key-helper.mjs` stages it
+  for `bundle:default` and `bundle:intel`, and `release.sh verify` checks it is in the app, for the
+  app's architecture, at macOS 12.0 (`scripts/check-fn-key-helper-bundled.sh`). The on-screen
+  capsule (`utils/dictationIndicator.ts`) is a non-focusable, click-through panel fed only an
+  activity word and a level over `dictation:indicator`. ⌘⇧D keeps working; on macOS AppKit hides
+  D's key up while ⌘ is held, so its hold is timed to the first modifier release
+  ([surfaces](docs/dictation/surfaces.md), "Gestures").
 - **The dictionary tier rule.** `bias_set` in `crates/biorouter/src/dictation/bias.rs` is the only
   producer of the entries recognition may use, and one value feeds the token prompt, the decoder
   bonus and every correction step (DD-36); `eligible_entries_are_built_only_by_bias_set` pins its
