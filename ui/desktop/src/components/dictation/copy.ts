@@ -125,6 +125,21 @@ export const DICTATION_MESSAGES = {
     "Biorouter's menu bar icon is off, so Dictate to clipboard is not in its menu. Choose a shortcut below, or turn on Show in menu bar in Settings > App.",
   'MSG-CLIPBOARD-EXPLAIN':
     'Dictate to clipboard puts the text on your system clipboard. After that it is outside Biorouter: any program on this computer can read it, including an agent with shell access in any chat; clipboard managers may keep it; Universal Clipboard or Windows cloud clipboard may sync it to your other devices; and the app you paste into decides where it goes. Your private dictionary terms are used only for a recording you start with Include my private terms.',
+  'MSG-FN-HELP':
+    'Hold fn to talk and let go to insert. Double-tap fn to dictate hands-free, and double-tap again to stop.',
+  'MSG-FN-PERMISSION':
+    'Allow Biorouter in Privacy & Security > Input Monitoring so fn can start dictation. Biorouter keeps only whether fn is held and drops every other key.',
+  'MSG-FN-CONFLICT':
+    'macOS also uses fn to <action>. To keep fn for dictation, set Press 🌐 key to Do Nothing in Keyboard settings.',
+  'MSG-FN-CONFLICT-UNKNOWN':
+    'macOS may also act when you press fn, for example by showing the emoji picker. To keep fn for dictation, set Press 🌐 key to Do Nothing in Keyboard settings.',
+  'MSG-FN-FAILED':
+    'The fn key listener stopped and could not start again. Turn the switch off and on to retry.',
+  'MSG-FN-MISSING': 'This build of Biorouter has no fn key listener, so fn cannot start dictation.',
+  'MSG-FN-OTHER-APPS':
+    'Hold or double-tap fn in any app while Biorouter is open. The text goes to the clipboard, as with Dictate to clipboard.',
+  'MSG-CHORD-HELP':
+    'In a message box, tap <chord> to start or stop, or hold it to talk. Windows and Linux do not let apps see the fn key, so Biorouter uses this key combination here.',
   'MSG-SHORTCUT-HELP':
     'A key combination that starts and stops Dictate to clipboard from any app. Leave it empty for none.',
   'MSG-CLIPBOARD-COPIED': 'Copied <n> words. Paste with <key>.',
@@ -211,6 +226,14 @@ export const DICTATION_ACTIONS = {
   dictateIntoThisApp: 'Dictate into this app',
   /** The Settings switch for the tray item and the global shortcut (S18). */
   dictateIntoOtherApps: 'Dictate into other apps',
+  /** The macOS switch for the fn gestures (hold to talk, double-tap for hands-free). */
+  dictateWithFn: 'Dictate with the fn key',
+  /** Under **Dictate into other apps** on macOS: the fn gestures there too. */
+  useFnInOtherApps: 'Use fn in other apps',
+  openInputMonitoring: 'Open Input Monitoring',
+  openKeyboardSettings: 'Open Keyboard settings',
+  /** The Windows and Linux row that names the composer's key combination. */
+  keyboardShortcut: 'Keyboard shortcut',
   setUp: 'Set up dictation',
   showButton: 'Show the microphone button',
   reduceNoise: 'Reduce background noise',
@@ -238,6 +261,8 @@ export const DICTATION_LABELS = {
   arming: 'Starting microphone…',
   recording: 'Stop dictation, <time>',
   recordingTooltip: 'Stop and insert · Esc cancels',
+  /** After **Dictate** in the idle tooltip while the fn shortcut works (macOS). */
+  fnGesture: 'hold or double-tap fn',
   transcribing: 'Transcribing…',
   finishFirst: 'Finish dictating first',
   listening: 'Listening…',
@@ -279,3 +304,13 @@ export function formatDictationClock(seconds: number): string {
   const rest = whole % 60;
   return `${minutes}:${rest.toString().padStart(2, '0')}`;
 }
+
+/**
+ * MSG-FN-CONFLICT's `<action>`: what macOS does with fn, by `AppleFnUsageType` (System Settings >
+ * Keyboard > "Press 🌐 key to"), as the `biorouter-fnkey` helper reads it.
+ */
+export const FN_USAGE_ACTIONS: Readonly<Record<1 | 2 | 3, string>> = {
+  1: 'change the input source',
+  2: 'show emoji and symbols',
+  3: 'start its own dictation',
+};

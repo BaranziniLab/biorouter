@@ -75,6 +75,7 @@ import {
 import './models.css';
 import './speechModels.css';
 import { DEFAULT_ANYWHERE_SHORTCUT } from '../../../utils/dictationAnywhere';
+import { DictationShortcutRows, FnOtherAppsRow } from './DictationShortcutRows';
 
 /**
  * **Settings > Models > Speech models** (DD-66, PR-18): install, use, remove, update and cancel
@@ -123,6 +124,7 @@ function SpeechModelSectionBody() {
       help={dictationMessage('MSG-SETTINGS-HELP')}
       data-testid="speech-models-section"
     >
+      <DictationShortcutRows />
       <AnywhereSettingsRows
         available={Boolean(status?.policy.enabled.allowed && status.policy.capture.allowed)}
         modelReady={Boolean(status && hasUsableModel(status))}
@@ -1128,6 +1130,7 @@ function AnywhereSettingsRows({
           }
         />
       </SettingRow>
+      {snapshot.enabled && <FnOtherAppsRow />}
       {snapshot.enabled && (
         <SettingRow label="Dictation shortcut" help={dictationMessage('MSG-SHORTCUT-HELP')}>
           <Input

@@ -26,6 +26,8 @@ import { readRegistryDownload } from './utils/registryDownloadResult';
 import { openAppInThisBrowser } from './utils/appLaunchLink';
 import { exportAppInThisBrowser } from './utils/appExportRequest';
 import { clearRetiredDictationSettings } from './utils/retiredDictationSettings';
+import { installFnGestureClient } from './components/dictation/fnGestureClient';
+import { installIndicatorReporter } from './components/dictation/indicatorReport';
 
 const App = lazy(() => import('./App'));
 const DictationCapturePage = lazy(() => import('./components/dictation/DictationCapturePage'));
@@ -648,6 +650,13 @@ if (needsHeadlessElectron || typeof window.appConfig === 'undefined') {
       </Suspense>
     );
     return;
+  }
+
+  // The fn gestures main routes to this window, and this window's dictation activity for the
+  // on-screen indicator (macOS desktop; a browser surface's bridge has neither, so both are no-ops).
+  if (!isLauncher) {
+    installFnGestureClient();
+    installIndicatorReporter();
   }
 
   // The code face (utils/systemMonoFont.ts): registered in the background, never

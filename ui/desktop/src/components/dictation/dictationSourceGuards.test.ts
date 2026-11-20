@@ -198,6 +198,12 @@ const DICTATION_CHANNELS: Record<string, Array<keyof typeof SENDER_CHECKS>> = {
   'dictation:anywhere:set': ['app'],
   'dictation:anywhere:settings-ready': ['app'],
   'dictation:busy': ['app'],
+  // The fn key shortcut's setting and the system settings panes it points to (macOS).
+  'dictation:fn:get': ['app'],
+  'dictation:fn:open-settings': ['app'],
+  'dictation:fn:set': ['app'],
+  // The on-screen indicator hears every page that records: composers and the hidden capture page.
+  'dictation:indicator': ['app', 'capture'],
   // The hidden capture window asks for the microphone as a composer does.
   'dictation:mic-request': ['app', 'capture'],
   'dictation:mic-status': ['app', 'capture'],

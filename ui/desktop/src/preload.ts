@@ -2,6 +2,9 @@ import Electron, { contextBridge, ipcRenderer, webUtils } from 'electron';
 import { Workflow } from './workflow';
 import { createCrewShareDroppedFile } from './utils/crewSharePathBridge';
 import type { AppExportRequest, AppExportResult } from './utils/appExportRequest';
+import type { FnKeySettings, FnKeyView } from './utils/dictationFnKey';
+import type { FnIntent } from './utils/fnGesture';
+import type { DictationActivityReport } from './utils/dictationIndicator';
 import {
   DICTIONARY_ADD_TERM_CHANNEL,
   DICTIONARY_OFFERED_CHANNEL,
@@ -422,6 +425,20 @@ type ElectronAPI = {
   dictationAnywherePrivateChoice?: (include: boolean) => Promise<boolean>;
   setDictationBusy?: (busy: boolean) => void;
   onDictationLockScreen?: (callback: () => void) => () => void;
+  /**
+   * The fn key shortcut (macOS): its setting and the listener's state, written only by main.
+   * - `dictationFnOpenSettings`: open Input Monitoring (also asking macOS once, so Biorouter is
+   *   listed there) or the Keyboard pane, from a person's click in Settings.
+   * - `onDictationFnIntent`: a gesture main routed to this window (`fnGestureClient.ts`).
+   * - `dictationIndicator`: this window's dictation activity and level, for the on-screen
+   *   indicator (`utils/dictationIndicator.ts`).
+   */
+  dictationFnGet?: () => Promise<FnKeyView | null>;
+  dictationFnSet?: (value: FnKeySettings) => Promise<FnKeyView | null>;
+  dictationFnOpenSettings?: (pane: 'input-monitoring' | 'keyboard') => Promise<boolean>;
+  onDictationFnState?: (callback: (view: FnKeyView) => void) => () => void;
+  onDictationFnIntent?: (callback: (intent: FnIntent) => void) => () => void;
+  dictationIndicator?: (report: DictationActivityReport) => void;
   /**
    * The context menu's **Add to Biorouter dictionary…** (DD-68): the word or
    * selection and where the menu opened, `{text, x, y}`, so the renderer can
@@ -935,6 +952,30 @@ const electronAPI: ElectronAPI = {
   dictationAnywherePrivateChoice: (include) =>
     ipcRenderer.invoke('dictation:anywhere:private-choice', include),
   setDictationBusy: (busy: boolean) => ipcRenderer.send('dictation:busy', busy === true),
+  dictationFnGet: () => ipcRenderer.invoke('dictation:fn:get'),
+  dictationFnSet: (value: FnKeySettings) => ipcRenderer.invoke('dictation:fn:set', value),
+  dictationFnOpenSettings: (pane: 'input-monitoring' | 'keyboard') =>
+    ipcRenderer.invoke('dictation:fn:open-settings', pane),
+  onDictationFnState: (callback: (view: FnKeyView) => void) => {
+    const listener = (_event: Electron.IpcRendererEvent, view: FnKeyView) => callback(view);
+    ipcRenderer.on('dictation:fn:state', listener);
+    return () => ipcRenderer.removeListener('dictation:fn:state', listener);
+  },
+  onDictationFnIntent: (callback: (intent: FnIntent) => void) => {
+    const listener = (_event: Electron.IpcRendererEvent, intent: unknown) => {
+      if (
+        intent === 'start-hold' ||
+        intent === 'end-hold' ||
+        intent === 'cancel-hold' ||
+        intent === 'toggle'
+      )
+        callback(intent);
+    };
+    ipcRenderer.on('dictation:fn:intent', listener);
+    return () => ipcRenderer.removeListener('dictation:fn:intent', listener);
+  },
+  dictationIndicator: (report: DictationActivityReport) =>
+    ipcRenderer.send('dictation:indicator', report),
   onDictationLockScreen: (callback: () => void) => {
     const listener = () => callback();
     ipcRenderer.on('dictation:lock-screen', listener);

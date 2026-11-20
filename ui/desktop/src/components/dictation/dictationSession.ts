@@ -274,6 +274,15 @@ export function getDictationSnapshot(): DictationSnapshot {
 }
 
 /**
+ * The dictation that holds the microphone now, as an opaque token, or null: a later dictation is a
+ * different token. The fn gestures use it so a release stops only the recording its hold started
+ * (`fnGestureClient.ts`).
+ */
+export function activeDictationToken(): object | null {
+  return active;
+}
+
+/**
  * Whether dictated text is going into `key`'s field at this moment, so the
  * composer's change handler can tell the insert from typing: a spoken "@" or
  * "/" opens no menu (DD-63 step 5), and the edit moves no anchor.

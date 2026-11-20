@@ -35,6 +35,7 @@ import {
   type DictationTarget,
 } from './dictationSession';
 import { noteDictationInterest } from './dictationStore';
+import { registerFnGestureTarget } from './fnGestureClient';
 import { acknowledgeSharedOriginNotice, needsSharedOriginNotice } from './sharedOriginGate';
 
 /** A hold of the chord at least this long talks while held (DD-62); a shorter one toggles. */
@@ -199,6 +200,18 @@ export function useDictationComposer(options: DictationComposerOptions): Dictati
     },
     [key, startOrStop]
   );
+
+  // The fn gestures (macOS) press this composer's microphone when it is the one in focus, or the
+  // one focused last (`fnGestureClient.ts`).
+  const pressRef = useRef(press);
+  pressRef.current = press;
+  useEffect(() => {
+    if (!available) return;
+    return registerFnGestureTarget(key, {
+      press: () => pressRef.current(),
+      field: () => textAreaRef.current,
+    });
+  }, [available, key, textAreaRef]);
 
   const acknowledgeSharedOrigin = useCallback(() => {
     acknowledgeSharedOriginNotice();
