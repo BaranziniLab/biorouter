@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Assert the vendored Open Computer Use tree can survive a fresh checkout.
+"""Assert the vendored agent-desktop tree can survive a fresh checkout.
 
 `vendor-computer-use-source.py --verify` proves the tree on THIS disk matches its
 manifest. That is necessary and not sufficient: a tree can verify here and still
@@ -12,8 +12,8 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-MANIFEST = ROOT / "vendor/computer-use/source-manifest.json"
-PREFIX = "vendor/computer-use/source"
+MANIFEST = ROOT / "vendor/agent-desktop/source-manifest.json"
+PREFIX = "vendor/agent-desktop/source"
 
 
 def paths():
@@ -32,9 +32,9 @@ def main():
     problems = []
 
     # 1. Ignored files never reach a fresh clone. The manifest would then fail
-    #    there naming the files, which says nothing about the reason. Measured:
-    #    repository-wide `*.png`, `.agents/` and `.mcp.json` rules matched 15 of
-    #    them when this tree was first vendored.
+    #    there naming the files, which says nothing about the reason. Measured on
+    #    the tree this one replaced: repository-wide `*.png`, `.agents/` and
+    #    `.mcp.json` rules matched 15 of its files when it was first vendored.
     ignored = [line for line in git(["check-ignore", "--stdin"], wanted) if line.strip()]
     if ignored:
         problems.append(
@@ -45,9 +45,9 @@ def main():
 
     # 2. End-of-line conversion changes bytes nobody edited. The tree is HASHED,
     #    so a Windows checkout rewriting LF to CRLF fails the manifest on a clean
-    #    tree. Measured on CI: five extensionless files — .gitattributes,
-    #    .gitignore, CODEOWNERS, LICENSE, Makefile — matched no `text eol=lf`
-    #    rule and were rewritten.
+    #    tree. Measured on CI with the tree this one replaced: five extensionless
+    #    files (.gitattributes, .gitignore, CODEOWNERS, LICENSE, Makefile) matched
+    #    no `text eol=lf` rule and were rewritten.
     #
     #    ⚠ Checked on EVERY platform, because whoever breaks it will be on macOS
     #    or Linux and will see nothing.
@@ -61,12 +61,12 @@ def main():
         )
 
     if problems:
-        print(f"{len(problems)} problem(s) with the vendored Open Computer Use tree:\n", file=sys.stderr)
+        print(f"{len(problems)} problem(s) with the vendored agent-desktop tree:\n", file=sys.stderr)
         for problem in problems:
             print(f"- {len(wanted)} vendored files checked; some are {problem}\n", file=sys.stderr)
         raise SystemExit(1)
 
-    print(f"Vendored Open Computer Use source: {len(wanted)} files, committable and EOL-pinned")
+    print(f"Vendored agent-desktop source: {len(wanted)} files, committable and EOL-pinned")
 
 
 if __name__ == "__main__":

@@ -123,3 +123,11 @@ ui/desktop/src/computer-use/
 # directory before anything inside it can be.
 !vendor/computer-use/source/**/
 !vendor/computer-use/source/**
+
+# ── Vendored agent-desktop upstream (Biorouter Copilot's engine, AD-02) ──────
+# Same reason as the block above: `vendor/agent-desktop/source/` is hashed file by
+# file and the build reads nothing else, so a repository-wide rule that matched one
+# of its files would make a fresh clone fail verification with no explanation.
+# Nothing matches today (measured 2026-11-20); this keeps it that way.
+!vendor/agent-desktop/source/**/
+!vendor/agent-desktop/source/**

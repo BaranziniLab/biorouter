@@ -59,6 +59,12 @@ vendor/computer-use/patches/*.patch text eol=lf whitespace=-blank-at-eol,-space-
 # edited.
 vendor/computer-use/source/** -text
 
+# The vendored agent-desktop subset (Biorouter Copilot's engine) is hashed file by
+# file into `vendor/agent-desktop/source-manifest.json` for the same reason, and it
+# too holds extensionless files (`LICENSE`). `scripts/check-vendored-computer-use.py`
+# fails on every platform when a file under it is not `-text`.
+vendor/agent-desktop/source/** -text
+
 # The vendored whisper.cpp subset (the local dictation engine) is hashed file by file
 # into `vendor/whisper.cpp/source-manifest.json` for the same reason, and it also holds
 # four binary test fixtures. `scripts/check-vendored-whisper-cpp.sh` fails when any file
