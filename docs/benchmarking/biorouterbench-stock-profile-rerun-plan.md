@@ -130,7 +130,7 @@ that the task text bytes in the first request are the same for the three harness
 | `crew` | on | off | It needs a saved connection to a Crew server. A cell has none, so its tools can only refuse. |
 | `decisions` | on | off | Its tools ask a separately installed decision model, on the same computer or on Baseten. None exists in a cell, and one that did would be a second provider outside the relay's cap and journal. |
 | `chatrecall`, `dictionary` | off | off | default |
-| `developer`, `webdocuments`, `autovisualiser`, `memory`, `knowledge`, `agent_drafter`, `todo`, `workspace`, `extensionmanager`, `skills`, `code_execution` | on | on | default |
+| `developer`, `webdocuments`, `autovisualiser`, `memory`, `knowledge`, `agent_drafter`, `todo`, `workspace`, `extensionmanager`, `skills`, `code_execution` | on | on | default; `webdocuments` is named in `config.yaml` to keep it on (see below) |
 
 **What the model sees directly.** With Code Execution on, the model's own roster holds the Code
 Execution tools (`execute_code`, `read_module`, `search_modules`, `wait_for`, `watch_job`) and the
@@ -140,8 +140,10 @@ families `survives_code_execution_filter` keeps
 the final output tool and the few tools a script may not run, such as deleting a knowledge base.
 The developer tools (`shell`, `text_editor`, `shell_status`, `shell_kill`) and the other
 extensions' tools are reached from inside an `execute_code` script. That is how Biorouter ships,
-so it is what BS5 and BS6 measure; BD6 measures the alternative. Nobody writes the roster by
-hand: Stage 0 captures it from the first request, and the relay enforces it from then on (R2).
+so it is what BS5 and BS6 measure; BD6 measures the alternative. Nobody writes the tool list by
+hand: Stage 0 checks the extensions the first request reaches against the table above
+(criterion 2), captures the tool list only after that check passes, and the relay enforces it
+from then on (R2).
 
 > **Why the full default roster, not the four developer tools.** #541 proposes the roster
 > `shell`, `shell_status`, `shell_kill`, `text_editor`. That fixes the 1.1.0 mismatch (a prompt
@@ -159,6 +161,14 @@ extensions:
     enabled: false
     type: builtin
     name: computercontroller
+  webdocuments:
+    enabled: true
+    type: builtin
+    name: webdocuments
+    display_name: "Web & Documents"
+    description: "Read web pages and work with spreadsheets, documents, and PDFs."
+    timeout: 300
+    bundled: true
   crew:
     enabled: false
     type: platform
@@ -170,6 +180,19 @@ extensions:
     name: decisions
     description: ""
 ```
+
+**Why `webdocuments` is named although it stays on.** Turning Biorouter Copilot off alone would
+also turn Web & Documents off. `get_extensions_map` in
+[`config/extensions.rs`](../../crates/biorouter/src/config/extensions.rs) runs
+`migrate_computer_use_capabilities` on every read, not only inside its one-time migration. When
+the map holds a `computercontroller` entry and no `webdocuments` entry, that function creates
+`webdocuments` with the Copilot entry's `enabled` value, here false, and
+`inject_builtin_extensions` then leaves the existing entry alone. The unit test
+`disabled_computer_use_keeps_both_capabilities_disabled` pins this behaviour, and the code is the
+same at `v1.94.5` and on the 1.94.6 branch. Without the entry, BS5, BS6, BG6 and BD6 would run
+with no `web_scrape` and no document, spreadsheet or PDF tools. The entry above is the one
+`builtin_entry` would inject, so the extension is configured exactly as on a fresh install.
+Stage 0 criterion 2 fails if it is missing.
 
 ### Minimal profile on 1.94.5 (BM5)
 
@@ -407,9 +430,24 @@ same way through the changed relay and through the 1.1.0 relay, and diff what ea
 Pass criteria, all required for every combination:
 
 1. No relay rejects other than `model_not_in_route`.
-2. The first request's tool list equals the profile's declared roster. For the stock profile
-   that list becomes the declared roster in the manifest, and it holds no `computercontroller__`,
-   `crew__` or `decisions__` tool.
+2. The extensions the first request reaches equal the profile's expected set, written down
+   before Stage 0 runs and never derived from the request itself. An extension counts as
+   reached when it prefixes a tool in the first request's tool list (`todo__`, `workspace__`)
+   or is named on the `Modules:` line of the MOIM block that request carries, which lists what
+   `execute_code` can import (`get_moim` in
+   [`code_execution_extension.rs`](../../crates/biorouter/src/agents/code_execution_extension.rs)).
+   The expected sets:
+
+   | Profile | Expected extensions |
+   | --- | --- |
+   | Stock (BS5, BS6, BG6) | `developer`, `webdocuments`, `autovisualiser`, `memory`, `knowledge`, `agent_drafter`, `todo`, `workspace`, `extensionmanager`, `skills`, `code_execution` |
+   | Direct tools (BD6) | the stock set without `code_execution`, all reached as direct tools, with no `Modules:` line |
+   | Minimal (BM5) | `developer` only, and the tool list is exactly `developer__shell`, as in 1.1.0 |
+
+   No `computercontroller__`, `crew__` or `decisions__` tool appears, directly or as a module.
+   A missing or extra extension fails the combination, and the fix goes in the profile, as the
+   `webdocuments` entry did, never in the expected set. Only after this check passes does the
+   first request's tool list become the declared roster in the manifest that R2 enforces.
 3. Every tool the rendered stock prompt names appears in the declared roster or in a
    `read_module` listing from the scripted exchange. The prompt's sha256 is recorded.
 4. The task text bytes in the first request are the same for the three harnesses.
@@ -605,6 +643,7 @@ Calendar time is about two working weeks.
 | `watch_job` in a headless run | Code Execution's `watch_job` ends the turn and resumes the chat when the job finishes. No handling for it was found in `crates/biorouter-cli`, so a headless run may exit while a watched job still runs, leaving files missing. Not verified. | K4 flags it; `syn-bgjob` exercises it in Stage 1; if it happens, file a product issue instead of changing the profile |
 | Biorouter reads GLM-5.3 Flash's window as 200,000 tokens | `z-ai/glm-5.3-flash` has no exact entry in `MODEL_CONTEXT_WINDOWS` ([`model.rs`](../../crates/biorouter/src/model.rs)), so the `glm-5` substring fallback gives 200,000 where OpenRouter lists 1,048,576. At the 0.8 threshold, compaction can start near 160,000 tokens on GLM cells; 1.1.0's largest Biorouter request, on any model, was 189,825 tokens. | shipped behaviour, so the stock profile keeps it; compactions are counted per configuration, Stage 0 records the window (criterion 8), and the mismatch goes to a product issue |
 | A default extension misbehaves without its prerequisites | noise in the Biorouter arms | three are off with reasons; Stage 0 records blocked connections; extension load errors are counted |
+| Turning one extension off silently turns another off | the stock arms run a smaller roster than documented (disabling Copilot alone disables Web & Documents) | the explicit `webdocuments` entry in `config.yaml`; Stage 0 criterion 2 compares the extensions reached with a set written down in advance, so any other such coupling fails Stage 0 instead of becoming the declared roster |
 | The relay changes create an asymmetry | a biased comparison | each mode is checked in Stage 0, and CX's and CC's forwarded requests are diffed against the 1.1.0 relay |
 | The stock profile costs more than assumed | budget overrun | per stage key credit limits; the budget is re-derived from Stage 1 |
 | Rate limits at a pinned upstream (HTTP 429) | retries, longer cells, aborted runs | the 1.1.0 relay retries; concurrency is capped per upstream; an abort after a rate limit is classified as upstream (in the review's smoke runs a 1.94 build aborted after eight retries on HTTP 429; the evidence is on #542) |
