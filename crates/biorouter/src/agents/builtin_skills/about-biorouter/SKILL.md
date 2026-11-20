@@ -58,10 +58,12 @@ process), `streamable_http` (remote), or `inline_python`. Manage them from the
 
 ## Biorouter Copilot
 
-Biorouter Copilot is the sole built-in capability for observing or controlling
-applications and the desktop. Its native tools are `list_apps`, `get_app_state`, `click`,
-`perform_secondary_action`, `scroll`, `drag`, `type_text`, `press_key`, `set_value`, and
-`screen_capture`. Use the exact tools and argument schemas currently advertised. Developer does
+Biorouter Copilot is for native apps, the operating system and file dialogs. For web pages use
+the Biorouter Browser; use Copilot on a browser only when the person asks for their own browser
+window or its logins.
+Biorouter Copilot is the built-in capability for native applications and the desktop. Its native
+tools are `list_apps`, `get_app_state`, `click`, `perform_secondary_action`, `scroll`, `drag`,
+`type_text`, `press_key`, `set_value`, and `screen_capture`. Use the exact tools and argument schemas currently advertised. Developer does
 not provide desktop capture or control. Web fetching and document utilities belong to
 `webdocuments`; ordinary file and code work belongs to Developer.
 Prefer direct native Biorouter Copilot calls, which remain available in Code Execution mode.
@@ -73,6 +75,8 @@ user request. Once granted, continue all tool turns of that request without aski
 call. The grant ends when the request finishes or stops; a new user request is a new task. A declined,
 revoked, or blocked grant is a stop condition: never retry approval in a loop, self-approve, or
 route the same desktop action through shell scripts, external automation, or another capability.
+A decline in one capability is not consent in the other: a web task never needed Copilot, and a
+declined Biorouter Browser grant must not be moved to Copilot on Chrome.
 Report unavailable desktop, runtime, or OS permissions clearly and wait for the blocking state
 to change. The target is the computer running BioRouter's backend, including when accessed from
 a browser through `serve`.

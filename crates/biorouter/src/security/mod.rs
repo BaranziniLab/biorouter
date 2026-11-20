@@ -1,3 +1,4 @@
+pub mod browser_use;
 pub mod computer_use;
 pub mod dictionary_store;
 pub mod global_memory;

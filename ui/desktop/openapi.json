@@ -370,6 +370,114 @@
         }
       }
     },
+    "/agent/browser/consent": {
+      "post": {
+        "tags": [
+          "super::routes::browser_use"
+        ],
+        "operationId": "browser_use_consent",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BrowserUseConsentRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BrowserUseStatus"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Human proof required"
+          },
+          "409": {
+            "description": "The request changed"
+          }
+        }
+      }
+    },
+    "/agent/browser/revoke": {
+      "post": {
+        "tags": [
+          "super::routes::browser_use"
+        ],
+        "operationId": "browser_use_revoke",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BrowserUseSessionRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BrowserUseStatus"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Session out of reach"
+          }
+        }
+      }
+    },
+    "/agent/browser/status": {
+      "get": {
+        "tags": [
+          "super::routes::browser_use"
+        ],
+        "operationId": "browser_use_status",
+        "parameters": [
+          {
+            "name": "session_id",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BrowserUseStatus"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Session out of reach"
+          },
+          "409": {
+            "description": "Chat mode does not run the browser"
+          },
+          "424": {
+            "description": "Chat not loaded"
+          }
+        }
+      }
+    },
     "/agent/call_tool": {
       "post": {
         "tags": [
@@ -13662,6 +13770,14 @@
         },
         "additionalProperties": false
       },
+      "ActLifetime": {
+        "type": "string",
+        "description": "How long an act grant lasts.",
+        "enum": [
+          "request",
+          "chat"
+        ]
+      },
       "ActionRequired": {
         "type": "object",
         "required": [
@@ -14405,6 +14521,129 @@
           "metadata": {
             "type": "string",
             "nullable": true
+          }
+        }
+      },
+      "BrowserGrant": {
+        "type": "string",
+        "description": "Which grant a browser operation needs.",
+        "enum": [
+          "observe",
+          "act"
+        ]
+      },
+      "BrowserUseConsentRequest": {
+        "type": "object",
+        "required": [
+          "session_id",
+          "challenge_id",
+          "grant"
+        ],
+        "properties": {
+          "challenge_id": {
+            "type": "string"
+          },
+          "grant": {
+            "$ref": "#/components/schemas/BrowserGrant"
+          },
+          "lifetime": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/ActLifetime"
+              }
+            ],
+            "nullable": true
+          },
+          "session_id": {
+            "type": "string"
+          }
+        }
+      },
+      "BrowserUseSessionRequest": {
+        "type": "object",
+        "required": [
+          "session_id"
+        ],
+        "properties": {
+          "session_id": {
+            "type": "string"
+          }
+        }
+      },
+      "BrowserUseStatus": {
+        "type": "object",
+        "required": [
+          "enabled",
+          "available",
+          "session_id",
+          "provider",
+          "model",
+          "destination",
+          "public_model",
+          "state",
+          "observe",
+          "challenge_id",
+          "disclosure"
+        ],
+        "properties": {
+          "act": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/ActLifetime"
+              }
+            ],
+            "nullable": true
+          },
+          "activity_id": {
+            "type": "string",
+            "description": "The most recent request that used the browser in this chat.",
+            "nullable": true
+          },
+          "available": {
+            "type": "boolean",
+            "description": "This daemon serves a desktop app that hosts the browser (BB-16)."
+          },
+          "challenge_id": {
+            "type": "string"
+          },
+          "destination": {
+            "type": "string"
+          },
+          "disclosure": {
+            "type": "string",
+            "description": "The consent the card shows for `requested` (or for the active grant)."
+          },
+          "enabled": {
+            "type": "boolean",
+            "description": "The capability is on for this chat."
+          },
+          "model": {
+            "type": "string"
+          },
+          "observe": {
+            "type": "boolean",
+            "description": "Reading is allowed for this chat."
+          },
+          "provider": {
+            "type": "string"
+          },
+          "public_model": {
+            "type": "boolean"
+          },
+          "requested": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/BrowserGrant"
+              }
+            ],
+            "nullable": true
+          },
+          "session_id": {
+            "type": "string"
+          },
+          "state": {
+            "type": "string",
+            "description": "`idle`, `approval_required`, `active` or `stopped`."
           }
         }
       },

@@ -207,7 +207,7 @@ fn panel_trust_notice(untrusted_external: bool) -> &'static str {
 /// to distrust — a total bypass rather than a leak. Substituting rather than
 /// deleting keeps the text readable, and a look-alike cannot be mis-decoded
 /// back into markup the way an entity reference can.
-fn neutralize_panel_markup(value: &str) -> String {
+pub(crate) fn neutralize_panel_markup(value: &str) -> String {
     value.replace('<', "‹").replace('>', "›")
 }
 
@@ -1013,7 +1013,7 @@ struct WorkspacePanelParams {
 
 const PANEL_CAPTURE_MAX_BYTES: u64 = 16 * 1024 * 1024;
 
-fn materialize_panel_capture(path: &str) -> Result<Content, String> {
+pub(crate) fn materialize_panel_capture(path: &str) -> Result<Content, String> {
     let candidate = Path::new(path);
     let temp_root = std::env::temp_dir().join("biorouter-pasted-images");
     let canonical_root = temp_root

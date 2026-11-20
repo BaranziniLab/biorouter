@@ -667,6 +667,10 @@ async function startOrAttachBiorouterd(
     // Respects an explicit user override; set BIOROUTER_AUTOVIS_CDN=0 for fully
     // offline/self-contained figures (no network needed at render time).
     BIOROUTER_AUTOVIS_CDN: process.env.BIOROUTER_AUTOVIS_CDN ?? '1',
+    // BB-16: this daemon serves a desktop app, which hosts the Biorouter Browser, so the agent's
+    // browser tools are offered. `biorouter serve` and the CLI never set it, and the daemon
+    // withholds the tools there: no Electron main process exists to host a page.
+    BIOROUTER_DESKTOP_BROWSER: '1',
     ...env,
     ...(sharedRuntime ? { BIOROUTER_SHARED_DAEMON: '1' } : {}),
   } as BiorouterProcessEnv;

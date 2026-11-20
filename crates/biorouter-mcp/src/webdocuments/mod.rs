@@ -44,7 +44,7 @@ fn web_scrape_status_hint(status: reqwest::StatusCode) -> &'static str {
     match status.as_u16() {
         403 => {
             " The site blocks automated clients. Try an alternative source, \
-                 or browser automation if available."
+                 or open it in the Biorouter Browser (browser_open) if it is available."
         }
         404 => " The URL does not exist. Verify the URL or pick another source.",
         429 => {

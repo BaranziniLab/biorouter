@@ -17,6 +17,12 @@ import type {
   EmbeddedBrowserState,
   EmbeddedBrowserSuggestion,
 } from './browser/types';
+import type {
+  BrowserAgentActivity,
+  BrowserAgentRequest,
+  BrowserAgentResult,
+  BrowserAgentShowTab,
+} from './browser/agent/types';
 
 // One-time warning for callers still using the legacy `off()` API. Each
 // channel only warns once to avoid log spam under React StrictMode.
@@ -624,6 +630,19 @@ type ElectronAPI = {
     onOpened: (callback: (payload: EmbeddedBrowserOpened) => void) => () => void;
     onShortcut: (callback: (payload: EmbeddedBrowserShortcut) => void) => () => void;
   };
+  /**
+   * BB-10: the agent's half of the Biorouter Browser. `run` forwards one operation the daemon
+   * sent through this window's workspace socket; main drives only this window's agent tabs of
+   * that chat. The events tell the chat's panel to show or close an agent tab, and when an
+   * operation is running on one (for the bar's label and Stop).
+   */
+  browserAgent?: {
+    run: (request: BrowserAgentRequest) => Promise<BrowserAgentResult>;
+    cancel: (requestId: string) => Promise<boolean>;
+    onShowTab: (callback: (payload: BrowserAgentShowTab) => void) => () => void;
+    onCloseTab: (callback: (payload: { sessionId: string; viewId: string }) => void) => () => void;
+    onActivity: (callback: (payload: BrowserAgentActivity) => void) => () => void;
+  };
   openArtifactInBrowser: (payload: {
     html: string;
     title?: string;
@@ -1140,6 +1159,33 @@ const electronAPI: ElectronAPI = {
       ipcRenderer.on('embedded-browser:shortcut', wrapped);
       return () => {
         ipcRenderer.removeListener('embedded-browser:shortcut', wrapped);
+      };
+    },
+  },
+  browserAgent: {
+    run: (request: BrowserAgentRequest) => ipcRenderer.invoke('biorouter-browser:agent', request),
+    cancel: (requestId: string) =>
+      ipcRenderer.invoke('biorouter-browser:agent-cancel', { requestId }),
+    onShowTab: (callback: (payload: BrowserAgentShowTab) => void) => {
+      const wrapped = (_event: unknown, payload: BrowserAgentShowTab) => callback(payload);
+      ipcRenderer.on('biorouter-browser:show-tab', wrapped);
+      return () => {
+        ipcRenderer.removeListener('biorouter-browser:show-tab', wrapped);
+      };
+    },
+    onCloseTab: (callback: (payload: { sessionId: string; viewId: string }) => void) => {
+      const wrapped = (_event: unknown, payload: { sessionId: string; viewId: string }) =>
+        callback(payload);
+      ipcRenderer.on('biorouter-browser:close-tab', wrapped);
+      return () => {
+        ipcRenderer.removeListener('biorouter-browser:close-tab', wrapped);
+      };
+    },
+    onActivity: (callback: (payload: BrowserAgentActivity) => void) => {
+      const wrapped = (_event: unknown, payload: BrowserAgentActivity) => callback(payload);
+      ipcRenderer.on('biorouter-browser:activity', wrapped);
+      return () => {
+        ipcRenderer.removeListener('biorouter-browser:activity', wrapped);
       };
     },
   },

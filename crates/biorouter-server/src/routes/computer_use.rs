@@ -129,7 +129,8 @@ pub async fn revoke(
     Json(request): Json<ComputerUseSessionRequest>,
 ) -> Result<Json<ComputerUseStatus>, ErrorResponse> {
     let agent = agent(&state, &request.session_id, &headers).await?;
-    agent.extension_manager.computer_use.revoke();
+    // BB-18: one Stop for both agent capabilities.
+    super::browser_use::stop_agent_capabilities(&agent);
     agent
         .extension_manager
         .computer_use_status(&request.session_id)

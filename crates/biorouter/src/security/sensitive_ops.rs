@@ -2404,7 +2404,9 @@ impl SensitiveOpsInspector {
             let Ok(tool_call) = &request.tool_call else {
                 continue;
             };
-            if crate::security::computer_use::is_computer_use_tool(&tool_call.name) {
+            if crate::security::computer_use::is_computer_use_tool(&tool_call.name)
+                || crate::security::browser_use::is_browser_tool(&tool_call.name)
+            {
                 continue;
             }
             let Some(args) = tool_call.arguments.as_ref() else {

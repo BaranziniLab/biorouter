@@ -37,7 +37,11 @@ import {
   wasRecentlyRefused,
 } from '../browser/localNetwork';
 import { acceptLanguages, chromeUserAgent } from '../browser/userAgent';
-import { completedDownloadPath, handlePersonDownload } from '../browser/downloads';
+import {
+  completedDownloadPath,
+  handleAgentDownload,
+  handlePersonDownload,
+} from '../browser/downloads';
 import { createBrowserStore, type BrowserStore } from '../browser/store';
 import type {
   EmbeddedBrowserBookmark,
@@ -129,6 +133,39 @@ type Entry = {
   /** A tab a page opened waits this long for the panel to claim it, then closes. */
   claimTimer: ReturnType<typeof setTimeout> | null;
   noticedPermissions: Set<string>;
+  /**
+   * BB-15: the chat whose agent opened this tab, or opened the tab that opened it. `null` for a
+   * tab the person opened, which the agent cannot see.
+   */
+  agentSession: string | null;
+  /** The tab's id in the agent's tool results (`t2`). */
+  agentLabel: string | null;
+  /** While an agent operation dispatches input, input events are the agent's, not the person's. */
+  agentInputDepth: number;
+  /** When the person (not the agent) last pressed a key, clicked or touched this page. */
+  personInputAt: number;
+  /** BB-05: how a download this tab starts during an agent operation is handled. */
+  agentDownload: AgentDownloadRoute | null;
+};
+
+/**
+ * Set by the agent driver for the length of one operation on an agent tab (BB-05): a download
+ * that starts then is the agent's. `dir` is set only under the act grant; with only the observe
+ * grant the download is cancelled and `onDone` says why.
+ */
+export type AgentDownloadRoute = {
+  dir: string | null;
+  onDone: (download: AgentDownloadReport) => void;
+};
+
+export type AgentDownloadReport = {
+  state: 'completed' | 'cancelled' | 'interrupted' | 'progressing';
+  filename: string;
+  bytes: number;
+  mime: string;
+  origin: string;
+  path?: string;
+  reason?: string;
 };
 
 const views = new Map<string, Entry>();
@@ -379,6 +416,10 @@ function embeddedSession(): Session {
     if (!entry || entry.window.isDestroyed()) {
       event.preventDefault();
       log.info('[EmbeddedBrowser] cancelled a download no tab owns');
+      return;
+    }
+    if (entry.agentDownload) {
+      handleAgentDownload(item, entry.agentDownload.dir, entry.agentDownload.onDone);
       return;
     }
     handlePersonDownload(item, (state) => {
@@ -662,6 +703,11 @@ function installWindowOpenHandler(
               sendToOwnerByWindow(entry.window, 'embedded-browser:state', { viewId, state }),
             inherit: record,
           });
+          // A tab an agent tab opened is the agent's too, and the agent sees it (BB-04).
+          if (entry.agentSession) {
+            child.agentSession = entry.agentSession;
+            child.agentLabel = nextAgentLabel(entry.window, entry.agentSession);
+          }
           child.claimTimer = setTimeout(() => {
             child.claimTimer = null;
             log.info('[EmbeddedBrowser] closed a page-opened tab nobody showed');
@@ -720,6 +766,10 @@ function installContentsGuards(contents: WebContents, record: ContentsRecord): v
       input.type === 'gestureTapDown'
     ) {
       record.lastUserInputAt = Date.now();
+      // The person's own input, told apart from the agent's: the next agent result says the
+      // person interacted with the page (BB-13).
+      if (record.entry && record.entry.agentInputDepth === 0)
+        record.entry.personInputAt = Date.now();
     }
   });
   // BB-08: never pick a client certificate for a site (Electron's default is the first one).
@@ -835,6 +885,11 @@ function registerEntry(
     find: null,
     claimTimer: null,
     noticedPermissions: new Set(),
+    agentSession: null,
+    agentLabel: null,
+    agentInputDepth: 0,
+    personInputAt: 0,
+    agentDownload: null,
   };
   entry.record.entry = entry;
   const { managed } = options;
@@ -901,14 +956,17 @@ function registerEntry(
   contents.on('did-navigate', (_event, url) => {
     entry.revision += 1;
     commitRecord(entry.record, url);
-    if (!managed) browserStore().recordVisit(url, contents.getTitle());
+    // The person's own history only: pages the agent opened are not suggestions for the person.
+    if (!managed && !entry.agentSession) browserStore().recordVisit(url, contents.getTitle());
     pushState(entry);
   });
   // Without this the URL bar goes stale on every single-page-app route change.
   contents.on('did-navigate-in-page', (_event, url, isMainFrame) => {
     entry.revision += 1;
     if (isMainFrame) entry.record.personNavigation = false;
-    if (!managed && isMainFrame) browserStore().recordVisit(url, contents.getTitle());
+    if (!managed && isMainFrame && !entry.agentSession) {
+      browserStore().recordVisit(url, contents.getTitle());
+    }
     pushState(entry);
   });
   contents.on('page-title-updated', (_event, title) => {
@@ -1531,6 +1589,253 @@ export function registerEmbeddedBrowserOwnerTeardown(window: BrowserWindow): voi
   });
   window.webContents.on('render-process-gone', () => destroyEmbeddedBrowsersForWindow(window));
   window.webContents.on('destroyed', () => destroyEmbeddedBrowsersForWindow(window));
+}
+
+// ---------------------------------------------------------------------------------------------
+// Agent tabs (BB-12 to BB-15). The driver in `browser/agent/driver.ts` uses these; nothing else
+// in main gives the agent a way to a page. An agent tab is an ordinary browser tab of the
+// window, on the same partition and with the same guards, that remembers which chat's agent
+// opened it. The person's own tabs have no `agentSession` and stay invisible to the agent.
+// ---------------------------------------------------------------------------------------------
+
+const agentLabelCounters = new Map<string, number>();
+let agentTabSequence = 0;
+
+function agentKey(window: BrowserWindow, sessionId: string): string {
+  return `${window.webContents.id}:${sessionId}`;
+}
+
+function nextAgentLabel(window: BrowserWindow, sessionId: string): string {
+  const key = agentKey(window, sessionId);
+  const next = (agentLabelCounters.get(key) ?? 0) + 1;
+  agentLabelCounters.set(key, next);
+  return `t${next}`;
+}
+
+export type AgentTabInfo = {
+  viewId: string;
+  label: string;
+  contents: WebContents;
+  visible: boolean;
+  url: string;
+  title: string;
+  isLoading: boolean;
+  personInputAt: number;
+};
+
+function agentTabInfo(entry: Entry): AgentTabInfo {
+  const contents = entry.view.webContents;
+  return {
+    viewId: entry.viewId,
+    label: entry.agentLabel ?? entry.viewId,
+    contents,
+    visible: isShown(entry),
+    url: contents.isDestroyed() ? '' : contents.getURL().slice(0, MAX_PAGE_URL_CHARS),
+    title: contents.isDestroyed() ? '' : contents.getTitle().slice(0, MAX_PAGE_TITLE_CHARS),
+    isLoading: !contents.isDestroyed() && contents.isLoading(),
+    personInputAt: entry.personInputAt,
+  };
+}
+
+function isShown(entry: Entry): boolean {
+  return (
+    entry.visible &&
+    entry.bounds.width > 0 &&
+    entry.bounds.height > 0 &&
+    !entry.window.isDestroyed() &&
+    !entry.window.isMinimized()
+  );
+}
+
+/** The agent tabs of one chat in one window, oldest first. */
+export function agentBrowserTabs(window: BrowserWindow, sessionId: string): AgentTabInfo[] {
+  return [...views.values()]
+    .filter(
+      (entry) =>
+        entry.window === window &&
+        entry.agentSession === sessionId &&
+        !entry.view.webContents.isDestroyed()
+    )
+    .map(agentTabInfo);
+}
+
+export function agentBrowserTab(window: BrowserWindow, viewId: string): AgentTabInfo | null {
+  const entry = entryFor(window, viewId);
+  if (!entry || !entry.agentSession || entry.view.webContents.isDestroyed()) return null;
+  return agentTabInfo(entry);
+}
+
+/** A new, empty agent tab for this chat. The driver loads it once the panel shows it. */
+export function createAgentBrowserTab(
+  window: BrowserWindow,
+  sessionId: string
+): AgentTabInfo | null {
+  if (window.isDestroyed()) return null;
+  agentTabSequence += 1;
+  const viewId = `agent-tab-${agentTabSequence}`;
+  const view = new WebContentsView({
+    webPreferences: { session: embeddedSession(), ...HARDENED_PREFERENCES },
+  });
+  const entry = registerEntry(window, viewId, view, {
+    onState: (state) => sendToOwnerByWindow(window, 'embedded-browser:state', { viewId, state }),
+  });
+  entry.agentSession = sessionId;
+  entry.agentLabel = nextAgentLabel(window, sessionId);
+  // A renderer for the debugger to attach to: a web contents that never loaded has none, and
+  // CDP commands to it wait for one.
+  void view.webContents.loadURL('about:blank').catch(() => undefined);
+  return agentTabInfo(entry);
+}
+
+/** Ask the chat's panel to show an agent tab (BB-15: the agent drives only what is visible). */
+export function showAgentBrowserTab(window: BrowserWindow, viewId: string): void {
+  const entry = entryFor(window, viewId);
+  if (!entry?.agentSession) return;
+  const contents = entry.view.webContents;
+  sendToOwnerByWindow(window, 'biorouter-browser:show-tab', {
+    sessionId: entry.agentSession,
+    viewId,
+    url: contents.isDestroyed() ? '' : contents.getURL(),
+    title: contents.isDestroyed() ? '' : contents.getTitle(),
+  });
+}
+
+/** The agent stopped using a tab it opened: the panel closes its tab, and the view ends. */
+export function closeAgentBrowserTab(window: BrowserWindow, viewId: string): boolean {
+  const entry = entryFor(window, viewId);
+  if (!entry?.agentSession) return false;
+  sendToOwnerByWindow(window, 'biorouter-browser:close-tab', {
+    sessionId: entry.agentSession,
+    viewId,
+  });
+  destroyEmbeddedBrowser(window, viewId);
+  return true;
+}
+
+/** An agent operation started or ended on a tab: the bar shows it, with Stop (BB-15). */
+export function reportAgentActivity(window: BrowserWindow, viewId: string, active: boolean): void {
+  const entry = entryFor(window, viewId);
+  if (!entry?.agentSession) return;
+  sendToOwnerByWindow(window, 'biorouter-browser:activity', {
+    sessionId: entry.agentSession,
+    viewId,
+    active,
+  });
+}
+
+/**
+ * Navigate an agent tab (BB-06 and BB-20). A public chat's agent never opens a private network
+ * or loopback address; a private chat's agent may, with the person's own admission rule. The
+ * daemon's port and the other reserved ports stay refused for everyone (the request filter).
+ */
+export async function navigateAgentBrowserTab(
+  window: BrowserWindow,
+  viewId: string,
+  url: string,
+  tier: 'public' | 'private'
+): Promise<{ ok: true } | { ok: false; reason: string }> {
+  const entry = entryFor(window, viewId);
+  if (!entry?.agentSession || entry.view.webContents.isDestroyed()) {
+    return { ok: false, reason: 'The tab is gone.' };
+  }
+  if (!isNavigableEmbeddedUrl(url)) {
+    return {
+      ok: false,
+      reason: 'Only http and https addresses without credentials can be opened.',
+    };
+  }
+  const parsed = new URL(url);
+  const host = canonicalHost(parsed.hostname);
+  const cls =
+    literalHostClass(host) ?? (await resolveHostClass(host).catch(() => null))?.cls ?? null;
+  if (cls === null) {
+    return { ok: false, reason: `${parsed.hostname} could not be found.` };
+  }
+  if (cls !== 'public' && tier !== 'private') {
+    return {
+      ok: false,
+      reason: `${parsed.hostname} is a local or private network address, which a chat on a public model may not open (privacy tiers). The person can open it, or use a private model.`,
+    };
+  }
+  if (isReservedLocalPort(defaultPort(parsed)) && cls === 'loopback') {
+    return {
+      ok: false,
+      reason: `${parsed.host} belongs to Biorouter itself, so the browser does not open it.`,
+    };
+  }
+  await prepareEmbeddedNetwork(entry.view.webContents.session);
+  if (entryFor(window, viewId) !== entry || entry.view.webContents.isDestroyed()) {
+    return { ok: false, reason: 'The tab closed.' };
+  }
+  entry.record.personNavigation = cls !== 'public' && tier === 'private';
+  entry.error = null;
+  entry.errorOffersExternal = false;
+  entry.notice = null;
+  void entry.view.webContents.loadURL(url).catch(() => {
+    // A failed load arrives through did-fail-load, which the driver reads from the state.
+  });
+  return { ok: true };
+}
+
+/** Back, forward, reload, stop on an agent tab: page navigation, never the person's. */
+export function controlAgentBrowserTab(
+  window: BrowserWindow,
+  viewId: string,
+  action: 'back' | 'forward' | 'reload' | 'stop'
+): boolean {
+  const entry = entryFor(window, viewId);
+  if (!entry?.agentSession || entry.view.webContents.isDestroyed()) return false;
+  const history = entry.view.webContents.navigationHistory;
+  entry.record.personNavigation = false;
+  if (action === 'back') {
+    if (!history.canGoBack()) return false;
+    history.goBack();
+  } else if (action === 'forward') {
+    if (!history.canGoForward()) return false;
+    history.goForward();
+  } else if (action === 'reload') {
+    entry.view.webContents.reload();
+  } else {
+    entry.view.webContents.stop();
+  }
+  return true;
+}
+
+/** The last load error the bar shows for a tab (a refused local address, a certificate error). */
+export function agentBrowserTabError(window: BrowserWindow, viewId: string): string | null {
+  const entry = entryFor(window, viewId);
+  if (!entry) return null;
+  return entry.error ?? (entry.notice ? entry.notice.text : null);
+}
+
+/**
+ * Bracket the agent's own input on a tab: input events inside are the agent's (so they never
+ * read as the person interacting), and a click inside counts as the gesture a page needs to
+ * open a tab (BB-04), because a popup the agent's click opens is a tab the agent then sees.
+ */
+export function beginAgentInput(window: BrowserWindow, viewId: string): void {
+  const entry = entryFor(window, viewId);
+  if (!entry) return;
+  entry.agentInputDepth += 1;
+  entry.record.lastUserInputAt = Date.now();
+}
+
+export function endAgentInput(window: BrowserWindow, viewId: string): void {
+  const entry = entryFor(window, viewId);
+  if (!entry) return;
+  // Input events arrive asynchronously; keep the agent's attribution a moment longer.
+  setTimeout(() => {
+    entry.agentInputDepth = Math.max(0, entry.agentInputDepth - 1);
+  }, 150);
+}
+
+export function setAgentDownloadRoute(
+  window: BrowserWindow,
+  viewId: string,
+  route: AgentDownloadRoute | null
+): void {
+  const entry = entryFor(window, viewId);
+  if (entry) entry.agentDownload = route;
 }
 
 const FOCUSED_EDITABLE_EXPRESSION = `(() => {

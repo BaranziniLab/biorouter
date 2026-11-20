@@ -49,6 +49,7 @@ import {
 import { useRunningChats, defaultChatStreamRegistry } from '../hooks/chatStreamStore';
 import { subscribeSessionNameChanges } from '../utils/sessionNameSync';
 import { runPanelCommand } from '../components/chatGroups/panelCommands';
+import { isSessionOnScreen, runBrowserCommand } from '../components/chatGroups/browserCommands';
 import {
   registerWorkspaceCommands,
   drainPendingWorkspaceCommands,
@@ -409,6 +410,13 @@ export function ChatGroupsProvider({ children }: { children: React.ReactNode }) 
       // the chat that owns the panel.
       if (cmd.cmd === 'read_panel' || cmd.cmd === 'capture_panel') {
         return runPanelCommand(cmd);
+      }
+      // BB-10: a Biorouter Browser operation runs only for a chat on screen in this window,
+      // and changes no layout; main shows the agent's tab in that chat's panel.
+      if (cmd.cmd === 'browser' || cmd.cmd === 'browser_cancel') {
+        return runBrowserCommand(cmd, (sessionId) =>
+          isSessionOnScreen(stateRef.current, sessionId)
+        );
       }
       const plan = planWorkspaceCommand(cmd, stateRef.current);
       // The plan is the WHOLE answer — nothing here is deferred to a later tick.

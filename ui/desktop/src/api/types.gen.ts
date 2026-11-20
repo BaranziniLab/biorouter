@@ -87,6 +87,11 @@ export type AcknowledgeDevicesRequest = {
     fingerprints: Array<string>;
 };
 
+/**
+ * How long an act grant lasts.
+ */
+export type ActLifetime = 'request' | 'chat';
+
 export type ActionRequired = {
     data: ActionRequiredData;
 };
@@ -403,6 +408,57 @@ export type Author = {
 export type AuthorRequest = {
     contact?: string | null;
     metadata?: string | null;
+};
+
+/**
+ * Which grant a browser operation needs.
+ */
+export type BrowserGrant = 'observe' | 'act';
+
+export type BrowserUseConsentRequest = {
+    challenge_id: string;
+    grant: BrowserGrant;
+    lifetime?: ActLifetime | null;
+    session_id: string;
+};
+
+export type BrowserUseSessionRequest = {
+    session_id: string;
+};
+
+export type BrowserUseStatus = {
+    act?: ActLifetime | null;
+    /**
+     * The most recent request that used the browser in this chat.
+     */
+    activity_id?: string | null;
+    /**
+     * This daemon serves a desktop app that hosts the browser (BB-16).
+     */
+    available: boolean;
+    challenge_id: string;
+    destination: string;
+    /**
+     * The consent the card shows for `requested` (or for the active grant).
+     */
+    disclosure: string;
+    /**
+     * The capability is on for this chat.
+     */
+    enabled: boolean;
+    model: string;
+    /**
+     * Reading is allowed for this chat.
+     */
+    observe: boolean;
+    provider: string;
+    public_model: boolean;
+    requested?: BrowserGrant | null;
+    session_id: string;
+    /**
+     * `idle`, `approval_required`, `active` or `stopped`.
+     */
+    state: string;
 };
 
 export type CallToolRequest = {
@@ -9666,6 +9722,80 @@ export type AgentAddExtensionResponses = {
 };
 
 export type AgentAddExtensionResponse = AgentAddExtensionResponses[keyof AgentAddExtensionResponses];
+
+export type BrowserUseConsentData = {
+    body: BrowserUseConsentRequest;
+    path?: never;
+    query?: never;
+    url: '/agent/browser/consent';
+};
+
+export type BrowserUseConsentErrors = {
+    /**
+     * Human proof required
+     */
+    403: unknown;
+    /**
+     * The request changed
+     */
+    409: unknown;
+};
+
+export type BrowserUseConsentResponses = {
+    200: BrowserUseStatus;
+};
+
+export type BrowserUseConsentResponse = BrowserUseConsentResponses[keyof BrowserUseConsentResponses];
+
+export type BrowserUseRevokeData = {
+    body: BrowserUseSessionRequest;
+    path?: never;
+    query?: never;
+    url: '/agent/browser/revoke';
+};
+
+export type BrowserUseRevokeErrors = {
+    /**
+     * Session out of reach
+     */
+    403: unknown;
+};
+
+export type BrowserUseRevokeResponses = {
+    200: BrowserUseStatus;
+};
+
+export type BrowserUseRevokeResponse = BrowserUseRevokeResponses[keyof BrowserUseRevokeResponses];
+
+export type BrowserUseStatusData = {
+    body?: never;
+    path?: never;
+    query: {
+        session_id: string;
+    };
+    url: '/agent/browser/status';
+};
+
+export type BrowserUseStatusErrors = {
+    /**
+     * Session out of reach
+     */
+    403: unknown;
+    /**
+     * Chat mode does not run the browser
+     */
+    409: unknown;
+    /**
+     * Chat not loaded
+     */
+    424: unknown;
+};
+
+export type BrowserUseStatusResponses = {
+    200: BrowserUseStatus;
+};
+
+export type BrowserUseStatusResponse = BrowserUseStatusResponses[keyof BrowserUseStatusResponses];
 
 export type CallToolData = {
     body: CallToolRequest;

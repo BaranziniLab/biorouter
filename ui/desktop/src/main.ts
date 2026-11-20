@@ -25,6 +25,7 @@ import {
   ipcMain,
   Menu,
   MenuItem,
+  nativeImage,
   nativeTheme,
   Notification,
   powerMonitor,
@@ -234,6 +235,12 @@ import {
   type EmbeddedBrowserBounds,
 } from './utils/embeddedBrowser';
 import { configureBrowserTestHosts, reserveLocalPort } from './browser/localNetwork';
+import { cancelAgentBrowserOperation, runAgentBrowserOperation } from './browser/agent/driver';
+import {
+  BROWSER_AGENT_OPS,
+  type BrowserAgentOp,
+  type BrowserAgentRequest,
+} from './browser/agent/types';
 import { configureBrowserTestDownloads } from './browser/downloads';
 import { browserTestHooksEnabled } from './browser/testHooks';
 import { heicToPng } from './utils/heicConvert';
@@ -5319,6 +5326,80 @@ function browserOwnerWindow(event: Electron.IpcMainInvokeEvent): BrowserWindow |
 function isViewId(value: unknown): value is string {
   return typeof value === 'string' && value.length > 0 && value.length <= 200;
 }
+
+// BB-10 and BB-11: one Biorouter Browser operation the daemon sent through this window's
+// workspace socket. The renderer checks the chat is on screen in this window and forwards the
+// frame here; main drives the chat's own agent tabs of THIS window through
+// `webContents.debugger`, and no other caller (a page, a popup, another window) can reach it.
+function agentBrowserRequest(payload: unknown): BrowserAgentRequest | null {
+  if (!payload || typeof payload !== 'object') return null;
+  const p = payload as Record<string, unknown>;
+  const text = (value: unknown) =>
+    typeof value === 'string' && value.length > 0 && value.length <= 200;
+  if (!text(p.requestId) || !text(p.sessionId)) return null;
+  if (typeof p.op !== 'string' || !BROWSER_AGENT_OPS.has(p.op)) return null;
+  if (!p.args || typeof p.args !== 'object' || Array.isArray(p.args)) return null;
+  if (p.grant !== 'observe' && p.grant !== 'act') return null;
+  if (p.tier !== 'public' && p.tier !== 'private') return null;
+  const deadline = Number(p.deadlineMs);
+  if (!Number.isFinite(deadline) || deadline <= 0) return null;
+  let downloadDir: string | undefined;
+  if (p.downloadDir !== undefined && p.downloadDir !== null) {
+    if (typeof p.downloadDir !== 'string' || !path.isAbsolute(p.downloadDir)) return null;
+    downloadDir = path.normalize(p.downloadDir);
+  }
+  return {
+    requestId: p.requestId as string,
+    sessionId: p.sessionId as string,
+    op: p.op as BrowserAgentOp,
+    args: p.args as Record<string, unknown>,
+    grant: p.grant,
+    tier: p.tier,
+    deadlineMs: deadline,
+    downloadDir,
+  };
+}
+
+/** A screenshot goes where the daemon's capture reader accepts it (PP-07, pixels out of band). */
+async function writeAgentScreenshot(png: Buffer): Promise<string> {
+  const dir = await ensureTempDirExists();
+  const filePath = path.join(dir, `browser-shot-${crypto.randomBytes(6).toString('hex')}.png`);
+  await fs.writeFile(filePath, png, { mode: 0o600 });
+  return filePath;
+}
+
+function resizeAgentScreenshot(png: Buffer, maxWidth: number, maxHeight: number): Buffer {
+  const image = nativeImage.createFromBuffer(png);
+  const { width, height } = image.getSize();
+  const scale = Math.min(1, maxWidth / Math.max(1, width), maxHeight / Math.max(1, height));
+  if (scale >= 1) return png;
+  return image
+    .resize({
+      width: Math.max(1, Math.round(width * scale)),
+      height: Math.max(1, Math.round(height * scale)),
+      quality: 'good',
+    })
+    .toPNG();
+}
+
+ipcMain.handle('biorouter-browser:agent', async (event, payload: unknown) => {
+  const window = browserOwnerWindow(event);
+  if (!window) return { ok: false, detail: 'This window cannot drive the browser.' };
+  const request = agentBrowserRequest(payload);
+  if (!request) return { ok: false, detail: 'The browser operation was malformed.' };
+  return runAgentBrowserOperation(window, request, {
+    writeScreenshot: writeAgentScreenshot,
+    resizePng: resizeAgentScreenshot,
+  });
+});
+
+ipcMain.handle('biorouter-browser:agent-cancel', (event, payload: { requestId?: unknown }) => {
+  const window = browserOwnerWindow(event);
+  if (!window || typeof payload?.requestId !== 'string' || payload.requestId.length > 200) {
+    return false;
+  }
+  return cancelAgentBrowserOperation(payload.requestId);
+});
 
 ipcMain.handle('embedded-browser:is-managed-app-url', async (event, payload: { url: string }) => {
   const window = browserOwnerWindow(event);

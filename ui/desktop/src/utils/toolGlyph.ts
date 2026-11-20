@@ -38,6 +38,7 @@
  */
 import type { ComponentType } from 'react';
 import {
+  Compass,
   Archive,
   Bookmark,
   Bug,
@@ -90,6 +91,7 @@ export type ToolGlyphKind =
   | 'workspace'
   | 'figure'
   | 'copilot'
+  | 'browser'
   | 'database'
   | 'memory'
   | 'plan'
@@ -124,6 +126,7 @@ export const TOOL_GLYPHS: Record<ToolGlyphKind, ToolIcon> = {
   workspace: MessagesSquare,
   figure: ChartColumn,
   copilot: Copilot,
+  browser: Compass,
   database: Database,
   memory: Bookmark,
   plan: ListTodo,
@@ -149,6 +152,7 @@ export const BUILT_IN_EXTENSION_KEYS: ReadonlySet<string> = new Set([
   'webdocuments',
   'autovisualiser',
   'computercontroller',
+  'browser',
   'agent_drafter',
   'appcontrol',
   'datasql',
@@ -183,6 +187,7 @@ const DISPLAY_KEY_ALIASES: Record<string, string> = Object.fromEntries(
   (
     [
       ['Biorouter Copilot', 'computercontroller'],
+      ['Biorouter Browser', 'browser'],
       ['Web & Documents', 'webdocuments'],
       ['Agent Drafter', 'agent_drafter'],
       ['Workspace Control', 'workspace'],
@@ -277,6 +282,8 @@ const FAMILY: Record<string, ToolGlyphKind> = {
   workspace: 'workspace',
   autovisualiser: 'figure',
   computercontroller: 'copilot',
+  // BB-09: every Biorouter Browser tool is one concept, the browser the agent drives.
+  browser: 'browser',
   datasql: 'database',
   memory: 'memory',
   dictionary: 'memory',

@@ -382,6 +382,25 @@ impl PermissionInspector {
             );
         }
 
+        // BB-17: the Biorouter Browser asks the person through its own grants (observe once per
+        // chat, act once per request) at dispatch, in every mode, so the ordinary per-tool card
+        // would be a second question about the same action.
+        if crate::security::browser_use::is_browser_tool(tool_name) {
+            if self.permission_manager.get_user_permission(tool_name)
+                == Some(PermissionLevel::NeverAllow)
+            {
+                return Verdict::Decided(
+                    InspectionAction::Deny,
+                    "User permission denies this tool".into(),
+                );
+            }
+            return Verdict::Decided(
+                InspectionAction::Allow,
+                "The Biorouter Browser requires its separate host-verified grant at dispatch"
+                    .into(),
+            );
+        }
+
         // AO-12: Crew's two person tools ask the person themselves. Every `crew__change`
         // parks its own proof-backed card, and a `crew__read` that returns workspace content
         // parks the read consent, so a second, generic card here would make one change ask

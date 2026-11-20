@@ -51,6 +51,7 @@ import {
   ChevronRight,
   ChevronUp,
   Code,
+  Compass,
   Copy,
   ExternalLink,
   File,
@@ -109,6 +110,7 @@ import DelimitedTable from './DelimitedTable';
 import { annotateBrowserReason } from './captureOnBrowser';
 import DocumentPreview from './DocumentPreview';
 import MarkdownDocument from './MarkdownDocument';
+import { stopBrowser } from '../browser/browserApi';
 import WebPagePreview, { type EmbeddedBrowserState, type LiveBrowserShare } from './WebPagePreview';
 import NotebookPreview from './NotebookPreview';
 import DecisionHistory from '../decisions/DecisionHistory';
@@ -544,6 +546,9 @@ export function iconForArtifact(
   loadedKind?: ArtifactFilePreview['kind']
 ) {
   if (!artifact) return File;
+  // BB-15: the agent mark. A tab the agent opened wears the Biorouter Browser's own glyph, so the
+  // person can tell its tabs from their own at a glance.
+  if (artifact.kind === 'externalUrl' && artifact.openedBy === 'agent') return Compass;
   if (artifact.kind === 'externalUrl') return Globe;
   // The decision-model mark the summary's Decisions section draws.
   if (artifact.kind === 'decisions') return ENTITY_ICONS.decision;
@@ -743,7 +748,11 @@ export default function ArtifactViewer({
   /** Whether a page artifact loads as a live page rather than the Open here card. */
   const isBrowsingArtifact = (candidate: ArtifactSource | null | undefined) =>
     candidate?.kind === 'externalUrl' &&
-    (candidate.viewId ? pageOpenedViews.has(candidate.viewId) : browsingUrls.has(candidate.url));
+    (candidate.viewId
+      ? // BB-15: a tab the agent opened in main is live from the start; main created and
+        // loaded it under the chat's browser grant, so there is no Open here card to show.
+        pageOpenedViews.has(candidate.viewId) || candidate.openedBy === 'agent'
+      : browsingUrls.has(candidate.url));
   const tabsRef = useRef(tabState.tabs);
   tabsRef.current = tabState.tabs;
   /** A live page's tab is named by its page, as in a browser; everything else by its source. */
@@ -1233,6 +1242,19 @@ export default function ArtifactViewer({
       onOpenArtifact(pageTab);
     });
   }, [onOpenArtifact]);
+
+  // BB-15: the agent closed a tab it opened (browser_tabs close): its panel tab goes too.
+  useEffect(() => {
+    const agent = window.electron?.browserAgent;
+    if (!agent?.onCloseTab) return;
+    return agent.onCloseTab((closed) => {
+      if (closed.sessionId !== sessionId) return;
+      const tab = tabsRef.current.find(
+        (candidate) => browserViewIdFor(candidate) === closed.viewId
+      );
+      if (tab) dispatchTabAction({ type: 'close', tabId: tab.id });
+    });
+  }, [sessionId]);
 
   // The browser tabs end with the panel: hiding a panel tab keeps its page (BB-01), but an
   // unmounted panel has nothing left to show them in.
@@ -1779,6 +1801,11 @@ export default function ArtifactViewer({
         isMenuCovering={tabOverflowOpen}
         onLiveBrowserViewChange={role === 'current' ? handleLiveBrowserViewChange : undefined}
         onLiveBrowserShareChange={role === 'current' ? onLiveBrowserShareChange : undefined}
+        onStopAgent={
+          sessionId && role === 'current'
+            ? () => void stopBrowser(sessionId).catch(() => undefined)
+            : undefined
+        }
         isAnnotating={role === 'current' && isAnnotating}
         annotationSnapshotDataUrl={
           role === 'current' ? (annotationSnapshot?.dataUrl ?? null) : null
@@ -2299,6 +2326,7 @@ function ArtifactPreviewBody({
   isMenuCovering = false,
   onLiveBrowserViewChange = () => {},
   onLiveBrowserShareChange,
+  onStopAgent,
   isAnnotating = false,
   annotationSnapshotDataUrl = null,
   refreshRevision = 0,
@@ -2321,6 +2349,8 @@ function ArtifactPreviewBody({
   isMenuCovering?: boolean;
   onLiveBrowserViewChange?: (viewId: string | null) => void;
   onLiveBrowserShareChange?: (share: LiveBrowserShare | null) => void;
+  /** BB-15: the bar's Stop while the agent acts on this tab. */
+  onStopAgent?: () => void;
   isAnnotating?: boolean;
   annotationSnapshotDataUrl?: string | null;
   refreshRevision?: number;
@@ -2403,6 +2433,7 @@ function ArtifactPreviewBody({
           }
           snapshotDataUrl={annotationSnapshotDataUrl}
           onViewIdChange={onLiveBrowserViewChange}
+          onStopAgent={onStopAgent}
           onAgentShareChange={onLiveBrowserShareChange}
           onOpenExternal={(url) => void openInBrowser(url)}
         />

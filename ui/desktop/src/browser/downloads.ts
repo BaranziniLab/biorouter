@@ -1,5 +1,6 @@
 import { app, type DownloadItem } from 'electron';
 import { execFile } from 'node:child_process';
+import fs from 'node:fs';
 import path from 'node:path';
 import log from 'electron-log';
 
@@ -111,4 +112,111 @@ export function handlePersonDownload(
     onUpdate(snapshot(state));
   });
   onUpdate(snapshot('progressing'));
+}
+
+/** The most an agent download may be (BB-05); a larger one is cancelled. */
+export const AGENT_DOWNLOAD_MAX_BYTES = 500 * 1024 * 1024;
+
+export type AgentDownloadResult = {
+  state: 'completed' | 'cancelled' | 'interrupted' | 'progressing';
+  filename: string;
+  bytes: number;
+  mime: string;
+  origin: string;
+  path?: string;
+  reason?: string;
+};
+
+/** `name`, or `name (2).ext` when `name` is taken in `dir`. */
+export function uniqueDownloadPath(
+  dir: string,
+  filename: string,
+  exists: (candidate: string) => boolean
+): string {
+  const safe =
+    [...path.basename(filename)]
+      .filter((char) => char.charCodeAt(0) >= 0x20)
+      .join('')
+      .trim() || 'download';
+  const extension = path.extname(safe);
+  const stem = safe.slice(0, safe.length - extension.length) || 'download';
+  let candidate = path.join(dir, safe);
+  for (let n = 2; exists(candidate) && n < 1000; n += 1) {
+    candidate = path.join(dir, `${stem} (${n})${extension}`);
+  }
+  return candidate;
+}
+
+/**
+ * A download the agent caused (BB-05). With the act grant (`dir` set) it is saved without a
+ * dialog into the chat's `downloads/` folder, never opened or executed, capped at 500 MB and
+ * quarantined like the person's. With only the observe grant (`dir` null) it is cancelled, and
+ * the result says the download needs the act grant.
+ */
+export function handleAgentDownload(
+  item: DownloadItem,
+  dir: string | null,
+  onDone: (result: AgentDownloadResult) => void
+): void {
+  const filename = path.basename(item.getFilename() || 'download');
+  let origin = 'unknown';
+  try {
+    origin = new URL(item.getURL()).origin;
+  } catch {
+    origin = 'unknown';
+  }
+  const base = (): AgentDownloadResult => ({
+    state: 'cancelled',
+    filename,
+    bytes: item.getReceivedBytes(),
+    mime: item.getMimeType() || 'application/octet-stream',
+    origin,
+  });
+  if (!dir) {
+    item.cancel();
+    onDone({
+      ...base(),
+      reason:
+        'downloading needs the permission to act on websites, which this request does not have. Ask the person, or have them download it.',
+    });
+    return;
+  }
+  try {
+    fs.mkdirSync(dir, { recursive: true });
+  } catch {
+    item.cancel();
+    onDone({ ...base(), reason: `the folder ${dir} could not be created.` });
+    return;
+  }
+  const target = uniqueDownloadPath(dir, filename, (candidate) => fs.existsSync(candidate));
+  item.setSavePath(target);
+  if (item.getTotalBytes() > AGENT_DOWNLOAD_MAX_BYTES) {
+    item.cancel();
+    onDone({ ...base(), reason: 'it is larger than 500 MB.' });
+    return;
+  }
+  item.on('updated', () => {
+    if (item.getReceivedBytes() > AGENT_DOWNLOAD_MAX_BYTES) item.cancel();
+  });
+  item.once('done', (_event, state) => {
+    if (state === 'completed') {
+      quarantine(target);
+      onDone({
+        ...base(),
+        state: 'completed',
+        bytes: item.getReceivedBytes(),
+        path: target,
+        filename: path.basename(target),
+      });
+      return;
+    }
+    onDone({
+      ...base(),
+      state: state === 'interrupted' ? 'interrupted' : 'cancelled',
+      reason:
+        item.getReceivedBytes() > AGENT_DOWNLOAD_MAX_BYTES
+          ? 'it is larger than 500 MB.'
+          : `the download was ${state}.`,
+    });
+  });
 }

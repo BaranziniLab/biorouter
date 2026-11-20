@@ -6,7 +6,9 @@
 // The renderer half (the panel, the bar) is covered by the Vitest suites; this harness covers
 // what only Chromium can answer: real navigation, real windows, real downloads, the proxy.
 
-import { app, BrowserWindow, webContents, type WebContents } from 'electron';
+import { app, BrowserWindow, nativeImage, webContents, type WebContents } from 'electron';
+import fs from 'node:fs';
+import os from 'node:os';
 import log from 'electron-log';
 import { execFileSync } from 'node:child_process';
 import path from 'node:path';
@@ -25,6 +27,11 @@ import { configureBrowserTestHosts, reserveLocalPort } from '../../src/browser/l
 import { configureBrowserTestDownloads } from '../../src/browser/downloads';
 import { browserTestHooksEnabled } from '../../src/browser/testHooks';
 import type { EmbeddedBrowserState } from '../../src/browser/types';
+import {
+  cancelAgentBrowserOperation,
+  runAgentBrowserOperation,
+} from '../../src/browser/agent/driver';
+import type { BrowserAgentRequest } from '../../src/browser/agent/types';
 
 const userData = process.env.BIOROUTER_BROWSER_TEST_USER_DATA;
 if (userData) {
@@ -49,8 +56,12 @@ configureBrowserTestDownloads(
 );
 
 let window: BrowserWindow | null = null;
+/** The renderer's panel, simulated: show an agent tab when main asks (BB-15). */
+let autoShowAgentTabs = true;
+let agentRequestSeq = 0;
+const shotDir = fs.mkdtempSync(path.join(os.tmpdir(), 'biorouter-browser-shots-'));
 const states = new Map<string, EmbeddedBrowserState>();
-const sent: Array<{ channel: string; payload: unknown }> = [];
+const sentLog: Array<{ channel: string; payload: unknown }> = [];
 
 function record(viewId: string) {
   return (state: EmbeddedBrowserState) => {
@@ -84,10 +95,27 @@ const api = {
       // The renderer's half of the IPC: record what main tells the panel.
       const original = window.webContents.send.bind(window.webContents);
       window.webContents.send = (channel: string, ...args: unknown[]) => {
-        sent.push({ channel, payload: args[0] });
+        sentLog.push({ channel, payload: args[0] });
         if (channel === 'embedded-browser:state') {
           const payload = args[0] as { viewId: string; state: EmbeddedBrowserState };
           states.set(payload.viewId, payload.state);
+        }
+        if (channel === 'biorouter-browser:show-tab' && autoShowAgentTabs && window) {
+          const payload = args[0] as { viewId: string; url: string };
+          const state = createEmbeddedBrowser(
+            window,
+            payload.viewId,
+            payload.url || 'about:blank',
+            record(payload.viewId)
+          );
+          if (state) states.set(payload.viewId, state);
+          setEmbeddedBrowserBounds(window, payload.viewId, {
+            x: 0,
+            y: 0,
+            width: 1000,
+            height: 760,
+          });
+          setEmbeddedBrowserVisible(window, payload.viewId, true);
         }
         original(channel, ...args);
       };
@@ -113,7 +141,7 @@ const api = {
     window ? controlEmbeddedBrowser(window, viewId, action) : false,
   state: (viewId: string) => states.get(viewId) ?? null,
   suggest: (query: string) => embeddedBrowserSuggestions(query),
-  sent: (channel?: string) => sent.filter((item) => !channel || item.channel === channel),
+  sent: (channel?: string) => sent(channel),
   url: (viewId: string) => contentsOf(viewId).getURL(),
   /** The colour of the page's top right corner, where the fixture draws nothing. */
   cornerPixel: async (viewId: string) => {
@@ -180,7 +208,69 @@ const api = {
   },
   downloadPath: (filename: string) =>
     path.join(process.env.BIOROUTER_BROWSER_TEST_DOWNLOAD_DIR ?? '', filename),
+  // --- The agent's tools (BB-12 to BB-15), through the real driver.
+  agent: async (
+    sessionId: string,
+    op: BrowserAgentRequest['op'],
+    args: Record<string, unknown> = {},
+    options: Partial<
+      Pick<BrowserAgentRequest, 'grant' | 'tier' | 'deadlineMs' | 'downloadDir' | 'requestId'>
+    > = {}
+  ) => {
+    if (!window) throw new Error('not ready');
+    agentRequestSeq += 1;
+    return runAgentBrowserOperation(
+      window,
+      {
+        requestId: options.requestId ?? `wsreq-test-${agentRequestSeq}`,
+        sessionId,
+        op,
+        args,
+        grant: options.grant ?? 'act',
+        tier: options.tier ?? 'public',
+        deadlineMs: options.deadlineMs ?? 30_000,
+        downloadDir: options.downloadDir,
+      },
+      {
+        writeScreenshot: async (png: Buffer) => {
+          const file = path.join(shotDir, `shot-${agentRequestSeq}.png`);
+          fs.writeFileSync(file, png);
+          return file;
+        },
+        resizePng: (png: Buffer, maxWidth: number, maxHeight: number) => {
+          const image = nativeImage.createFromBuffer(png);
+          const { width, height } = image.getSize();
+          const scale = Math.min(1, maxWidth / width, maxHeight / height);
+          return scale >= 1
+            ? png
+            : image
+                .resize({ width: Math.round(width * scale), height: Math.round(height * scale) })
+                .toPNG();
+        },
+      }
+    );
+  },
+  agentCancel: (requestId: string) => cancelAgentBrowserOperation(requestId),
+  setAutoShow: (value: boolean) => {
+    autoShowAgentTabs = value;
+  },
+  /** Hide every view, as a menu over the panel does. */
+  hideView: (viewId: string) => window && setEmbeddedBrowserVisible(window, viewId, false),
+  imageSize: (file: string) => nativeImage.createFromPath(file).getSize(),
+  hostFocused: () => Boolean(window?.isFocused()),
+  /** The title of the page an agent tab shows, by the view id main gave it. */
+  viewTitle: (viewId: string) => {
+    const state = states.get(viewId);
+    const id = Number(state?.sourceRevision.split(':')[0]);
+    return Number.isFinite(id) ? (webContents.fromId(id)?.getTitle() ?? null) : null;
+  },
+  agentViews: () =>
+    sent('biorouter-browser:show-tab').map((item) => (item.payload as { viewId: string }).viewId),
 };
+
+function sent(channel?: string) {
+  return sentLog.filter((item) => !channel || item.channel === channel);
+}
 
 (globalThis as unknown as { __biorouterBrowserTest: typeof api }).__biorouterBrowserTest = api;
 

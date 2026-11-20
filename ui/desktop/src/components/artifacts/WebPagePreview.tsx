@@ -8,6 +8,7 @@ import {
   MoreHorizontal,
   RefreshCw,
   Share2,
+  Square,
   X,
 } from '../icons/app-icons';
 import { cn } from '../../utils';
@@ -86,6 +87,7 @@ export default function WebPagePreview({
   onCloseTab,
   onViewIdChange,
   onAgentShareChange,
+  onStopAgent,
   onStateChange,
   refreshRevision = 0,
   navigateRevision,
@@ -106,6 +108,11 @@ export default function WebPagePreview({
   onCloseTab?: () => void;
   onViewIdChange?: (viewId: string | null) => void;
   onAgentShareChange?: (share: LiveBrowserShare | null) => void;
+  /**
+   * BB-15: Stop, offered in the bar while the agent is acting on this tab. The same revoke as
+   * the agent control above the composer: it ends the browser's and Copilot's grants.
+   */
+  onStopAgent?: () => void;
   /** The page's state as it changes, for the panel tab's title. */
   onStateChange?: (state: EmbeddedBrowserState | null) => void;
   refreshRevision?: number;
@@ -126,6 +133,8 @@ export default function WebPagePreview({
   const [isEditingAddress, setIsEditingAddress] = useState(false);
   const [unavailable, setUnavailable] = useState(false);
   const [sharedWithAgent, setSharedWithAgent] = useState(false);
+  // BB-15: an agent operation is running on this tab right now (main reports it).
+  const [agentActive, setAgentActive] = useState(false);
   const [updateReady, setUpdateReady] = useState(false);
   const [editableFocused, setEditableFocused] = useState(false);
   const [privateAllowed, setPrivateAllowed] = useState(false);
@@ -152,6 +161,16 @@ export default function WebPagePreview({
 
   // Dictate into this app is shown only while an editable field in the app has focus
   // (owner decision, 2026-11-10). It does not depend on Dictate into other apps.
+  // BB-15: main reports when an agent operation starts and ends on this tab.
+  useEffect(() => {
+    const agent = window.electron?.browserAgent;
+    if (!agent?.onActivity) return;
+    setAgentActive(false);
+    return agent.onActivity((activity) => {
+      if (activity.viewId === viewId) setAgentActive(activity.active);
+    });
+  }, [viewId]);
+
   useEffect(() => {
     if (
       isBrowserSurface() ||
@@ -669,12 +688,31 @@ export default function WebPagePreview({
             )}
           </ContextMenu>
         )}
-        <ToolbarButton
-          label={sharedWithAgent ? BROWSER_COPY.stopSharing : BROWSER_COPY.share}
-          pressed={sharedWithAgent}
-          onClick={() => setSharedWithAgent((current) => !current)}
-          icon={<Share2 className="h-3.5 w-3.5" aria-hidden="true" />}
-        />
+        {agentActive ? (
+          <>
+            <span
+              role="status"
+              data-testid="browser-agent-active"
+              className="flex-none whitespace-nowrap text-xs text-text-muted"
+            >
+              {BROWSER_COPY.agentBrowsing}
+            </span>
+            {onStopAgent && (
+              <ToolbarButton
+                label={BROWSER_COPY.stopAgent}
+                onClick={onStopAgent}
+                icon={<Square className="h-3 w-3" aria-hidden="true" />}
+              />
+            )}
+          </>
+        ) : (
+          <ToolbarButton
+            label={sharedWithAgent ? BROWSER_COPY.stopSharing : BROWSER_COPY.share}
+            pressed={sharedWithAgent}
+            onClick={() => setSharedWithAgent((current) => !current)}
+            icon={<Share2 className="h-3.5 w-3.5" aria-hidden="true" />}
+          />
+        )}
         <DropdownMenu
           open={menuOpen}
           onOpenChange={(open) => {
@@ -819,6 +857,14 @@ export default function WebPagePreview({
           'relative min-h-0 flex-1 overflow-hidden',
           (isSuspended || coveredBySelf) && 'bg-background-fill'
         )}
+        // The native view paints over the slot, so the accent edge sits just outside it. An
+        // inline style rather than a utility: nothing load-bearing may depend on a newly written
+        // Tailwind class being generated (CLAUDE.md, the composer focus edge).
+        style={
+          agentActive
+            ? { outline: '2px solid var(--border-accent)', outlineOffset: '1px' }
+            : undefined
+        }
       >
         {snapshotDataUrl && (
           <img
@@ -872,6 +918,8 @@ export const BROWSER_COPY = {
   local: 'Local',
   localHint: 'A page on this computer or your local network',
   share: 'Share with agent',
+  agentBrowsing: 'Biorouter is browsing',
+  stopAgent: 'Stop Biorouter',
   stopSharing: 'Stop sharing with agent',
   more: 'More browser actions',
   openInDefaultBrowser: 'Open in default browser',
