@@ -17,6 +17,9 @@
 //! state file the fixture app writes (scripts/copilot-fixture-gtk.py,
 //! scripts/copilot-fixture-winforms.cs), never from a tool's own report. The host's consent
 //! itself (the card, the grant, Stop) is covered by `security::computer_use`'s tests.
+#[path = "support/path_sandbox.rs"]
+mod path_sandbox;
+
 use biorouter_mcp::ComputerControllerServer;
 use rmcp::{
     model::{CallToolRequest, CallToolRequestParams, ClientRequest, Meta, ServerResult},
@@ -215,19 +218,27 @@ fn scroll_reference(observation: &str) -> String {
         .unwrap_or_else(|| panic!("no scrollable element in:\n{observation}"))
 }
 
-/// The app's name as list_apps shows it: the line naming the fixture's process.
+/// The app's name as list_apps shows it: the line naming the fixture's process. Compared without
+/// case, spaces or an `.exe`, because a platform may list `BiorouterCopilotFixture.exe` or
+/// `Biorouter Copilot Fixture` for the process `BiorouterCopilotFixture`.
 fn app_name(listing: &str, process: &str) -> String {
+    let plain = |text: &str| {
+        let lowered = text.to_ascii_lowercase().replace(' ', "");
+        lowered
+            .strip_suffix(".exe")
+            .map(str::to_owned)
+            .unwrap_or(lowered)
+    };
+    let wanted = plain(process);
     listing
         .lines()
         .map(str::trim)
-        .find(|line| {
-            let name = line.split(" (").next().unwrap_or(line);
-            name.eq_ignore_ascii_case(process)
-                || name
-                    .to_ascii_lowercase()
-                    .starts_with(&process.to_ascii_lowercase())
+        .map(|line| line.split(" (").next().unwrap_or(line))
+        .find(|name| {
+            let name = plain(name);
+            !name.is_empty() && (name == wanted || name.starts_with(&wanted))
         })
-        .map(|line| line.split(" (").next().unwrap_or(line).to_owned())
+        .map(str::to_owned)
         .unwrap_or_else(|| panic!("list_apps does not show {process:?}:\n{listing}"))
 }
 
@@ -499,6 +510,17 @@ fn reference_lines_parse_as_the_wrapper_renders_them() {
     assert_eq!(
         app_name("Finder (com.apple.finder)\npython3.12\n", "python3.12"),
         "python3.12"
+    );
+    assert_eq!(
+        app_name(
+            "Explorer\nBiorouter Copilot Fixture (org.biorouter.copilot-fixture)\n",
+            "BiorouterCopilotFixture"
+        ),
+        "Biorouter Copilot Fixture"
+    );
+    assert_eq!(
+        app_name("BiorouterCopilotFixture.exe\n", "BiorouterCopilotFixture"),
+        "BiorouterCopilotFixture.exe"
     );
     assert_eq!(
         drop_window("window_id w-10: python3.12 \"Biorouter Copilot Fixture Drop\"\n"),
