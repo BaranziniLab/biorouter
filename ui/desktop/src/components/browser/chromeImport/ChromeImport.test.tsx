@@ -127,7 +127,21 @@ describe('the import dialog (BB-21)', () => {
     expect(summary.textContent).toContain('91 history entries');
     expect(onImported).toHaveBeenCalledWith(SUMMARY);
 
+    // Remove imported data asks first, as Settings does (L4); Cancel takes nothing.
     await userEvent.click(screen.getByRole('button', { name: COPY.remove }));
+    const ask = await screen.findByRole('dialog', { name: COPY.confirmRemoveTitle('Work') });
+    expect(ask.textContent).toContain(COPY.confirmRemoveMessage);
+    expect(bridge.remove).not.toHaveBeenCalled();
+    await userEvent.click(within(ask).getByRole('button', { name: COPY.cancel }));
+    await waitFor(() =>
+      expect(screen.queryByRole('dialog', { name: COPY.confirmRemoveTitle('Work') })).toBeNull()
+    );
+    expect(bridge.remove).not.toHaveBeenCalled();
+    expect(screen.getByTestId('chrome-import-summary')).toBeTruthy();
+
+    await userEvent.click(screen.getByRole('button', { name: COPY.remove }));
+    const again = await screen.findByRole('dialog', { name: COPY.confirmRemoveTitle('Work') });
+    await userEvent.click(within(again).getByRole('button', { name: COPY.confirmRemove }));
     expect(bridge.remove).toHaveBeenCalledWith('chrome-1');
     expect(await screen.findByText(COPY.removed)).toBeTruthy();
   });

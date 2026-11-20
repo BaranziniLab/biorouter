@@ -7,6 +7,7 @@ import type {
 import { ModalShell } from '../../ModalShell';
 import { Button } from '../../ui/button';
 import { Checkbox } from '../../ui/Checkbox';
+import { ConfirmationModal } from '../../ui/ConfirmationModal';
 import CustomRadio from '../../ui/CustomRadio';
 import { Disclosure } from '../../ui/disclosure';
 import { FilterInput } from '../../ui/filter-input';
@@ -72,12 +73,15 @@ export function ChromeImportDialog({
   const [filter, setFilter] = useState('');
   const [step, setStep] = useState<Step>({ kind: 'choose' });
   const [error, setError] = useState<string | null>(null);
+  // What Remove imported data would take, waiting for the person's yes, as in Settings (L4).
+  const [confirmRemove, setConfirmRemove] = useState<ChromeImportSummary | null>(null);
   const loginsSupported = status?.loginsSupported ?? true;
 
   useEffect(() => {
     if (!open) return;
     setStep({ kind: 'choose' });
     setError(null);
+    setConfirmRemove(null);
     setFilter('');
     const bridge = chromeImportBridge();
     if (!bridge) return;
@@ -182,7 +186,7 @@ export function ChromeImportDialog({
   const footer =
     step.kind === 'summary' ? (
       <>
-        <Button type="button" variant="secondary" onClick={() => void removeImport(step.summary)}>
+        <Button type="button" variant="secondary" onClick={() => setConfirmRemove(step.summary)}>
           {COPY.remove}
         </Button>
         <Button type="button" onClick={close} data-testid="chrome-import-done">
@@ -384,6 +388,24 @@ export function ChromeImportDialog({
           )}
         </div>
       )}
+
+      {/* A dialog nested in this one, so it stacks above it and Escape closes it first. */}
+      <ConfirmationModal
+        isOpen={confirmRemove !== null}
+        title={COPY.confirmRemoveTitle(confirmRemove?.profileName ?? '')}
+        message={COPY.confirmRemoveMessage}
+        confirmLabel={COPY.confirmRemove}
+        cancelLabel={COPY.cancel}
+        // Not red, as in Settings: it takes only what the import brought, and importing again
+        // restores it.
+        confirmVariant="default"
+        onConfirm={() => {
+          const summary = confirmRemove;
+          setConfirmRemove(null);
+          if (summary) void removeImport(summary);
+        }}
+        onCancel={() => setConfirmRemove(null)}
+      />
     </ModalShell>
   );
 }

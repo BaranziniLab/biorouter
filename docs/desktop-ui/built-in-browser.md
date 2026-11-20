@@ -891,9 +891,10 @@ Allow** in the prompt, macOS remembers the choice for the requesting program. Fo
 
 **Settings > App > Browser** shows one line per import, for example "Imported from Chrome (Work) on
 Nov 19: logins for 96 sites, 412 bookmarks, 8,900 history entries, search engine", and one control,
-**Remove imported data**. It asks first, in the app's confirmation dialog ("Remove data imported
-from Chrome (Work)?", with **Remove** and **Cancel**; not red, because it takes only what the import
-brought and importing again restores it), then deletes:
+**Remove imported data**. The same control sits in the summary at the end of an import. Both ask
+first, in the app's confirmation dialog ("Remove data imported from Chrome (Work)?", with **Remove**
+and **Cancel**; not red, because it takes only what the import brought and importing again restores
+it), then delete:
 
 - every cookie the import set, found by the manifest of keys (`url`, `name`, `domain`, `path`) the
   import recorded in `browser/import-manifest.json`, which never holds values;
@@ -1384,7 +1385,7 @@ findings for review. This round fixed each with a test that failed first.
 | L1 | `browser_open` reported success for an address the network policy then refused | The result says how the load ended: `loaded`, `blocked` (the policy refused it) or `failed` (Chromium's error), with the reason | `embeddedBrowser.ts` (`agentBrowserTabLoad`), `driver.ts` (`opOpen`) |
 | L2 | `file:`, `javascript:`, `chrome:`, `about:`, `data:` and `view-source:` typed in the address field went to Google as a search | They are refused with one line under the bar; `data: science jobs` (a space after the colon) still searches | `browser/addressBar.ts`, `WebPagePreview.tsx` |
 | L3 | After a refused or download-only navigation the bar kept the refused address over a blank page | A refusal commits Chromium's blank error page, so the tab goes back to the page the person was on, keeps the note and drops the refused entry; a tab with nothing to go back to shows an empty bar | `embeddedBrowser.ts` (`leaveRefusedPage`), `WebPagePreview.tsx` |
-| L4 | **Remove imported data** in Settings acted at once | It asks first, in the app's confirmation dialog, not red (BB-25) | `BrowserSettingsSection.tsx` |
+| L4 | **Remove imported data** in Settings acted at once | It asks first, in the app's confirmation dialog, not red (BB-25); the import summary's control asks the same way (integration) | `BrowserSettingsSection.tsx`, `ChromeImportDialog.tsx` |
 | L5 | The summary never showed cookies left out or refused, and a Linux `v11` key that failed was silent | The summary and the Settings InfoTip say how many cookies were left out or could not be set, and that some logins were not imported and why | `chromeImport/copy.ts` (`loginsNote`), `keyProvider.ts` (`missing`), `importer.ts`, `manifest.ts` |
 | L6 | Chats saved before the browser existed never got its tools | A roster now records the capabilities it was written knowing (`offered`); a roster that predates the browser is offered it when the chat opens, unless the person has it off for every chat. A chat whose roster this build wrote keeps the person's choice | `session/extension_data.rs` (`EnabledExtensionsState::backfill`), `agents/agent.rs` (`load_extensions_from_session`) |
 | L7 | At the default panel width sites render their phone layout | Considered and declined; see "Geometry in the artifact panel" | |
