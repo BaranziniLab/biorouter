@@ -115,6 +115,12 @@ pub(crate) fn denied_response_text(
         // Non-bypassable safety block: the user did not decline, the command is
         // refused outright, so return the reason directly.
         Some(result) if result.inspector_name == "security" => result.reason.clone(),
+        Some(result)
+            if result.inspector_name
+                == crate::permission::managed_inspector::MANAGED_INSPECTOR_NAME =>
+        {
+            result.reason.clone()
+        }
         // BR-29/BR-31: a loop guard tripped — the call repeated itself, or the
         // tool has been failing the same way over and over. The user did not
         // decline anything; telling the model they did (the old

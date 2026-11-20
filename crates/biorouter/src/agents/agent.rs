@@ -8820,7 +8820,7 @@ impl Agent {
                 inspection_results.push(InspectionResult {
                     tool_request_id: request.id.clone(),
                     action: InspectionAction::Deny,
-                    reason: "This exact tool call signature was already blocked by the repetition policy earlier in this turn."
+                    reason: "This exact tool call signature was already blocked by the automatic repetition guard earlier in this turn."
                         .to_string(),
                     confidence: 1.0,
                     inspector_name: crate::tool_monitor::REPETITION_INSPECTOR_NAME.to_string(),
