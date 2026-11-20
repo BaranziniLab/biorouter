@@ -347,6 +347,10 @@ describe('the page', () => {
   it('shows MSG-EMPTY with the Add menu when there are no terms', async () => {
     renderPage();
     expect(await screen.findByText(DICTIONARY_MESSAGES['MSG-EMPTY'])).toBeInTheDocument();
+    // The examples are UCSF and Biorouter (owner, 2026-11-19), as the CLI's help gives them.
+    expect(DICTIONARY_MESSAGES['MSG-EMPTY']).toBe(
+      'No terms yet. Add the words dictation should spell your way, such as UCSF or Biorouter.'
+    );
     expect(screen.getAllByTestId('dictionary-add').length).toBeGreaterThan(0);
   });
 

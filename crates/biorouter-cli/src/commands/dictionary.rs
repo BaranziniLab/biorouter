@@ -71,7 +71,7 @@ const EXPORT_WITH_PRIVATE: &str = "Export with private terms";
 const EXPORT_PUBLIC_ONLY: &str = "Export public terms only";
 /// MSG-EMPTY.
 pub const MSG_EMPTY: &str =
-    "No terms yet. Add the words dictation should spell your way, such as UCSF or EPAS1.";
+    "No terms yet. Add the words dictation should spell your way, such as UCSF or Biorouter.";
 const MSG_NOTHING_CHANGED: &str = "Nothing was changed.";
 
 /// MSG-SPOKEN-ONE-TERM (exit 2).
@@ -3274,7 +3274,7 @@ mod tests {
             (MSG_PUBLICIZE_WARN.into(), "This term came from a private chat. Making it public lets it appear when you dictate into chats on public models."),
             (MSG_PUBLICIZE_WARN_NO_CHAT.into(), "This term is private. Making it public lets it appear when you dictate into chats on public models."),
             (MSG_EXPORT_PRIVATE.into(), "This file leaves Biorouter. It will include your private terms."),
-            (MSG_EMPTY.into(), "No terms yet. Add the words dictation should spell your way, such as UCSF or EPAS1."),
+            (MSG_EMPTY.into(), "No terms yet. Add the words dictation should spell your way, such as UCSF or Biorouter."),
             (MSG_SPOKEN_ONE_TERM.into(), "Use --spoken with one term at a time."),
             (MSG_IMPORT_FORMAT.into(), "Name the format with --format txt, csv, tsv or json."),
             (msg_no_term("EPAS1", None), "There is no term EPAS1 in the dictionary."),

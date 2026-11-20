@@ -29,7 +29,7 @@ export const DICTIONARY_MESSAGES = {
   'MSG-ROW-PRIVATE-LOCAL': 'Used only in private chats on local models',
   'MSG-EXPORT-PRIVATE': 'This file leaves Biorouter. It will include your private terms.',
   'MSG-EMPTY':
-    'No terms yet. Add the words dictation should spell your way, such as UCSF or EPAS1.',
+    'No terms yet. Add the words dictation should spell your way, such as UCSF or Biorouter.',
   'MSG-TERM-TOO-LONG': 'Use a term of at most 64 characters.',
   'MSG-TERM-WORDS': 'Use a term of at most six words.',
   'MSG-TERM-PLAIN': 'Use one line of plain text.',
@@ -49,7 +49,7 @@ export const DICTIONARY_MESSAGES = {
   'MSG-DICTIONARY-TOO-LARGE':
     'That list is larger than 1 MB or 5,000 rows. Split it and add each part.',
   'MSG-ADD-TERMS-HELP':
-    'Paste one term per line, such as UCSF or EPAS1 = epas one, or drop a .txt, .csv, .tsv or .json file. Terms you already have gain the new spoken forms; nothing is deleted.',
+    'Paste one term per line, such as UCSF or Biorouter = bio router, or drop a .txt, .csv, .tsv or .json file. Terms you already have gain the new spoken forms; nothing is deleted.',
   'MSG-IMPORT-PLAN': '<new> new · <existing> already in your dictionary · <skipped> skipped',
   'MSG-IMPORT-SKIPPED': 'Line <line>: <sentence>',
   'MSG-SPOKEN-FORMS-HELP':

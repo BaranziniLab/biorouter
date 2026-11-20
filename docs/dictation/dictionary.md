@@ -4,7 +4,7 @@
 > **Status:** Current: the record of local dictation as it was built on branch `feat/local-dictation`, PR-01 to PR-33 (PR-07 and PR-32 withdrawn), with every code pull request committed by 2026-11-10 and before the release that carries it. Design rationale and the measurements taken while building it are kept with their dates; "As built" notes say where the code differs from the design. Suggestions from chats became a feature each person runs and measures for themselves on 2026-11-13, replacing the M-21 labelling gate ([Automatic extraction from chats](#automatic-extraction-from-chats)).
 > **Audience:** developers who maintain the store, the bias set, the capability, the extractor and the Dictionary page (PR-13, PR-14, PR-16, PR-20, PR-22, PR-23, PR-24, PR-26); reviewers of changes to them; the owner, whose decisions O-3, O-17, O-23 and O-31 to O-38 of 2026-11-05, O-43 and O-44 of 2026-11-10, and the plan's defaults O-5 to O-8 and O-21 this document follows.
 
-Each account that runs Biorouter has one dictionary: a file of terms such as UCSF or EPAS1 that dictation should spell the person's way. The daemon, the CLI and the agent's `dictionary` capability read and write that one file under one lock. Dictation feeds the eligible terms to the speech model as a token prompt and a decoder bonus, then corrects the transcript with guarded exact matching. Because Whisper can copy its prompt into the transcript when it hears no speech, a term learned in a private chat must never shape dictation aimed at a public model, so every channel reads one tier filtered set. This document specifies each part to the level an engineer can build from, with the acceptance check for each. The [implementation plan](../history/local-dictation-2026-11/implementation-plan.md) holds the decision register this document elaborates; where they differ, the plan wins.
+Each account that runs Biorouter has one dictionary: a file of terms such as UCSF or Biorouter that dictation should spell the person's way. The daemon, the CLI and the agent's `dictionary` capability read and write that one file under one lock. Dictation feeds the eligible terms to the speech model as a token prompt and a decoder bonus, then corrects the transcript with guarded exact matching. Because Whisper can copy its prompt into the transcript when it hears no speech, a term learned in a private chat must never shape dictation aimed at a public model, so every channel reads one tier filtered set. This document specifies each part to the level an engineer can build from, with the acceptance check for each. The [implementation plan](../history/local-dictation-2026-11/implementation-plan.md) holds the decision register this document elaborates; where they differ, the plan wins.
 
 ## How to read this document
 
@@ -1443,7 +1443,7 @@ In `components/ToolCallWithResponse.tsx`, for a `dictionary__add_terms` row, fro
 
 ### Empty state
 
-MSG-EMPTY: "No terms yet. Add the words dictation should spell your way, such as UCSF or EPAS1." with the **Add** menu.
+MSG-EMPTY: "No terms yet. Add the words dictation should spell your way, such as UCSF or Biorouter." with the **Add** menu. The examples match `biorouter dictionary add --help` and MSG-ADD-TERMS-HELP (owner, 2026-11-19).
 
 ### Files and guard updates
 

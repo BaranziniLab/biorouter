@@ -371,7 +371,7 @@ biorouter transcribe notes.flac --context-file abstract.txt --format json
 
 ### dictionary
 
-Manage your personal dictionary: the words dictation should spell your way, such as UCSF or EPAS1. Dictation steers recognition toward these terms and corrects close misses to them. There is one dictionary per account, in `<config>/dictionary/`; the commands work on it directly under its lock, with no daemon, and a term one terminal adds is listed by another at once. Each command prints the folder and account it acts on to stderr, so standard output stays clean for `list` and `export`.
+Manage your personal dictionary: the words dictation should spell your way, such as UCSF or Biorouter. Dictation steers recognition toward these terms and corrects close misses to them. There is one dictionary per account, in `<config>/dictionary/`; the commands work on it directly under its lock, with no daemon, and a term one terminal adds is listed by another at once. Each command prints the folder and account it acts on to stderr, so standard output stays clean for `list` and `export`.
 
 A term is public, used for dictation into any chat, or private (`--private`), used only for dictation into chats on private models. A term may hold up to 64 characters and six words, and cannot be a web or email address, a file path, digits alone or something that looks like a key.
 
