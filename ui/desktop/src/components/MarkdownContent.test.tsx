@@ -1047,10 +1047,13 @@ console.log('Hello, World!');
         await screen.findByRole('button', { name: 'http://localhost:4173/dashboard' })
       );
 
+      // BB-02: the person's click opens the page at once, so the artifact says so.
       expect(onOpenArtifact).toHaveBeenCalledWith({
         kind: 'externalUrl',
         title: 'http://localhost:4173/dashboard',
         url: 'http://localhost:4173/dashboard',
+        openedBy: 'click',
+        openedAt: expect.any(Number),
       });
     });
 
@@ -1735,8 +1738,66 @@ for the result.`;
         kind: 'externalUrl',
         title: 'https://example.com/docs',
         url: 'https://example.com/docs',
+        openedBy: 'click',
+        openedAt: expect.any(Number),
       });
       expect(electron.openExternal).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      ['Cmd click', { metaKey: true }],
+      ['Ctrl click', { ctrlKey: true }],
+    ])('opens a web link in the default browser on %s (BB-02)', async (_name, modifier) => {
+      const electron = installElectronMock();
+      const onOpenArtifact = vi.fn();
+      render(
+        <MarkdownContent
+          content="[Docs](https://example.com/docs)"
+          onOpenArtifact={onOpenArtifact}
+        />
+      );
+      fireEvent.click(await screen.findByRole('button', { name: 'Docs' }), modifier);
+      expect(electron.openExternal).toHaveBeenCalledWith('https://example.com/docs');
+      expect(onOpenArtifact).not.toHaveBeenCalled();
+    });
+
+    it('follows Open links in: Default browser, and Cmd click opens the other one', async () => {
+      const electron = installElectronMock();
+      const onOpenArtifact = vi.fn();
+      localStorage.setItem('biorouter:open-links-in', 'default');
+      try {
+        render(
+          <MarkdownContent
+            content="[Docs](https://example.com/docs)"
+            onOpenArtifact={onOpenArtifact}
+          />
+        );
+        const link = await screen.findByRole('button', { name: 'Docs' });
+        fireEvent.click(link);
+        expect(electron.openExternal).toHaveBeenCalledWith('https://example.com/docs');
+        expect(onOpenArtifact).not.toHaveBeenCalled();
+        fireEvent.click(link, { metaKey: true });
+        expect(onOpenArtifact).toHaveBeenCalledWith(
+          expect.objectContaining({ url: 'https://example.com/docs', openedBy: 'click' })
+        );
+      } finally {
+        localStorage.removeItem('biorouter:open-links-in');
+      }
+    });
+
+    it('opens a web link in the default browser on a middle click (BB-02)', async () => {
+      const electron = installElectronMock();
+      const onOpenArtifact = vi.fn();
+      render(
+        <MarkdownContent
+          content="[Docs](https://example.com/docs)"
+          onOpenArtifact={onOpenArtifact}
+        />
+      );
+      const link = await screen.findByRole('button', { name: 'Docs' });
+      fireEvent(link, new MouseEvent('auxclick', { bubbles: true, button: 1 }));
+      expect(electron.openExternal).toHaveBeenCalledWith('https://example.com/docs');
+      expect(onOpenArtifact).not.toHaveBeenCalled();
     });
 
     it('keeps loopback HTTP links on the artifact-panel route', async () => {
@@ -1755,6 +1816,8 @@ for the result.`;
         kind: 'externalUrl',
         title: 'http://127.0.0.1:4173/dashboard',
         url: 'http://127.0.0.1:4173/dashboard',
+        openedBy: 'click',
+        openedAt: expect.any(Number),
       });
     });
 

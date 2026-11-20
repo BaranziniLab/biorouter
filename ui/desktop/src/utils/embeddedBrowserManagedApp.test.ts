@@ -38,6 +38,7 @@ const electron = vi.hoisted(() => {
     if (!sessions.has(partition)) {
       sessions.set(partition, {
         setProxy: vi.fn().mockResolvedValue(undefined),
+        setUserAgent: vi.fn(),
         setPermissionRequestHandler: vi.fn(),
         setPermissionCheckHandler: vi.fn(),
         setDevicePermissionHandler: vi.fn(),
@@ -81,6 +82,8 @@ vi.mock('electron', () => ({
         return this.url;
       },
       getTitle: () => '',
+      getZoomFactor: () => 1,
+      setZoomFactor: vi.fn(),
       isLoading: () => false,
       isDestroyed: () => this.closed,
       loadURL: vi.fn(async (url: string) => {
@@ -359,9 +362,12 @@ describe('managed app preview handoff', () => {
       );
       const pending = controlEmbeddedBrowser(owner, 'racing', 'reload-if-idle');
       if (change === 'navigation') contents.emit('did-navigate-in-page');
-      else if (change === 'replacement')
+      else if (change === 'replacement') {
+        // Creating again with the same id now ATTACHES to the tab (BB-01), so a replacement
+        // is a destroy followed by a create.
+        destroyEmbeddedBrowser(owner, 'racing');
         createEmbeddedBrowser(owner, 'racing', url, vi.fn(), context);
-      else if (change === 'hidden') setEmbeddedBrowserVisible(owner, 'racing', false);
+      } else if (change === 'hidden') setEmbeddedBrowserVisible(owner, 'racing', false);
       else lifetimes[lifetimes.length - 1].abort();
       resolve(true);
       expect(await pending).toBe(false);

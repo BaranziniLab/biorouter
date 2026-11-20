@@ -37,7 +37,17 @@ const E2E_DIR = join(__dirname, '../../tests/e2e');
  * throwaway main process (`user-message-layout.main.cjs`) that renders a static
  * HTML fixture — no daemon, no config, nothing to sandbox.
  */
-const ALLOWED_DIRECT_LAUNCH = new Set(['helpers/app.ts', 'user-message-layout.spec.ts']);
+/**
+ * `biorouter-browser.spec.ts` launches its own probe main (`biorouter-browser.main.ts`), never the
+ * app's bundle: it starts no daemon, reads no Biorouter config, and points Electron's user data
+ * and logs at a temporary folder (`BIOROUTER_BROWSER_TEST_USER_DATA`), so there is no root to
+ * sandbox.
+ */
+const ALLOWED_DIRECT_LAUNCH = new Set([
+  'helpers/app.ts',
+  'user-message-layout.spec.ts',
+  'biorouter-browser.spec.ts',
+]);
 
 /**
  * Specs skipped wholesale because the UI they drive was removed. They still

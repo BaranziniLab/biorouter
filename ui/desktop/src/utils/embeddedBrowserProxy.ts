@@ -1,6 +1,12 @@
 import dns from 'node:dns/promises';
-import net, { type Server, type Socket } from 'node:net';
-import { resolvePublicEmbeddedHost, type PublicNetworkTarget } from './embeddedBrowserPolicy';
+import net, { isIP, type Server, type Socket } from 'node:net';
+import {
+  noteLocalRefusal,
+  proxyMayConnect,
+  reserveLocalPort,
+  resolveHostClass,
+} from '../browser/localNetwork';
+import type { PublicNetworkTarget } from './embeddedBrowserPolicy';
 
 const SOCKS_VERSION = 5;
 const SOCKS_CONNECT = 1;
@@ -52,10 +58,28 @@ function requestHost(buffer: Buffer): string | null {
   return null;
 }
 
-async function pinnedTarget(host: string): Promise<PublicNetworkTarget> {
-  return resolvePublicEmbeddedHost(host, (candidate) =>
+/**
+ * Resolve once and pin the socket to the answer, so a public name cannot be rebound to a local
+ * address between the check and the connect (DNS rebinding).
+ *
+ * A local answer (private network or loopback) is connected only while the request filter has
+ * granted that exact host and port (BB-06, `browser/localNetwork.ts`): the person opened it, or a
+ * page on that same local host asked for it. A reserved loopback port (the daemon, the dev
+ * renderer, the proxies themselves) is never connected.
+ */
+async function pinnedTarget(host: string, port: number): Promise<PublicNetworkTarget> {
+  const resolved = await resolveHostClass(host, (candidate) =>
     dns.lookup(candidate, { all: true, verbatim: true })
   );
+  if (!resolved || resolved.addresses.length === 0) {
+    throw new Error('The embedded browser could not resolve this host.');
+  }
+  if (!proxyMayConnect(host, port, resolved.cls)) {
+    if (resolved.cls !== 'public') noteLocalRefusal(host, port);
+    throw new Error('Local addresses are not available to this page.');
+  }
+  const address = resolved.addresses[0];
+  return { address, family: isIP(address) as 4 | 6 };
 }
 
 function handleClient(client: Socket, sockets: Set<Socket>, state: { stopped: boolean }): void {
@@ -127,7 +151,7 @@ function handleClient(client: Socket, sockets: Set<Socket>, state: { stopped: bo
     buffer = buffer.subarray(total);
     phase = 'connecting';
 
-    void pinnedTarget(host)
+    void pinnedTarget(host, port)
       .then((target) => {
         if (state.stopped || client.destroyed) throw new Error('Proxy stopped');
         return new Promise<Socket>((resolve, reject) => {
@@ -200,6 +224,8 @@ async function createRuntime(): Promise<ProxyRuntime> {
     server.close();
     throw new Error('Could not bind the embedded browser proxy.');
   }
+  // A page must never reach the proxy itself as a destination.
+  reserveLocalPort(address.port);
   return { server, port: address.port, sockets, state };
 }
 

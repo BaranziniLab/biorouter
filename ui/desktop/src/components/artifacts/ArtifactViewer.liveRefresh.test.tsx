@@ -443,7 +443,7 @@ describe('completed coding changes refresh the existing artifact', () => {
     );
     const { rerender } = render(view(0));
     await waitFor(() => expect(browser.create).toHaveBeenCalledOnce());
-    const address = screen.getByRole('textbox', { name: 'Address' });
+    const address = screen.getByRole('combobox', { name: 'Address' });
     fireEvent.focus(address);
     rerender(view(1));
     expect(browser.control).not.toHaveBeenCalled();

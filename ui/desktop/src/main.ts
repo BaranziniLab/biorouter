@@ -210,19 +210,32 @@ import {
 import { readGitArtifactTree } from './utils/artifactGit';
 import {
   captureEmbeddedBrowser,
+  claimEmbeddedBrowser,
   clearEmbeddedBrowserData,
   controlEmbeddedBrowser,
   createEmbeddedBrowser,
   destroyEmbeddedBrowser,
   destroyEmbeddedBrowsersForWindow,
+  dismissEmbeddedBrowserNotice,
+  embeddedBrowserBookmarks,
+  embeddedBrowserSuggestions,
+  findInEmbeddedBrowser,
   navigateEmbeddedBrowser,
   openExternalBrowserNavigation,
   readEmbeddedBrowserText,
   registerEmbeddedBrowserOwnerTeardown,
+  releaseEmbeddedBrowser,
+  setEmbeddedBrowserBookmark,
   setEmbeddedBrowserBounds,
   setEmbeddedBrowserVisible,
+  showEmbeddedBrowserDownload,
+  stopFindInEmbeddedBrowser,
+  zoomEmbeddedBrowser,
   type EmbeddedBrowserBounds,
 } from './utils/embeddedBrowser';
+import { configureBrowserTestHosts, reserveLocalPort } from './browser/localNetwork';
+import { configureBrowserTestDownloads } from './browser/downloads';
+import { browserTestHooksEnabled } from './browser/testHooks';
 import { heicToPng } from './utils/heicConvert';
 import {
   managedAppHasFocusedField,
@@ -1686,6 +1699,15 @@ const bindWindowAppPreview = (window: BrowserWindow) => {
     if (managedAppPreviewBindings.get(windowId) !== binding) return;
     if (backend && !window.isDestroyed()) managedAppPreviewBackends.set(windowId, backend);
     else managedAppPreviewBackends.delete(windowId);
+    // BB-06: the daemon's own app listener is reserved too (a shared daemon's differs from
+    // the proxy's port).
+    for (const origin of [backend?.baseUrl, backend?.appOrigin]) {
+      try {
+        if (origin) reserveLocalPort(new URL(origin).port);
+      } catch {
+        // Not a URL: nothing to reserve.
+      }
+    }
   });
   return binding;
 };
@@ -1813,6 +1835,13 @@ const createChat = async (
       });
 
   const { baseUrl, process: biorouterdProcess, errorLog } = biorouterdResult;
+  // BB-06: the daemon (or the local proxy in front of a shared one) is never a page the
+  // browser may open, for anyone.
+  try {
+    reserveLocalPort(new URL(baseUrl).port);
+  } catch {
+    // A malformed base URL fails the readiness check below on its own.
+  }
   // A new window after the shared daemon restarted would otherwise open onto a proxy that
   // refuses every request, fail its readiness check and quit the app: reconnect first (R-1).
   let daemonAttached = true;
@@ -5256,17 +5285,43 @@ ipcMain.handle(
 
 // ── Embedded browser (the artifact panel's live web view) ────────────────────
 //
-// Every handler resolves the owning window from the *event sender*. The main
-// registry keys renderer view ids by that owner, so an identical React id in a
-// second window cannot drive, read, capture, or destroy the first window's view.
+// Every handler resolves the owning window from the *event sender*, and answers only that
+// window's own renderer (`browserOwnerWindow`): a page in the browser has no preload and so no
+// IPC at all, and a popup window it opened has none either, so this is the window's chrome
+// talking. The main registry keys renderer view ids by that owner, so an identical React id in
+// a second window cannot drive, read, capture, or destroy the first window's view.
 //
 // An app link is answered once this window's preview backend is bound, which for a shared
 // daemon waits on the daemon naming its own listener (`bindWindowAppPreview`): a chat reopened
 // as the window starts would otherwise show its app as an external page. ⚠ `create` below stays
 // synchronous and reads the bound backend as it is: the renderer asks this first, and sends
 // `set-visible` and `set-bounds` right behind `create`, which must find the view already made.
-ipcMain.handle('embedded-browser:is-managed-app-url', async (event, payload: { url: string }) => {
+
+// BB-06 and the Electron tests (`tests/e2e/biorouter-browser.spec.ts`): fixture host names and
+// dialog-free downloads exist only in an unpackaged app run with BIOROUTER_E2E=1.
+{
+  const testHooks = browserTestHooksEnabled(process.env, app.isPackaged);
+  configureBrowserTestHosts(process.env.BIOROUTER_BROWSER_TEST_HOSTS, testHooks);
+  configureBrowserTestDownloads(
+    testHooks ? (process.env.BIOROUTER_BROWSER_TEST_DOWNLOAD_DIR ?? null) : null
+  );
+  // The dev renderer's own server is never a page the browser may open.
+  if (MAIN_WINDOW_VITE_DEV_SERVER_URL) {
+    reserveLocalPort(new URL(MAIN_WINDOW_VITE_DEV_SERVER_URL).port);
+  }
+}
+
+function browserOwnerWindow(event: Electron.IpcMainInvokeEvent): BrowserWindow | null {
   const window = BrowserWindow.fromWebContents(event.sender);
+  return window && window.webContents === event.sender ? window : null;
+}
+
+function isViewId(value: unknown): value is string {
+  return typeof value === 'string' && value.length > 0 && value.length <= 200;
+}
+
+ipcMain.handle('embedded-browser:is-managed-app-url', async (event, payload: { url: string }) => {
+  const window = browserOwnerWindow(event);
   if (!window || typeof payload?.url !== 'string' || !localAppPageId(payload.url)) return false;
   const backend = await windowAppPreviewBackend(window);
   return Boolean(managedAppPreviewScope(payload.url, backend));
@@ -5275,10 +5330,11 @@ ipcMain.handle('embedded-browser:is-managed-app-url', async (event, payload: { u
 ipcMain.handle(
   'embedded-browser:create',
   (event, payload: { viewId: string; url: string; managedOnly?: boolean }) => {
-    const window = BrowserWindow.fromWebContents(event.sender);
+    const window = browserOwnerWindow(event);
     if (
       !window ||
-      typeof payload?.viewId !== 'string' ||
+      !isViewId(payload?.viewId) ||
+      typeof payload.url !== 'string' ||
       (payload.managedOnly !== undefined && typeof payload.managedOnly !== 'boolean')
     )
       return null;
@@ -5300,22 +5356,28 @@ ipcMain.handle(
 ipcMain.handle(
   'embedded-browser:set-bounds',
   (event, payload: { viewId: string; bounds: EmbeddedBrowserBounds }) => {
-    const window = BrowserWindow.fromWebContents(event.sender);
-    if (window) setEmbeddedBrowserBounds(window, payload.viewId, payload.bounds);
+    const window = browserOwnerWindow(event);
+    if (window && isViewId(payload?.viewId) && payload.bounds) {
+      setEmbeddedBrowserBounds(window, payload.viewId, payload.bounds);
+    }
   }
 );
 
 ipcMain.handle(
   'embedded-browser:set-visible',
   (event, payload: { viewId: string; visible: boolean }) => {
-    const window = BrowserWindow.fromWebContents(event.sender);
-    if (window) setEmbeddedBrowserVisible(window, payload.viewId, payload.visible);
+    const window = browserOwnerWindow(event);
+    if (window && isViewId(payload?.viewId)) {
+      setEmbeddedBrowserVisible(window, payload.viewId, payload.visible === true);
+    }
   }
 );
 
 ipcMain.handle('embedded-browser:navigate', (event, payload: { viewId: string; url: string }) => {
-  const window = BrowserWindow.fromWebContents(event.sender);
-  return window ? navigateEmbeddedBrowser(window, payload.viewId, payload.url) : false;
+  const window = browserOwnerWindow(event);
+  return window && isViewId(payload?.viewId) && typeof payload.url === 'string'
+    ? navigateEmbeddedBrowser(window, payload.viewId, payload.url)
+    : false;
 });
 
 ipcMain.handle(
@@ -5324,8 +5386,14 @@ ipcMain.handle(
     event,
     payload: { viewId: string; action: 'back' | 'forward' | 'reload' | 'stop' | 'reload-if-idle' }
   ) => {
-    const window = BrowserWindow.fromWebContents(event.sender);
-    return window ? controlEmbeddedBrowser(window, payload.viewId, payload.action) : false;
+    const window = browserOwnerWindow(event);
+    if (
+      !window ||
+      !isViewId(payload?.viewId) ||
+      !['back', 'forward', 'reload', 'stop', 'reload-if-idle'].includes(payload.action)
+    )
+      return false;
+    return controlEmbeddedBrowser(window, payload.viewId, payload.action);
   }
 );
 
@@ -5341,8 +5409,8 @@ ipcMain.handle(
 ipcMain.handle(
   'embedded-browser:read-text',
   async (event, payload: { viewId: string; maxChars?: number }) => {
-    const window = BrowserWindow.fromWebContents(event.sender);
-    if (!window) return null;
+    const window = browserOwnerWindow(event);
+    if (!window || !isViewId(payload?.viewId)) return null;
     const requested = payload.maxChars ?? 20_000;
     const limit = Number.isFinite(requested)
       ? Math.min(40_000, Math.max(0, Math.floor(requested)))
@@ -5352,8 +5420,8 @@ ipcMain.handle(
 );
 
 ipcMain.handle('embedded-browser:capture', async (event, payload: { viewId: string }) => {
-  const window = BrowserWindow.fromWebContents(event.sender);
-  if (!window) return null;
+  const window = browserOwnerWindow(event);
+  if (!window || !isViewId(payload?.viewId)) return null;
   const shot = await captureEmbeddedBrowser(window, payload.viewId);
   if (!shot) return null;
   const dir = await ensureTempDirExists();
@@ -5368,14 +5436,90 @@ ipcMain.handle('embedded-browser:capture', async (event, payload: { viewId: stri
 });
 
 ipcMain.handle('embedded-browser:clear-data', async (event, payload: { viewId: string }) => {
-  const window = BrowserWindow.fromWebContents(event.sender);
-  return window ? clearEmbeddedBrowserData(window, payload.viewId) : false;
+  const window = browserOwnerWindow(event);
+  return window && isViewId(payload?.viewId)
+    ? clearEmbeddedBrowserData(window, payload.viewId)
+    : false;
+});
+
+// BB-01: hiding a tab when the panel shows something else keeps it; destroy ends it.
+ipcMain.handle('embedded-browser:release', (event, payload: { viewId: string }) => {
+  const window = browserOwnerWindow(event);
+  if (window && isViewId(payload?.viewId)) releaseEmbeddedBrowser(window, payload.viewId);
+});
+
+ipcMain.handle('embedded-browser:claim', (event, payload: { viewId: string }) => {
+  const window = browserOwnerWindow(event);
+  return window && isViewId(payload?.viewId) ? claimEmbeddedBrowser(window, payload.viewId) : false;
 });
 
 ipcMain.handle('embedded-browser:destroy', (event, payload: { viewId: string }) => {
-  const window = BrowserWindow.fromWebContents(event.sender);
-  if (window) destroyEmbeddedBrowser(window, payload.viewId);
+  const window = browserOwnerWindow(event);
+  if (window && isViewId(payload?.viewId)) destroyEmbeddedBrowser(window, payload.viewId);
 });
+
+ipcMain.handle(
+  'embedded-browser:zoom',
+  (event, payload: { viewId: string; direction: 'in' | 'out' | 'reset' }) => {
+    const window = browserOwnerWindow(event);
+    if (
+      !window ||
+      !isViewId(payload?.viewId) ||
+      !['in', 'out', 'reset'].includes(payload.direction)
+    )
+      return null;
+    return zoomEmbeddedBrowser(window, payload.viewId, payload.direction);
+  }
+);
+
+ipcMain.handle(
+  'embedded-browser:find',
+  (event, payload: { viewId: string; text: string; forward?: boolean; findNext?: boolean }) => {
+    const window = browserOwnerWindow(event);
+    if (!window || !isViewId(payload?.viewId) || typeof payload.text !== 'string') return false;
+    return findInEmbeddedBrowser(window, payload.viewId, payload.text, {
+      forward: payload.forward !== false,
+      findNext: payload.findNext === true,
+    });
+  }
+);
+
+ipcMain.handle('embedded-browser:stop-find', (event, payload: { viewId: string }) => {
+  const window = browserOwnerWindow(event);
+  if (window && isViewId(payload?.viewId)) stopFindInEmbeddedBrowser(window, payload.viewId);
+});
+
+ipcMain.handle('embedded-browser:dismiss-notice', (event, payload: { viewId: string }) => {
+  const window = browserOwnerWindow(event);
+  if (window && isViewId(payload?.viewId)) dismissEmbeddedBrowserNotice(window, payload.viewId);
+});
+
+ipcMain.handle('embedded-browser:show-download', (event, payload: { viewId: string }) => {
+  const window = browserOwnerWindow(event);
+  return window && isViewId(payload?.viewId)
+    ? showEmbeddedBrowserDownload(window, payload.viewId)
+    : false;
+});
+
+ipcMain.handle(
+  'embedded-browser:bookmark',
+  (event, payload: { viewId: string; bookmarked: boolean }) => {
+    const window = browserOwnerWindow(event);
+    if (!window || !isViewId(payload?.viewId) || typeof payload.bookmarked !== 'boolean')
+      return false;
+    return setEmbeddedBrowserBookmark(window, payload.viewId, payload.bookmarked);
+  }
+);
+
+ipcMain.handle('embedded-browser:bookmarks', (event) =>
+  browserOwnerWindow(event) ? embeddedBrowserBookmarks() : []
+);
+
+ipcMain.handle('embedded-browser:suggest', (event, payload: { query: string }) =>
+  browserOwnerWindow(event) && typeof payload?.query === 'string'
+    ? embeddedBrowserSuggestions(payload.query)
+    : []
+);
 
 ipcMain.handle('read-artifact-file', async (event, filePath: string) => {
   const expandedPath = expandBiorouterPath(filePath);

@@ -109,7 +109,7 @@ import DelimitedTable from './DelimitedTable';
 import { annotateBrowserReason } from './captureOnBrowser';
 import DocumentPreview from './DocumentPreview';
 import MarkdownDocument from './MarkdownDocument';
-import WebPagePreview, { type LiveBrowserShare } from './WebPagePreview';
+import WebPagePreview, { type EmbeddedBrowserState, type LiveBrowserShare } from './WebPagePreview';
 import NotebookPreview from './NotebookPreview';
 import DecisionHistory from '../decisions/DecisionHistory';
 import type {
@@ -364,6 +364,23 @@ function barOnReadingColumn(artifact: ArtifactSource, preview: PreviewState): bo
   return !isImageExtension(extension) && !DOCUMENT_EXTENSIONS.has(extension);
 }
 
+/**
+ * The Biorouter Browser tab a panel tab shows (BB-01): the one a page opened, or one of the
+ * panel tab's own. `null` for every other kind.
+ */
+function browserViewIdFor(tab: ArtifactTab | null | undefined): string | null {
+  if (!tab || tab.artifact.kind !== 'externalUrl') return null;
+  return tab.artifact.viewId ?? `browser-${tab.id}`;
+}
+
+function hostTitle(url: string): string {
+  try {
+    return new URL(url).hostname || url;
+  } catch {
+    return url;
+  }
+}
+
 /** A live page paints a native view that cannot fade, so it never crossfades. */
 function isLivePagePreview(preview: PreviewState, browsing: boolean) {
   return preview.kind === 'externalUrl' && (preview.managedApp || browsing);
@@ -397,6 +414,8 @@ type ArtifactTabsState = {
 
 type ArtifactTabsAction =
   | { type: 'open'; artifact: ArtifactSource; newTabId: string }
+  /** Open a tab without showing it: a page's background tab (BB-04). */
+  | { type: 'add'; artifact: ArtifactSource; newTabId: string }
   | { type: 'activate'; tabId: string }
   | { type: 'close'; tabId: string }
   | { type: 'reorder'; draggedTabId: string; targetTabId: string };
@@ -410,6 +429,8 @@ function nextArtifactTabId() {
 
 function artifactSourceKey(artifact: ArtifactSource) {
   if (artifact.kind === 'file') return `file:${artifact.path}`;
+  // A tab a page opened is its own tab even when another tab shows the same address.
+  if (artifact.kind === 'externalUrl' && artifact.viewId) return `view:${artifact.viewId}`;
   if (artifact.kind === 'externalUrl') return `url:${artifact.url}`;
   if (artifact.kind === 'html') {
     return `html:${artifact.title}:${artifact.html.length}:${artifact.html.slice(0, 80)}`;
@@ -457,6 +478,12 @@ function artifactTabsReducer(
       tabs: [...state.tabs, { id: action.newTabId, artifact: action.artifact }],
       activeTabId: action.newTabId,
     };
+  }
+
+  if (action.type === 'add') {
+    const key = artifactSourceKey(action.artifact);
+    if (state.tabs.some((tab) => artifactSourceKey(tab.artifact) === key)) return state;
+    return { ...state, tabs: [...state.tabs, { id: action.newTabId, artifact: action.artifact }] };
   }
 
   if (action.type === 'activate') return { ...state, activeTabId: action.tabId };
@@ -645,6 +672,14 @@ export default function ArtifactViewer({
    * reopening a session should not silently start loading pages.
    */
   const [browsingUrls, setBrowsingUrls] = useState<ReadonlySet<string>>(() => new Set());
+  /**
+   * Browser tabs a page in this panel opened (BB-04), which the panel claimed from the main
+   * process. Only these may be shown without the Open here card when an artifact names a view.
+   */
+  const [pageOpenedViews, setPageOpenedViews] = useState<ReadonlySet<string>>(() => new Set());
+  /** Each live page's title, for its panel tab's label. */
+  const [liveTitles, setLiveTitles] = useState<ReadonlyMap<string, string>>(() => new Map());
+  const [tabOverflowOpen, setTabOverflowOpen] = useState(false);
   const [isAnnotating, setIsAnnotating] = useState(false);
   const interactionRef = useRef({ isAnnotating, isResizing });
   interactionRef.current = { isAnnotating, isResizing };
@@ -704,6 +739,20 @@ export default function ArtifactViewer({
   const hasTabs = tabState.tabs.length > 0;
   const activeTab = tabState.tabs.find((tab) => tab.id === tabState.activeTabId) ?? null;
   const activeArtifact = activeTab?.artifact ?? null;
+  const activeBrowserViewId = browserViewIdFor(activeTab);
+  /** Whether a page artifact loads as a live page rather than the Open here card. */
+  const isBrowsingArtifact = (candidate: ArtifactSource | null | undefined) =>
+    candidate?.kind === 'externalUrl' &&
+    (candidate.viewId ? pageOpenedViews.has(candidate.viewId) : browsingUrls.has(candidate.url));
+  const tabsRef = useRef(tabState.tabs);
+  tabsRef.current = tabState.tabs;
+  /** A live page's tab is named by its page, as in a browser; everything else by its source. */
+  const tabLabel = (tab: ArtifactTab) => {
+    const viewId = browserViewIdFor(tab);
+    return (
+      (viewId && isBrowsingArtifact(tab.artifact) && liveTitles.get(viewId)) || tab.artifact.title
+    );
+  };
   const quotedRevision =
     preview.kind === 'file' && 'revision' in preview.preview ? preview.preview.revision : undefined;
   const quotedSelection = useTextSelection(
@@ -932,6 +981,32 @@ export default function ArtifactViewer({
     [onOpenArtifact]
   );
 
+  /** A blocked popup's "Open in a new tab": the person's click on the note. */
+  const openPageInNewTab = useCallback(
+    (url: string) => {
+      openArtifactInTab({
+        kind: 'externalUrl',
+        title: hostTitle(url),
+        url,
+        openedBy: 'click',
+        openedAt: Date.now(),
+      });
+      setBrowsingUrls((current) => (current.has(url) ? current : new Set(current).add(url)));
+    },
+    [openArtifactInTab]
+  );
+
+  const handleLiveState = useCallback((viewId: string, state: EmbeddedBrowserState | null) => {
+    const title = state?.title?.trim();
+    if (!title) return;
+    setLiveTitles((current) => {
+      if (current.get(viewId) === title) return current;
+      const next = new Map(current);
+      next.set(viewId, title);
+      return next;
+    });
+  }, []);
+
   const closeTab = useCallback(
     (tabId: string) => {
       if (tabState.tabs.length === 1) {
@@ -942,6 +1017,10 @@ export default function ArtifactViewer({
       const closingIndex = tabState.tabs.findIndex((tab) => tab.id === tabId);
       const closingActiveTab = tabState.activeTabId === tabId;
       const remainingTabs = tabState.tabs.filter((tab) => tab.id !== tabId);
+      const closingViewId = browserViewIdFor(tabState.tabs[closingIndex]);
+      const browser = window.electron?.embeddedBrowser;
+      if (closingViewId && typeof browser?.destroy === 'function')
+        void browser.destroy(closingViewId);
       dispatchTabAction({ type: 'close', tabId });
 
       if (closingActiveTab) {
@@ -1117,8 +1196,56 @@ export default function ArtifactViewer({
       pendingNavigationKeyRef.current = null;
       return;
     }
+    // BB-02: a link the person clicked in a message opens as a live page at once. An agent
+    // supplied link (no `openedBy`) still shows the Open here card.
+    if (artifact.kind === 'externalUrl' && artifact.openedBy === 'click' && !artifact.viewId) {
+      setBrowsingUrls((current) =>
+        current.has(artifact.url) ? current : new Set(current).add(artifact.url)
+      );
+    }
     dispatchTabAction({ type: 'open', artifact, newTabId: nextArtifactTabId() });
   }, [artifact]);
+
+  // BB-04: a page in one of this panel's browser tabs opened a new tab (`target=_blank`, a
+  // middle click). Main created it; the panel claims it and shows it as a tab of its own.
+  useEffect(() => {
+    const browser = window.electron?.embeddedBrowser;
+    if (!browser?.onOpened) return;
+    return browser.onOpened((opened) => {
+      const ownsOpener = tabsRef.current.some(
+        (tab) => browserViewIdFor(tab) === opened.openerViewId
+      );
+      if (!ownsOpener) return;
+      void browser.claim(opened.viewId);
+      setPageOpenedViews((current) => new Set(current).add(opened.viewId));
+      const pageTab: ArtifactSource = {
+        kind: 'externalUrl',
+        title: hostTitle(opened.url),
+        url: opened.url,
+        viewId: opened.viewId,
+      };
+      if (!opened.foreground) {
+        dispatchTabAction({ type: 'add', artifact: pageTab, newTabId: nextArtifactTabId() });
+        return;
+      }
+      pendingNavigationKeyRef.current = artifactSourceKey(pageTab);
+      dispatchTabAction({ type: 'open', artifact: pageTab, newTabId: nextArtifactTabId() });
+      onOpenArtifact(pageTab);
+    });
+  }, [onOpenArtifact]);
+
+  // The browser tabs end with the panel: hiding a panel tab keeps its page (BB-01), but an
+  // unmounted panel has nothing left to show them in.
+  useEffect(
+    () => () => {
+      const browser = window.electron?.embeddedBrowser;
+      for (const tab of tabsRef.current) {
+        const viewId = browserViewIdFor(tab);
+        if (viewId && typeof browser?.destroy === 'function') void browser.destroy(viewId);
+      }
+    },
+    []
+  );
 
   const refreshScope = JSON.stringify([sessionId, activeSourceKey]);
   const fileRefreshRevision = fileRefresh.scope === refreshScope ? fileRefresh.revision : 0;
@@ -1466,10 +1593,7 @@ export default function ArtifactViewer({
       shown &&
       shown.key === layers.key &&
       shown.preview.kind !== 'loading' &&
-      !isLivePagePreview(
-        shown.preview,
-        shown.preview.kind === 'externalUrl' && browsingUrls.has(shown.preview.url)
-      ) &&
+      !isLivePagePreview(shown.preview, isBrowsingArtifact(shown.artifact)) &&
       canCrossfadeLayers()
         ? shown
         : null;
@@ -1607,8 +1731,7 @@ export default function ArtifactViewer({
     }
   };
 
-  const isBrowsingActive =
-    activeArtifact.kind === 'externalUrl' && browsingUrls.has(activeArtifact.url);
+  const isBrowsingActive = isBrowsingArtifact(activeArtifact);
   // A live page brings its own 32px toolbar (address, back, reload); it stands in
   // for the bar rather than stacking a second row above it.
   const livePage = isLivePagePreview(visiblePreview, isBrowsingActive);
@@ -1645,8 +1768,15 @@ export default function ArtifactViewer({
         isResizing={isResizing}
         trustedFrameRef={role === 'current' ? trustedFrameRef : outgoingFrameRef}
         onOpenArtifactInTab={openArtifactInTab}
-        isBrowsingUrl={layerArtifact.kind === 'externalUrl' && browsingUrls.has(layerArtifact.url)}
+        isBrowsingUrl={isBrowsingArtifact(layerArtifact)}
         onStartBrowsing={(url) => setBrowsingUrls((current) => new Set(current).add(url))}
+        browserViewId={role === 'current' ? (activeBrowserViewId ?? undefined) : undefined}
+        onOpenInNewTab={openPageInNewTab}
+        onCloseBrowserTab={
+          role === 'current' && activeTab ? () => closeTab(activeTab.id) : undefined
+        }
+        onLiveState={handleLiveState}
+        isMenuCovering={tabOverflowOpen}
         onLiveBrowserViewChange={role === 'current' ? handleLiveBrowserViewChange : undefined}
         onLiveBrowserShareChange={role === 'current' ? onLiveBrowserShareChange : undefined}
         isAnnotating={role === 'current' && isAnnotating}
@@ -1774,20 +1904,18 @@ export default function ArtifactViewer({
                     // The path is the tooltip (`title`), and the app's tooltip layer
                     // would copy a `title` into the aria-label of a control that has
                     // none, naming every tab by its full path. The name is the file.
-                    aria-label={tab.artifact.title}
+                    aria-label={tabLabel(tab)}
                     title={artifactHoverTitle(tab.artifact)}
                     className="flex h-full min-w-0 flex-1 cursor-grab items-center gap-1.5 text-left active:cursor-grabbing"
                   >
                     <TabIcon className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
-                    <span className="br-tab__label min-w-0 flex-1 truncate">
-                      {tab.artifact.title}
-                    </span>
+                    <span className="br-tab__label min-w-0 flex-1 truncate">{tabLabel(tab)}</span>
                   </button>
                   <button
                     type="button"
                     onClick={() => closeTab(tab.id)}
-                    aria-label={PREVIEW_COPY.closeTab(tab.artifact.title)}
-                    title={PREVIEW_COPY.closeTab(tab.artifact.title)}
+                    aria-label={PREVIEW_COPY.closeTab(tabLabel(tab))}
+                    title={PREVIEW_COPY.closeTab(tabLabel(tab))}
                     className={cn(
                       // A 14px glyph in a 20px hit area: the close yields to the
                       // label rather than matching the kind icon's weight.
@@ -1807,7 +1935,8 @@ export default function ArtifactViewer({
             // Outside the scroll box, for the reason ChatTabStrip's wrap documents:
             // inside it, the button's own width would keep alive the overflow that
             // summoned it.
-            <DropdownMenu>
+            // A native page paints over this menu, so the page hides while it is open.
+            <DropdownMenu onOpenChange={setTabOverflowOpen}>
               <DropdownMenuTrigger asChild>
                 <button
                   type="button"
@@ -1831,7 +1960,7 @@ export default function ArtifactViewer({
                       className="gap-2"
                     >
                       <TabIcon className="h-4 w-4 flex-none" aria-hidden="true" />
-                      <span className="min-w-0 flex-1 truncate">{tab.artifact.title}</span>
+                      <span className="min-w-0 flex-1 truncate">{tabLabel(tab)}</span>
                       {isCurrent && (
                         // The menus' one selection mark is a trailing check (spec 2.6);
                         // a heavier weight is not one, because Arial draws 500 as 400.
@@ -2163,6 +2292,11 @@ function ArtifactPreviewBody({
   onOpenArtifactInTab,
   isBrowsingUrl,
   onStartBrowsing,
+  browserViewId,
+  onOpenInNewTab,
+  onCloseBrowserTab,
+  onLiveState,
+  isMenuCovering = false,
   onLiveBrowserViewChange = () => {},
   onLiveBrowserShareChange,
   isAnnotating = false,
@@ -2175,9 +2309,16 @@ function ArtifactPreviewBody({
   isResizing: boolean;
   trustedFrameRef: React.RefObject<HTMLIFrameElement | null>;
   onOpenArtifactInTab: (artifact: ArtifactSource) => void;
-  /** The user has clicked "Open here" for this URL in this tab. */
+  /** The person clicked this link, clicked "Open here", or a page opened this tab. */
   isBrowsingUrl: boolean;
   onStartBrowsing?: (url: string) => void;
+  /** The Biorouter Browser tab this panel tab shows (BB-01). */
+  browserViewId?: string;
+  onOpenInNewTab?: (url: string) => void;
+  onCloseBrowserTab?: () => void;
+  onLiveState?: (viewId: string, state: EmbeddedBrowserState | null) => void;
+  /** A panel menu is open over the page, so the native view must hide. */
+  isMenuCovering?: boolean;
   onLiveBrowserViewChange?: (viewId: string | null) => void;
   onLiveBrowserShareChange?: (share: LiveBrowserShare | null) => void;
   isAnnotating?: boolean;
@@ -2229,27 +2370,37 @@ function ArtifactPreviewBody({
   }
 
   if (preview.kind === 'externalUrl') {
-    // Ordinary live pages open **only** on a deliberate click. The sole
-    // automatic case is a main-process-approved app served by this window's
-    // active BioRouter daemon; WebPagePreview creation independently rechecks
-    // that same scope before granting its managed-app request policy.
+    // Ordinary live pages open **only** on a person's click (BB-02): a link
+    // clicked in a message (`openedBy: 'click'`), Open here on this card, or a
+    // tab a page in the browser opened under the person's gesture (BB-04). The
+    // sole automatic case is a main-process-approved app served by this
+    // window's active BioRouter daemon; WebPagePreview creation independently
+    // rechecks that same scope before granting its managed-app request policy.
     //
     // This card is the whole boundary between "the user browsed somewhere" and
     // "something else navigated the user's app". An MCP resource link with an
     // http(s) URI already becomes an artifact with no transcript card and can
     // auto-open; if that path rendered a live view directly, any extension
-    // could make an arbitrary site load and execute here. One click is cheap
-    // for the user and structurally impossible for the agent.
+    // could make an arbitrary site load and execute here. Such an artifact never
+    // carries `openedBy` (only the transcript's click handler sets it), so it
+    // still waits for the person.
     if (preview.managedApp || isBrowsingUrl) {
       return (
         <WebPagePreview
-          key={preview.url}
+          key={browserViewId ?? preview.url}
           url={preview.url}
+          viewId={browserViewId}
+          navigateRevision={artifact.kind === 'externalUrl' ? artifact.openedAt : undefined}
           requireManagedApp={preview.managedApp}
           refreshRevision={refreshRevision}
           // The native view has no shared z-index with the DOM, so it has to be
           // hidden while the resize shield is up or it paints straight over it.
-          isSuspended={isResizing || isAnnotating}
+          isSuspended={isResizing || isAnnotating || isMenuCovering}
+          onOpenInNewTab={onOpenInNewTab}
+          onCloseTab={onCloseBrowserTab}
+          onStateChange={
+            browserViewId && onLiveState ? (state) => onLiveState(browserViewId, state) : undefined
+          }
           snapshotDataUrl={annotationSnapshotDataUrl}
           onViewIdChange={onLiveBrowserViewChange}
           onAgentShareChange={onLiveBrowserShareChange}

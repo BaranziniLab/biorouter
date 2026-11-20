@@ -57,6 +57,9 @@ import {
   type KnownFilePaths,
 } from './artifacts/artifactFileLinks';
 import { isOpenableFileLink, useFileLinkExistence } from './artifacts/fileLinkStatus';
+import { opensInDefaultBrowser, withLinkClickOrigin } from './artifacts/browserLinks';
+import { readLinkTarget } from './artifacts/linkPreference';
+import { openInBrowser } from '../utils/openInBrowser';
 
 const codeCopy = transcriptCopy.code;
 
@@ -447,7 +450,8 @@ function ArtifactLinkButton({
           className={`${ARTIFACT_LINK_BASE_CLASS} ${LINK_CLASS} ${
             inlineCode ? ARTIFACT_LINK_CODE_CLASS : ''
           }`}
-          onClick={() => onOpenArtifact(artifact)}
+          onClick={(event) => openLinkFromClick(event, artifact, onOpenArtifact)}
+          onAuxClick={(event) => openLinkFromClick(event, artifact, onOpenArtifact)}
         >
           {children}
         </button>
@@ -582,6 +586,30 @@ function openExternalLink(event: React.MouseEvent<HTMLAnchorElement>, href: stri
   if (!opener) return;
   event.preventDefault();
   void opener(href);
+}
+
+/**
+ * A click on a link in a message (BB-02). A plain click opens a web page in the Biorouter
+ * Browser at once, because the click is the person's own; Cmd or Ctrl click and a middle click
+ * open it in the default browser. A file link opens its preview either way.
+ */
+function openLinkFromClick(
+  event: React.MouseEvent<HTMLButtonElement>,
+  artifact: ArtifactSource,
+  onOpenArtifact: (artifact: ArtifactSource) => void
+) {
+  if (event.button !== 0 && event.button !== 1) return;
+  if (artifact.kind === 'externalUrl') {
+    // Settings > Chat > Display > Open links in decides the plain click; a modified or middle
+    // click opens the other one.
+    const toDefault = opensInDefaultBrowser(event) !== (readLinkTarget() === 'default');
+    if (toDefault) {
+      event.preventDefault();
+      void openInBrowser(artifact.url);
+      return;
+    }
+  }
+  onOpenArtifact(withLinkClickOrigin(artifact));
 }
 
 // Inside a markdown link, the link IS the destination. Inline code in its text
@@ -828,11 +856,13 @@ function MarkdownAnchor({ href, children: linkChildren, node: _node, ...props }:
   }
   const externalUrl = previewableExternalUrl(href);
   if (externalUrl && onOpenArtifact) {
+    const artifact: ArtifactSource = { kind: 'externalUrl', title: href, url: externalUrl };
     return (
       <button
         type="button"
         className={`inline break-all text-left ${LINK_CLASS}`}
-        onClick={() => onOpenArtifact({ kind: 'externalUrl', title: href, url: externalUrl })}
+        onClick={(event) => openLinkFromClick(event, artifact, onOpenArtifact)}
+        onAuxClick={(event) => openLinkFromClick(event, artifact, onOpenArtifact)}
       >
         {children}
       </button>

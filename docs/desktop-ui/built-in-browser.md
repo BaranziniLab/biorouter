@@ -5,7 +5,8 @@
 > beside Biorouter Copilot without overlapping it, and that can take a person's logins, bookmarks
 > and history from Google Chrome when they ask.
 > **Status:** Current. Accepted design of 2026-11-19; implementation is in progress on branch
-> `br1946/browser`. Until that branch merges, the shipping behaviour is the one recorded in the
+> `br1946/browser`, where phase 1 is built (see "Phase 1 as built"). Until that branch merges, the
+> shipping behaviour is the one recorded in the
 > [preview panel implementation record](preview-panel/implementation-record.md), and the open work is
 > listed under "Phases" below.
 > **Audience:** developers working on the desktop app, the agent loop, privacy and security, and
@@ -1087,6 +1088,52 @@ These touch real accounts or real keys, so no automated test or agent runs them:
 4. **Chrome import**: the importer, the key helper, Settings, the first use card, removal, and the
    synthetic profile tests.
 5. **Verification**: every gate above, the public site pass, and the owner's manual checks.
+
+### Phase 1 as built
+
+Phase 1 is on branch `br1946/browser`. It is all desktop code; nothing in the daemon changed.
+
+| Area | Where | What it does |
+|---|---|---|
+| Tab registry (BB-01) | `utils/embeddedBrowser.ts` | `create` attaches to a tab that exists, `release` hides it, only `destroy` ends it. The panel destroys a tab when its panel tab closes or the panel unmounts, so switching panel tabs keeps the page and its history. A tab a page opened waits 30 seconds for the panel to claim it. |
+| Links from a chat (BB-02) | `MarkdownContent.tsx`, `artifacts/browserLinks.ts`, `ArtifactViewer.tsx` | A plain click opens the page at once (`openedBy: 'click'`); Cmd or Ctrl click and a middle click open the default browser. Settings, Chat, Display, **Open links in** swaps the two. A tool or MCP link still shows the card. |
+| Login pages (BB-03) | `utils/embeddedBrowser.ts` | Nothing is diverted. `isAuthenticationNavigation` only words the default browser confirmation now. |
+| New windows (BB-04) | `installWindowOpenHandler` | Tabs through `createWindow` into a `WebContentsView`; sized popups as hardened child windows; no gesture means a note with **Open in a new tab**. |
+| Downloads (BB-05) | `browser/downloads.ts` | Save dialog in Downloads, progress and **Reveal in Finder** under the bar, quarantine written on macOS. |
+| Local addresses (BB-06) | `browser/localNetwork.ts`, `utils/embeddedBrowserProxy.ts` | Grants per host and port, recorded by the request filter and required by the proxy; reserved ports for the daemon, the dev renderer and the proxies. |
+| User agent (BB-07) | `browser/userAgent.ts` | Reduced Chrome string and `Accept-Language` on the partition. |
+| Prompts (BB-08) | `installContentsGuards`, the permission handlers | Certificate errors fail closed with **Open in default browser**; no client certificate is ever picked; HTTP authentication is cancelled with a note; `clipboard-sanitized-write` is the one grant. |
+| Bar and keys | `WebPagePreview.tsx` | Address field selects on focus, searches Google for text that is not an address, suggests from the person's own history and bookmarks; the ⋯ menu holds Open in default browser, Copy link, Find in page, zoom, bookmarks and Clear site data; Cmd or Ctrl L, R, `[`, `]`, F, W, plus, minus, 0 and Escape work while the page has focus. |
+| History and bookmarks | `browser/store.ts` | `history.json` and `bookmarks.json` in the user data folder, mode 0600, 90 days and 5,000 pages, nothing with a one time credential in its query. |
+
+What the first build measured on Electron 39.8.10, answering the questions below:
+
+- `createWindow` adopting the new web contents into a `WebContentsView` keeps the sandbox and the
+  partition; a sized popup keeps `window.opener`, and `postMessage` to the opener works.
+- After `session.setUserAgent`, `navigator.userAgentData.brands` lists only `Chromium` and
+  `Not_A Brand`, so no CDP override is needed for the client hints.
+- Electron does not set the macOS quarantine attribute on downloads, so the browser writes it.
+- `sendInputEvent` and real input both raise `input-event`, which is the gesture the popup rule reads.
+
+Where the build differs from the text above, and why:
+
+- **PDFs open in the tab.** `plugins: true` turns on Chromium's PDF viewer, and the request filter
+  admits only that viewer's own resources (`chrome-extension://` for its extension id and
+  `chrome://resources`). Without it every linked paper downloaded instead of opening.
+- **A public page cannot open a local address on its own, even from a link.** The request filter
+  cannot tell a click from a script, so a navigation a public page starts to a private or loopback
+  host is refused with a note whose **Open it** is the person's own navigation. A local page may
+  reach its own host on any port, so a development front end can call its API on another port.
+- **No note for a denied location request.** Chromium answers `getCurrentPosition` from the
+  permission check, which also runs on every page load, so only real requests (notifications,
+  camera, microphone) get a note.
+- **Not in phase 1:** discarding hidden tabs after 15 minutes, the agent's downloads (phase 2), and
+  **Import from Chrome** and **Browser settings** in the ⋯ menu (phase 4).
+
+Tests: Vitest suites under `src/browser/`, `WebPagePreview.navigation.test.tsx`,
+`ArtifactViewer.biorouterBrowser.test.tsx` and the updated `embeddedBrowser*.test.ts`; and the
+Electron spec `tests/e2e/biorouter-browser.spec.ts` against the fixture site in
+`tests/e2e/fixtures/biorouter-browser/site.cjs`, which `node` can also run by hand for a live check.
 
 ## Open questions and things to measure first
 

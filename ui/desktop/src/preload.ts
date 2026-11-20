@@ -8,6 +8,15 @@ import {
   readDictionaryAddTermPayload,
   type DictionaryAddTermPayload,
 } from './components/dictionary/contextMenu';
+// The browser's types live in `browser/types.ts`, a types-only module, so preload can share
+// them without pulling in any main-process code (the import is erased at build time).
+import type {
+  EmbeddedBrowserBookmark,
+  EmbeddedBrowserOpened,
+  EmbeddedBrowserShortcut,
+  EmbeddedBrowserState,
+  EmbeddedBrowserSuggestion,
+} from './browser/types';
 
 // One-time warning for callers still using the legacy `off()` API. Each
 // channel only warns once to avoid log spam under React StrictMode.
@@ -71,19 +80,6 @@ interface SaveDataUrlResponse {
   filePath?: string;
   error?: string;
 }
-
-// Mirrors `utils/embeddedBrowser.ts`. Declared here rather than imported because
-// preload is bundled separately and must not pull in main-process modules.
-type EmbeddedBrowserState = {
-  url: string;
-  title: string;
-  managedApp?: boolean;
-  sourceRevision: string;
-  canGoBack: boolean;
-  canGoForward: boolean;
-  isLoading: boolean;
-  error: string | null;
-};
 
 type ArtifactFileEntry = {
   name: string;
@@ -609,6 +605,24 @@ type ElectronAPI = {
     onState: (
       callback: (payload: { viewId: string; state: EmbeddedBrowserState }) => void
     ) => () => void;
+    /** Hide a tab the panel stopped showing; it keeps its page (BB-01). */
+    release: (viewId: string) => Promise<void>;
+    /** Keep a tab a page opened; unclaimed ones close after 30 seconds. */
+    claim: (viewId: string) => Promise<boolean>;
+    zoom: (viewId: string, direction: 'in' | 'out' | 'reset') => Promise<number | null>;
+    find: (
+      viewId: string,
+      text: string,
+      options?: { forward?: boolean; findNext?: boolean }
+    ) => Promise<boolean>;
+    stopFind: (viewId: string) => Promise<void>;
+    dismissNotice: (viewId: string) => Promise<void>;
+    showDownload: (viewId: string) => Promise<boolean>;
+    setBookmark: (viewId: string, bookmarked: boolean) => Promise<boolean>;
+    bookmarks: () => Promise<EmbeddedBrowserBookmark[]>;
+    suggest: (query: string) => Promise<EmbeddedBrowserSuggestion[]>;
+    onOpened: (callback: (payload: EmbeddedBrowserOpened) => void) => () => void;
+    onShortcut: (callback: (payload: EmbeddedBrowserShortcut) => void) => () => void;
   };
   openArtifactInBrowser: (payload: {
     html: string;
@@ -1097,6 +1111,35 @@ const electronAPI: ElectronAPI = {
       ipcRenderer.on('embedded-browser:state', wrapped);
       return () => {
         ipcRenderer.removeListener('embedded-browser:state', wrapped);
+      };
+    },
+    release: (viewId: string) => ipcRenderer.invoke('embedded-browser:release', { viewId }),
+    claim: (viewId: string) => ipcRenderer.invoke('embedded-browser:claim', { viewId }),
+    zoom: (viewId: string, direction: 'in' | 'out' | 'reset') =>
+      ipcRenderer.invoke('embedded-browser:zoom', { viewId, direction }),
+    find: (viewId: string, text: string, options?: { forward?: boolean; findNext?: boolean }) =>
+      ipcRenderer.invoke('embedded-browser:find', { viewId, text, ...options }),
+    stopFind: (viewId: string) => ipcRenderer.invoke('embedded-browser:stop-find', { viewId }),
+    dismissNotice: (viewId: string) =>
+      ipcRenderer.invoke('embedded-browser:dismiss-notice', { viewId }),
+    showDownload: (viewId: string) =>
+      ipcRenderer.invoke('embedded-browser:show-download', { viewId }),
+    setBookmark: (viewId: string, bookmarked: boolean) =>
+      ipcRenderer.invoke('embedded-browser:bookmark', { viewId, bookmarked }),
+    bookmarks: () => ipcRenderer.invoke('embedded-browser:bookmarks'),
+    suggest: (query: string) => ipcRenderer.invoke('embedded-browser:suggest', { query }),
+    onOpened: (callback: (payload: EmbeddedBrowserOpened) => void) => {
+      const wrapped = (_event: unknown, payload: EmbeddedBrowserOpened) => callback(payload);
+      ipcRenderer.on('embedded-browser:opened', wrapped);
+      return () => {
+        ipcRenderer.removeListener('embedded-browser:opened', wrapped);
+      };
+    },
+    onShortcut: (callback: (payload: EmbeddedBrowserShortcut) => void) => {
+      const wrapped = (_event: unknown, payload: EmbeddedBrowserShortcut) => callback(payload);
+      ipcRenderer.on('embedded-browser:shortcut', wrapped);
+      return () => {
+        ipcRenderer.removeListener('embedded-browser:shortcut', wrapped);
       };
     },
   },
