@@ -25,7 +25,8 @@ const options = Array.from({ length: 30 }, (_, index) => ({
 function App() {
   const [model, setModel] = React.useState(options[0]);
   return (
-    <ModalShell open onOpenChange={() => {}} purpose="form" scrollBody title="Switch models"
+    <ModalShell open purpose="form" scrollBody title="Switch models"
+      onOpenChange={(open) => { if (!open) document.body.dataset.dialogClosed = 'yes'; }}
       subtitle="Select a provider and model for this chat.">
       <div style={{ height: 150, paddingTop: 70 }}>
         <Select aria-label="Model" classNamePrefix="model" value={model} onChange={setModel}
@@ -144,6 +145,35 @@ describe('a model menu inside a dialog', () => {
       await page.keyboard.press('ArrowDown');
       await page.keyboard.press('Enter');
       await expect.poll(() => page.locator('#selected').textContent()).toBe('gemini-1');
+    } finally {
+      await page.close();
+    }
+  });
+
+  it('keeps End, Home, typing to filter and Escape in the portalled menu', async (ctx) => {
+    if (!browser) return ctx.skip();
+    const page = await openMenu();
+    try {
+      const list = page.locator('[role="listbox"]');
+      const focused = () => page.locator('.model__option--is-focused').textContent();
+      const scrollTop = () => list.evaluate((element) => element.scrollTop);
+
+      await page.keyboard.press('End');
+      await expect.poll(focused).toBe('gemini-29');
+      await expect.poll(scrollTop).toBeGreaterThan(0);
+
+      await page.keyboard.press('Home');
+      await expect.poll(focused).toBe('gemini-0');
+      await expect.poll(scrollTop).toBe(0);
+
+      await page.keyboard.type('gemini-17');
+      await expect.poll(focused).toBe('gemini-17');
+
+      await page.keyboard.press('Escape');
+      await expect.poll(() => list.count()).toBe(0);
+      expect(await page.evaluate(() => document.body.dataset.dialogClosed)).toBeUndefined();
+      expect(await page.locator('[role="dialog"]').count()).toBe(1);
+      expect(await page.locator('#selected').textContent()).toBe('gemini-0');
     } finally {
       await page.close();
     }

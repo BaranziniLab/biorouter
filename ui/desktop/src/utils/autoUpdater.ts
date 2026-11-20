@@ -39,6 +39,7 @@ import {
   type UpdaterState,
 } from './updaterState';
 import { restartAllowedWhileDictating } from './dictationBusy';
+import { menuBarWindows, revealFromMenuBar } from './menuBarReveal';
 
 /** MSG-RESTART-BUSY before any restart that installs an update (`utils/dictationBusy.ts`). */
 const confirmRestartWhileDictating = (): Promise<boolean> =>
@@ -46,6 +47,7 @@ const confirmRestartWhileDictating = (): Promise<boolean> =>
 
 let updateAvailable = false;
 let trayRef: Tray | null = null;
+let isTrayChatWindow: (win: BrowserWindow) => boolean = () => false;
 let trayMenu: Menu | null = null;
 let isUsingGitHubFallback = false;
 let githubUpdateInfo: {
@@ -993,20 +995,17 @@ export function setDictationAnywhereTrayActions(actions: AnywhereTrayActions) {
 export function updateTrayMenu(hasUpdate: boolean) {
   if (!trayRef) return;
 
-  // Helper: show any existing window, then navigate to a view.
-  // If no windows are open, create one first.
+  // Helper: bring the chat windows forward, then navigate to a view.
+  // If no chat window is open, create one first.
   const showAndNavigate = (view: string) => {
-    const windows = BrowserWindow.getAllWindows();
+    const windows = menuBarWindows(BrowserWindow.getAllWindows(), isTrayChatWindow);
     if (windows.length === 0) {
       const recentDirs = loadRecentDirs();
       const openDir = recentDirs.length > 0 ? recentDirs[0] : null;
       ipcMain.emit('create-chat-window', {}, undefined, openDir);
       return;
     }
-    windows.forEach((win) => {
-      if (!win.isVisible()) win.show();
-      win.focus();
-    });
+    windows.forEach((win) => revealFromMenuBar(win, process.platform));
     windows[windows.length - 1].webContents.send('set-view', view);
   };
 
@@ -1072,9 +1071,11 @@ export function popUpTrayMenu() {
   }
 }
 
-// Export functions to manage tray reference
-export function setTrayRef(tray: Tray) {
+// Export functions to manage tray reference. `isChatWindow` tells main's chat windows from the
+// dictation windows, which the menu items must not bring forward (`menuBarReveal.ts`).
+export function setTrayRef(tray: Tray, isChatWindow: (win: BrowserWindow) => boolean) {
   trayRef = tray;
+  isTrayChatWindow = isChatWindow;
   // Update icon based on current update status
   updateTrayIcon(updateAvailable);
 }

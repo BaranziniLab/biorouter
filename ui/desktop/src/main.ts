@@ -177,6 +177,7 @@ import {
 } from './utils/autoUpdater';
 import { UPDATES_ENABLED } from './updates';
 import { startMainThreadWatchdog } from './utils/mainThreadWatchdog';
+import { menuBarWindows, revealFromMenuBar } from './utils/menuBarReveal';
 import {
   STARTUP_UPDATER_SETUP_DELAY_MS,
   STARTUP_DEPENDENCY_CHECK_DELAY_MS,
@@ -2835,7 +2836,7 @@ const createTray = () => {
 
   try {
     tray = new Tray(iconPath);
-    setTrayRef(tray);
+    setTrayRef(tray, (win) => windowMap.has(win.id));
     updateTrayMenu(getUpdateAvailable());
 
     if (process.platform === 'win32' || process.platform === 'darwin') {
@@ -2854,38 +2855,17 @@ const createTray = () => {
 };
 
 const showWindow = async () => {
-  const windows = BrowserWindow.getAllWindows();
+  const windows = menuBarWindows(BrowserWindow.getAllWindows(), (win) => windowMap.has(win.id));
 
   if (windows.length === 0) {
-    log.info('No windows are open, creating a new one...');
+    log.info('No chat window is open, creating a new one...');
     const recentDirs = loadRecentDirs();
     const openDir = recentDirs.length > 0 ? recentDirs[0] : null;
     await createChat(app, undefined, openDir || undefined);
     return;
   }
 
-  const initialOffsetX = 30;
-  const initialOffsetY = 30;
-
-  // Iterate over all windows
-  windows.forEach((win, index) => {
-    const currentBounds = win.getBounds();
-    const newX = currentBounds.x + initialOffsetX * index;
-    const newY = currentBounds.y + initialOffsetY * index;
-
-    win.setBounds({
-      x: newX,
-      y: newY,
-      width: currentBounds.width,
-      height: currentBounds.height,
-    });
-
-    if (!win.isVisible()) {
-      win.show();
-    }
-
-    win.focus();
-  });
+  windows.forEach((win) => revealFromMenuBar(win, process.platform));
 };
 
 const buildRecentFilesMenu = () => {
