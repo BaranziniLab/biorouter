@@ -10,7 +10,7 @@ use clap_complete::{generate, Shell as ClapShell};
 
 use crate::commands::apps::{handle_apps_list, handle_apps_open, handle_apps_serve};
 use crate::commands::bench::agent_generator;
-use crate::commands::configure::handle_configure;
+use crate::commands::configure::{handle_configure, handle_configure_command};
 use crate::commands::info::handle_info;
 use crate::commands::models::{
     handle_models_current, handle_models_list, handle_models_providers, handle_models_set,
@@ -2152,6 +2152,15 @@ struct ServeOptions {
     )]
     no_token: bool,
 
+    /// Print the address with its access token
+    #[arg(
+        long,
+        help = "Print the address with its access token, whatever the output is. Without it, \
+                the token is printed only when it was made for this launch and the output is a \
+                terminal; `biorouter serve url` shows it otherwise."
+    )]
+    print_url: bool,
+
     /// Keep model installation on the host, not in a served browser
     #[arg(
         long,
@@ -2173,8 +2182,9 @@ struct ServeOptions {
         value_name = "URL",
         help = "The https:// address a reverse proxy serves the interface at, path prefix \
                 included (for example https://hub.example.org/user/me/proxy/8765/). The proxy \
-                must strip the prefix. Printed with the access token, and admitted by the \
-                live views' origin check. Takes precedence over BIOROUTER_PUBLIC_URL."
+                must strip the prefix. Printed as the address to open (with the access token \
+                only as --print-url describes), and admitted by the live views' origin check. \
+                Takes precedence over BIOROUTER_PUBLIC_URL."
     )]
     public_url: Option<String>,
 
@@ -2205,15 +2215,43 @@ struct ServeOptions {
                 program holding its secret."
     )]
     allow_public_decision_models: bool,
+
+    /// Something to do instead of serving
+    #[command(subcommand)]
+    action: Option<ServeAction>,
+}
+
+/// What `biorouter serve` does instead of serving.
+#[derive(Subcommand)]
+enum ServeAction {
+    /// Show the address of a running `biorouter serve`, access token included (issue #524)
+    #[command(
+        about = "Show the address, access token included, of the biorouter serve running for \
+                 this account"
+    )]
+    Url {
+        /// The port that serve listens on
+        #[arg(
+            short,
+            long,
+            default_value_t = crate::commands::serve::DEFAULT_PORT,
+            help = "The port that biorouter serve listens on"
+        )]
+        port: u16,
+    },
 }
 
 impl ServeOptions {
     async fn run(self) -> anyhow::Result<()> {
+        if let Some(ServeAction::Url { port }) = self.action {
+            return crate::commands::serve::handle_serve_url(port);
+        }
         crate::commands::serve::handle_serve(
             self.host,
             self.port,
             self.token,
             self.no_token,
+            self.print_url,
             self.no_dictation_install,
             self.web_dir,
             self.public_url,
@@ -2232,7 +2270,27 @@ enum Command {
     Crew(crate::commands::crew::CrewOptions),
     /// Configure Biorouter settings
     #[command(about = "Configure Biorouter settings")]
-    Configure {},
+    Configure {
+        /// The provider whose API key `--secret-stdin` enters (issue #526)
+        #[arg(
+            long,
+            value_name = "PROVIDER",
+            requires = "secret_stdin",
+            help = "The provider whose API key --secret-stdin enters (`biorouter models \
+                    providers` lists them)"
+        )]
+        provider: Option<String>,
+
+        /// Enter the provider's API key with no echo, from a hidden prompt or from stdin
+        #[arg(
+            long,
+            requires = "provider",
+            help = "Enter --provider's API key and nothing else: at a hidden prompt on a \
+                    terminal, or as NAME=value lines on stdin. It is checked with the provider \
+                    before it is saved, and never appears on the command line."
+        )]
+        secret_stdin: bool,
+    },
 
     /// Display Biorouter configuration information
     #[command(about = "Display Biorouter information")]
@@ -2630,7 +2688,8 @@ enum Command {
     /// lands in the right place.
     #[command(
         about = "Run Biorouter and open it in a browser",
-        visible_alias = "headless"
+        visible_alias = "headless",
+        args_conflicts_with_subcommands = true
     )]
     Serve(ServeOptions),
 
@@ -2789,7 +2848,7 @@ pub struct InputConfig {
 fn get_command_name(command: &Option<Command>) -> &'static str {
     match command {
         Some(Command::Crew(_)) => "crew",
-        Some(Command::Configure {}) => "configure",
+        Some(Command::Configure { .. }) => "configure",
         Some(Command::Info { .. }) => "info",
         Some(Command::Mcp { .. }) => "mcp",
         Some(Command::Acp { .. }) => "acp",
@@ -4356,7 +4415,7 @@ async fn dispatch(command: Option<Command>) -> anyhow::Result<()> {
             generate(shell, &mut cmd, bin_name, &mut std::io::stdout());
             Ok(())
         }
-        Some(Command::Configure {}) => handle_configure().await,
+        Some(Command::Configure { provider, .. }) => handle_configure_command(provider).await,
         Some(Command::Info { verbose }) => handle_info(verbose),
         Some(Command::Mcp { server }) => handle_mcp_command(server).await,
         Some(Command::Acp { builtins, ws }) => match ws {
@@ -6036,5 +6095,50 @@ mod issue_526_cli_tests {
             Cli::try_parse_from(["biorouter", "configure", "--provider", "versa_azure"]).is_err()
         );
         assert!(Cli::try_parse_from(["biorouter", "run", "--secret-stdin"]).is_err());
+    }
+}
+
+#[cfg(test)]
+mod issue_524_serve_url_cli_tests {
+    use super::*;
+
+    /// `biorouter serve url` shows the address the banner leaves the token out
+    /// of. It takes its own port and nothing of `serve`'s, so `serve --port 9
+    /// url` is a mistake clap names rather than a server started by accident.
+    #[test]
+    fn issue_524_serve_url_is_a_subcommand_that_takes_only_its_port() {
+        let parsed = Cli::try_parse_from(["biorouter", "serve", "url"]).unwrap();
+        let Some(Command::Serve(options)) = parsed.command else {
+            panic!("serve command expected");
+        };
+        assert!(matches!(
+            options.action,
+            Some(ServeAction::Url { port }) if port == crate::commands::serve::DEFAULT_PORT
+        ));
+
+        let parsed =
+            Cli::try_parse_from(["biorouter", "headless", "url", "--port", "9001"]).unwrap();
+        let Some(Command::Serve(options)) = parsed.command else {
+            panic!("the alias selects serve");
+        };
+        assert!(matches!(
+            options.action,
+            Some(ServeAction::Url { port: 9001 })
+        ));
+
+        assert!(Cli::try_parse_from(["biorouter", "serve", "--port", "9001", "url"]).is_err());
+        assert!(Cli::try_parse_from(["biorouter", "serve", "--print-url", "url"]).is_err());
+
+        let parsed = Cli::try_parse_from(["biorouter", "serve", "--print-url"]).unwrap();
+        let Some(Command::Serve(options)) = parsed.command else {
+            panic!("serve command expected");
+        };
+        assert!(options.print_url && options.action.is_none());
+
+        let parsed = Cli::try_parse_from(["biorouter", "serve"]).unwrap();
+        let Some(Command::Serve(options)) = parsed.command else {
+            panic!("serve command expected");
+        };
+        assert!(!options.print_url && options.action.is_none());
     }
 }

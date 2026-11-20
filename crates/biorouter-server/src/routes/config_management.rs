@@ -2892,14 +2892,18 @@ fn provider_setup_refusal(headers: &http::HeaderMap, uri: &http::Uri) -> Option<
             )
         }
         // No browser metadata at a network address: a browser sends none to a
-        // plain-HTTP one, which is what SD-15 refuses a typed key over.
+        // plain-HTTP one, which is what SD-15 refuses a typed key over. Issue
+        // #526: the safe browser routes come first. Sending the person to a
+        // shell on the host first is how a key ended up pasted at a bare prompt.
         UserActionProof::NoKeyInstalled
             if !biorouter_server::auth::sent_by_same_origin_page_script(headers) =>
         {
             Some(
                 "This page is open over plain HTTP at a network address, so a key typed here \
-                 would cross the network unencrypted. Open it over HTTPS or on the computer \
-                 running Biorouter, or run `biorouter configure` there.",
+                 would cross the network unencrypted. Open it over HTTPS, or through an SSH or \
+                 SSM tunnel to a loopback address (127.0.0.1) on the computer running \
+                 Biorouter, and choose a provider there. Otherwise run `biorouter configure` \
+                 on that computer.",
             )
         }
         UserActionProof::NoKeyInstalled => Some(

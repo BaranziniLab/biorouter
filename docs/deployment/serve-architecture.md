@@ -125,7 +125,12 @@ is to write those two things into the document before handing it over. Everythin
 A browser's first request cannot carry a header, so the secret-key scheme every other client uses
 cannot gate the initial document. The exchange is therefore:
 
-1. `biorouter serve` mints a random browser token for the launch and prints it in the URL.
+1. `biorouter serve` mints a random browser token for the launch (or takes the operator's from
+   `--token` or `BIOROUTER_BROWSER_TOKEN`) and hands it to the daemon. The banner prints the URL
+   with the token only to a terminal, for a minted token, or with `--print-url`; elsewhere it
+   prints the URL without the token, and `biorouter serve url` reads the whole address from a file
+   only that account can read (`commands::serve::save_address`; issue #524, recorded under
+   [SD-9](serve-decisions.md#sd-9--the-launch-token-works-until-the-daemon-stops-it-is-not-single-use)).
 2. `GET /?t=<token>` validates it, sets an `httpOnly`, `SameSite=Strict` session cookie, and
    answers a short page of the daemon's own origin that moves the browser on to the interface's
    mount (`./`, so it stays under a proxy's path prefix). It is a page

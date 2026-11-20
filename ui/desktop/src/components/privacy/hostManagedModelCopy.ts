@@ -46,11 +46,16 @@ export const HOST_MANAGED_MODEL_SHORT = `Biorouter is open in a browser, so the 
 /**
  * What to do, and why the choice is the host's here: the info icon beside
  * {@link HOST_MANAGED_MODEL_SHORT} (owner, 2026-11-13: one line up front, the detail on hover).
- * Two sentences. Shown only where the daemon did not admit this browser (SD-18).
+ * Two sentences. Shown only where the daemon did not admit this browser (SD-18). The secure
+ * browser routes come before the host command (issue #526): a page reached over HTTPS, or through
+ * a tunnel to a loopback address, is one the daemon can admit, and sending a person to a shell on
+ * the host first is how a key ended up pasted at a bare prompt.
  */
 export const HOST_MANAGED_MODEL_HELP =
-  `Change it there with ${HOST_CONFIGURE_COMMAND}, then reload this page. Keeping the choice on ` +
-  `the host keeps a private conversation from silently moving to a public model.`;
+  `To choose it in this page, open the page over HTTPS or through an SSH or SSM tunnel to a ` +
+  `loopback address; otherwise change it there with ${HOST_CONFIGURE_COMMAND} and reload. ` +
+  `Keeping the choice on the host keeps a private conversation from silently moving to a ` +
+  `public model.`;
 
 /** The full explanation as one string, for a disabled control's description. */
 export const HOST_MANAGED_MODEL_REASON = `${HOST_MANAGED_MODEL_SHORT} ${HOST_MANAGED_MODEL_HELP}`;
@@ -66,10 +71,14 @@ export const HOST_MANAGED_ONBOARDING_TITLE = 'Choose a model on the host';
 /** The panel's one visible line when the daemon gave no sentence of its own. */
 export const HOST_MANAGED_ONBOARDING_REASON = `No provider is set up yet. Choose one on the computer running ${HOST_SERVE_COMMAND}.`;
 
-/** The first-run panel's InfoTip: what to do there, and why the choice stays on the host. */
+/**
+ * The first-run panel's InfoTip: what to do there, and why the choice stays on the host. The
+ * secure browser routes come first, as in {@link HOST_MANAGED_MODEL_HELP} (issue #526).
+ */
 export const HOST_MANAGED_ONBOARDING_HELP =
-  `Run ${HOST_CONFIGURE_COMMAND} on that computer, then reload this page. Keeping the choice ` +
-  `there keeps a private conversation from silently moving to a public model.`;
+  `To choose one in this page, open the page over HTTPS or through an SSH or SSM tunnel to a ` +
+  `loopback address; otherwise run ${HOST_CONFIGURE_COMMAND} on that computer and reload. ` +
+  `Keeping the choice there keeps a private conversation from silently moving to a public model.`;
 
 /**
  * Where a provider's key is kept, said on the first-run page of a browser the daemon admitted
