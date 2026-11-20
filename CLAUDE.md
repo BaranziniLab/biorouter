@@ -2483,7 +2483,9 @@ binary, from `BaranziniLab/biorouter-models`.
   store that saved its setting keeps it, and a store with no file yet reads as a new one, so
   `extractor::admission_stamp` admits it at version 0 and the first observation creates the file.
   ⚠ Zero is a real version there (no file); the watcher's "not admitted" is `u64::MAX`, never 0,
-  or the switch would read on while nothing is learned. Its switch, the
+  or the switch would read on while nothing is learned. With both on, a Private chat still teaches
+  the extractor nothing, and a public model's `list_terms` sees public suggestions from the
+  person's other public chats but never a private row. Its switch, the
   `agent_writes` select, the capability switch and **Find words** are Settings rows
   (`settings/models/DictionarySettingsRows.tsx`); the Dictionary page holds the words alone. A row
   left out changes no field of a response. All of it is accident prevention for cooperative

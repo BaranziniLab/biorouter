@@ -83,7 +83,7 @@ The store file:
 {
   "format": "biorouter.dictionary.store",
   "version": 1,
-  "settings": { "learn_from_chats": false, "agent_writes": "on_request" },
+  "settings": { "learn_from_chats": true, "agent_writes": "on_request" },
   "entries": [
     {
       "id": "dct_6f0b8a52-6a1e-4f7e-9d0b-2a3c1d4e5f60",
@@ -113,7 +113,7 @@ The store file:
 }
 ```
 
-`learn_from_chats` in a new store takes the compiled default `LEARN_FROM_CHATS_DEFAULT`, `true`: suggestions from chats start on (owner, 2026-11-19, replacing O-44's off; the user run design of 2026-11-13 is in [Measured by the person](#measured-by-the-person)). The field is always written, so a store that saved its setting before the default changed keeps it, `false` included; only a store created later starts on. A store with no file yet reads as a new store, and the extractor follows it: the first message with a term creates the file ([When it runs](#when-it-runs)). `agent_writes` starts at `on_request` (O-3, decided by the owner on 2026-11-05).
+`learn_from_chats` in a new store takes the compiled default `LEARN_FROM_CHATS_DEFAULT`, `true`: suggestions from chats start on (owner, 2026-11-19, replacing O-44's off; the user run design of 2026-11-13 is in [Measured by the person](#measured-by-the-person)). The field is always written, so a store that saved its setting before the default changed keeps it, `false` included; only a store created later starts on. A store with no file yet reads as a new store, and the extractor follows it: the first message with a term creates the file ([When it runs](#when-it-runs)). With both defaults on, a chat whose tier is Private still teaches the extractor nothing, and `dictionary__list_terms` shows a public caller only public rows, so a public model sees public suggestions learned from the person's other public chats but never a private row. `agent_writes` starts at `on_request` (O-3, decided by the owner on 2026-11-05).
 
 PR-16 adds one optional key, `sightings`: the observations the store has applied ([The observations route](#the-observations-route)), so a resend counts once. Each holds digests only, never the correction's words: `key`, the first 32 hexadecimal digits of the SHA-256 of (`record_id`, `from`, `to`), the stamp `tier`, `at`, and for a rejection `rejected`, the digest of (entry id, `from`) whose second distinct sighting changes the entry. At most 1,000 per tier are kept, the oldest dropped first (`MAX_SIGHTINGS_PER_TIER`). A store that has had no observation writes no `sightings` key, so its bytes are what PR-13 wrote. At the cap the key adds 208,021 B to a 7,800 row file of 4,064,540 B, and the parse a dictation's `view()` pays once after each change takes 5 % longer (136 ms against 130 ms in a debug build, `store::observe::tests::measure_the_sightings_cost`) [M, 2026-11-06]; at the release build's 8.7 ms reparse that is about 0.4 ms, paid once per change to the store and never between a stop and the text.
 

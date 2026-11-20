@@ -492,11 +492,11 @@ this section is the ledger.
     because it dispatches as `public_enforced()` and a private chat's term would land public
     there; an `execute_code` script refuses the same two tools from any chat (DD-42,
     `crates/biorouter/src/security/dictionary_store.rs`).
-  - **The ACP residual of DD-57.** Over ACP stdio the capability, when the person turned it on,
-    only ever suggests. The Jupyter AI persona delivers other people's messages to Biorouter as
+  - **The ACP residual of DD-57.** Over ACP stdio the capability, which is on in a fresh
+    configuration, only ever suggests. The Jupyter AI persona delivers other people's messages to Biorouter as
     user messages, so an agent there can take a term from a colleague's words. That term lands
     as a suggestion and shapes nothing until the person accepts it; the chat extractor (PR-24,
-    which ships off) skips every ACP session, stdio and `--ws` alike, so nothing is harvested from
+    on in a new store since 2026-11-19) skips every ACP session, stdio and `--ws` alike, so nothing is harvested from
     them on its own.
   - **Residuals, recorded rather than closed.** A shell can read `dictionary.json` (DR-17 left the
     filesystem open); the path inspector stops a cooperative agent's file tools and named paths.
