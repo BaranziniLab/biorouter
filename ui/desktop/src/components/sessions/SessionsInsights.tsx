@@ -3,15 +3,18 @@ import { Greeting } from '../common/Greeting';
 import { ActivityWindow } from '../../api';
 import { HomeUsageCard, HomeUsageCardLoading } from './HomeUsageCard';
 import { getCachedHomeActivity, refreshHomeActivity } from '../../utils/homeInsightsCache';
+import { useHomeUsageFit } from './useHomeUsageFit';
 
 /**
  * Home's content above the composer (spec 3.9): the greeting, then one usage
  * card. No eyebrow, no recent chats (the sidebar owns those), no paragraphs.
  *
  * The greeting and the card are one group, centred in the space above the
- * composer and on its column (`.biorouter-home-*` in main.css). As the window
- * gets short, container queries compact the hero and then hide it; below that,
- * Home scrolls.
+ * composer and on its column (`.biorouter-home-*` in main.css). The card yields
+ * first (`homeUsageFit.ts`): it shows only at its whole measure, and where the
+ * window is too short for it to leave the gap above the composer it drops its
+ * heat map, then leaves. As the window gets shorter still, container queries
+ * compact the greeting and then hide it; below that, Home scrolls.
  */
 export function SessionInsights() {
   const initialActivity = useRef(getCachedHomeActivity()).current;
@@ -37,8 +40,12 @@ export function SessionInsights() {
     loadActivity();
   }, [initialActivity]);
 
+  const insightsRef = useRef<HTMLDivElement>(null);
+  const cardKind = activity ? 'loaded' : activityFailed ? null : 'loading';
+  const fit = useHomeUsageFit(insightsRef, cardKind);
+
   return (
-    <div className="biorouter-home-insights">
+    <div ref={insightsRef} className="biorouter-home-insights">
       <div className="biorouter-home-column">
         <div className="biorouter-home-hero">
           {/* Home is where a new window and a new tab both land, and each is an
@@ -47,11 +54,18 @@ export function SessionInsights() {
           <Greeting className="biorouter-home-greeting text-title text-text-default" />
         </div>
 
-        {activity ? (
-          <HomeUsageCard window={activity} />
-        ) : activityFailed ? null : ( // definitive failure: collapse, don't leave a void
-          <HomeUsageCardLoading />
-        )}
+        {cardKind ? (
+          // Folded away by clipping, never unmounted, so the card keeps its natural size for
+          // the fit to measure. `inert` keeps a folded card out of reach as well as out of sight.
+          <div
+            className="biorouter-home-usage"
+            data-fit={fit}
+            data-testid="home-usage"
+            inert={fit === 'hidden'}
+          >
+            {activity ? <HomeUsageCard window={activity} /> : <HomeUsageCardLoading />}
+          </div>
+        ) : null}
       </div>
     </div>
   );

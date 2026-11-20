@@ -75,7 +75,7 @@ Each of those was made to fail once on purpose: 16 mutations, each turning a nam
 
 - **A maximise control** for a sheet squeezed to its strip. The rule allows one, behind an explicit click with a labelled way back to the chat, and never automatic. It is not built.
 - **The window still grows on open** for a single pane, targeting 1048px, exactly as before.
-- **A replay stacks only in a narrow browser.** On the desktop, History's run detail and a shared chat are one pane at least 1048px wide, so they sit beside. Their stacked layout was checked by narrowing the pane in the running app.
+- **A replay stacks in a narrow window.** History's run detail and a shared chat are one pane as wide as the window's page area, so they sit beside down to an 800px pane and stack below it. Until 2026-11-19 the desktop window stopped at 1048px and only a narrow browser reached the stacked layout; the window now narrows to 721px ([narrow windows](../narrow-windows.md)), so a desktop replay reaches it too. Their stacked layout was checked by narrowing the pane in the running app.
 
 ## Related documentation
 

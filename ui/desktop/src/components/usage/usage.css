@@ -171,6 +171,14 @@
   animation: br-fade-out var(--dur-fast) var(--ease-out) both;
 }
 
+/* The heat map and its footnote, the part of the card that folds away first where Home is
+   short (`sessions/homeUsageFit.ts`; the fold itself is Home's rule in `main.css`). The body is
+   its own formatting context so the heat map's top margin stays inside it: the fit measures the
+   body's height as what folding saves. */
+.br-usage-card-extra-body {
+  display: flow-root;
+}
+
 .br-usage-card-heatmap {
   margin-block-start: 24px;
 }
