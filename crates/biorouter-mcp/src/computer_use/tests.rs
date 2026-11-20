@@ -933,3 +933,46 @@ fn version_floors_compare_numerically() {
     assert!(!version_at_least("2.46.0", ATSPI_MINIMUM));
     assert!(!version_at_least("", ATSPI_MINIMUM));
 }
+
+#[tokio::test]
+async fn stop_of_an_idle_task_deletes_its_folder_and_leaves_a_newer_generation_alone() {
+    let fx = Fixture::new(Platform::MacOs);
+    let engine = fx.engine();
+    let runtime = Arc::new(tokio::sync::Mutex::new(fx.runtime));
+    let chat = uuid::Uuid::new_v4().to_string();
+    for _ in 0..3 {
+        let token = CancellationToken::new();
+        register_session(&chat, "task-1", &runtime, token.clone());
+        let mut session = runtime.lock().await;
+        session
+            .call(
+                &chat,
+                "task-1",
+                "list_apps",
+                json!({}),
+                Grant::Observe,
+                token,
+            )
+            .await
+            .unwrap();
+    }
+    let registered = SESSION_RUNTIMES
+        .lock()
+        .unwrap()
+        .get(&chat)
+        .map(Vec::len)
+        .unwrap_or_default();
+    assert_eq!(
+        registered, 1,
+        "one registration per runtime, however many calls"
+    );
+    let home = PathBuf::from(std::fs::read_to_string(engine.join("home")).unwrap().trim());
+    assert!(home.exists());
+    stop_session(&chat, "task-0").await;
+    assert!(
+        home.exists(),
+        "Stop of another generation leaves this task alone"
+    );
+    stop_session(&chat, "task-1").await;
+    assert!(!home.exists(), "Stop deletes an idle task's folder");
+}

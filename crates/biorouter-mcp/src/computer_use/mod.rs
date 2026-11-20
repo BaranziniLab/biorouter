@@ -287,18 +287,18 @@ pub(crate) fn register_session(
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     registry.retain(|_, entries| {
-        entries
-            .retain(|entry| entry.runtime.strong_count() > 0 && !entry.cancellation.is_cancelled());
+        entries.retain(|entry| entry.runtime.strong_count() > 0);
         !entries.is_empty()
     });
-    registry
-        .entry(session.to_owned())
-        .or_default()
-        .push(RuntimeRegistration {
-            generation: generation.to_owned(),
-            runtime: Arc::downgrade(runtime),
-            cancellation,
-        });
+    // One registration per runtime: the latest call's generation and token. The runtime's own
+    // lock serializes its calls, so an older entry can only be a finished call.
+    let entries = registry.entry(session.to_owned()).or_default();
+    entries.retain(|entry| !entry.runtime.ptr_eq(&Arc::downgrade(runtime)));
+    entries.push(RuntimeRegistration {
+        generation: generation.to_owned(),
+        runtime: Arc::downgrade(runtime),
+        cancellation,
+    });
 }
 
 /// Stop (AD-15): cancel the running command (its runner sends `SIGTERM`, waits for the release
@@ -347,7 +347,7 @@ fn refuse(message: impl Into<String>) -> ErrorData {
 /// result (an engine error, which carries its delivery disposition).
 enum Halt {
     Error(ErrorData),
-    Tool(CallToolResult),
+    Tool(Box<CallToolResult>),
 }
 
 impl From<ErrorData> for Halt {
@@ -363,7 +363,9 @@ fn text_result(text: impl Into<String>) -> CallToolResult {
 }
 
 fn failed(text: impl Into<String>) -> Halt {
-    Halt::Tool(CallToolResult::error(vec![Content::text(text.into())]))
+    Halt::Tool(Box::new(CallToolResult::error(vec![Content::text(
+        text.into(),
+    )])))
 }
 
 fn arg<'a>(arguments: &'a Map<String, Value>, key: &str) -> Option<&'a str> {
@@ -941,7 +943,7 @@ impl SessionRuntime {
         match outcome {
             Ok(result) => Ok(result),
             Err(Halt::Error(error)) => Err(error),
-            Err(Halt::Tool(result)) => Ok(result),
+            Err(Halt::Tool(result)) => Ok(*result),
         }
     }
 
@@ -1279,7 +1281,7 @@ impl SessionRuntime {
                 " (hidden or minimized)"
             };
             lines.push(format!(
-                "window_id {} — {} \"{}\"{state}",
+                "window_id {}: {} \"{}\"{state}",
                 label("id"),
                 label("app_name"),
                 label("title")
@@ -1849,14 +1851,16 @@ async fn doctor() -> Result<Value, String> {
     if !envelope.ok {
         return Err(render::error(&envelope.error));
     }
-    let state = |key: &str| match envelope
-        .data
-        .pointer(&format!("/{key}/state"))
-        .and_then(Value::as_str)
-    {
-        Some("granted" | "not_required") => json!(true),
-        Some("denied") => json!(false),
-        _ => Value::Null,
+    // A state the engine could not read counts as not granted: "ready" is said only on
+    // evidence.
+    let state = |key: &str| {
+        json!(matches!(
+            envelope
+                .data
+                .pointer(&format!("/{key}/state"))
+                .and_then(Value::as_str),
+            Some("granted" | "not_required")
+        ))
     };
     let accessibility = state("accessibility");
     let screen_recording = state("screen_recording");
@@ -1867,8 +1871,10 @@ async fn doctor() -> Result<Value, String> {
         "accessibility": accessibility,
         "screen_recording": screen_recording,
         "capture_available": screen_recording != json!(false),
-        "message": if denied {
+        "message": if denied && cfg!(target_os = "macos") {
             "Allow Biorouter Copilot in System Settings (Accessibility, and Screen Recording for screenshots), then check again."
+        } else if denied {
+            "The desktop's accessibility service did not answer Biorouter Copilot. Make sure accessibility is on for this desktop session, then check again."
         } else {
             "Biorouter Copilot is ready."
         },

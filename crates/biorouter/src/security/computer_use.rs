@@ -31,18 +31,47 @@ use crate::agents::types::SharedProvider;
 pub struct ModeForbidsComputerUse;
 
 pub const APPROVAL_REQUIRED: &str = "COMPUTER_USE_APPROVAL_REQUIRED";
-pub const TOOLS: &[&str] = &[
-    "list_apps",
-    "get_app_state",
-    "click",
-    "perform_secondary_action",
-    "scroll",
-    "drag",
-    "type_text",
-    "press_key",
-    "set_value",
-    "screen_capture",
-];
+/// Biorouter Copilot's thirteen tools (AD-08), defined once in `biorouter-mcp`.
+pub const TOOLS: &[&str] = &biorouter_mcp::computer_use::contract::TOOL_NAMES;
+
+/// How much a call needs, and how much the person allowed (AD-10): look, or look and control.
+pub use biorouter_mcp::computer_use::contract::Grant as ComputerUseGrant;
+
+/// Said when a call needs control and the person allowed looking only. No second card.
+pub use biorouter_mcp::computer_use::LOOK_ONLY_REFUSAL;
+
+/// The grant a Copilot call needs, decided before the dispatch gate waits for consent. One
+/// definition, shared with the wrapper that checks it again (AD-10).
+pub fn grant_for_call(tool: &str, arguments: Option<&rmcp::model::JsonObject>) -> ComputerUseGrant {
+    biorouter_mcp::computer_use::contract::grant_for(
+        tool,
+        arguments,
+        biorouter_mcp::computer_use::contract::Platform::current(),
+    )
+}
+
+/// Refuse typed text that looks like a credential (AD-12): the same patterns
+/// `guardrails::secret_output` withholds from every tool result, as the browser does (BB-13).
+pub fn refuse_secret_text(tool: &str, arguments: Option<&rmcp::model::JsonObject>) -> Result<()> {
+    let bare = tool.strip_prefix("computercontroller__").unwrap_or(tool);
+    let key = match bare {
+        "type_text" => "text",
+        "set_value" => "value",
+        _ => return Ok(()),
+    };
+    let text = arguments
+        .and_then(|args| args.get(key))
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or_default();
+    if let Some((_, kinds)) = crate::guardrails::secret_output::redact_text(text) {
+        bail!(
+            "This text looks like a secret ({}), so Biorouter Copilot will not type it into an \
+             app. Ask the person to enter it themselves.",
+            kinds.join(", ")
+        );
+    }
+    Ok(())
+}
 
 pub fn is_computer_use_tool(name: &str) -> bool {
     name.strip_prefix("computercontroller__")
@@ -83,6 +112,7 @@ struct Scope {
 struct Grant {
     generation: String,
     cancel: CancellationToken,
+    level: ComputerUseGrant,
 }
 
 #[derive(Default)]
@@ -316,11 +346,16 @@ impl ComputerUseConsent {
             .as_ref()
             .is_some_and(|(owner, _)| owner != &self.identity);
         let handoff = (scope.public_model && !active) || switching;
-        let mut disclosure = if scope.public_model {
-            format!("Let Biorouter Copilot use {}/{} to control {}? Screenshots, open-window information and app text may be sent to {}, including sensitive information visible on this computer. BioRouter can move the cursor, change focus, type, click and make changes on your behalf. Allow control and sharing for this user request, including all its tool actions, until the reply finishes or you stop it? {}", scope.provider, scope.model, scope.target, scope.destination, if handoff { "Content left visible by another task or person may be shared. Close or hide anything you do not want shared before allowing this chat to continue." } else { "The desktop, files, clipboard and app logins are shared with other tasks." })
-        } else {
-            format!("Allow BioRouter to view and control {} for this user request using {}/{} at {}? It can read screenshots and app content, move the cursor, change focus, type, click and make changes on your behalf. Private classification does not mean on-device processing. The desktop, files, clipboard and app logins remain shared. Approval ends when the reply finishes. You can stop it at any time.", scope.target, scope.provider, scope.model, scope.destination)
-        };
+        let mut disclosure = format!(
+            "Let Biorouter Copilot use {}/{} on {}? It can see the apps you have open, read their text and take screenshots, and these go to {}, including anything sensitive that is visible. With Allow it can also click, type, drag and change things in those apps; some actions move the pointer and bring a window forward. It cannot see or control Biorouter itself, password fields or system security prompts. This lasts until the reply finishes or you stop it.",
+            scope.provider, scope.model, scope.target, scope.destination
+        );
+        if !scope.public_model {
+            disclosure.push_str(" Private classification does not mean on-device processing.");
+        }
+        if handoff {
+            disclosure.push_str(" Content left visible by another task or person may be shared. Close or hide anything you do not want shared before allowing.");
+        }
         if switching {
             disclosure.push_str(" Allowing switches control from the other active Biorouter Copilot task and stops its queued actions.");
         }
@@ -351,11 +386,24 @@ impl ComputerUseConsent {
         }
     }
 
-    /// Call only from a human-authenticated host surface, never a model tool.
+    /// Call only from a human-authenticated host surface, never a model tool. Allows looking and
+    /// control for the request.
     pub async fn approve(
         &self,
         session: &str,
         challenge: &str,
+        provider: &SharedProvider,
+    ) -> Result<ComputerUseStatus> {
+        self.approve_with(session, challenge, ComputerUseGrant::Act, provider)
+            .await
+    }
+
+    /// [`Self::approve`] with the person's choice of how much to allow (AD-10).
+    pub async fn approve_with(
+        &self,
+        session: &str,
+        challenge: &str,
+        level: ComputerUseGrant,
         provider: &SharedProvider,
     ) -> Result<ComputerUseStatus> {
         let scope = Self::scope(session, provider).await?;
@@ -398,6 +446,7 @@ impl ComputerUseConsent {
         state.grant = Some(Grant {
             generation: Uuid::new_v4().to_string(),
             cancel,
+            level,
         });
         state.challenge = Uuid::new_v4().to_string();
         state.stopped = false;
@@ -446,10 +495,24 @@ impl ComputerUseConsent {
         }
     }
 
+    /// A permit for a call that needs control.
     pub async fn permit(
         &self,
         session: &str,
         provider: &SharedProvider,
+        cancel: &CancellationToken,
+    ) -> Result<ComputerUsePermit> {
+        self.permit_for(session, provider, ComputerUseGrant::Act, cancel)
+            .await
+    }
+
+    /// A permit for a call that needs `needed`. Under a look only grant an act call fails at
+    /// once with [`LOOK_ONLY_REFUSAL`] and raises no second card (AD-10).
+    pub async fn permit_for(
+        &self,
+        session: &str,
+        provider: &SharedProvider,
+        needed: ComputerUseGrant,
         cancel: &CancellationToken,
     ) -> Result<ComputerUsePermit> {
         ensure!(!crate::user_surface::no_human_surface(), "{APPROVAL_REQUIRED}: Biorouter Copilot must run within its approved chat request; an identity-free API call cannot consume a chat's grant");
@@ -489,6 +552,7 @@ impl ComputerUseConsent {
                         "Biorouter Copilot request changed while awaiting approval"
                     );
                     if let Some(grant) = state.grant.as_ref().filter(|g| !g.cancel.is_cancelled()) {
+                        ensure!(grant.level.covers(needed), "{LOOK_ONLY_REFUSAL}");
                         let desktop = desktop().lock().unwrap_or_else(|e| e.into_inner());
                         ensure!(
                             desktop
@@ -500,6 +564,7 @@ impl ComputerUseConsent {
                         return Ok(ComputerUsePermit {
                             generation: grant.generation.clone(),
                             cancel: grant.cancel.clone(),
+                            grant: grant.level,
                             lease: desktop.lock.clone(),
                         });
                     }
@@ -548,6 +613,8 @@ impl Drop for ComputerUseTaskGuard {
 pub struct ComputerUsePermit {
     pub generation: String,
     pub cancel: CancellationToken,
+    /// What the person allowed: the wrapper refuses an act call under a look only grant too.
+    pub grant: ComputerUseGrant,
     // Keep the OS lock until a cancelled operation has actually settled.
     lease: Option<Arc<File>>,
 }
@@ -854,7 +921,7 @@ pub(crate) mod tests {
         let now = consent.status("chat", &provider).await.unwrap();
         assert!(now.public_model);
         assert_ne!(before.challenge_id, now.challenge_id);
-        assert!(now.disclosure.contains("may be sent"));
+        assert!(now.disclosure.contains("these go to"));
     }
 
     #[tokio::test]
@@ -947,6 +1014,143 @@ pub(crate) mod tests {
     }
 
     #[tokio::test]
+    async fn a_look_only_grant_admits_observation_and_refuses_control_without_a_second_card() {
+        let _serial = test_serial().lock().await;
+        let provider = model(ProviderTier::Private);
+        let consent = Arc::new(ComputerUseConsent::default());
+        let _task = consent.task_guard();
+        consent.bind_task("chat", &provider).await.unwrap();
+        let cancel = CancellationToken::new();
+        // The first call of a request is an observation; it raises the card.
+        let waiting = consent.permit_for("chat", &provider, ComputerUseGrant::Observe, &cancel);
+        tokio::pin!(waiting);
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(20), &mut waiting)
+                .await
+                .is_err()
+        );
+        let status = consent.status("chat", &provider).await.unwrap();
+        assert_eq!(status.state, "approval_required");
+        consent
+            .approve_with(
+                "chat",
+                &status.challenge_id,
+                ComputerUseGrant::Observe,
+                &provider,
+            )
+            .await
+            .unwrap();
+        let permit = waiting.await.unwrap();
+        assert_eq!(permit.grant, ComputerUseGrant::Observe);
+        // An act call is refused at once, and the grant stays for looking.
+        let refused = tokio::time::timeout(
+            std::time::Duration::from_millis(200),
+            consent.permit_for("chat", &provider, ComputerUseGrant::Act, &cancel),
+        )
+        .await
+        .expect("no second card: the refusal is immediate")
+        .err()
+        .unwrap();
+        assert_eq!(refused.to_string(), LOOK_ONLY_REFUSAL);
+        assert_eq!(
+            consent.status("chat", &provider).await.unwrap().state,
+            "active"
+        );
+        assert!(consent
+            .permit_for("chat", &provider, ComputerUseGrant::Observe, &cancel)
+            .await
+            .is_ok());
+        assert!(consent.permit("chat", &provider, &cancel).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn allow_admits_both_and_an_act_call_waiting_on_a_look_only_answer_is_refused() {
+        let _serial = test_serial().lock().await;
+        let provider = model(ProviderTier::Private);
+        let consent = Arc::new(ComputerUseConsent::default());
+        let _task = consent.task_guard();
+        consent.bind_task("chat", &provider).await.unwrap();
+        let cancel = CancellationToken::new();
+        let waiting = consent.permit_for("chat", &provider, ComputerUseGrant::Act, &cancel);
+        tokio::pin!(waiting);
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(20), &mut waiting)
+                .await
+                .is_err()
+        );
+        let status = consent.status("chat", &provider).await.unwrap();
+        consent
+            .approve_with(
+                "chat",
+                &status.challenge_id,
+                ComputerUseGrant::Observe,
+                &provider,
+            )
+            .await
+            .unwrap();
+        assert_eq!(waiting.await.err().unwrap().to_string(), LOOK_ONLY_REFUSAL);
+        drop(_task);
+        let _task = consent.task_guard();
+        consent.bind_task("chat", &provider).await.unwrap();
+        grant(&consent, "chat", &provider).await;
+        let permit = consent.permit("chat", &provider, &cancel).await.unwrap();
+        assert_eq!(permit.grant, ComputerUseGrant::Act);
+        assert!(consent
+            .permit_for("chat", &provider, ComputerUseGrant::Observe, &cancel)
+            .await
+            .is_ok());
+    }
+
+    #[test]
+    fn grants_are_classified_by_the_shared_table_and_secrets_are_never_typed() {
+        let args = |value: serde_json::Value| value.as_object().cloned().unwrap();
+        assert_eq!(
+            grant_for_call("computercontroller__get_app_state", None),
+            ComputerUseGrant::Observe
+        );
+        assert_eq!(
+            grant_for_call("computercontroller__click", None),
+            ComputerUseGrant::Act
+        );
+        assert_eq!(
+            grant_for_call("computercontroller__drag", None),
+            ComputerUseGrant::Act
+        );
+        assert_eq!(
+            grant_for_call(
+                "computercontroller__perform_secondary_action",
+                Some(&args(serde_json::json!({"ref":"@s1:e1","action":"expand"})))
+            ),
+            ComputerUseGrant::Observe
+        );
+        assert_eq!(TOOLS.len(), 13);
+        for tool in ["find_elements", "wait_for", "open_app"] {
+            assert!(is_computer_use_tool(&format!("computercontroller__{tool}")));
+        }
+        let key = "-----BEGIN OPENSSH PRIVATE KEY-----\nb3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAAAAAABAAAAMwAAAAtzc2gtZW\n-----END OPENSSH PRIVATE KEY-----";
+        for tool in [
+            "computercontroller__type_text",
+            "computercontroller__set_value",
+        ] {
+            let field = if tool.ends_with("type_text") {
+                "text"
+            } else {
+                "value"
+            };
+            let refused = refuse_secret_text(tool, Some(&args(serde_json::json!({ field: key }))))
+                .unwrap_err()
+                .to_string();
+            assert!(refused.contains("looks like a secret"), "{refused}");
+            assert!(refuse_secret_text(
+                tool,
+                Some(&args(serde_json::json!({ field: "a quarterly report" })))
+            )
+            .is_ok());
+        }
+        assert!(refuse_secret_text("computercontroller__click", None).is_ok());
+    }
+
+    #[tokio::test]
     async fn declining_a_pending_request_wakes_it_without_running() {
         let _serial = test_serial().lock().await;
         let consent = Arc::new(ComputerUseConsent::default());
@@ -1015,6 +1219,7 @@ pub(crate) mod tests {
         let permit = ComputerUsePermit {
             generation: "test".into(),
             cancel: CancellationToken::new(),
+            grant: ComputerUseGrant::Act,
             lease: None,
         };
         permit.cancel.cancel();

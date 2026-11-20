@@ -399,8 +399,9 @@ def check(cli, helper, target, expected_status, expected_backends, report_path):
         tools = builtin_tools(cli, env)
         names = [tool['name'] for tool in tools]
         required = {'list_apps', 'get_app_state', 'click', 'perform_secondary_action', 'scroll',
-                    'drag', 'type_text', 'press_key', 'set_value', 'screen_capture'}
-        if set(names) != required or len(names) != 10:
+                    'drag', 'type_text', 'press_key', 'set_value', 'screen_capture',
+                    'find_elements', 'wait_for', 'open_app'}
+        if set(names) != required or len(names) != 13:
             raise ValueError(f'Installed builtin tool census mismatch: {names}')
     receipt = {'cli': str(cli), 'target': target, 'doctor': report, 'tools': sorted(names),
                'doctor_timings': doctor_timings,

@@ -234,7 +234,8 @@ mod tests {
         );
         assert_eq!(
             definitions,
-            vec!["crates/biorouter/src/utils.rs".to_string()],
+            // Moved beside Biorouter Copilot, which cannot import this crate; `utils` re-exports it.
+            vec!["crates/biorouter-mcp/src/untrusted_text.rs".to_string()],
             "the untrusted-label drop set must exist in exactly one place"
         );
     }

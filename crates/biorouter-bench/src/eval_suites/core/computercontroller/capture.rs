@@ -28,7 +28,9 @@ impl Evaluation for ComputerUseImage {
     ) -> anyhow::Result<Vec<(String, EvalMetricValue)>> {
         let (messages, perf_metrics) = collect_baseline_metrics(
             agent,
-            "Take a screenshot of the display 0 and describe what you see.".to_string(),
+            // A display screenshot is refused while a Biorouter window (or the terminal running
+            // Biorouter) is on that display (AD-12), so the eval captures one app's window.
+            "Take a screenshot of the Finder's window and describe what you see.".to_string(),
         )
         .await;
 
@@ -45,12 +47,10 @@ impl Evaluation for ComputerUseImage {
                     return None;
                 };
                 (call.name == "computercontroller__screen_capture"
-                    && call
-                        .arguments
-                        .as_ref()
-                        .and_then(|arguments| arguments.get("display"))
-                        .and_then(Value::as_u64)
-                        == Some(0))
+                    && call.arguments.as_ref().is_some_and(|arguments| {
+                        arguments.get("app").and_then(Value::as_str).is_some()
+                            || arguments.get("window_id").and_then(Value::as_str).is_some()
+                    }))
                 .then_some(request.id.as_str())
             })
             .collect();

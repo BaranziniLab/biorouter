@@ -163,6 +163,9 @@ pub(crate) enum Reason {
     /// The command runs `biorouterd browser-key`, the helper only the desktop app may start
     /// (BB-23). See [`HelperSighting`].
     BrowserKeyHelper,
+    /// The command starts Biorouter Copilot's engine, which holds the person's Accessibility and
+    /// Screen Recording permissions (AD-12). See [`HelperSighting`].
+    CopilotEngine,
 }
 
 /// What a scan has seen of the browser-key helper (BB-23), across every word, nested script
@@ -179,14 +182,38 @@ pub(crate) enum Reason {
 ///
 /// This stops a model that was told to run the helper. It is not what keeps the key from a
 /// determined program: the helper itself runs only for Electron main (`browser_key.rs`).
+///
+/// Biorouter Copilot's engine is the counterpart (AD-12 in docs/design/copilot-agent-desktop.md):
+/// the operating system grants Accessibility and Screen Recording to the Biorouter Copilot
+/// bundle, so a shell that started it would observe and control the desktop with no Copilot
+/// consent. Its executable path inside the bundle or the install's `computer-use` folder is
+/// refused on sight; its bundle name or identifier is refused together with a launcher (`open`,
+/// `osascript`). A copy of the engine the person installed themselves is not refused: it gets
+/// its permissions from whoever starts it, and Biorouter holds none.
 #[derive(Default)]
 struct HelperSighting {
     subcommand: bool,
     companion: bool,
+    copilot_path: bool,
+    copilot_name: bool,
+    launcher: bool,
 }
 
 impl HelperSighting {
     fn note(&mut self, text: &str) {
+        let lowered = text.to_lowercase();
+        if lowered.contains("copilot.app/contents/macos")
+            || lowered.contains("computer-use/agent-desktop")
+            || lowered.contains("computer-use\\agent-desktop")
+        {
+            self.copilot_path = true;
+        }
+        if lowered.contains("org.biorouter.computer-use")
+            || lowered.contains("biorouter copilot")
+            || lowered.contains("copilot.app")
+        {
+            self.copilot_name = true;
+        }
         for token in text
             .split(|c: char| !(c.is_alphanumeric() || matches!(c, '-' | '_' | '.' | '/' | '\\')))
             .filter(|token| !token.is_empty())
@@ -199,11 +226,18 @@ impl HelperSighting {
             if matches!(program, "biorouterd" | "biorouterd.exe") || token == "--source" {
                 self.companion = true;
             }
+            if matches!(program, "open" | "osascript") {
+                self.launcher = true;
+            }
         }
     }
 
     fn seen(&self) -> bool {
         self.subcommand && self.companion
+    }
+
+    fn copilot(&self) -> bool {
+        self.copilot_path || (self.copilot_name && self.launcher)
     }
 }
 
@@ -326,8 +360,17 @@ impl<'a> Resolver<'a> {
         }
     }
 
-    /// Refuse once the call has named the browser-key helper (BB-23).
+    /// Refuse once the call has named the browser-key helper (BB-23) or started Biorouter
+    /// Copilot's engine (AD-12).
     fn refuse_helper(&self) -> Scan {
+        if self.helper.copilot() {
+            return Err(Finding {
+                shown: "Biorouter Copilot".to_string(),
+                path: None,
+                reason: Reason::CopilotEngine,
+                heredoc: None,
+            });
+        }
         if self.helper.seen() {
             return Err(Finding {
                 shown: "biorouterd browser-key".to_string(),

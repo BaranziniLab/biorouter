@@ -1300,6 +1300,9 @@ const CODING_AGENT_BRIDGE_ALLOWED_COMPUTERCONTROLLER_TOOLS: &[&str] = &[
     "computercontroller__press_key",
     "computercontroller__set_value",
     "computercontroller__screen_capture",
+    "computercontroller__find_elements",
+    "computercontroller__wait_for",
+    "computercontroller__open_app",
 ];
 
 const CODING_AGENT_BRIDGE_ALLOWED_WEBDOCUMENTS_TOOLS: &[&str] = &[

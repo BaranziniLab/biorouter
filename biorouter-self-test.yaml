@@ -212,7 +212,7 @@ instructions: |
 
   {% if test_phases == "all" or "computer_use" in test_phases %}
   ### Phase 2D: Native Biorouter Copilot
-  Validate the ten-tool native roster, per-request approval, private/public isolation and
+  Validate the thirteen-tool native roster, per-request approval, private/public isolation and
   sequential control against the explicitly supplied disposable app/window fixture. A missing
   fixture or desktop leaves GUI evidence unavailable; never claim a skipped action passed.
 
@@ -556,15 +556,15 @@ prompt: |
   ## PHASE 2D: Native Biorouter Copilot
 
   {% if test_depth == "fixture_only" %}
-  1. Use only the ten native Biorouter Copilot tools loaded for this run. The only approved
+  1. Use only the thirteen native Biorouter Copilot tools loaded for this run. The only approved
      targets are {{ computer_use_fixture }}. Do not inspect or interact with unrelated apps.
   2. Wait for host task approval before observing the desktop. The workflow cannot approve itself.
      After approval, use list_apps to resolve the fixture to its exact running app name or bundle ID.
      Do not invent generic app aliases such as "Browser". If read-only discovery returns appNotFound,
      use list_apps and the explicit fixture identity to correct the target before proceeding.
-     Obtain fresh state for the exact fixture and perform synthetic typing,
-     a click, scrolling, dragging, a key press, and setting a value where the fixture supports them.
-     Verify outcomes using refreshed state and a fixture-window screen capture.
+     Obtain fresh state for the exact fixture and act on references from it (such as @s1abc:e4):
+     synthetic typing, a click, scrolling, dragging, a key press, and setting a value where the
+     fixture supports them. Verify outcomes using refreshed state and a fixture-window screen capture.
   3. The same grant should cover subsequent actions in this request. Do not replay failed or
      timed-out mutations; obtain fresh state before any different action. If stopped, do not
      retry, seek another approval, or use a fallback tool. Report the observed stopped outcome.
@@ -573,8 +573,8 @@ prompt: |
      variants, and regression suites are NOT OBSERVABLE in this bounded run, not passes.
   {% else %}
   1. Inspect the effective roster. Biorouter Copilot must expose exactly list_apps, get_app_state,
-     click, perform_secondary_action, scroll, drag, type_text, press_key, set_value, and
-     screen_capture. Web & Documents must expose web_scrape, xlsx_tool, docx_tool, pdf_tool,
+     click, perform_secondary_action, scroll, drag, type_text, press_key, set_value,
+     screen_capture, find_elements, wait_for, and open_app. Web & Documents must expose web_scrape, xlsx_tool, docx_tool, pdf_tool,
      and cache independently. Developer must expose no desktop capture/control tool.
   2. Exercise contract, consent, non-pooling, ownership, cancellation and bridge/nested-call
      regression tests. Require removed tool names to fail rather than forward. A disabled
