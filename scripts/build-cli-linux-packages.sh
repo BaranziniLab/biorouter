@@ -113,6 +113,9 @@ bash "$ROOT/scripts/stage-crew-broker.sh" "$REL/biorouter-crew" "$CREW_BROKER_DI
   || die "could not stage $REL/biorouter-crew for the Crew setup service"
 
 python3 "$ROOT/scripts/computer-use-runtime.py" verify linux-x64
+# The engine release the payload carries, which each smoke test asks the installed
+# helper for (it prints one JSON envelope and touches no desktop).
+COPILOT_VERSION="$(python3 -I -c 'import json, sys; print(json.load(open(sys.argv[1]))["upstream_version"])' "$ROOT/vendor/agent-desktop/pin.json")"
 
 mkdir -p "$OUT"
 rm -f "$DEB" "$RPM"
@@ -158,10 +161,11 @@ docker run --rm --platform linux/amd64 -e ROSETTA_ADVERTISE_AVX=1 -v "$ROOT/$OUT
   export BIOROUTER_DISABLE_KEYRING=true BIOROUTER_DEV_PROFILE_ROOT
   eval "$GGML_SCAN"
   dpkg -L "$(dpkg-deb -f "/pkg/'"$(basename "$DEB")"'" Package)" | scan_ggml_list
-  test -x /usr/libexec/biorouter/computer-use/ocu
+  test -x /usr/libexec/biorouter/computer-use/agent-desktop
   test -s /usr/libexec/biorouter/computer-use/manifest.json
-  /usr/libexec/biorouter/computer-use/ocu --version
-  python3 -c "import gi; gi.require_version(\"Atspi\", \"2.0\"); gi.require_version(\"Gdk\", \"3.0\"); from gi.repository import Atspi, Gdk"
+  test -s /usr/libexec/biorouter/computer-use/LICENSE.agent-desktop
+  /usr/libexec/biorouter/computer-use/agent-desktop version | grep -q "\"ok\":true,\"command\":\"version\",\"data\":{.*\"version\":\"'"$COPILOT_VERSION"'\""
+  { dpkg -s at-spi2-core || rpm -q at-spi2-core; } >/dev/null 2>&1
   command -v biorouter && command -v biorouterd && command -v biorouter-crew
   biorouter --version
   biorouterd --version
@@ -201,10 +205,11 @@ docker run --rm --platform linux/amd64 -e ROSETTA_ADVERTISE_AVX=1 -v "$ROOT/$OUT
   export BIOROUTER_DISABLE_KEYRING=true BIOROUTER_DEV_PROFILE_ROOT
   eval "$GGML_SCAN"
   rpm -ql "$(rpm -qp --qf "%{NAME}" "/pkg/'"$(basename "$RPM")"'")" | scan_ggml_list
-  test -x /usr/libexec/biorouter/computer-use/ocu
+  test -x /usr/libexec/biorouter/computer-use/agent-desktop
   test -s /usr/libexec/biorouter/computer-use/manifest.json
-  /usr/libexec/biorouter/computer-use/ocu --version
-  python3 -c "import gi; gi.require_version(\"Atspi\", \"2.0\"); gi.require_version(\"Gdk\", \"3.0\"); from gi.repository import Atspi, Gdk"
+  test -s /usr/libexec/biorouter/computer-use/LICENSE.agent-desktop
+  /usr/libexec/biorouter/computer-use/agent-desktop version | grep -q "\"ok\":true,\"command\":\"version\",\"data\":{.*\"version\":\"'"$COPILOT_VERSION"'\""
+  { dpkg -s at-spi2-core || rpm -q at-spi2-core; } >/dev/null 2>&1
   command -v biorouter && command -v biorouterd && command -v biorouter-crew
   biorouter --version
   biorouterd --version

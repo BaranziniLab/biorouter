@@ -113,7 +113,7 @@ class MacCandidateSigningTests(unittest.TestCase):
             framework = app / 'Contents/Frameworks/Fixture.framework'
             framework_version = framework / 'Versions/A'
             helper = app / 'Contents/Resources/computer-use'
-            runtime_app = helper / 'BioRouter Computer Use.app'
+            runtime_app = helper / 'Biorouter Copilot.app'
             def executable_bundle(bundle, name):
                 contents = bundle / 'Contents'
                 (contents / 'MacOS').mkdir(parents=True)
@@ -123,7 +123,7 @@ class MacCandidateSigningTests(unittest.TestCase):
                 subprocess.run(['cc', '-x', 'c', '-', '-o', contents / 'MacOS' / name],
                     input='int main(void) { return 0; }', text=True, check=True, capture_output=True)
             executable_bundle(app, 'candidate')
-            executable_bundle(runtime_app, 'ocu')
+            executable_bundle(runtime_app, 'agent-desktop')
             subprocess.run(['codesign', '--force', '--sign', '-', runtime_app], check=True, capture_output=True)
             (helper / 'manifest.json').write_text('{"fixture": "preserve runtime bytes"}', encoding='utf-8')
             runtime_before = {p.relative_to(helper): p.read_bytes() for p in helper.rglob('*') if p.is_file()}

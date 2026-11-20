@@ -469,7 +469,7 @@ for line in sys.stdin:
     if 'id' not in request: continue
     method = request['method']
     if method == 'initialize':
-        result = {'protocolVersion':'2025-03-26','serverInfo':{'version':'0.3.5'}}
+        result = {'protocolVersion':'2025-03-26','serverInfo':{'version':'1.3.1'}}
     elif method == 'tools/list': result = tools
     else:
         count += 1
@@ -480,7 +480,7 @@ for line in sys.stdin:
         result = {'content':[{'type':'text','text':str(count)},{'type':'image','mimeType':'image/png','data':'aW1hZ2U='}], 'isError':mode == 'error'}
     print(json.dumps({'jsonrpc':'2.0','id':request['id'],'result':result}), flush=True)
 "##;
-        let executable = root.path().join("ocu");
+        let executable = root.path().join("agent-desktop");
         std::fs::write(&executable, script).unwrap();
         std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o700)).unwrap();
         let runtime = Runtime::start_payload(manifest::RuntimePayload {

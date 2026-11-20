@@ -87,8 +87,8 @@ async fn tools_over_mcp<S: rmcp::ServerHandler + Send + 'static>(
 
 fn fixture(root: &Path) {
     std::fs::create_dir_all(root).unwrap();
-    std::fs::write(root.join("ocu"), b"fixture native bytes").unwrap();
-    let manifest = json!({"schema_version":1,"upstream_version":manifest::UPSTREAM_VERSION,"upstream_commit":manifest::UPSTREAM_COMMIT,"patch_revision":manifest::patch_revision(),"target":manifest::target(),"executable":"ocu","files":[{"path":"ocu","sha256":format!("{:x}", Sha256::digest(b"fixture native bytes"))}]});
+    std::fs::write(root.join("agent-desktop"), b"fixture native bytes").unwrap();
+    let manifest = json!({"schema_version":2,"engine":manifest::ENGINE,"upstream_version":manifest::UPSTREAM_VERSION,"upstream_commit":manifest::UPSTREAM_COMMIT,"contract_version":manifest::CONTRACT_VERSION,"target":manifest::target(),"executable":"agent-desktop","files":[{"path":"agent-desktop","sha256":format!("{:x}", Sha256::digest(b"fixture native bytes"))}]});
     std::fs::write(
         root.join("manifest.json"),
         serde_json::to_vec(&manifest).unwrap(),
@@ -129,7 +129,11 @@ fn packaged_payload_resolves_from_each_layout_and_relocation() {
         let resolved = manifest::locate_for_executable(&exe).unwrap();
         assert_eq!(
             resolved.executable,
-            install.join(payload).join("ocu").canonicalize().unwrap()
+            install
+                .join(payload)
+                .join("agent-desktop")
+                .canonicalize()
+                .unwrap()
         );
         #[cfg(unix)]
         {
@@ -163,7 +167,7 @@ fn copied_cli_follows_install_origin_and_keeps_local_payload_precedence() {
     let resolved = manifest::locate_for_executable(&exe).unwrap();
     assert_eq!(resolved.root, payload.canonicalize().unwrap());
     assert!(!resolved.development_override);
-    std::fs::write(payload.join("ocu"), b"corrupt origin payload").unwrap();
+    std::fs::write(payload.join("agent-desktop"), b"corrupt origin payload").unwrap();
     assert!(manifest::locate_for_executable(&exe)
         .unwrap_err()
         .to_string()
@@ -207,7 +211,7 @@ fn payload_rejects_corruption_wrong_pin_and_escaping_paths() {
     let temp = tempfile::tempdir().unwrap();
     fixture(temp.path());
     assert!(manifest::validate(temp.path(), false).is_ok());
-    std::fs::write(temp.path().join("ocu"), b"tampered").unwrap();
+    std::fs::write(temp.path().join("agent-desktop"), b"tampered").unwrap();
     assert!(manifest::validate(temp.path(), false)
         .unwrap_err()
         .to_string()
@@ -219,9 +223,10 @@ fn payload_rejects_corruption_wrong_pin_and_escaping_paths() {
     for (field, value) in [
         ("upstream_version", "999"),
         ("upstream_commit", "unreviewed"),
-        ("patch_revision", "outdated"),
+        ("engine", "open-computer-use"),
+        ("contract_version", "2.7"),
         ("target", "foreign"),
-        ("executable", "../ocu"),
+        ("executable", "../agent-desktop"),
     ] {
         let mut wrong = original.clone();
         wrong[field] = json!(value);

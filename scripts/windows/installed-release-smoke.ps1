@@ -203,8 +203,8 @@ try {
     }
     python scripts/computer-use-runtime.py verify win32-x64 --directory $helper
     if ($LASTEXITCODE -ne 0) { throw 'Installed native helper integrity check failed' }
-    python scripts/test-computer-use-protocol.py $helper
-    if ($LASTEXITCODE -ne 0) { throw 'Installed native helper protocol check failed' }
+    python scripts/computer-use-runtime.py contract win32-x64 --directory $helper
+    if ($LASTEXITCODE -ne 0) { throw 'Installed native helper contract check failed' }
     foreach ($binary in @($cli, $daemon)) {
         $output = & $binary --version
         if ($LASTEXITCODE -ne 0 -or $output -notmatch "\b$([regex]::Escape($Version))\b") {

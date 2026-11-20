@@ -172,7 +172,7 @@ DOCTOR_TIMEOUT = sum(ATTEMPT_TIMEOUTS.values())
 
 # What a timeout report is looking for. A whole-machine snapshot buries the two
 # processes that matter in several hundred system daemons.
-RELEVANT = ('biorouter', 'ocu', 'OpenComputerUse', 'llama-server', 'powershell', 'node')
+RELEVANT = ('biorouter', 'agent-desktop', 'llama-server', 'powershell', 'node')
 
 
 def snapshot(fields):

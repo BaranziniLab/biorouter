@@ -4,35 +4,42 @@ use sha2::{Digest, Sha256};
 use std::path::{Component, Path, PathBuf};
 use std::sync::LazyLock;
 
-pub const UPSTREAM_VERSION: &str = "0.3.5";
-pub const UPSTREAM_COMMIT: &str = "547b4ffb8ed731a8f16486e6d8a3b215484267d3";
+/// Biorouter Copilot's engine: agent-desktop, vendored at `vendor/agent-desktop/`
+/// (AD-01 and AD-02 in docs/design/copilot-agent-desktop.md). These constants are
+/// the pin's, asserted equal to `pin.json` by `pin_tests`.
+pub const ENGINE: &str = "agent-desktop";
+pub const UPSTREAM_VERSION: &str = "1.3.1";
+pub const UPSTREAM_COMMIT: &str = "b0b7277bea09b770ef9d1fb45aad667bc432cd57";
+/// The JSON envelope version agent-desktop prints (`{"version": "2.6", ...}`).
+pub const CONTRACT_VERSION: &str = "2.6";
 
 #[derive(Deserialize)]
 struct RuntimePin {
     schema_version: u32,
+    engine: String,
     upstream_version: String,
     upstream_commit: String,
-    patch_revision: String,
+    contract_version: String,
 }
 
 static RUNTIME_PIN: LazyLock<RuntimePin> = LazyLock::new(|| {
     serde_json::from_str(include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/../../vendor/computer-use/pin.json"
+        "/../../vendor/agent-desktop/pin.json"
     )))
     .expect("bundled Biorouter Copilot pin must be valid")
 });
 
-pub fn patch_revision() -> &'static str {
-    &RUNTIME_PIN.patch_revision
-}
-
+/// The payload manifest `scripts/computer-use-runtime.py` writes beside the engine.
+/// Fields the runtime does not read (the Biorouter version, the Rust triple, the
+/// minimum OS, the source tree digest) are checked by the packaging scripts.
 #[derive(Debug, Deserialize)]
 pub struct Manifest {
     pub schema_version: u32,
+    pub engine: String,
     pub upstream_version: String,
     pub upstream_commit: String,
-    pub patch_revision: String,
+    pub contract_version: String,
     pub target: String,
     pub executable: PathBuf,
     pub files: Vec<ManifestFile>,
@@ -91,12 +98,13 @@ fn inspect(root: &Path, development_override: bool, verify_hashes: bool) -> Resu
     let manifest: Manifest = serde_json::from_slice(&bytes)
         .context("computer_use_incompatible_runtime: invalid manifest")?;
     if manifest.schema_version != RUNTIME_PIN.schema_version
+        || manifest.engine != RUNTIME_PIN.engine
         || manifest.upstream_version != RUNTIME_PIN.upstream_version
         || manifest.upstream_commit != RUNTIME_PIN.upstream_commit
-        || manifest.patch_revision != RUNTIME_PIN.patch_revision
+        || manifest.contract_version != RUNTIME_PIN.contract_version
         || manifest.target != target()
     {
-        bail!("computer_use_incompatible_runtime: runtime pin, patch or platform does not match BioRouter");
+        bail!("computer_use_incompatible_runtime: runtime engine, pin or platform does not match Biorouter");
     }
     if !relative_path(&manifest.executable)
         || !manifest
@@ -203,33 +211,58 @@ fn install_origin(bin: &Path) -> Option<PathBuf> {
 mod pin_tests {
     use super::*;
 
+    fn fixture_manifest(executable: &str, digest: &str) -> serde_json::Value {
+        serde_json::json!({
+            "schema_version": RUNTIME_PIN.schema_version,
+            "engine": ENGINE,
+            "upstream_version": UPSTREAM_VERSION,
+            "upstream_commit": UPSTREAM_COMMIT,
+            "contract_version": CONTRACT_VERSION,
+            "target": target(),
+            "executable": executable,
+            "files": [{ "path": executable, "sha256": digest }],
+        })
+    }
+
     #[test]
-    fn current_bundled_pin_is_accepted_and_other_patch_revisions_are_refused() {
+    fn the_constants_are_the_vendored_pin() {
+        assert_eq!(RUNTIME_PIN.engine, ENGINE);
         assert_eq!(RUNTIME_PIN.upstream_version, UPSTREAM_VERSION);
         assert_eq!(RUNTIME_PIN.upstream_commit, UPSTREAM_COMMIT);
+        assert_eq!(RUNTIME_PIN.contract_version, CONTRACT_VERSION);
+        assert_eq!(RUNTIME_PIN.schema_version, 2);
+    }
 
+    #[test]
+    fn current_bundled_pin_is_accepted_and_other_engines_or_contracts_are_refused() {
         let dir = tempfile::tempdir().unwrap();
-        let executable = dir.path().join("ocu");
+        let executable = dir.path().join("agent-desktop");
         std::fs::write(&executable, b"fixture helper").unwrap();
         let digest = format!("{:x}", Sha256::digest(std::fs::read(&executable).unwrap()));
-        let mut manifest = serde_json::json!({
-            "schema_version": RUNTIME_PIN.schema_version,
-            "upstream_version": RUNTIME_PIN.upstream_version,
-            "upstream_commit": RUNTIME_PIN.upstream_commit,
-            "patch_revision": patch_revision(),
-            "target": target(),
-            "executable": "ocu",
-            "files": [{ "path": "ocu", "sha256": digest }],
-        });
+        let manifest = fixture_manifest("agent-desktop", &digest);
         std::fs::write(dir.path().join("manifest.json"), manifest.to_string()).unwrap();
         inspect(dir.path(), false, true).expect("the bundled pin must be accepted");
 
-        manifest["patch_revision"] = serde_json::json!("outdated-patch");
-        std::fs::write(dir.path().join("manifest.json"), manifest.to_string()).unwrap();
-        assert!(inspect(dir.path(), false, true)
-            .unwrap_err()
-            .to_string()
-            .contains("computer_use_incompatible_runtime"));
+        // The retired engine's payload (schema 1, a patch revision, its own pin)
+        // and a payload of the right engine on another JSON contract are both
+        // refused rather than spawned.
+        for (field, value) in [
+            ("schema_version", serde_json::json!(1)),
+            ("engine", serde_json::json!("open-computer-use")),
+            ("contract_version", serde_json::json!("2.7")),
+            ("upstream_version", serde_json::json!("0.3.5")),
+        ] {
+            let mut wrong = manifest.clone();
+            wrong[field] = value;
+            std::fs::write(dir.path().join("manifest.json"), wrong.to_string()).unwrap();
+            assert!(
+                inspect(dir.path(), false, true)
+                    .unwrap_err()
+                    .to_string()
+                    .contains("computer_use_incompatible_runtime"),
+                "must refuse a payload whose {field} differs"
+            );
+        }
     }
 }
 
@@ -241,17 +274,18 @@ mod windows_path_spelling_tests {
     /// Build a payload directory that `inspect` will accept, so the test
     /// exercises the real function rather than a re-implementation of it.
     fn payload(dir: &Path) -> std::io::Result<()> {
-        let exe = dir.join("ocu.exe");
+        let exe = dir.join("agent-desktop.exe");
         std::fs::write(&exe, b"not a real helper")?;
         let digest = format!("{:x}", Sha256::digest(std::fs::read(&exe)?));
         let manifest = serde_json::json!({
-            "schema_version": 1,
+            "schema_version": 2,
+            "engine": ENGINE,
             "upstream_version": UPSTREAM_VERSION,
             "upstream_commit": UPSTREAM_COMMIT,
-            "patch_revision": patch_revision(),
+            "contract_version": CONTRACT_VERSION,
             "target": target(),
-            "executable": "ocu.exe",
-            "files": [{ "path": "ocu.exe", "sha256": digest }],
+            "executable": "agent-desktop.exe",
+            "files": [{ "path": "agent-desktop.exe", "sha256": digest }],
         });
         std::fs::write(dir.join("manifest.json"), manifest.to_string())
     }

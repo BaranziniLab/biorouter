@@ -106,6 +106,33 @@ def installed_linux_helper_roots(opt=Path('/opt'), lib=Path('/usr/lib'), libexec
     return roots
 
 
+# The Biorouter Copilot bundle's folder name, from the engine's pin.
+COPILOT_BUNDLE = json.loads((ROOT / 'vendor/agent-desktop/pin.json').read_text(encoding='utf-8'))['macos_bundle']
+
+
+def build_helper(target, env):
+    """Build the target's engine payload, or reuse one a CI job already built and verified.
+
+    The darwin payloads build on this Mac. The linux and win32 ones are built in the
+    pinned bullseye container (scripts/build-computer-use-helper-cross.sh), which a
+    Windows runner cannot run, so the workflow builds them on Linux and hands the
+    payload over as an artifact; here it only has to verify.
+    """
+    if target.startswith('darwin-'):
+        run([PYTHON, 'scripts/computer-use-runtime.py', 'build', target], env=env)
+        return
+    verified = subprocess.run([PYTHON, 'scripts/computer-use-runtime.py', 'verify', target],
+                              cwd=ROOT, env=env, capture_output=True, text=True)
+    if verified.returncode == 0:
+        print(f'reusing the verified {target} Biorouter Copilot payload', flush=True)
+        return
+    if os.name == 'nt' or shutil.which('docker') is None:
+        raise ValueError(f'No verified {target} Biorouter Copilot payload, and it is built in a Linux '
+                         f'container: run scripts/build-computer-use-helper-cross.sh {target} on a host with '
+                         f'Docker and copy target/computer-use/{target} here ({verified.stderr.strip()[-300:]})')
+    run(['bash', 'scripts/build-computer-use-helper-cross.sh', target], env=env)
+
+
 def sign_macos_candidate(app):
     manifest = app / 'Contents/Resources/computer-use/manifest.json'
     manifest_before = digest(manifest)
@@ -128,7 +155,7 @@ def stage(target):
     for key in ['APPLE_ID', 'APPLE_APP_SPECIFIC_PASSWORD', 'WINDOWS_CERTIFICATE_FILE',
                 'WINDOW_SIGNING_ROLE', 'BIOROUTER_WINDOWS_SIGN_PASSWORD_FILE']:
         env.pop(key, None)
-    run([PYTHON, 'scripts/computer-use-runtime.py', 'build', target], env=env)
+    build_helper(target, env)
     triples = {'linux-x64': 'x86_64-unknown-linux-gnu', 'win32-x64': 'x86_64-pc-windows-gnu',
                'darwin-arm64': 'aarch64-apple-darwin', 'darwin-x64': 'x86_64-apple-darwin'}
     triple = triples[target]
@@ -186,27 +213,20 @@ def linux_install(archive, index):
     rpm = archive.suffix == '.rpm'
     image = 'rockylinux:9' if rpm else 'debian:bookworm-slim'
     install = 'dnf install -y /pkg/' + archive.name if rpm else 'apt-get update -qq && apt-get install -y /pkg/' + archive.name
-    extras = ('dnf install -y epel-release && dnf install -y openbox xorg-x11-server-Xvfb xorg-x11-xauth dbus-x11' if rpm else
-              'apt-get install -y xvfb xauth dbus-x11 openbox')
-    command = install + '''
-python3 -c 'import gi; gi.require_version("Atspi", "2.0"); gi.require_version("Gdk", "3.0"); from gi.repository import Atspi, Gdk'
-''' + runtime_only_path_guard() + '''
-python3 /repo/scripts/computer-use-package-acceptance.py installed-linux ''' + str(index) + '\n' + extras + '''
-Xvfb :99 -screen 0 1280x900x24 >/tmp/xvfb.log 2>&1 &
-xvfb=$!
-trap 'kill "$xvfb" 2>/dev/null || true' EXIT
-export DISPLAY=:99
-display_ready=
-for attempt in {1..50}; do
-  kill -0 "$xvfb"
-  if python3 -c 'import gi,sys; gi.require_version("Gdk", "3.0"); from gi.repository import Gdk; sys.exit(Gdk.Display.open(":99") is None)'; then
-    display_ready=yes
-    break
-  fi
-  sleep 0.1
-done
-test "$display_ready" = yes
-dbus-run-session -- python3 /repo/scripts/computer-use-package-acceptance.py fixture-linux ''' + str(index)
+    # The engine needs only the accessibility bus (at-spi2-core) from the package.
+    # Python is installed here for the acceptance driver alone, AFTER the
+    # package's own dependencies are proven sufficient by the helper's version
+    # check, so a package that silently relied on Python would still fail. The GUI
+    # fixture is driven through Copilot's tools by the fixture jobs (AD-21).
+    helper_check = ('''
+helper=$(find /usr/lib /usr/libexec /opt -path '*/computer-use/manifest.json' -print -quit 2>/dev/null || true)
+test -n "$helper"
+"$(dirname "$helper")/agent-desktop" version | grep -q '"ok":true,"command":"version"'
+{ dpkg -s at-spi2-core || rpm -q at-spi2-core; } >/dev/null 2>&1
+''')
+    python = 'dnf install -y python3' if rpm else 'apt-get install -y --no-install-recommends python3'
+    command = install + helper_check + runtime_only_path_guard() + python + '''
+python3 /repo/scripts/computer-use-package-acceptance.py installed-linux ''' + str(index)
     owned_container(['--cpus=2', '--memory=4g', '-v', f'{ROOT}:/repo:ro',
          '-v', f'{OUTPUT}:/evidence', '-v', f'{archive.parent}:/pkg:ro', image,
          'bash', '-euc', command])
@@ -250,16 +270,12 @@ def linux_paths(**roots):
     return cli, helper
 
 
-def container_check(fixture, label):
+def container_check(label):
     cli, helper = linux_paths()
-    if fixture:
-        run(['/usr/bin/python3', ROOT / 'scripts/test-computer-use-linux-fixture.py', helper,
-             '--report', f'/evidence/linux-{label}-fixture.json'], timeout=120)
-    else:
-        run(['/usr/bin/python3', ROOT / 'scripts/computer-use-runtime.py', 'verify', 'linux-x64', '--directory', helper])
-        run(['/usr/bin/python3', ROOT / 'scripts/verify-installed-computer-use.py', '--cli', cli,
-             '--helper', helper, '--target', 'linux-x64', '--expect-status', 'desktop_unavailable',
-             '--backends', '/evidence/backends.json', '--report', f'/evidence/linux-{label}-installed.json'], timeout=INSTALLED_CHECK_TIMEOUT)
+    run(['/usr/bin/python3', ROOT / 'scripts/computer-use-runtime.py', 'verify', 'linux-x64', '--directory', helper])
+    run(['/usr/bin/python3', ROOT / 'scripts/verify-installed-computer-use.py', '--cli', cli,
+         '--helper', helper, '--target', 'linux-x64', '--expect-status', 'desktop_unavailable',
+         '--backends', '/evidence/backends.json', '--report', f'/evidence/linux-{label}-installed.json'], timeout=INSTALLED_CHECK_TIMEOUT)
 
 
 def verify(target):
@@ -312,13 +328,11 @@ def verify(target):
                 cli = resources / ('bin/biorouter.exe' if platform == 'win32' else 'bin/biorouter')
                 if platform == 'darwin':
                     run(['codesign', '--verify', '--deep', '--strict', resources.parent.parent])
-                    run(['codesign', '--verify', '--deep', '--strict', helper / 'BioRouter Computer Use.app'])
+                    run(['codesign', '--verify', '--deep', '--strict', helper / COPILOT_BUNDLE])
                 installed(cli, helper, target, 'ready,os_permission_required,desktop_unavailable' if platform == 'darwin' else 'ready', f'{target}-{index}')
                 if platform == 'win32':
-                    run([PYTHON, 'scripts/test-computer-use-windows-fixture.py', helper,
-                         '--report', OUTPUT / 'windows-installed-fixture.json'], timeout=180)
-                    run([PYTHON, 'scripts/test-computer-use-packaged-windows-console.py',
-                         '--cli', cli, '--report', OUTPUT / 'windows-packaged-console.json'], timeout=180)
+                    run([PYTHON, 'scripts/computer-use-runtime.py', 'contract', target, '--directory', helper],
+                        timeout=180)
                     local = directory / 'isolated-user'
                     env = dict(os.environ, LOCALAPPDATA=str(local), BIOROUTER_DISABLE_KEYRING='true',
                                BIOROUTER_PATH_ROOT=str(directory / 'isolated-config'))
@@ -336,7 +350,7 @@ def verify(target):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('mode', choices=['build', 'verify', 'installed-linux', 'fixture-linux'])
+    parser.add_argument('mode', choices=['build', 'verify', 'installed-linux'])
     parser.add_argument('target')
     args = parser.parse_args()
     if args.mode == 'build':
@@ -344,4 +358,4 @@ if __name__ == '__main__':
     elif args.mode == 'verify':
         verify(args.target)
     else:
-        container_check(args.mode == 'fixture-linux', args.target)
+        container_check(args.target)
