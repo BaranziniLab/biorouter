@@ -57,6 +57,24 @@ jobs:
         if: always()
         run: if [ -d .cross-cache ]; then sudo chown -R "$(id -u):$(id -g)" .cross-cache; fi
 
+      # Biorouter Copilot's engine (agent-desktop) for Windows is built here, in
+      # the pinned rust:1.92-bullseye image with mingw (cross_copilot_helper in
+      # scripts/cross-env.sh), because the Windows runner cannot run that
+      # container. The packages job verifies the payload again before staging it.
+      - name: Build the Biorouter Copilot helper payload
+        env:
+          CROSS_REGISTRY_MOUNT: ${{ github.workspace }}/.cross-cache/copilot-registry
+        run: |
+          bash scripts/build-computer-use-helper-cross.sh win32-x64
+          sudo chown -R "$(id -u):$(id -g)" .cross-cache
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-copilot-helper-${{ inputs.version }}
+          path: target/computer-use/win32-x64/
+          if-no-files-found: error
+          retention-days: 7
+
       - name: Record what was built
         run: |
           ls -l target/x86_64-pc-windows-gnu/release/*.exe target/x86_64-pc-windows-gnu/release/*.dll
@@ -108,6 +126,10 @@ jobs:
         with:
           name: windows-backend-${{ inputs.version }}
           path: target/x86_64-pc-windows-gnu/release/
+      - uses: actions/download-artifact@v4
+        with:
+          name: windows-copilot-helper-${{ inputs.version }}
+          path: target/computer-use/win32-x64/
       # Missing when the backend job could not build the broker; see "Build and stage the
       # Linux Crew broker" there. Non-fatal for the same reason.
       - uses: actions/download-artifact@v4
@@ -121,10 +143,6 @@ jobs:
           node-version: '24'
           cache: npm
           cache-dependency-path: ui/desktop/package-lock.json
-      - uses: actions/setup-go@v5
-        with:
-          go-version: '1.26.8'
-          cache: false
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
@@ -144,17 +162,13 @@ jobs:
           [ "$want" = "$cargo" ] && [ "$want" = "$pkg" ] || {
             echo "::error::version $want does not match the tree ($cargo / $pkg)"; exit 1; }
 
-      - name: Build the Biorouter Copilot helper payload
-        run: python scripts/computer-use-runtime.py build win32-x64
-
-      - name: Measure the release helper's PowerShell console
-        run: python scripts/test-computer-use-windows-console.py target/computer-use/source.noindex target/computer-use/win32-x64/ocu.exe --report target/computer-use/windows-console.json
-      - uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: windows-package-console-evidence-${{ inputs.version }}
-          path: target/computer-use/windows-console.json
-          if-no-files-found: warn
+      # The payload the backend job built: its bytes, console subsystem and
+      # imports, then the binary itself on Windows (`version` and a refused bare
+      # reference; no desktop access).
+      - name: Verify and run the Biorouter Copilot helper payload
+        run: |
+          python scripts/computer-use-runtime.py verify win32-x64
+          python scripts/computer-use-runtime.py contract win32-x64
 
       # ⚠ `src/bin` is not tracked in git, so a fresh checkout has none.
       # `prepare-platform-binaries.js` VALIDATES this directory and never copies
