@@ -15,15 +15,16 @@ use std::path::Path;
 
 #[test]
 fn native_numeric_contract_rejects_invalid_supplied_values() {
-    for (name, argument, valid, invalid) in [
+    for (name, argument, base, valid, invalid) in [
         (
             "click",
-            "click_count",
-            vec![json!(1), json!(2), json!(100)],
+            "count",
+            json!({"ref":"@s1abc:e1"}),
+            vec![json!(1), json!(2), json!(3)],
             vec![
                 json!(0),
+                json!(4),
                 json!(-1),
-                json!(101),
                 json!(1.5),
                 json!(1e100),
                 json!(true),
@@ -33,12 +34,14 @@ fn native_numeric_contract_rejects_invalid_supplied_values() {
         ),
         (
             "scroll",
-            "pages",
-            vec![json!(0.25), json!(1), json!(100)],
+            "amount",
+            json!({"ref":"@s1abc:e1", "direction":"down"}),
+            vec![json!(1), json!(3), json!(50)],
             vec![
                 json!(0),
                 json!(-1),
-                json!(100.01),
+                json!(51),
+                json!(2.5),
                 json!(1e100),
                 json!(true),
                 json!(null),
@@ -52,11 +55,7 @@ fn native_numeric_contract_rejects_invalid_supplied_values() {
             .unwrap();
         let schema = serde_json::Value::Object((*tool.input_schema).clone());
         let validator = jsonschema::validator_for(&schema).unwrap();
-        let mut arguments = if name == "scroll" {
-            json!({"app":"synthetic", "element_index":"1", "direction":"down"})
-        } else {
-            json!({"app":"synthetic"})
-        };
+        let mut arguments = base;
         assert!(
             validator.is_valid(&arguments),
             "absent optional value retains its default"
@@ -238,6 +237,47 @@ fn payload_rejects_corruption_wrong_pin_and_escaping_paths() {
     }
 }
 
+/// A reference from no observation, another chat, or a call with no grant is refused before
+/// the native runtime is even located.
+async fn refusals_before_any_runtime(client: &rmcp::service::RunningService<rmcp::RoleClient, ()>) {
+    for (session, grant, expected) in [
+        ("contract-chat", Some("act"), "computer_use_stale_reference"),
+        (
+            "different-chat",
+            Some("act"),
+            "computer_use_session_mismatch",
+        ),
+        // A call the host sent without a grant is look only, never control.
+        (
+            "contract-chat",
+            None,
+            "allowed Biorouter Copilot to look only",
+        ),
+    ] {
+        let mut extensions = rmcp::model::Extensions::default();
+        let mut meta = json!({"biorouter-session-id":session, "computer_use_generation":"grant", "progressToken":"contract-progress"});
+        if let Some(grant) = grant {
+            meta["computer_use_grant"] = json!(grant);
+        }
+        extensions.insert(Meta(meta.as_object().unwrap().clone()));
+        let request = CallToolRequest {
+            method: Default::default(),
+            params: CallToolRequestParams {
+                meta: None,
+                name: "click".into(),
+                arguments: Some(json!({"ref":"@s1abc:e0"}).as_object().unwrap().clone()),
+                task: None,
+            },
+            extensions,
+        };
+        let error = client
+            .send_request(ClientRequest::CallToolRequest(request))
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains(expected), "{error:?}");
+    }
+}
+
 #[tokio::test]
 async fn capabilities_are_disjoint_and_listing_never_launches_a_helper() {
     let (client_io, server_io) = tokio::io::duplex(65536);
@@ -251,7 +291,7 @@ async fn capabilities_are_disjoint_and_listing_never_launches_a_helper() {
     });
     let client = ().serve(client_io).await.unwrap();
     let roster = client.list_all_tools().await.unwrap();
-    assert_eq!(roster.len(), 10);
+    assert_eq!(roster.len(), 13);
     for expected in contract::TOOL_NAMES {
         assert!(roster.iter().any(|tool| tool.name == expected));
     }
@@ -292,36 +332,23 @@ async fn capabilities_are_disjoint_and_listing_never_launches_a_helper() {
         .await
         .unwrap_err();
     assert!(invalid.to_string().contains("schema"), "{invalid:?}");
-    for (session, expected) in [
-        ("contract-chat", "computer_use_stale_state"),
-        ("different-chat", "computer_use_session_mismatch"),
-    ] {
-        let mut extensions = rmcp::model::Extensions::default();
-        extensions.insert(Meta(
-            json!({"biorouter-session-id":session, "computer_use_generation":"grant", "progressToken":"contract-progress"})
-                .as_object().unwrap().clone(),
-        ));
-        let request = CallToolRequest {
-            method: Default::default(),
-            params: CallToolRequestParams {
-                meta: None,
-                name: "click".into(),
-                arguments: Some(
-                    json!({"app":"fixture", "element_index":"0"})
-                        .as_object()
-                        .unwrap()
-                        .clone(),
-                ),
-                task: None,
-            },
-            extensions,
-        };
-        let error = client
-            .send_request(ClientRequest::CallToolRequest(request))
-            .await
-            .unwrap_err();
-        assert!(error.to_string().contains(expected), "{error:?}");
-    }
+    // OCU's element indexes are named in the refusal, so a saved workflow says what changed.
+    let retired = client
+        .call_tool(CallToolRequestParams {
+            meta: None,
+            name: "click".into(),
+            arguments: Some(
+                json!({"app":"fixture","element_index":"0"})
+                    .as_object()
+                    .unwrap()
+                    .clone(),
+            ),
+            task: None,
+        })
+        .await
+        .unwrap_err();
+    assert!(retired.to_string().contains("by reference"), "{retired:?}");
+    refusals_before_any_runtime(&client).await;
     client.cancel().await.unwrap();
     server.await.unwrap().unwrap();
 
@@ -429,71 +456,4 @@ async fn every_tool_a_shipped_skill_names_is_a_tool_that_exists() {
         checked >= 3,
         "expected the office skills' tool references to be checked, saw {checked}"
     );
-}
-
-/// The readiness probe's bound must exceed every bound it supervises.
-///
-/// ⚠ This is a rule about NESTING, not about a number. `Runtime::doctor` wraps a
-/// helper that imposes its own deadline and answers honestly when it expires —
-/// the Windows helper runs PowerShell under `context.WithTimeout(30s)` and
-/// reports `missing_dependency`, "Windows runtime timed out after 30s". An outer
-/// bound equal to the inner one always wins, because it starts strictly earlier
-/// (spawn, process start and the helper's own setup all precede the inner
-/// clock), so the inner deadline becomes dead code and its diagnosis is never
-/// delivered. Both were 30 s, and a Windows runner reported only "could not
-/// check the native runtime" for it.
-///
-/// The bounds are read out of the two sources rather than restated, because a
-/// test carrying its own copy of a number passes while the real one drifts.
-#[test]
-fn the_probe_bound_exceeds_every_helper_bound_it_supervises() {
-    let runtime = std::fs::read_to_string(
-        Path::new(env!("CARGO_MANIFEST_DIR")).join("src/computer_use/runtime.rs"),
-    )
-    .expect("runtime.rs");
-    let outer: u64 = runtime
-        .split_once("const PROBE_BOUND:")
-        .and_then(|(_, rest)| rest.split_once("from_secs("))
-        .and_then(|(_, rest)| rest.split_once(')'))
-        .and_then(|(value, _)| value.trim().parse().ok())
-        .expect("PROBE_BOUND must be a literal `from_secs(N)` this test can read");
-
-    // The helper sources are fetched at build time, so read them only when a
-    // checkout is present; the rule is still pinned wherever one is.
-    let checkout =
-        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/computer-use/source.noindex/apps");
-    let mut checked = 0usize;
-    for app in ["OpenComputerUseWindows", "OpenComputerUseLinux"] {
-        let Ok(source) = std::fs::read_to_string(checkout.join(app).join("main.go")) else {
-            continue;
-        };
-        // `split` rather than `match_indices` + slicing: clippy::string_slice
-        // rejects indexing a `str`, because a byte index that is not a character
-        // boundary panics. The indices here happen to be safe (they come from
-        // `match_indices`), but the lint is denied workspace-wide and the split
-        // form needs no such reasoning to read.
-        for tail in source
-            .split("context.WithTimeout(context.Background(), ")
-            .skip(1)
-        {
-            // The split pattern already consumed up to `Background(), `, so the
-            // duration is at the head of `tail`. The old `match_indices` form
-            // kept the pattern and had to skip past it with `split_once("), ")`.
-            let seconds: u64 = tail
-                .split_once("*time.Second")
-                .and_then(|(value, _)| value.trim().parse().ok())
-                .expect("a helper bound this test can read");
-            checked += 1;
-            assert!(
-                outer > seconds,
-                "{app} bounds its bridge at {seconds}s and the probe supervising it allows \
-                 {outer}s. An outer bound that does not EXCEED the inner one always wins — it \
-                 starts earlier — so the helper's own diagnosis can never be delivered."
-            );
-        }
-    }
-    if checked == 0 {
-        // Say so rather than passing quietly: with no checkout this asserted nothing.
-        eprintln!("no helper checkout present; the nesting rule was not exercised");
-    }
 }

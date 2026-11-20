@@ -1,11 +1,10 @@
 use tokio_util::sync::CancellationToken;
 use unicode_normalization::UnicodeNormalization;
 
-/// Check if a character is in the Unicode Tags Block range (U+E0000-U+E007F)
-/// These characters are invisible and can be used for steganographic attacks
-fn is_in_unicode_tag_range(c: char) -> bool {
-    matches!(c, '\u{E0000}'..='\u{E007F}')
-}
+use biorouter_mcp::untrusted_text::is_in_unicode_tag_range;
+/// The one definition of these lives in `biorouter_mcp::untrusted_text`, so Biorouter Copilot
+/// (which cannot import this crate) quotes app labels exactly as the browser quotes page labels.
+pub use biorouter_mcp::untrusted_text::{is_invisible_formatting, sanitize_untrusted_label};
 
 pub fn contains_unicode_tags(text: &str) -> bool {
     text.chars().any(is_in_unicode_tag_range)
@@ -45,64 +44,6 @@ pub fn is_token_cancelled(cancellation_token: &Option<CancellationToken>) -> boo
     cancellation_token
         .as_ref()
         .is_some_and(|t| t.is_cancelled())
-}
-
-/// Characters a reader cannot see but a renderer still acts on.
-///
-/// The Arabic letter mark, the zero-width and directional-formatting run
-/// `U+200B..=U+200F`, the bidi overrides `U+202A..=U+202E`, `U+2060..=U+206F`
-/// (invisible operators *and* the bidi isolates `U+2066..=U+2069`), the
-/// byte-order mark, and the tag block [`sanitize_unicode_tags`] exists for.
-///
-/// Exposed rather than inlined so a caller that needs to *detect* the class —
-/// a test asserting none survived, say — asks this instead of restating the
-/// ranges. A restatement is a second definition that drifts.
-pub fn is_invisible_formatting(ch: char) -> bool {
-    matches!(
-        ch,
-        '\u{061c}'
-            | '\u{200b}'..='\u{200f}'
-            | '\u{202a}'..='\u{202e}'
-            | '\u{2060}'..='\u{206f}'
-            | '\u{feff}'
-    ) || is_in_unicode_tag_range(ch)
-}
-
-/// Reduce attacker-controlled text to a single-line, control-free label.
-///
-/// The **one** definition in this workspace, deliberately: titles, locators and
-/// revisions reach a prompt from places nobody vetted — a web page picks its own
-/// `<title>`, a `.docx` carries its own metadata, and a filename may hold a
-/// newline on every platform this ships to. Left raw such a string is not a
-/// label at all. A newline writes extra *lines* into whichever frame quotes it,
-/// so a page can forge the very fields that describe it (and the trust notice
-/// beside them) without using a single markup character; a bidi override
-/// rewrites what the **user** sees, defeating their own review before they act.
-///
-/// Dropped: every [`char::is_control`] (`\n`, `\r`, the whole C0 block including
-/// ESC and BEL, DEL, and C1) and everything [`is_invisible_formatting`] names. A
-/// dropped character that *was* whitespace leaves a single space behind, so
-/// neighbouring words do not fuse into one and change meaning.
-///
-/// Markup is deliberately **not** touched here: callers frame this value into
-/// different syntaxes (XML-ish frames, JSON, terminal output) and each one owns
-/// the escaping its own syntax needs.
-///
-/// `max_chars` is counted over the **input**, so a payload padded with invisible
-/// characters shortens the result rather than smuggling more visible text past
-/// the cap.
-pub fn sanitize_untrusted_label(value: &str, max_chars: usize) -> String {
-    let mut sanitized = String::new();
-    for ch in value.chars().take(max_chars) {
-        if ch.is_control() || is_invisible_formatting(ch) {
-            if ch.is_whitespace() && !sanitized.ends_with(' ') {
-                sanitized.push(' ');
-            }
-        } else {
-            sanitized.push(ch);
-        }
-    }
-    sanitized.trim().to_string()
 }
 
 #[cfg(test)]
