@@ -37,7 +37,9 @@
 //! readers (`grep -r`, `tar`, `cp -r`, `find … -exec cat`) that name only an
 //! ancestor directory are the other known gap, for the same reason.
 
+use std::borrow::Cow;
 use std::collections::{HashMap, VecDeque};
+use std::ops::Range;
 use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 
@@ -186,6 +188,9 @@ enum Root {
 struct Redirect {
     target: Option<Word>,
     body: Option<String>,
+    /// The body is data written straight to a file (#546): see
+    /// [`data_heredocs`] and [`Resolver::read_data_body`].
+    data: bool,
 }
 
 pub(crate) struct State {
@@ -237,6 +242,10 @@ pub(crate) struct Resolver<'a> {
     /// [`Self::under_each_grammar`] for the length of one pass and never read
     /// from the host: see [`grammars`].
     windows_lexing: bool,
+    /// Inside a here-document body that is data, not a script this command
+    /// runs (#546). Set only by [`Self::read_data_body`], for the length of
+    /// that body.
+    reading_data: bool,
 }
 
 impl<'a> Resolver<'a> {
@@ -252,6 +261,7 @@ impl<'a> Resolver<'a> {
             strict: true,
             dotglob: false,
             windows_lexing: cfg!(windows),
+            reading_data: false,
         }
     }
 
@@ -324,18 +334,26 @@ impl<'a> Resolver<'a> {
     }
 
     fn scan_command_under(&mut self, grammars: &[bool], command: &str, bases: &[Base]) -> Scan {
-        // Before any grammar runs, and for every entry point alike — a test
-        // asking what another host would do must not silently lose the
-        // dot-glob detection the production path performs.
-        static DOT_QUALIFIER: Lazy<Regex> =
-            Lazy::new(|| Regex::new(r"\([^()|]*D[^()|]*\)").expect("static regex"));
-        if DOT_QUALIFIER.is_match(command) {
-            self.dotglob = true;
-        }
         self.under_grammars(grammars, |me| {
+            // Which here-documents are data is decided once per grammar, from
+            // this pass's own tokens, and everything below uses that one
+            // answer: the walk reads those bodies as data, and the two readings
+            // of the whole command (the dot-glob detection and the code pass)
+            // see the command with those bodies blanked, because the walk has
+            // already read them (#546).
+            let tokens = lex::lex_for(command, me.windows_lexing);
+            let data = data_heredocs(&tokens);
+            let outside_data = blank_spans(command, data.iter().map(|(_, span)| span));
+            // Before the walk, and for every entry point alike: a test asking
+            // what another host would do must not silently lose the dot-glob
+            // detection the production path performs.
+            if dot_qualifier(&outside_data) {
+                me.dotglob = true;
+            }
+            let data_tokens: Vec<usize> = data.iter().map(|(index, _)| *index).collect();
             let mut state = State::new(bases);
-            me.walk(command, &mut state)?;
-            me.scan_code_in(command, &state)
+            me.walk_tokens(tokens, &data_tokens, &mut state)?;
+            me.scan_code_in(&outside_data, &state)
         })
     }
 
@@ -374,10 +392,18 @@ impl<'a> Resolver<'a> {
                 reason: Reason::TooComplex,
             });
         }
+        let tokens = lex::lex_for(script, self.windows_lexing);
+        self.walk_tokens(tokens, &[], state)
+    }
+
+    /// Follow a lexed script. `data` holds the indices, in `tokens`, of the
+    /// here-document redirects whose bodies are data ([`data_heredocs`]);
+    /// only the top-level command of a scan has any.
+    fn walk_tokens(&mut self, tokens: Vec<Token>, data: &[usize], state: &mut State) -> Scan {
         let mut words: Vec<Word> = Vec::new();
         let mut redirects: Vec<Redirect> = Vec::new();
         let mut awaiting_target = false;
-        for token in lex::lex_for(script, self.windows_lexing) {
+        for (index, token) in tokens.into_iter().enumerate() {
             match token {
                 Token::Word(word) => {
                     if awaiting_target {
@@ -389,9 +415,13 @@ impl<'a> Resolver<'a> {
                         words.push(word);
                     }
                 }
-                Token::Redirect { op, body } => {
+                Token::Redirect { op, body, .. } => {
                     let heredoc = op == "<<" || op == "<<-";
-                    redirects.push(Redirect { target: None, body });
+                    redirects.push(Redirect {
+                        target: None,
+                        body,
+                        data: heredoc && data.contains(&index),
+                    });
                     awaiting_target = !heredoc;
                 }
                 Token::Op(_) => {
@@ -450,16 +480,63 @@ impl<'a> Resolver<'a> {
                 self.check_word(target, state, &word_text(target))?;
             }
             if let Some(body) = &redirect.body {
-                // A here-document is either data or a script (`bash <<EOF`,
-                // `cat <<EOF | sh`, `ssh host <<EOF`). Read it as both.
-                self.nested(body, state)?;
-                self.scan_code_in(body, state)?;
+                if redirect.data {
+                    self.read_data_body(body, state)?;
+                } else {
+                    // A here-document is either data or a script (`bash
+                    // <<EOF`, `cat <<EOF | sh`, `ssh host <<EOF`). Read it as
+                    // both, and as code read from stdin (`python3 - <<EOF`).
+                    self.nested(body, state)?;
+                    self.scan_code_in(body, state)?;
+                    self.scan_code_strings(body, state)?;
+                }
             }
         }
         if args.is_empty() {
             return Ok(());
         }
         self.program_semantics(args, state)
+    }
+
+    /// A quoted here-document body written straight to a file (#546; which
+    /// bodies qualify is [`data_heredocs`]).
+    ///
+    /// The shell hands the body to `cat` as text, so this command neither
+    /// expands nor runs anything in it. It is still read as a script and as
+    /// code, exactly as any other body is, because a file written here can be
+    /// run later, where the guard cannot see inside it: a protected path in
+    /// any spelling the resolver knows, a link into a secret store, an unknown
+    /// name in a directory that holds a secret, a script nested too deeply and
+    /// a link past the symlink budget are all still refused. Two refusals are
+    /// dropped, both of them guesses about text this command does not run:
+    ///
+    /// * the known end of a partly unknown word is not matched against the
+    ///   floor ([`Self::tails`]): `res$IHS[is.finite(res$IHS)]` in R and
+    ///   `` `…` `` in Markdown are data;
+    /// * a literal path that names nothing on disk is not resolved
+    ///   ([`Self::denied_resolved`]), so prose does not spend the symlink
+    ///   budget that links and real files still answer to.
+    ///
+    /// The body gets its own copy of the state, one level deeper, as a script
+    /// nested anywhere else does, and nothing it changes (a `cd`, a `shopt -s
+    /// dotglob`, a zsh `(D)`) reaches the commands around it.
+    fn read_data_body(&mut self, body: &str, state: &State) -> Scan {
+        let mut local = State {
+            cwds: state.cwds.clone(),
+            vars: state.vars.clone(),
+            depth: state.depth + 1,
+        };
+        let reading_data = std::mem::replace(&mut self.reading_data, true);
+        let dotglob = self.dotglob;
+        if dot_qualifier(body) {
+            self.dotglob = true;
+        }
+        let result = self
+            .walk(body, &mut local)
+            .and_then(|()| self.scan_code_in(body, &local));
+        self.reading_data = reading_data;
+        self.dotglob = dotglob;
+        result
     }
 
     fn program_semantics(&mut self, args: &[Word], state: &mut State) -> Scan {
@@ -984,6 +1061,43 @@ impl<'a> Resolver<'a> {
         Ok(())
     }
 
+    /// The quoted strings in a here-document body that is not data (#546).
+    ///
+    /// Code read from stdin (`python3 - <<'EOF'` with `open('.env')`) names a
+    /// file by a string with no `/` in it, which [`Self::scan_code_in`] does
+    /// not look for and the shell reading of the body sees as one word with
+    /// parentheses. Each single- or double-quoted string on one line is judged
+    /// as one path, taken literally (no glob, no expansion), the way a code
+    /// literal is: refused when it names a protected file, never refused for
+    /// being unverifiable. A data body skips this, because writing a file that
+    /// mentions `.env` reads nothing.
+    fn scan_code_strings(&mut self, text: &str, state: &State) -> Scan {
+        static STRING: Lazy<Regex> = Lazy::new(|| {
+            Regex::new(r#"'([^'\\\n]*(?:\\.[^'\\\n]*)*)'|"([^"\\\n]*(?:\\.[^"\\\n]*)*)""#)
+                .expect("static regex")
+        });
+        let was_strict = std::mem::replace(&mut self.strict, false);
+        let result = (|| -> Scan {
+            for caps in STRING.captures_iter(text).take(MAX_CODE_LITERALS) {
+                let raw = caps
+                    .get(1)
+                    .or_else(|| caps.get(2))
+                    .map_or("", |m| m.as_str());
+                let unescaped = unescape_code_string(raw);
+                let literal = unescaped.trim();
+                if literal.len() < 2 || literal.contains(['\n', UNKNOWN]) || literal.contains("://")
+                {
+                    continue;
+                }
+                let template: Template = literal.chars().map(|c| Atom::Ch(c, false)).collect();
+                self.check_template(&template, state, literal)?;
+            }
+            Ok(())
+        })();
+        self.strict = was_strict;
+        result
+    }
+
     // ---- judging one path -------------------------------------------------
 
     fn check_template(&mut self, template: &Template, state: &State, shown: &str) -> Scan {
@@ -1207,6 +1321,11 @@ impl<'a> Resolver<'a> {
                 return Err(self.finding(shown, Some(relative), Reason::PatternTail));
             }
         }
+        if self.reading_data {
+            // A guess about where an unknown value lands, in text this
+            // command does not run (#546, `Self::read_data_body`).
+            return Ok(());
+        }
         for pattern in floor_components() {
             // Align the two right-anchored: the candidate's known tail against
             // the deny pattern's last components. Whichever is shorter is the
@@ -1237,6 +1356,15 @@ impl<'a> Resolver<'a> {
         let lexical = lexical_normalize(path);
         if self.guard.is_denied(&lexical) {
             return Verdict::Denied;
+        }
+        if self.reading_data && names_nothing(path) {
+            // A word of a data body (#546) that names nothing on disk. Asked
+            // of the path as written, through the same lookup `open` makes,
+            // so a link anywhere on the way, a case-insensitive match or a
+            // spelling Windows shortens all find the file and are resolved
+            // below like any other path. Only "not found" skips; any other
+            // answer is resolved, and fails closed past the budget.
+            return Verdict::Clear;
         }
         let Some(physical) = self.physical(path) else {
             // Out of budget with a link, an unusual name or an unknown folder
@@ -1385,6 +1513,154 @@ impl<'a> Resolver<'a> {
 }
 
 // ---- helpers ---------------------------------------------------------------
+
+/// A zsh glob qualifier that turns on dot-file matching (`*(D)`, `*(.D)`).
+fn dot_qualifier(text: &str) -> bool {
+    static DOT_QUALIFIER: Lazy<Regex> =
+        Lazy::new(|| Regex::new(r"\([^()|]*D[^()|]*\)").expect("static regex"));
+    DOT_QUALIFIER.is_match(text)
+}
+
+/// Whether `path` certainly names nothing: `lstat` answers "not found". A
+/// relative path is never asked, because the process does not run where the
+/// command does.
+fn names_nothing(path: &Path) -> bool {
+    path.is_absolute()
+        && matches!(
+            std::fs::symlink_metadata(path),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound
+        )
+}
+
+/// #546: the here-documents of a top-level command whose bodies are data, as
+/// `(index of the redirect token, byte span of the body)`.
+///
+/// A body is data only when the shell will hand it, unexpanded, to a program
+/// that writes it to a file and runs nothing, and when nothing else in the
+/// same input can run that file. So every simple command in the input has
+/// to be exactly `cat > FILE <<'DELIM'` (see [`data_write`]), joined only by
+/// newlines, `;`, `&&`, `||` or `&`. One command of any other shape, a pipe
+/// or a subshell, and no body in the input is data: `cat > x.sh <<'EOF' …
+/// EOF` followed by `bash x.sh` keeps today's reading, as does any receiver
+/// the guard cannot classify (`sh`, `python3 -`, `xargs`, `while read`,
+/// `at`, `docker exec -i`).
+///
+/// Only a scan's top-level command is classified. A command nested anywhere
+/// (`bash -c`, `eval`, a substitution, another body) may have its output
+/// captured or run, so its bodies stay scripts.
+fn data_heredocs(tokens: &[Token]) -> Vec<(usize, Range<usize>)> {
+    let mut found = Vec::new();
+    let mut start = 0;
+    for (index, token) in tokens.iter().enumerate() {
+        let Token::Op(op) = token else {
+            continue;
+        };
+        if !matches!(*op, "\n" | ";" | "&&" | "||" | "&") {
+            return Vec::new();
+        }
+        if index > start {
+            match data_write(&tokens[start..index], start) {
+                Some(body) => found.push(body),
+                None => return Vec::new(),
+            }
+        }
+        start = index + 1;
+    }
+    if tokens.len() > start {
+        match data_write(&tokens[start..], start) {
+            Some(body) => found.push(body),
+            None => return Vec::new(),
+        }
+    }
+    found
+}
+
+/// One simple command that is exactly bare `cat`, one output redirection to
+/// a literal file (`>`, `>>` or `>|`) and one here-document whose delimiter is
+/// quoted, read the same way by every POSIX shell, and ended by its line.
+/// `offset` is the index of `command[0]` in the whole token list.
+fn data_write(command: &[Token], offset: usize) -> Option<(usize, Range<usize>)> {
+    let mut program = false;
+    let mut output = false;
+    let mut heredoc = None;
+    let mut awaiting_target = false;
+    for (index, token) in command.iter().enumerate() {
+        match token {
+            Token::Word(word) if awaiting_target => {
+                let literal =
+                    !word.is_empty() && word.iter().all(|piece| matches!(piece, Piece::Lit { .. }));
+                if !literal || output {
+                    return None;
+                }
+                output = true;
+                awaiting_target = false;
+            }
+            Token::Word(word) => {
+                let bare_cat = matches!(
+                    word.as_slice(),
+                    [Piece::Lit { text, quoted: false }] if text == "cat"
+                );
+                if !bare_cat || program {
+                    return None;
+                }
+                program = true;
+            }
+            Token::Redirect {
+                op,
+                heredoc: Some(found),
+                ..
+            } if op == "<<" || op == "<<-" => {
+                let plain_text =
+                    found.delimiter_quoted && !found.delimiter_unsupported && found.terminated;
+                let span = found.body_span.clone().filter(|_| plain_text)?;
+                if heredoc.is_some() || awaiting_target {
+                    return None;
+                }
+                heredoc = Some((offset + index, span));
+            }
+            Token::Redirect { op, .. } if matches!(op.as_str(), ">" | ">>" | ">|") => {
+                if awaiting_target {
+                    return None;
+                }
+                awaiting_target = true;
+            }
+            _ => return None,
+        }
+    }
+    if awaiting_target || !program || !output {
+        return None;
+    }
+    heredoc
+}
+
+/// `text` with each span's characters turned to spaces, newlines kept, so
+/// nothing in a span can join text on either side of it into a new word.
+fn blank_spans<'t, 'r>(
+    text: &'t str,
+    spans: impl Iterator<Item = &'r Range<usize>>,
+) -> Cow<'t, str> {
+    let mut spans: Vec<&Range<usize>> = spans.collect();
+    if spans.is_empty() {
+        return Cow::Borrowed(text);
+    }
+    spans.sort_by_key(|span| span.start);
+    let mut out = String::with_capacity(text.len());
+    let mut at = 0;
+    for span in spans {
+        let (start, end) = (span.start.max(at), span.end.min(text.len()));
+        // A span always comes from lexing `text` itself, so both slices exist;
+        // if one did not, the span would stay visible, which only adds
+        // refusals.
+        let (Some(before), Some(inside)) = (text.get(at..start), text.get(start..end)) else {
+            continue;
+        };
+        out.push_str(before);
+        out.extend(inside.chars().map(|c| if c == '\n' { '\n' } else { ' ' }));
+        at = end;
+    }
+    out.push_str(text.get(at..).unwrap_or_default());
+    Cow::Owned(out)
+}
 
 fn push_var(state: &mut State, name: &str, value: Template) {
     let entry = state.vars.entry(name.to_string()).or_default();

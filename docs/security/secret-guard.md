@@ -7,7 +7,8 @@
 > 2026-09-11, fixing QA-C finding H1; the sections below describe that code. Seven well-known
 > password and token stores joined the floor on 2026-09-25 (Crew live QA round 4, Q4-56). On
 > 2026-11-17 the symlink budget began to fail closed (SG-30) and the served page's two file routes
-> began to apply the floor and the redaction (SG-27).
+> began to apply the floor and the redaction (SG-27). Since #546 (1.94.6) a quoted here-document
+> that only writes a file is read as data; see "Here-documents" below.
 > **Audience:** developers working on tool dispatch, the Developer and Biorouter Copilot
 > extensions or the guardrails, and anyone reviewing what BioRouter promises about secrets.
 
@@ -161,6 +162,66 @@ proves expensive.
 - A word that is *entirely* unknown (`cat "$(ls *.csv)"`) is not refused: refusing it would
   refuse every command substitution. That residue is what the output redaction is for.
 
+### Here-documents
+
+Every here-document body used to be read three ways: as a script, as code, and again inside the
+whole command's code pass. That is right when something runs the body (`bash <<'EOF'`,
+`cat <<'EOF' | sh`, `python3 - <<'EOF'`), and it refused ordinary file writes (#546).
+`res$IHS[is.finite(res$IHS)]` in an R script read as a path with an unknown middle whose end
+could spell `credentials`; a backquoted R expression in Markdown read as a command substitution;
+and a 600-word prose body spent the 512 symlink resolutions on words that name nothing, then
+failed closed as too complex.
+
+The lexer (`lex.rs`) now records four facts about each here-document: whether the delimiter was
+quoted, whether every POSIX shell reads that delimiter the same way, whether a line equal to it
+ended the body, and the body's byte range in the input. The delimiter word is always read with
+POSIX quote removal, under the Windows grammar as well, because `<<` is POSIX syntax: otherwise
+the Windows reading of `\EOF` keeps the backslash, never meets the `EOF` line, and turns the
+rest of the input into body. Only that word is read this way; the next word gets the pass's own
+grammar back.
+
+A body is **data** when all of this holds:
+
+- Every command in the input is a plain file write, `cat > FILE <<'EOF'` (or `>>`, `>|`, `<<-`,
+  redirections in any order), joined only by newlines, `;`, `&&`, `||` or `&`. `FILE` is literal
+  text.
+- The delimiter is quoted (`'EOF'`, `"EOF"`, `\EOF`, `'E'OF`) and made only of letters, digits,
+  `_`, `.` and `-`.
+- A line equal to the delimiter ends the body.
+
+Anything else keeps the three readings: an unquoted delimiter, `$'EOF'` (bash and zsh decode it
+and dash does not, so the shells disagree on which line ends the body), a missing or empty
+delimiter, a carriage return straight after the delimiter (the shell reads it as part of the
+delimiter, so its body ends at an earlier `EOF\r` line and the lines after that run), a body
+that runs to the end of the input, a pipe, a subshell, a wrapper such as
+`sudo`, an extra argument, a target with a variable in it, and any other command in the same
+input, including the `bash x.sh` that would run the file just written. Only a scan's top-level
+command is classified. A body inside `bash -c`, `eval` or a command substitution stays a script,
+because its output can be captured and run.
+
+A data body is still read as a script and as code, one level deeper and with its own copy of the
+directory set, because a file written now can run later where the guard cannot look inside it.
+A protected path in any spelling, a link into a secret store, an unknown name in a folder that
+holds a secret, nesting past four levels and a link past the symlink budget are all refused as
+before. Two refusals are dropped, and both are guesses about text this command does not run:
+
+- The known end of a partly unknown word is not matched against the floor.
+- A literal path that `lstat` reports as not found is not resolved, so prose does not spend the
+  symlink budget. The question is asked of the path as written, through the same lookup `open`
+  makes, so a link on the way or a spelling the disk folds still finds the file and is resolved.
+  Only "not found" skips; any other answer is resolved, and past the budget fails closed.
+
+A zsh `(D)` or a `shopt -s dotglob` inside a data body applies to that body only. The command's
+own code pass and dot-glob check read the command with data bodies blanked, because the body has
+already been read.
+
+A body that is not data is also read for quoted strings, each judged as one literal path:
+`python3 - <<'EOF'` with `open('.env')` names the file by a string with no `/`, which the code
+pass does not look for, and the script reading sees `print(open('.env').read())` as one word. A
+data body skips this, because writing a file that mentions `.env` reads nothing. The literal
+whitespace pass over the whole command still runs, so a protected path written out in full, such
+as `~/.aws/credentials`, is refused inside a data body too.
+
 ### Cost
 
 The scan runs on every tool call, so it is bounded: at most 512 symlink resolutions, 64
@@ -235,6 +296,10 @@ boundary against a determined adversary — the same ruling that governs
   `get_app_state` screenshot therefore reaches the model as it was taken, so a credential visible
   in a terminal or an editor is not withheld. The per-request Biorouter Copilot approval is the only
   control there.
+- **A file written by a here-document and run later** is beyond the check, as any script
+  written earlier is. A data body is still held to the floor (above), but a path in it whose end
+  only *could* name a secret, such as `cd "$(…)"` followed by `cat credentials`, is let through
+  when the body only writes a file.
 - **The deny set is editable by the agent**: a negation written into `.biorouterignore` reopens a
   file, as it always could.
 - **Windows shells**: `\` is read as a path separator (not a POSIX escape), so a native
@@ -248,6 +313,7 @@ boundary against a determined adversary — the same ruling that governs
 
 ```bash
 BIOROUTER_DISABLE_KEYRING=true cargo test -p biorouter-mcp --lib -- secret_guard h1_
+BIOROUTER_DISABLE_KEYRING=true cargo test -p biorouter-mcp --test developer_guard_execution
 BIOROUTER_DISABLE_KEYRING=true cargo test -p biorouter --lib -- secret_output extension_manager guardrails::tool_output
 BIOROUTER_DISABLE_KEYRING=true cargo test -p biorouter-server --lib -- crew::local_files
 BIOROUTER_DISABLE_KEYRING=true cargo test -p biorouter-server --lib -- routes::shell
@@ -259,7 +325,11 @@ HOME holding made-up credentials, through the dispatch scan, through the resolve
 name, by case and through the H1 spellings (`~`, `$HOME`, a glob, `cd`, `bash -c`,
 `find -name`), keep their neighbours readable, and prove a negation still reopens one;
 `crew::local_files` holds Crew's registration to the same floor, and `routes::shell` holds the
-served page's two file routes to it and to the redaction. The fake key material is
+served page's two file routes to it and to the redaction. The `issue546_` tests (in
+`secret_guard.rs`, `secret_guard/lex.rs` and the `developer_guard_execution` integration binary)
+hold the here-document rules: the four quoted delimiters as data on both hosts, every form that is
+not a plain file write, links, spellings and budgets inside data bodies, and the real shell ending
+each body where the guard does. The fake key material is
 assembled at run time so no key-shaped literal sits in the source. None of the tests reads the
 real `~/.aws`, `~/.ssh` or `~/.config/biorouter`.
 
