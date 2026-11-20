@@ -534,6 +534,23 @@ const EXPECTED: &[Site] = &[
     },
     Site {
         needle: "CallCapability::public_enforced(",
+        file: "crates/biorouter-cli/src/session/executed_calls.rs",
+        count: 1,
+        what: "NOT a production decider: the `#[cfg(test)] mod producer`'s \
+               `run_execute_code()` helper (#525), which dispatches one real \
+               `code_execution__execute_code` call through an `ExtensionManager` so \
+               the CLI's executed-calls views are tested against the records the \
+               extension really writes. It takes the most restrictive pair rather \
+               than a permissive one invented for a test's convenience. Counted for \
+               the same reason as the `apps.rs`, `crew_tools/mod.rs` and `bridge.rs` \
+               helpers: a line-wise grep cannot tell a `#[cfg(test)]` block from \
+               production, and a filter that tried would blind the census to \
+               production too. The CLI never builds a capability in production: it \
+               reads stored or streamed tool results. Keep it one helper: a test \
+               that inlines the constructor moves the count off 1 and fires here",
+    },
+    Site {
+        needle: "CallCapability::public_enforced(",
         file: "crates/biorouter-server/src/routes/agent.rs",
         count: 2,
         what: "the two entries with no caller identity — `POST /agent/call_tool` and \
