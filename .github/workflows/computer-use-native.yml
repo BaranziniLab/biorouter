@@ -10,8 +10,17 @@ name: Biorouter Copilot native payloads
 # Xcode tools). The Linux and Windows payloads build in the pinned
 # rust:1.92-bullseye container through scripts/build-computer-use-helper-cross.sh,
 # the same recipe the release and the package workflows use; the Windows payload
-# is then checked on a Windows runner. GUI behaviour (the fixture apps driven
-# through Copilot's tools, drag included) runs in the fixture jobs, not here.
+# is then checked on a Windows runner.
+#
+# The fixture jobs then drive a real app through Copilot's own tools
+# (crates/biorouter-mcp/tests/computer_use_fixture.rs): the GTK fixture under
+# Xvfb with the accessibility bridge on Ubuntu 24.04, and the WinForms fixture on
+# a Windows desktop. Each reads every outcome from the app's own state file:
+# typing, clicking, checking, look only and password refusals, a list reordered
+# by drag, text dragged into a second window, scrolling, and Stop in the middle
+# of a drag with no button left pressed. macOS hosted runners cannot grant
+# Accessibility to the Biorouter Copilot bundle, so there the fixture is built
+# and the drive is the owner's live gate (AD-22).
 
 on:
   pull_request:
@@ -23,6 +32,8 @@ on:
       - ".dockerignore"
       - "rust-toolchain.toml"
       - "scripts/*computer-use*"
+      - "scripts/*copilot-fixture*"
+      - "crates/biorouter-mcp/tests/computer_use_fixture.rs"
       - "scripts/cross-env.sh"
       - "scripts/check-macos-deployment.sh"
       - "ui/desktop/scripts/computer-use-resources.js"
@@ -77,6 +88,10 @@ jobs:
         run: python scripts/computer-use-runtime.py contract ${{ matrix.target }}
       - name: Packaging regression tests
         run: python scripts/test-computer-use-packaging.py
+      # The drive needs Accessibility for the Copilot bundle, which a hosted runner
+      # cannot grant; building the fixture keeps it ready for the live gate.
+      - name: Build the macOS fixture app
+        run: bash scripts/build-copilot-fixture-macos.sh
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -163,6 +178,72 @@ jobs:
       - name: Contract smoke (no desktop access)
         run: python scripts/computer-use-runtime.py contract win32-x64
 
+  # The GTK fixture driven through Copilot's own tools, in a throwaway X11 session
+  # with the accessibility bridge (at-spi2-core 2.52, Ubuntu 24.04's).
+  linux-fixture:
+    name: Drive the GTK fixture (linux-x64)
+    needs: container
+    timeout-minutes: 45
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.92"
+      - uses: actions/download-artifact@v4
+        with:
+          name: computer-use-linux-x64
+          path: target/computer-use/linux-x64
+      - name: Restore the engine's executable mode
+        run: chmod +x target/computer-use/linux-x64/agent-desktop
+      - name: Install the X11 session, accessibility bridge and GTK
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y python3 python3-gi gir1.2-gtk-3.0 at-spi2-core xvfb xauth dbus-x11 openbox
+      - name: Build the driver
+        run: cargo test --locked -p biorouter-mcp --test computer_use_fixture --no-run -j 3
+      - name: Drive the fixture through Copilot's tools, drag and drop included
+        timeout-minutes: 10
+        shell: bash
+        run: bash scripts/test-copilot-fixture-linux.sh target/computer-use/linux-x64 2>&1 | tee target/copilot-fixture-linux.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: copilot-fixture-linux
+          path: target/copilot-fixture-linux.log
+          if-no-files-found: warn
+
+  # The WinForms fixture driven through Copilot's own tools on a Windows desktop,
+  # with the engine this release ships (the windows-gnu build).
+  windows-fixture:
+    name: Drive the WinForms fixture (win32-x64)
+    needs: container
+    timeout-minutes: 60
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.92"
+      - uses: actions/download-artifact@v4
+        with:
+          name: computer-use-win32-x64
+          path: target/computer-use/win32-x64
+      - name: Build the driver
+        run: cargo test --locked -p biorouter-mcp --test computer_use_fixture --no-run -j 3
+      - name: Drive the fixture through Copilot's tools, drag and drop included
+        timeout-minutes: 10
+        shell: powershell
+        run: |
+          powershell -NoProfile -ExecutionPolicy Bypass -File scripts/test-copilot-fixture-windows.ps1 target/computer-use/win32-x64 *>&1 | Tee-Object -FilePath target/copilot-fixture-windows.log
+          exit $LASTEXITCODE
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: copilot-fixture-windows
+          path: target/copilot-fixture-windows.log
+          if-no-files-found: warn
+
   # Upstream's own unit tests for the platform-neutral core, on the vendored tree
   # and Biorouter's toolchain, so a pin move that breaks the core under 1.92 is
   # caught before a payload is built from it.
@@ -183,13 +264,17 @@ jobs:
   native-release-gate:
     timeout-minutes: 5
     if: always()
-    needs: [macos, container, windows, upstream-core-tests]
+    needs: [macos, container, windows, linux-fixture, windows-fixture, upstream-core-tests]
     runs-on: ubuntu-latest
     steps:
-      - name: Require every target's payload and the core tests
+      - name: Require every target's payload, both fixture drives and the core tests
         env:
           MACOS: ${{ needs.macos.result }}
           CONTAINER: ${{ needs.container.result }}
           WINDOWS: ${{ needs.windows.result }}
+          LINUX_FIXTURE: ${{ needs.linux-fixture.result }}
+          WINDOWS_FIXTURE: ${{ needs.windows-fixture.result }}
           CORE: ${{ needs.upstream-core-tests.result }}
-        run: test "$MACOS" = success && test "$CONTAINER" = success && test "$WINDOWS" = success && test "$CORE" = success
+        run: |
+          test "$MACOS" = success && test "$CONTAINER" = success && test "$WINDOWS" = success \
+            && test "$LINUX_FIXTURE" = success && test "$WINDOWS_FIXTURE" = success && test "$CORE" = success
