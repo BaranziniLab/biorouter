@@ -43,6 +43,9 @@ export const DICTATION_MESSAGES = {
   'MSG-OFFLINE':
     "This computer cannot reach Biorouter's model repository. On a computer that can, run `biorouter dictation urls` and download the files it lists, copy them here, then run `biorouter dictation install --from <file>` (or put them in <folder> and choose Rescan).",
   'MSG-HASH': "The downloaded file did not match Biorouter's pin, so nothing was installed.",
+  // The installer's own sentence (`InstallError::Cancelled`), shown as the daemon sends it; held
+  // here so a surface can tell a cancel the person made from a failure (`isCancelledInstall`).
+  'MSG-INSTALL-CANCELLED': 'The install was cancelled.',
   'MSG-DISK': 'Installing <model> needs <x> GB free on <volume>; <y> GB is available.',
   'MSG-TURBO-CPU':
     'This model takes about <t> s to transcribe <a> s of speech on this computer. Install it anyway?',
@@ -145,7 +148,7 @@ export const DICTATION_MESSAGES = {
   'MSG-DISCLOSE-HOST-DETAIL':
     'Biorouter does not save it or send it anywhere else. The text appears here for you to check before you send it.',
   'MSG-SETUP':
-    "Dictation turns your speech into text <where>. It needs a speech model: <name> (<size>), downloaded once from the Baranzini Lab's model repository on GitHub into <folder>. Audio is not saved.",
+    "Dictation turns your speech into text <where>. It needs a <size> speech model, <name>, downloaded once from the Baranzini Lab's model repository on GitHub into <folder>.",
   'MSG-SETUP-SUGGEST':
     'The agent can propose terms it sees in your chats. A term can go into your dictionary when you ask the agent to add it, or reply to its offer naming that term, even if you decline; everything else waits for you to accept it.',
   'MSG-PRIVATE-DRAFT':

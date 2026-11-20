@@ -193,6 +193,14 @@ export async function cancelSpeechModelInstall(model: string): Promise<void> {
   await forModel(model, 'cancel', () => api.cancel(model));
 }
 
+/**
+ * Whether an install's ending sentence is MSG-INSTALL-CANCELLED: a cancel the person made, which
+ * the popover and the row say in the muted ink, as a record, rather than in the ink a failure
+ * takes. The job carries only the daemon's sentence, so the sentence is what is compared.
+ */
+export const isCancelledInstall = (sentence: string | null | undefined): boolean =>
+  !!sentence && sentence === dictationMessage('MSG-INSTALL-CANCELLED');
+
 /** What tells one install job's ending from another's: the status gives a job no id. */
 export const failureKey = (job: InstallJob): string =>
   [job.model, job.bytes_done, job.bytes_total, job.error ?? ''].join('\n');

@@ -691,19 +691,27 @@
   }
 }
 
-/* Installing: a progress ring around the glyph. */
+/* Installing: a progress ring around the glyph, both centred in the 28px button.
+   The ring is named by its own class, never by `svg`: the microphone inside is an
+   `svg` too, and a descendant `svg` rule turned it a quarter and pinned it to the
+   top left corner. The ring's size is authored here because the button's
+   `[&_svg]:size-4` utility would otherwise shrink it to 16px in that corner; this
+   rule is unlayered, so it wins over the layered utility. */
 .br-dictation-ring {
   position: relative;
   display: inline-flex;
+  flex: none;
   align-items: center;
   justify-content: center;
   width: 28px;
   height: 28px;
 }
 
-.br-dictation-ring svg {
+.br-dictation-ring__svg {
   position: absolute;
   inset: 0;
+  width: 100%;
+  height: 100%;
   transform: rotate(-90deg);
 }
 
@@ -773,10 +781,45 @@
   color: var(--text-danger);
 }
 
+/* A record of what the person did (a cancelled install): the privacy line's muted ink, not
+   the ink a failure takes, so it reads as what happened rather than as something wrong. */
+.br-dictation-setup__note {
+  color: var(--text-muted);
+}
+
+/* The popover box takes focus after a pointer open (`quietSetupOpen`); it is not a control,
+   so it draws no ring, and the next Tab reaches the first control, which does. The
+   `prefers-contrast: more` and forced colours outline in `main.css` still wins. */
+.br-dictation-setup-popover:focus {
+  outline: none;
+}
+
 .br-dictation-setup__progress {
   display: flex;
   flex-direction: column;
   gap: 4px;
+}
+
+/* The dictionary choice: one line in the popover's own 12px, the box's square on the text
+   column (the 24px hit target insets its 16px square by 4px), the label 8px from the square,
+   and the InfoTip's glyph 4px after the words (its 24px target carries the rest of the gap),
+   never pushed to the far edge by a label that wrapped. */
+.br-dictation-setup__choice {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  margin-inline-start: -4px;
+}
+
+.br-dictation-setup__choice-label {
+  display: inline-flex;
+  min-width: 0;
+  align-items: center;
+  gap: 4px;
+  cursor: pointer;
+  font-size: var(--text-supporting);
+  line-height: var(--text-supporting--line-height);
+  color: var(--text-default);
 }
 
 .br-dictation-setup__actions {
