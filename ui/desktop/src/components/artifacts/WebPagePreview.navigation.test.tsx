@@ -174,6 +174,28 @@ describe('the address field', () => {
     );
   });
 
+  it('refuses a file: or javascript: address with one line, and sends nothing anywhere (L2)', async () => {
+    const { browser } = installBrowser(stateAt('https://example.com/'));
+    await mount();
+    const address = screen.getByRole('combobox', { name: BROWSER_COPY.address });
+    for (const typed of [
+      'file:///etc/hosts',
+      'javascript:alert(1)',
+      'view-source:https://a.test',
+    ]) {
+      await userEvent.clear(address);
+      await userEvent.type(address, `${typed}{Enter}`);
+      const line = await screen.findByTestId('embedded-browser-address-refused');
+      expect(line.textContent).toContain('addresses do not open in the Biorouter Browser');
+    }
+    expect(browser.navigate).not.toHaveBeenCalled();
+    // Typing again clears the line, and an ordinary address opens.
+    await userEvent.clear(address);
+    expect(screen.queryByTestId('embedded-browser-address-refused')).toBeNull();
+    await userEvent.type(address, 'example.org{Enter}');
+    expect(browser.navigate).toHaveBeenLastCalledWith('tab-1', 'https://example.org/');
+  });
+
   it('takes focus when the person presses Cmd L in the page', async () => {
     const { key } = installBrowser(stateAt('https://example.com/'));
     await mount();

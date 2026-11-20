@@ -34,14 +34,31 @@ describe('the Biorouter Browser address field', () => {
     'pubmed',
     '1.2',
     'what is example.com',
-    'file:///etc/passwd',
-    'javascript:alert(1)',
-    'data:text/html,<b>x</b>',
     'mailto:someone@example.com',
-    'about:blank',
+    'about: the history of rome',
+    'data: science jobs',
     'https://user:pass@example.com/',
   ])('searches for %s instead of loading it', (input) => {
     expect(addressFieldTarget(input)).toEqual({ kind: 'search', url: search(input) });
+  });
+
+  it.each([
+    ['file:///etc/passwd', 'file'],
+    ['javascript:alert(1)', 'javascript'],
+    ['JavaScript: alert(document.cookie)', 'javascript'],
+    ['chrome://settings', 'chrome'],
+    ['about:blank', 'about'],
+    ['data:text/html,<b>x</b>', 'data'],
+    ['view-source:https://example.com', 'view-source'],
+    ['  chrome-extension://abc/page.html', 'chrome-extension'],
+    ['blob:https://example.com/1', 'blob'],
+  ])('refuses %s with a one line reason instead of searching for it (L2)', (input, scheme) => {
+    const target = addressFieldTarget(input);
+    expect(target).toEqual({
+      kind: 'refused',
+      scheme,
+      reason: `${scheme}: addresses do not open in the Biorouter Browser. It opens web pages (http and https) only.`,
+    });
   });
 
   it('answers nothing for empty input', () => {
@@ -57,14 +74,15 @@ describe('the Biorouter Browser address field', () => {
       })
     ).toEqual({ kind: 'search', url: 'https://duckduckgo.com/?q=rna%20seq' });
     // A template without the placeholder falls back to the default rather than dropping the query.
-    expect(addressFieldTarget('x', { name: 'Broken', template: 'https://bad.example/' })?.url).toBe(
-      DEFAULT_SEARCH_ENGINE.template.replace('{searchTerms}', 'x')
-    );
+    expect(addressFieldTarget('x', { name: 'Broken', template: 'https://bad.example/' })).toEqual({
+      kind: 'search',
+      url: DEFAULT_SEARCH_ENGINE.template.replace('{searchTerms}', 'x'),
+    });
   });
 
   it('caps what an oversized input can send to the search engine', () => {
     const target = addressFieldTarget('a b '.repeat(5000));
     expect(target?.kind).toBe('search');
-    expect(target!.url.length).toBeLessThan(8000);
+    expect(target && 'url' in target ? target.url.length : Infinity).toBeLessThan(8000);
   });
 });

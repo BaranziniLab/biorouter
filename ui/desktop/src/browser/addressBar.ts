@@ -11,8 +11,11 @@
  *   over `http:`, the scheme local development servers speak.
  * - Anything else is a search with the search engine, Google by default.
  *
- * Other schemes (`file:`, `javascript:`, `data:`, `mailto:`) are never loaded from the address
- * field; they are searched for as text, which is harmless.
+ * - An address with a scheme a web page must never be opened with (`file:`, `javascript:`,
+ *   `chrome:`, `about:`, `data:`, `view-source:` and the browser's own internal schemes) is
+ *   refused with one line saying why (L2). Sending it to the search engine instead would hand a
+ *   local path or a script to a third party as a query.
+ * - Any other scheme (`mailto:`) is searched for as text, which is harmless.
  */
 
 export type SearchEngine = {
@@ -26,7 +29,39 @@ export const DEFAULT_SEARCH_ENGINE: SearchEngine = {
   template: 'https://www.google.com/search?q={searchTerms}',
 };
 
-export type AddressTarget = { kind: 'url' | 'search'; url: string };
+export type AddressTarget =
+  | { kind: 'url' | 'search'; url: string }
+  | { kind: 'refused'; scheme: string; reason: string };
+
+/**
+ * Schemes the address field refuses (L2). `javascript:` and `vbscript:` are refused however they
+ * are spaced; the rest only when the scheme runs straight into its address (`about:blank`), so a
+ * search such as `data: science jobs` still searches.
+ */
+const REFUSED_SCHEMES = new Set([
+  'file',
+  'javascript',
+  'vbscript',
+  'chrome',
+  'chrome-extension',
+  'chrome-untrusted',
+  'devtools',
+  'about',
+  'data',
+  'blob',
+  'filesystem',
+  'view-source',
+]);
+const SCHEME_PREFIX = /^([a-z][a-z0-9+.-]*):(\s?)/i;
+
+function refusedScheme(text: string): string | null {
+  const match = SCHEME_PREFIX.exec(text);
+  if (!match) return null;
+  const scheme = match[1].toLowerCase();
+  if (!REFUSED_SCHEMES.has(scheme)) return null;
+  const spaced = match[2] !== '';
+  return spaced && scheme !== 'javascript' && scheme !== 'vbscript' ? null : scheme;
+}
 
 const MAX_ADDRESS_CHARS = 8 * 1024;
 const HOST_PATTERN =
@@ -67,6 +102,14 @@ export function addressFieldTarget(
 ): AddressTarget | null {
   const text = input.trim();
   if (!text) return null;
+  const refused = refusedScheme(text);
+  if (refused) {
+    return {
+      kind: 'refused',
+      scheme: refused,
+      reason: `${refused}: addresses do not open in the Biorouter Browser. It opens web pages (http and https) only.`,
+    };
+  }
   if (text.length > MAX_ADDRESS_CHARS)
     return { kind: 'search', url: searchUrl(text.slice(0, 2048), engine) };
 

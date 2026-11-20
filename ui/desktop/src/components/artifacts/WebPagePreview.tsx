@@ -141,6 +141,8 @@ export default function WebPagePreview({
   const [state, setState] = useState<EmbeddedBrowserState | null>(null);
   const [addressDraft, setAddressDraft] = useState(url);
   const [isEditingAddress, setIsEditingAddress] = useState(false);
+  // L2: why the address field did not open what was typed (a `file:` or `javascript:` address).
+  const [addressRefusal, setAddressRefusal] = useState<string | null>(null);
   const [unavailable, setUnavailable] = useState(false);
   const [sharedWithAgent, setSharedWithAgent] = useState(false);
   // BB-15: an agent operation is running on this tab right now (main reports it).
@@ -447,7 +449,14 @@ export default function WebPagePreview({
         return;
       }
       const target = addressFieldTarget(addressDraft, searchEngine);
-      if (target) openAddress(target.url);
+      if (!target) return;
+      if (target.kind === 'refused') {
+        setAddressRefusal(target.reason);
+        setSuggestions([]);
+        return;
+      }
+      setAddressRefusal(null);
+      openAddress(target.url);
     },
     [addressDraft, highlighted, openAddress, searchEngine, suggestions]
   );
@@ -625,6 +634,7 @@ export default function WebPagePreview({
               onChange={(event) => {
                 setAddressDraft(event.target.value);
                 setIsEditingAddress(true);
+                setAddressRefusal(null);
               }}
               onKeyDown={(event) => {
                 if (event.key === 'Escape') {
@@ -855,6 +865,13 @@ export default function WebPagePreview({
         </DropdownMenu>
       </div>
 
+      {addressRefusal && (
+        <BrowserLine
+          testId="embedded-browser-address-refused"
+          text={addressRefusal}
+          onDismiss={() => setAddressRefusal(null)}
+        />
+      )}
       {state?.error && (
         <BrowserLine testId="embedded-browser-error" text={state.error}>
           {state.errorOffersExternal && (
