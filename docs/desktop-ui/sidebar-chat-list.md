@@ -259,12 +259,13 @@ date header is drawn anyway (one element). The lines in view are read from the d
 off a drawn row by `measuredLinePitch`, so no header, row or gap height is assumed), on every
 scroll, committed before the frame paints, and again after anything that moves lines without a
 scroll (a view drawn, a folder opened, rows arriving, the box growing). The pitch is read, not
-assumed, because the Text size preference scales the row and its 2px gap (34.5px a line under
-Larger text): read at a fixed 30px, the middle of a long list showed only placeholder. For the same
-reason the placeholder scales its own 2px. Some lines are kept drawn whatever the range: the focused
-line (a row, a folder header or a Show more), the current chat, so the single Tab stop stays on it, a
-row being renamed or just renamed, and a line whose right-click or ⋯ menu is open (a ⋯ opened with
-the pointer never takes focus, and the list scrolls under it). So neither focus, an open menu nor an
+assumed, because the Text size preference scales the row and its 2px gap (32.1px a line at
+Standard, the default, and 34.5px at Large): read at a fixed 30px, the middle of a long list
+showed only placeholder. For the same reason the placeholder scales its own 2px. Some lines are
+kept drawn whatever the range: the focused line (a row, a folder header or a Show more), the
+current chat, so the single Tab stop stays on it, a row being renamed or just renamed, and a line
+whose right-click or ⋯ menu is open (a ⋯ opened with the pointer never takes focus, and the list
+scrolls under it). So neither focus, an open menu nor an
 editor is ever unmounted under the person. Home and End scroll the list to its end before they move
 focus, so that end's row is drawn; ArrowUp and ArrowDown on a line the list was scrolled away from
 bring the list back to it first, so they reach the line next to it, not the first row drawn far down

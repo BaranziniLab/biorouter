@@ -366,7 +366,7 @@ describe('The non-private model disclosure is the shared dialog (ruling 23)', ()
     }
   });
 
-  // The app's minimum window (main.ts: 1048 x 600) at the largest text size (`larger`, 1.15): the
+  // The app's minimum window (main.ts: 1048 x 600) at the largest text size (`large`, 1.15): the
   // smallest room a person can give the dialog. Text of the served copy's length overflows there
   // (measured: 400px of text in a 377px body), and a refusal's notice takes more room still.
   const SHORT = { width: 1048, height: 600, scale: 1.15 } as const;

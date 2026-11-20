@@ -5,7 +5,7 @@
  * V4-R3-1: Tab onto an InfoTip drew its focus edge over the label's last letter (the 24px hit box
  * starts 1px before the label's end). The mark is now a 20px box inside the hit box, so focusing
  * the tip must not change one pixel of the label, in normal colours, under `prefers-contrast:
- * more` and in forced colours, at standard and Large text.
+ * more` and in forced colours, at Small (unscaled) and Standard (1.07, the default) text.
  *
  * V4-R3-5: a status line ("Restart to apply") grew the row by one line and the control, centred on
  * the grown row, slid 8px down under the pointer that had just clicked it. The value and the
@@ -411,7 +411,7 @@ describe('a settings row under a keyboard and a pointer', () => {
           const version = await rect(tab, '[data-testid="version"]');
           const value = await rect(tab, '[data-testid="version"] .br-setting-row-value');
           const button = await rect(tab, '[data-testid="version"] .br-setting-row-control button');
-          // 40px at standard text, the 40px row scaled at Large; padding 10/9 plus the 1px edge.
+          // 40px at Small text, the 40px row scaled at Standard; padding 10/9 plus the 1px edge.
           expect(row.height).toBeCloseTo(scale === '1' ? 40 : 42.8, 1);
           // The 1px edge room is part of the bottom 10px, so the line sits on the row's centre.
           expect(control.mid - row.mid, scale).toBeCloseTo(0, 1);

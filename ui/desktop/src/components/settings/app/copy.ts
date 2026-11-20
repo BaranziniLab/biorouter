@@ -50,7 +50,7 @@ export const appearanceCopy = {
   themeOptions: { light: 'Light', dark: 'Dark', system: 'System' },
   palette: 'Color palette',
   textSize: 'Text size',
-  textSizeOptions: { standard: 'Standard', large: 'Large', larger: 'Larger' },
+  textSizeOptions: { small: 'Small', standard: 'Standard', large: 'Large' },
 } as const;
 
 export const aboutCopy = {

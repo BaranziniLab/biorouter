@@ -1362,9 +1362,10 @@ value's *location* is as load-bearing as the number.
   folded into one `.br-chat-row-gap` placeholder of exactly its height, so the
   scroll height and every drawn row's place are unchanged. The pitch is read off a
   drawn row (`measuredLinePitch` in `RecentChats.tsx`), never assumed: the Text
-  size preference scales the 28px row and its 2px gap (34.5px a line under Larger
-  text), which is also why the placeholder scales its own 2px. Kept drawn whatever
-  the range: the focused line (row, folder header or Show more), the current chat
+  size preference scales the 28px row and its 2px gap (32.1px a line at Standard,
+  the default, and 34.5px at Large), which is also why the placeholder scales its
+  own 2px. Kept drawn whatever the range: the focused line (row, folder header or
+  Show more), the current chat
   (so the list's single Tab stop stays on it), a row being renamed or just renamed,
   and a line whose right-click or `⋯` menu is open, so focus, an open menu or the
   editor is never unmounted under the person. ⚠ No row mounts a Radix menu root:
