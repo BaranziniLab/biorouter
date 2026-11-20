@@ -1849,17 +1849,17 @@ impl ExtensionManager {
         if !crate::agents::browser_extension::desktop_browser_available() {
             return Ok(None);
         }
-        if let Ok(session) = self
+        // Fail closed: a chat whose kind cannot be read is never assumed to be a person's own.
+        let session = self
             .context
             .session_manager
             .get_session(session_id, false)
             .await
-        {
-            anyhow::ensure!(
-                session.session_type != crate::session::session_manager::SessionType::SubAgent,
-                crate::agents::browser_extension::SUBAGENT_REFUSAL
-            );
-        }
+            .map_err(|_| anyhow::anyhow!(crate::agents::browser_extension::UNKNOWN_CHAT_REFUSAL))?;
+        anyhow::ensure!(
+            session.session_type != crate::session::session_manager::SessionType::SubAgent,
+            crate::agents::browser_extension::SUBAGENT_REFUSAL
+        );
         let status = self.browser_use.status(session_id, &self.provider).await?;
         anyhow::ensure!(
             status.public_model != cap.tier().is_private(),
@@ -5079,6 +5079,41 @@ mod tests {
                 .await
         );
         assert!(!manager.has_non_injected_extensions().await);
+    }
+
+    /// BB-16: the subagent refusal fails closed. A chat whose row cannot be read could be a
+    /// subagent, so no grant is asked for and nothing reaches the window.
+    #[tokio::test]
+    #[serial_test::serial(workspace_services)]
+    async fn a_browser_call_from_a_chat_that_cannot_be_found_is_refused() {
+        let root = tempfile::tempdir().unwrap();
+        let manager = Arc::new(ExtensionManager::new_without_provider(
+            root.path().to_path_buf(),
+        ));
+        let config = ExtensionConfig::Platform {
+            name: crate::agents::browser_extension::EXTENSION_NAME.to_string(),
+            description: String::new(),
+            bundled: Some(true),
+            available_tools: Vec::new(),
+        };
+        crate::agents::browser_extension::set_available_for_tests(Some(true));
+        let refused = manager
+            .admit_browser(
+                "no-such-chat",
+                &config,
+                "browser__browser_snapshot",
+                None,
+                crate::privacy::CallCapability::for_test_restricted(),
+                &CancellationToken::new(),
+            )
+            .await;
+        crate::agents::browser_extension::set_available_for_tests(None);
+        let error = refused.err().expect("refused").to_string();
+        assert_eq!(
+            error,
+            crate::agents::browser_extension::UNKNOWN_CHAT_REFUSAL,
+            "{error}"
+        );
     }
 
     /// BB-09 and BB-18: the `browser` key and the `browser__browser_*` names belong to the

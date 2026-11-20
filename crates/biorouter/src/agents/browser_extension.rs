@@ -52,6 +52,10 @@ pub const SUBAGENT_REFUSAL: &str = "The Biorouter Browser runs only in a person'
      is the chat on screen; a subagent cannot use it. Return what you need to the parent chat, \
      or use webdocuments web_scrape for the plain text of a public page.";
 
+/// Said where the calling chat cannot be looked up, so whether it is a subagent is unknown.
+pub const UNKNOWN_CHAT_REFUSAL: &str = "The Biorouter Browser could not confirm which chat is \
+     calling, so it did nothing. Ask the person to reopen the chat and try again.";
+
 /// Said where no desktop app hosts the browser: `biorouter serve`, the CLI in its own process.
 pub const NOT_AVAILABLE: &str = "The Biorouter Browser runs in the Biorouter desktop app, which \
      is not hosting this chat. Use webdocuments web_scrape for the plain text of a public page, \
