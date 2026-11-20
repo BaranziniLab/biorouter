@@ -45,7 +45,7 @@ export const DICTATION_MESSAGES = {
   'MSG-HASH': "The downloaded file did not match Biorouter's pin, so nothing was installed.",
   // The installer's own sentence (`InstallError::Cancelled`), shown as the daemon sends it; held
   // here so a surface can tell a cancel the person made from a failure (`isCancelledInstall`).
-  'MSG-INSTALL-CANCELLED': 'The install was cancelled.',
+  'MSG-INSTALL-CANCELLED': 'The install was canceled.',
   'MSG-DISK': 'Installing <model> needs <x> GB free on <volume>; <y> GB is available.',
   'MSG-TURBO-CPU':
     'This model takes about <t> s to transcribe <a> s of speech on this computer. Install it anyway?',

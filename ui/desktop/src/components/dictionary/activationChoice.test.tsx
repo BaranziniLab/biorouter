@@ -132,7 +132,7 @@ describe('first dictionary activation choice', () => {
     });
     rerender({
       status: speechStatus(
-        { install_job: job('failed', 9, 'The install was cancelled.') },
+        { install_job: job('failed', 9, 'The install was canceled.') },
         { installed: false }
       ),
     });

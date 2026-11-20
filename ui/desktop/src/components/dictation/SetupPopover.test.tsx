@@ -181,7 +181,7 @@ describe('the setup popover', () => {
           bytes_total: turbo.bytes,
           bytes_per_second: 0,
           phase: 'failed',
-          error: 'The install was cancelled.',
+          error: 'The install was canceled.',
         },
       },
       turbo
@@ -190,7 +190,7 @@ describe('the setup popover', () => {
       <SetupPopover status={status} progress={null} onNotNow={vi.fn()} onMoreInSettings={vi.fn()} />
     );
     expect(screen.queryByRole('alert')).toBeNull();
-    const note = screen.getByText('The install was cancelled.');
+    const note = screen.getByText('The install was canceled.');
     expect(note).toHaveAttribute('role', 'status');
     expect(note).toHaveClass('br-dictation-setup__note');
     // Install is still offered, so the person can pick up where the partial stopped.

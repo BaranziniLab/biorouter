@@ -1025,7 +1025,7 @@ impl std::fmt::Display for InstallError {
                 f,
                 "Nothing was installed in the shared model folder, because {why}. Make each folder on that path a real folder that only root or an Administrator can change, then try again."
             ),
-            InstallError::Cancelled => f.write_str("The install was cancelled."),
+            InstallError::Cancelled => f.write_str("The install was canceled."),
             InstallError::Io(e) => write!(f, "The model could not be written: {e}."),
             InstallError::Internal(why) => write!(f, "The install failed: {why}."),
         }

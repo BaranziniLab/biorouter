@@ -1895,7 +1895,7 @@ mod tests {
             (InstallError::Redirect("more than 5 redirects".into()).to_string(), "The download was refused: more than 5 redirects."),
             (InstallError::KeptFailing.to_string(), "The download kept failing, so it stopped. Run the install again to continue where it stopped."),
             (InstallError::UnsafeFolder("/var/lib/biorouter is not owned by root".into()).to_string(), "Nothing was installed in the shared model folder, because /var/lib/biorouter is not owned by root. Make each folder on that path a real folder that only root or an Administrator can change, then try again."),
-            (InstallError::Cancelled.to_string(), "The install was cancelled."),
+            (InstallError::Cancelled.to_string(), "The install was canceled."),
             (InstallError::Io(io()).to_string(), "The model could not be written: no space."),
             (InstallError::Internal("a catalog URL does not parse".into()).to_string(), "The install failed: a catalog URL does not parse."),
             (ImportError::Read { path: "/m/x.bin".into(), error: io() }.to_string(), "/m/x.bin could not be read: no space."),

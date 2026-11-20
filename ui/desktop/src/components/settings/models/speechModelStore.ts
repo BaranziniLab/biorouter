@@ -55,7 +55,7 @@ export interface SpeechModelsSnapshot {
   /**
    * Per model, the failed install the daemon still reports after that model was installed some
    * other way (Rescan, the CLI) and then removed from this window. The daemon keeps its last job
-   * until the next install, so without this the row said "The install was cancelled." again after
+   * until the next install, so without this the row said "The install was canceled." again after
    * Remove, about a job that ended before the model was installed [M]. A key from {@link failureKey}.
    */
   retiredFailures: Readonly<Record<string, string>>;

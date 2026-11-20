@@ -560,13 +560,13 @@ describe('the model rows', () => {
           bytes_total: 2,
           bytes_per_second: 0,
           phase: 'failed',
-          error: 'The install was cancelled.',
+          error: 'The install was canceled.',
         },
       })
     );
     await renderSection();
     expect(within(row(SMALL)).queryByRole('alert')).toBeNull();
-    const note = within(row(SMALL)).getByText('The install was cancelled.');
+    const note = within(row(SMALL)).getByText('The install was canceled.');
     expect(note).toHaveAttribute('role', 'status');
     expect(note).toHaveClass('text-text-muted');
     expect(within(row(SMALL)).getByRole('button', { name: /^Install / })).toBeEnabled();
