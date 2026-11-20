@@ -1176,7 +1176,7 @@ On Windows and Linux the tray item and shortcut work only while a Biorouter wind
 | Transcription | WSL's `biorouter` worker, Linux on the CPU |
 | Models | The WSL account's `~/.local/share/biorouter/dictation/models/`; `biorouter dictation install --from /mnt/c/…` reuses a download made on the Windows side, after the hash check |
 | Bias | As S9 |
-| Entry points | As S9; or `biorouter serve` inside WSL, opened from a Windows browser at the address it prints (`http://127.0.0.1:8765/?t=<token>`), which is S5 through WSL's localhost forwarding [I]; or the Windows desktop app (S3) |
+| Entry points | As S9; or `biorouter serve` inside WSL, opened from a Windows browser at the full address (`http://127.0.0.1:8765/?t=<token>`), which the banner prints whole at a terminal and `biorouter serve url` shows otherwise (#524), and which is S5 through WSL's localhost forwarding [I]; or the Windows desktop app (S3) |
 | Detection | `WSL_DISTRO_NAME` set; WSLg when `/mnt/wslg/PulseServer` exists; WSL1 when `/proc/sys/kernel/osrelease` lacks `microsoft-standard` |
 | Messages | MSG-WSL2-NOPULSE when WSLg is there but the PulseAudio client library is missing; MSG-WSL2-NOWSLG when WSLg is absent or turned off, because no PulseAudio server exists to reach and installing `libpulse0` would not help; MSG-WSL1 |
 | Clipboard | `biorouter dictate --copy` goes through `powershell.exe Set-Clipboard` |
