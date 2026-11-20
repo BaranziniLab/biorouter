@@ -185,6 +185,29 @@ impl ToolErrorKind {
             }
         }
     }
+
+    /// [`Self::guidance`] for an error whose retry verdict may differ from the
+    /// kind's default, because the tool's own envelope overrode it.
+    ///
+    /// Issue #537: the shell's foreground budget marks its kill
+    /// `{kind: timeout, retryable: false}`, since an identical retry is killed
+    /// the same way, and the header used to read `retryable=false` followed by
+    /// "One retry … is reasonable". Only the two kinds that are retryable by
+    /// default can be overridden into that contradiction; every other case
+    /// keeps its usual sentence.
+    pub fn guidance_for(self, retryable: bool) -> &'static str {
+        match (self, retryable) {
+            (Self::Timeout, false) => {
+                "The call exceeded its deadline, and the same call will exceed it again. \
+                 Narrow it or run it another way."
+            }
+            (Self::Transient, false) => {
+                "A dependency failed, and the tool reports that repeating the call will not \
+                 help. Take another route."
+            }
+            _ => self.guidance(),
+        }
+    }
 }
 
 /// Where in a file the failure points, when the error text says so (`file:line`
@@ -262,7 +285,7 @@ impl ToolError {
             "[tool_error kind={} retryable={}{at}] {}",
             self.kind.as_str(),
             self.retryable,
-            self.kind.guidance()
+            self.kind.guidance_for(self.retryable)
         )
     }
 
@@ -1156,6 +1179,31 @@ mod tests {
         let header = classified.header();
         assert!(header.contains("kind=timeout retryable=false"));
         assert!(!header.contains("One retry"));
+    }
+
+    #[test]
+    fn issue537_an_override_changes_the_guidance_only_where_it_would_contradict_the_flag() {
+        assert!(!ToolErrorKind::Transient
+            .guidance_for(false)
+            .contains("One retry"));
+        for kind in [
+            ToolErrorKind::NotFound,
+            ToolErrorKind::PermissionDenied,
+            ToolErrorKind::InvalidArgs,
+            ToolErrorKind::ToolFailure,
+            ToolErrorKind::Internal,
+        ] {
+            assert_eq!(kind.guidance_for(false), kind.guidance(), "{kind:?}");
+            assert_eq!(kind.guidance_for(true), kind.guidance(), "{kind:?}");
+        }
+        assert_eq!(
+            ToolErrorKind::Timeout.guidance_for(true),
+            ToolErrorKind::Timeout.guidance()
+        );
+        assert_eq!(
+            ToolErrorKind::Transient.guidance_for(true),
+            ToolErrorKind::Transient.guidance()
+        );
     }
 
     #[test]
