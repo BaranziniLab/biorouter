@@ -18552,10 +18552,18 @@ impl Agent {
         .await
     }
 
-    /// Override the system prompt with a custom template
+    /// Replace the base system prompt with a custom template
     pub async fn override_system_prompt(&self, template: String) {
         let mut prompt_manager = self.prompt_manager.lock().await;
         prompt_manager.set_system_prompt_override(template);
+    }
+
+    /// Put a custom template in place of the base system prompt and keep
+    /// Biorouter's core after it: the tool roster, tool instructions, task
+    /// rules, the tool-output frame and the safety rules (#544).
+    pub async fn compose_system_prompt(&self, template: String) {
+        let mut prompt_manager = self.prompt_manager.lock().await;
+        prompt_manager.set_composed_system_prompt_override(template);
     }
 
     pub async fn list_extension_prompts(&self) -> HashMap<String, Vec<Prompt>> {
