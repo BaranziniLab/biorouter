@@ -4959,6 +4959,26 @@ body:has(.biorouter-modal-surface [data-slot='select-content'][data-state='open'
    point; keeping it working would have preserved a fix for a defect that no
    longer exists. */
 
+/* THE WINDOW FLOOR, KNOWLEDGE'S PART (owner, 2026-11-19). The window may now
+   narrow to `WINDOW_MIN_WIDTH` (721px, Layout/yieldLadder.ts). Below rung 1 the
+   sidebar is folded and the band carries the titlebar reserve (172px on macOS,
+   the selector `.biorouter-page-header-bar` keys its margin on), and below the
+   860px step the Sources/Graph pair joins the band too. There, with the widest
+   labels (BioOKF, Private, four-digit counts), the counts painted over the
+   pair below an 830px window, even after the base's name had given way. So
+   while both hold, the counts fold: the title, the base's format and tier, the
+   pair and the actions keep their size, and the band fits down to about 700px.
+   A docked sidebar leaves the band its whole width, and the counts stay.
+   Measured in `Layout/windowFloor.browser.test.tsx`. */
+@container br-knowledge-pane (max-width: 859px) {
+  [data-slot='sidebar'][data-state='collapsed']
+    ~ [data-slot='sidebar-inset']
+    .br-knowledge-pane
+    [data-testid='knowledge-graph-summary'] {
+    display: none;
+  }
+}
+
 /* @ws WS-USAGE begin: home */
 .biorouter-home-content {
   container-name: biorouter-home-content;

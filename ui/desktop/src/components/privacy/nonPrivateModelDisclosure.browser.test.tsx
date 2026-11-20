@@ -34,6 +34,7 @@ import { build, type Plugin } from 'esbuild';
 import postcss from 'postcss';
 import { chromium, type Browser, type Page } from 'playwright';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { WINDOW_MIN_WIDTH } from '../Layout/yieldLadder';
 
 import { fontScale } from '../../../vite-plugins/fontScale.mjs';
 
@@ -366,10 +367,11 @@ describe('The non-private model disclosure is the shared dialog (ruling 23)', ()
     }
   });
 
-  // The app's minimum window (main.ts: 1048 x 600) at the largest text size (`larger`, 1.15): the
-  // smallest room a person can give the dialog. Text of the served copy's length overflows there
-  // (measured: 400px of text in a 377px body), and a refusal's notice takes more room still.
-  const SHORT = { width: 1048, height: 600, scale: 1.15 } as const;
+  // The app's minimum window (main.ts: `WINDOW_MIN_WIDTH` x 600, 721 since 2026-11-19; it was
+  // 1048) at the largest text size (`larger`, 1.15): the smallest room a person can give the
+  // dialog. Text of the served copy's length overflows there (measured: 400px of text in a 377px
+  // body), and a refusal's notice takes more room still.
+  const SHORT = { width: WINDOW_MIN_WIDTH, height: 600, scale: 1.15 } as const;
 
   it('scrolls by keyboard from the prose in a short window, the button staying on screen', async (ctx) => {
     if (!browser) return ctx.skip();
@@ -395,7 +397,11 @@ describe('The non-private model disclosure is the shared dialog (ruling 23)', ()
 
   it('keeps a refused acknowledgement in view above "Continue" in that short window', async (ctx) => {
     if (!browser) return ctx.skip();
-    const tab = await open({ ...SHORT, error: true, shot: 'disclosure-refused-1048x600-larger' });
+    const tab = await open({
+      ...SHORT,
+      error: true,
+      shot: `disclosure-refused-${WINDOW_MIN_WIDTH}x600-larger`,
+    });
     try {
       const m = await measure(tab);
       expect(m.buttonText).toBe('Continue');

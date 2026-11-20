@@ -168,8 +168,22 @@ const AppLayoutContent: React.FC = () => {
    * The sidebar snapped shut inside the same tick as the click, so the button
    * looked broken and the rail was unrecoverable until you clicked a second
    * time. Gating on a crossing means a user toggle can never re-arm this.
+   *
+   * ⚠ A LAYOUT effect, so a window that opens below rung 1 is an overlay from
+   * the first frame anything measures. The sidebar starts open, and as a passive
+   * effect this ran after every child's passive effect had already measured the
+   * page beside a docked 288px column: the split watcher in `ChatGroupsShell`
+   * read a 721px window as a 433px box, merged a two-pane split that fits, and
+   * then dropped the snapshot it owed back as the person's own (measured on a
+   * reload at the window's floor, 2026-11-19). Below the old 1048px floor only a
+   * split of three or more could be caught that way; the 721px floor made it
+   * every two-pane split under a 1009px window. Its cleanup therefore leaves the
+   * overlay class alone: it re-runs on every toggle (`setOpen` changes), and a
+   * cleanup that lifted the class did so in the middle of that commit, under the
+   * panel's own layout effect that moves focus into an overlay ⌘B opens. The
+   * class goes when the layout does (the effect after this one).
    */
-  React.useEffect(() => {
+  React.useLayoutEffect(() => {
     const updateSidebarMode = () => {
       const shouldCollapse = window.innerWidth < SIDEBAR_AUTO_COLLAPSE_WIDTH;
       const action = sidebarAutoCollapseAction({
@@ -209,11 +223,10 @@ const AppLayoutContent: React.FC = () => {
 
     updateSidebarMode();
     window.addEventListener('resize', updateSidebarMode);
-    return () => {
-      document.body.classList.remove('biorouter-sidebar-compact');
-      window.removeEventListener('resize', updateSidebarMode);
-    };
+    return () => window.removeEventListener('resize', updateSidebarMode);
   }, [isMobile, setOpen, holdWindowStill]);
+
+  React.useEffect(() => () => document.body.classList.remove('biorouter-sidebar-compact'), []);
 
   // Marks every resize, crossing or not. Its own effect, apart from the watcher, on purpose: the
   // watcher re-runs whenever `setOpen` changes identity (every toggle), and a cleanup that lifted

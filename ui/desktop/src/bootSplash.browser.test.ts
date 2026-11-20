@@ -605,7 +605,8 @@ describe('The boot splash draws the wordmark at rest on the page ground (FR-R1-7
 
   it("sits the wordmark's ink at the window's centre, with the sweep a fixed distance below", async () => {
     if (!browser) return;
-    // 1440 x 900 is the usual window; 1048 x 700 is the smallest the app opens at.
+    // 1440 x 900 is the usual window; 1048 x 700 a small one (it was the smallest until the
+    // window's floor moved to 721 on 2026-11-19).
     for (const [width, height] of [
       [1440, 900],
       [1048, 700],

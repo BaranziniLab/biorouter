@@ -2,13 +2,13 @@
  * The left sidebar's width: its bounds, its clamp, and the stored preference.
  *
  * WHY THIS IS A SEPARATE MODULE. The sidebar was a fixed `15rem` written once
- * inside a React component, and the number leaked: `main.ts` derives the OS
- * window's `minWidth` from it, and `styles/measures.test.ts` re-parses it out of
- * the component's source to assert that derivation still holds. Now that the
- * width is a range rather than a value, three files reason about the same three
- * numbers, and a copy that drifted would let the window be sized narrow enough
- * for the sidebar to squeeze the 760px reading column — a layout bug jsdom
- * cannot see, because it computes no layout.
+ * inside a React component, and the number leaked: `main.ts` derived the OS
+ * window's `minWidth` from it (until 2026-11-19; the floor is now the ladder's
+ * `WINDOW_MIN_WIDTH`), and `styles/measures.test.ts` re-parsed it out of the
+ * component's source. Now that the width is a range rather than a value,
+ * several files reason about the same three numbers, and a copy that drifted
+ * would let a docked sidebar squeeze the 760px reading column — a layout bug
+ * jsdom cannot see, because it computes no layout.
  *
  * So the numbers and the arithmetic live here, free of React and the DOM, the
  * way `useArtifactPanel`'s clamp and `utils/messageClamp.ts`'s thresholds do.
@@ -20,10 +20,9 @@
 /**
  * The floor. 10% under the 240px the sidebar shipped at — narrow enough to buy
  * back a meaningful slice of the canvas, wide enough that a chat title is still
- * a title rather than a truncation. It is also the number the OS window's
- * `minWidth` is derived from (`main.ts`), because the window must stay able to
- * seat the NARROWEST sidebar beside a full reading column; anything wider than
- * this is the user's own choice, made with the window already open.
+ * a title rather than a truncation. (A comment here once said the OS window's
+ * `minWidth` was derived from it; it never was, and is now the yield ladder's
+ * `WINDOW_MIN_WIDTH`, below which the sidebar has long since folded.)
  */
 export const SIDEBAR_MIN_WIDTH = 216;
 

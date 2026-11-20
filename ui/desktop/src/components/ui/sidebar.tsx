@@ -13,6 +13,7 @@ import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from '
 import { Skeleton } from './skeleton';
 import { AppTooltipProvider, Tooltip, TooltipContent, TooltipTrigger } from './Tooltip';
 import { useIsMobile } from '../../hooks/use-mobile';
+import { isBrowserSurface } from '../../utils/surface';
 import { MOTION, RESIZING_CLASSES } from '../../styles/motion';
 import {
   SIDEBAR_DEFAULT_WIDTH,
@@ -194,7 +195,10 @@ function SidebarProvider({
   open?: boolean;
   onOpenChange?: (open: boolean) => void;
 }) {
-  const isMobile = useIsMobile();
+  // The drawer (a sheet over the page) is the layout of a narrow BROWSER. The desktop window
+  // keeps the overlay below rung 1 at every width its OS minimum allows, so narrowing the
+  // window folds the sidebar one way only, never into a second presentation.
+  const isMobile = useIsMobile() && isBrowserSurface();
   const [openMobile, setOpenMobile] = React.useState(false);
 
   // This is the internal state of the sidebar.
@@ -692,7 +696,7 @@ function Sidebar({
 
   return (
     <div
-      className="group peer text-sidebar-foreground hidden md:block"
+      className="group peer text-sidebar-foreground"
       data-state={state}
       data-collapsible={state === 'collapsed' ? collapsible : ''}
       data-variant={variant}
@@ -721,7 +725,7 @@ function Sidebar({
         inert={offCanvas}
         onClick={handlePanelClick}
         className={cn(
-          'biorouter-sidebar-shell bg-sidebar fixed inset-y-0 z-10 hidden h-svh w-(--sidebar-width) will-change-transform md:flex',
+          'biorouter-sidebar-shell bg-sidebar fixed inset-y-0 z-10 flex h-svh w-(--sidebar-width) will-change-transform',
           side === 'left'
             ? 'left-0 group-data-[collapsible=offcanvas]:translate-x-[-100%]'
             : 'right-0 group-data-[collapsible=offcanvas]:translate-x-[100%]',
