@@ -41,9 +41,21 @@ export const CAPABILITIES: CapabilityMeta[] = [
     defaultEnabled: true,
   },
   {
+    /*
+     * The Biorouter Browser (BB-09): the side panel browser the agent can drive. A platform
+     * capability (`PLATFORM_EXTENSIONS["browser"]`), on by default like Copilot; using it still
+     * needs the person's grants, asked from the chat.
+     */
+    key: 'browser',
+    label: 'Biorouter Browser',
+    description:
+      'Browse and use websites in Biorouter’s own browser. You allow it from the chat, and Stop stays above the composer.',
+    defaultEnabled: true,
+  },
+  {
     key: 'webdocuments',
     label: 'Web & Documents',
-    description: 'Read web pages and work with spreadsheets, documents, and PDFs.',
+    description: 'Fetch web pages and read spreadsheets, documents, and PDFs.',
     defaultEnabled: true,
   },
   {

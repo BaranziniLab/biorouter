@@ -87,6 +87,19 @@ pub const DEFAULT_SECRET_PATTERNS: &[&str] = &[
     // The shared daemon's user-action key, saved by whoever started the daemon so the desktop
     // app and `biorouter crew` can connect without asking the person for anything.
     "**/daemon/user-action-key.json",
+    // BB-25: the cookie jars that hold a person's logins. Chrome's own (macOS
+    // `Library/Application Support/Google/Chrome/<profile>`, Windows `Google/Chrome/User Data`,
+    // Linux `.config/google-chrome`) with its saved passwords and payment data beside them, and
+    // the Biorouter Browser's profile, which holds what a Chrome import set.
+    "**/Google/Chrome/**/Cookies",
+    "**/Google/Chrome/**/Login Data",
+    "**/Google/Chrome/**/Login Data For Account",
+    "**/Google/Chrome/**/Web Data",
+    "**/google-chrome/**/Cookies",
+    "**/google-chrome/**/Login Data",
+    "**/google-chrome/**/Login Data For Account",
+    "**/google-chrome/**/Web Data",
+    "**/Partitions/biorouter-embedded-browser/**/Cookies",
 ];
 
 /// Conventional `.env` templates, reopened on top of the floor (issue #522).
@@ -737,6 +750,12 @@ impl DeniedAccess {
                  reads, because the command nests shells too deeply or names more links than it \
                  can follow. Split it into simpler commands."
             ),
+            resolve::Reason::BrowserKeyHelper => "The command is blocked: it runs `biorouterd \
+                 browser-key`, the helper that reads the key to the person's Chrome logins for \
+                 the desktop app's Import from Chrome. Only the Biorouter app runs it, when the \
+                 person imports from Chrome in Settings. Do not run it in any other way; if the \
+                 task needs the person's Chrome logins, ask them to import from Chrome themselves."
+                .to_string(),
         };
         // #546: a model that wrote the body as text looks for the word among
         // its commands and finds nothing, so say where it was.
@@ -1193,6 +1212,124 @@ mod tests {
         ] {
             assert!(!g.is_denied(Path::new(ordinary)), "{ordinary}");
             assert!(!g.is_denied(&fake.home.join(ordinary)), "~/{ordinary}");
+        }
+    }
+
+    /// BB-25: the cookie and password stores of Chrome and of the Biorouter Browser's own profile.
+    const BROWSER_STORES: &[&str] = &[
+        "Library/Application Support/Google/Chrome/Default/Cookies",
+        "Library/Application Support/Google/Chrome/Default/Network/Cookies",
+        "Library/Application Support/Google/Chrome/Profile 1/Login Data",
+        "Library/Application Support/Google/Chrome/Default/Login Data For Account",
+        "Library/Application Support/Google/Chrome/Default/Web Data",
+        ".config/google-chrome/Default/Cookies",
+        ".config/google-chrome/Profile 2/Login Data",
+        ".config/google-chrome/Default/Web Data",
+        "AppData/Local/Google/Chrome/User Data/Default/Network/Cookies",
+        "Library/Application Support/Biorouter/Partitions/biorouter-embedded-browser/Cookies",
+        "Library/Application Support/Biorouter/Partitions/biorouter-embedded-browser/Network/Cookies",
+    ];
+
+    #[test]
+    fn bb_25_browser_cookie_and_password_stores_are_on_the_floor() {
+        let fake = FakeHome::new();
+        let g = fake.guard();
+        for store in BROWSER_STORES {
+            assert!(g.is_denied(&fake.home.join(store)), "~/{store}");
+        }
+        // Chrome's other files, and files merely called Cookies elsewhere, stay readable.
+        for ordinary in [
+            "Library/Application Support/Google/Chrome/Default/Bookmarks",
+            "Library/Application Support/Google/Chrome/Default/Preferences",
+            "Library/Application Support/Google/Chrome/Local State",
+            "Library/Application Support/Biorouter/biorouter-browser/bookmarks.json",
+            "project/Cookies",
+            "project/src/cookies/index.ts",
+            "notes/Login Data.md",
+        ] {
+            assert!(!g.is_denied(&fake.home.join(ordinary)), "~/{ordinary}");
+        }
+        let (g, env) = (fake.guard(), fake.env());
+        for command in [
+            "cat ~/Library/Application\\ Support/Google/Chrome/Default/Cookies",
+            "sqlite3 \"$HOME/Library/Application Support/Google/Chrome/Default/Login Data\" .dump",
+            "cp ~/.config/google-chrome/Default/Cookies /tmp/c",
+            "cd ~/.config/google-chrome/Default && sqlite3 'Web Data' .tables",
+            "cat ~/Library/Application\\ Support/Biorouter/Partitions/biorouter-embedded-browser/Cookies",
+        ] {
+            assert!(
+                scan_command(&g, &env, command).is_some(),
+                "reached a browser store: {command}"
+            );
+        }
+    }
+
+    /// BB-23: the browser-key helper reads the key to the person's Chrome cookies, silently once
+    /// the Keychain prompt was answered with Always Allow, so an agent's shell never runs it, in
+    /// any spelling the guard can read. Searching the code for it stays possible.
+    #[test]
+    fn bb_23_the_browser_key_helper_is_refused_in_every_spelling() {
+        let fake = FakeHome::new();
+        let (g, env) = (fake.guard(), fake.env());
+        let refused = [
+            "biorouterd browser-key --source chrome",
+            "/Applications/Biorouter.app/Contents/Resources/bin/biorouterd browser-key --source chrome",
+            "~/repo/target/debug/biorouterd browser-key --source=chrome | xxd",
+            "BIOROUTERD browser-key --source chrome",
+            "C:\\Program Files\\Biorouter\\resources\\bin\\biorouterd.exe browser-key --source chrome",
+            "env FOO=1 biorouterd browser-key --source chrome",
+            "exec nohup biorouterd browser-key --source chrome > /tmp/key",
+            "\"biorouterd\" 'browser-key' --source chrome",
+            "bio\"rou\"terd brow'ser'-key --source chrome",
+            "biorouterd browser\\-key --source chrome",
+            "B=biorouterd; $B browser-key --source chrome",
+            "K=browser-key; biorouterd \"$K\" --source chrome",
+            "sh -c 'biorouterd browser-key --source chrome'",
+            "bash -lc \"cd /tmp && biorouterd browser-key --source chrome\"",
+            "eval 'biorouterd browser-key --source chrome'",
+            "alias k='biorouterd browser-key'; k --source chrome",
+            "biorouterd $(echo browser-key) --source chrome",
+            "cp \"$(which biorouterd)\" /tmp/x && /tmp/x browser-key --source chrome",
+            "/tmp/renamed browser-key --source chrome",
+            "echo browser-key --source chrome | xargs /tmp/renamed",
+            "python3 -c \"import subprocess; subprocess.run(['biorouterd','browser-key','--source','chrome'])\"",
+            "cat <<EOF | sh\nbiorouterd browser-key --source chrome\nEOF",
+            "cargo run -p biorouter-server --bin biorouterd -- browser-key --source chrome",
+        ];
+        for command in refused {
+            let denied = g
+                .find_denied_access_in(json!({ "command": command }).as_object().unwrap(), &env)
+                .unwrap_or_else(|| panic!("ran the browser-key helper: {command}"));
+            assert!(
+                denied.message().contains("Only the Biorouter app runs it"),
+                "{command}: {}",
+                denied.message()
+            );
+            assert!(
+                g.find_denied_in_command(command, &fake.home, &env)
+                    .is_some(),
+                "the Developer shell's own check missed: {command}"
+            );
+        }
+        assert!(g
+            .find_denied_in_code(
+                "system(\"biorouterd browser-key --source chrome\")",
+                &fake.home,
+                &env
+            )
+            .is_some());
+        for ordinary in [
+            "rg browser-key crates/",
+            "grep -rn 'browser-key' docs/desktop-ui/built-in-browser.md",
+            "cargo test -p biorouter-server --bin biorouterd browser_key_tests",
+            "biorouterd --version",
+            "ps aux | grep biorouterd",
+            "biorouter session list --source mine",
+        ] {
+            assert!(
+                scan_command(&g, &env, ordinary).is_none(),
+                "refused an ordinary command: {ordinary}"
+            );
         }
     }
 

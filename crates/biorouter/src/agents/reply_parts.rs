@@ -484,6 +484,9 @@ pub(crate) fn survives_code_execution_filter(
 ) -> bool {
     tool_name.starts_with(code_exec_prefix)
         || crate::security::computer_use::is_computer_use_tool(tool_name)
+        // BB-09: like Copilot's, the browser's tools stay direct, so their per-call grants and
+        // visible driving are never hidden inside a script.
+        || crate::security::browser_use::is_browser_tool(tool_name)
         || tool_name == SUBAGENT_TOOL_NAME
         || tool_name == SUBAGENT_TOOL_PREFIXED
         // Nested scripts always refuse Dictionary writes because they bypass the

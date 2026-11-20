@@ -389,6 +389,11 @@ pub struct McpMeta {
     /// surface. Read/watch/close must then stay within its direct subagent
     /// children even when privacy tiers are disabled.
     pub workspace_child_scope_only: bool,
+    /// BB-17: the Biorouter Browser grant this call was admitted under, set by
+    /// `ExtensionManager::admit_browser` and by nothing else. `None` for every
+    /// other extension, and for a browser call that was not admitted, which the
+    /// browser therefore refuses.
+    pub browser_permit: Option<crate::security::browser_use::BrowserPermit>,
 }
 
 impl McpMeta {
@@ -404,6 +409,7 @@ impl McpMeta {
             capability_private: None,
             capability_affiliation: None,
             workspace_child_scope_only: false,
+            browser_permit: None,
         }
     }
 

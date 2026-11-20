@@ -581,7 +581,7 @@ fn desktop_lock_path() -> Result<std::path::PathBuf> {
         .join("computer-use.desktop.lock"))
 }
 
-fn collect_endpoints(value: &serde_json::Value, endpoints: &mut Vec<String>) {
+pub(crate) fn collect_endpoints(value: &serde_json::Value, endpoints: &mut Vec<String>) {
     match value {
         serde_json::Value::Object(map) => {
             for (key, value) in map {

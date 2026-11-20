@@ -57,6 +57,8 @@ export const SETTINGS_SECTIONS = {
   privacy: { id: 'settings-privacy', tab: 'app' },
   general: { id: 'settings-general', tab: 'app' },
   appearance: { id: 'settings-appearance', tab: 'app' },
+  // The Biorouter Browser: what was imported from Chrome, and Import from Chrome (BB-25).
+  browser: { id: 'settings-browser', tab: 'app' },
   usage: { id: 'settings-usage', tab: 'app' },
   about: { id: 'settings-about', tab: 'app' },
   appDangerZone: { id: 'settings-app-danger-zone', tab: 'app' },

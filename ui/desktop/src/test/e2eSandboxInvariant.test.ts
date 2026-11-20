@@ -37,7 +37,21 @@ const E2E_DIR = join(__dirname, '../../tests/e2e');
  * throwaway main process (`user-message-layout.main.cjs`) that renders a static
  * HTML fixture — no daemon, no config, nothing to sandbox.
  */
-const ALLOWED_DIRECT_LAUNCH = new Set(['helpers/app.ts', 'user-message-layout.spec.ts']);
+/**
+ * `biorouter-browser.spec.ts`, `biorouter-browser-agent.spec.ts` and
+ * `biorouter-browser-import.spec.ts` launch their own probe main (`biorouter-browser.main.ts`),
+ * never the app's bundle: they start no daemon, read no Biorouter config, and point Electron's
+ * user data and logs at a temporary folder (`BIOROUTER_BROWSER_TEST_USER_DATA`), so there is no
+ * root to sandbox. The import spec reads only the synthetic Chrome profile it builds
+ * (`BIOROUTER_BROWSER_TEST_CHROME_DIR`), never a real one.
+ */
+const ALLOWED_DIRECT_LAUNCH = new Set([
+  'helpers/app.ts',
+  'user-message-layout.spec.ts',
+  'biorouter-browser.spec.ts',
+  'biorouter-browser-agent.spec.ts',
+  'biorouter-browser-import.spec.ts',
+]);
 
 /**
  * Specs skipped wholesale because the UI they drive was removed. They still

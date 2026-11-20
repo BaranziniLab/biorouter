@@ -2066,8 +2066,8 @@ hold:
 self-excluding.** `ensure_spawn_extension` puts `workspace` into the extension
 map, so counting it would make one turn's `true` the reason for the next turn's
 `true` — an agent that removed its last real extension would keep delegating
-forever off a grant it derived from itself. The default-on `decisions` and
-`dictionary` platform extensions are not counted either (`is_not_counted_by_the_delegation_gate` in
+forever off a grant it derived from itself. The default-on `decisions`,
+`dictionary` and `browser` platform extensions are not counted either (`is_not_counted_by_the_delegation_gate` in
 `extension_manager.rs`): each is on in every chat, so counting it would enable
 delegation everywhere by itself. The consequence to recognise: a chat
 with **every** extension disabled has no `subagent` tool, which looks exactly

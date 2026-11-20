@@ -160,6 +160,51 @@ pub(crate) enum Reason {
     PatternTail,
     /// Too large or too deeply nested to verify.
     TooComplex,
+    /// The command runs `biorouterd browser-key`, the helper only the desktop app may start
+    /// (BB-23). See [`HelperSighting`].
+    BrowserKeyHelper,
+}
+
+/// What a scan has seen of the browser-key helper (BB-23), across every word, nested script
+/// and code string of one tool call.
+///
+/// The helper reads the key Chrome encrypts its cookies with, and a person who once answered the
+/// macOS Keychain prompt with **Always Allow** has allowed `biorouterd` to read it silently. So a
+/// command that runs it is refused in any spelling the scan can read: a path, quotes, `env` and
+/// other wrappers, variables, `sh -c` and `eval`, here-documents, an alias body, a command
+/// substitution, a string handed to `subprocess` or `system`. It is judged by its words, not its
+/// path: the subcommand `browser-key`, together with either the program `biorouterd` (any path,
+/// any case, `.exe`) or the `--source` option the helper cannot run without. `browser-key` on its
+/// own (a `grep` of this code) is not refused.
+///
+/// This stops a model that was told to run the helper. It is not what keeps the key from a
+/// determined program: the helper itself runs only for Electron main (`browser_key.rs`).
+#[derive(Default)]
+struct HelperSighting {
+    subcommand: bool,
+    companion: bool,
+}
+
+impl HelperSighting {
+    fn note(&mut self, text: &str) {
+        for token in text
+            .split(|c: char| !(c.is_alphanumeric() || matches!(c, '-' | '_' | '.' | '/' | '\\')))
+            .filter(|token| !token.is_empty())
+        {
+            let token = token.to_lowercase();
+            if token == "browser-key" {
+                self.subcommand = true;
+            }
+            let program = token.rsplit(['/', '\\']).next().unwrap_or_default();
+            if matches!(program, "biorouterd" | "biorouterd.exe") || token == "--source" {
+                self.companion = true;
+            }
+        }
+    }
+
+    fn seen(&self) -> bool {
+        self.subcommand && self.companion
+    }
 }
 
 /// What [`Resolver::denied_resolved`] concluded about one path.
@@ -259,6 +304,8 @@ pub(crate) struct Resolver<'a> {
     /// runs (#546). Set only by [`Self::read_data_body`], for the length of
     /// that body.
     reading_data: bool,
+    /// The browser-key helper's words seen so far in this tool call (BB-23).
+    helper: HelperSighting,
 }
 
 impl<'a> Resolver<'a> {
@@ -275,7 +322,21 @@ impl<'a> Resolver<'a> {
             dotglob: false,
             windows_lexing: cfg!(windows),
             reading_data: false,
+            helper: HelperSighting::default(),
         }
+    }
+
+    /// Refuse once the call has named the browser-key helper (BB-23).
+    fn refuse_helper(&self) -> Scan {
+        if self.helper.seen() {
+            return Err(Finding {
+                shown: "biorouterd browser-key".to_string(),
+                path: None,
+                reason: Reason::BrowserKeyHelper,
+                heredoc: None,
+            });
+        }
+        Ok(())
     }
 
     /// Run one scan under every grammar `input` could be read with, refusing if
@@ -347,6 +408,12 @@ impl<'a> Resolver<'a> {
     }
 
     fn scan_command_under(&mut self, grammars: &[bool], command: &str, bases: &[Base]) -> Scan {
+        // The text with the shell's quoting taken out (`bio"router"d`, `browser\-key`), for the
+        // spellings no word reading recovers, such as a substitution the expander leaves unknown.
+        // It includes a here-document body that is data (#546): the guard still reads such a
+        // body, because the file it writes can be run later.
+        self.helper
+            .note(&command.replace(['\'', '"', '\\', '`'], ""));
         self.under_grammars(grammars, |me| {
             // Which here-documents are data is decided once per grammar, from
             // this pass's own tokens, and everything below uses that one
@@ -367,7 +434,8 @@ impl<'a> Resolver<'a> {
             let mut state = State::new(bases);
             me.walk_tokens(tokens, &data_tokens, &mut state)?;
             me.scan_code_in(&outside_data, &state)
-        })
+        })?;
+        self.refuse_helper()
     }
 
     /// A string a tool will treat as a path.
@@ -392,7 +460,8 @@ impl<'a> Resolver<'a> {
         self.under_each_grammar(text, |me| {
             let state = State::new(bases);
             me.scan_code_in(text, &state)
-        })
+        })?;
+        self.refuse_helper()
     }
 
     // ---- the walk ---------------------------------------------------------
@@ -462,6 +531,13 @@ impl<'a> Resolver<'a> {
         redirects: &[Redirect],
         state: &mut State,
     ) -> Scan {
+        // Every word as the shell will pass it: quotes removed, variables and assignments made
+        // earlier expanded, an alias body or an `env` prefix included.
+        for word in words {
+            for reading in self.readings_as_text(word, state) {
+                self.helper.note(&reading);
+            }
+        }
         let mut i = 0;
         while let Some(word) = words.get(i) {
             match plain_text(word).as_deref() {
@@ -1018,6 +1094,8 @@ impl<'a> Resolver<'a> {
 
     /// Path-looking literals in code, and the strings code hands to a shell.
     fn scan_code_in(&mut self, text: &str, state: &State) -> Scan {
+        // `subprocess.run(["biorouterd", "browser-key", ...])` names the helper as list items.
+        self.helper.note(text);
         static CODE_PATH: Lazy<Regex> = Lazy::new(|| {
             Regex::new(r"[A-Za-z0-9._\-~$+@%:{}*?\[\]]*/[A-Za-z0-9._\-~$+@%:{}*?\[\]/]*")
                 .expect("static regex")

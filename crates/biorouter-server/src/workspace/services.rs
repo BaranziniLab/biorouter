@@ -510,6 +510,24 @@ impl WorkspaceServices for ServerWorkspaceServices {
         .await
     }
 
+    async fn gui_browser_request(
+        &self,
+        frame: serde_json::Value,
+        session_id: &str,
+        deadline: std::time::Duration,
+        cancel: tokio_util::sync::CancellationToken,
+    ) -> Result<serde_json::Value, biorouter::workspace_services::BrowserChannelError> {
+        browser_request_on(
+            crate::workspace::bridge::bridge_for_session(session_id),
+            crate::workspace::bridge::any_attached(),
+            frame,
+            session_id,
+            deadline,
+            &cancel,
+        )
+        .await
+    }
+
     async fn gui_command(
         &self,
         frame: serde_json::Value,
@@ -523,6 +541,71 @@ impl WorkspaceServices for ServerWorkspaceServices {
         )
         .await
     }
+}
+
+/// How much longer than the operation's own deadline the daemon waits, so the window's own
+/// timeout answer (which says what state the page was left in) arrives first (BB-10).
+const BROWSER_DEADLINE_GRACE: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// One Biorouter Browser operation on the window that holds the chat, and on no other (BB-10).
+///
+/// Split from [`ServerWorkspaceServices::gui_browser_request`] for the reason
+/// `emit_with_fallback` is: `BRIDGES` is process-wide, so a test that asserts which window a
+/// frame landed on is only containment-safe against a supplied candidate.
+///
+/// ⚠ **No fallback.** `primary` is `bridge_for_session`'s answer; when it is `None` the
+/// operation fails, even with another window attached. `gui_command_near` falls back to the
+/// focused window because a misplaced tab is harmless; a click in the wrong window is not.
+pub(crate) async fn browser_request_on(
+    primary: Option<crate::workspace::bridge::WorkspaceBridge>,
+    any_window: bool,
+    frame: serde_json::Value,
+    session_id: &str,
+    deadline: std::time::Duration,
+    cancel: &tokio_util::sync::CancellationToken,
+) -> Result<serde_json::Value, biorouter::workspace_services::BrowserChannelError> {
+    use crate::workspace::bridge::BrowserWait;
+    use biorouter::workspace_services::BrowserChannelError;
+    let Some(bridge) = primary else {
+        return Err(if any_window {
+            BrowserChannelError::ChatNotOnScreen
+        } else {
+            BrowserChannelError::NoDesktop
+        });
+    };
+    match bridge
+        .emit_and_wait_cancellable(frame, deadline + BROWSER_DEADLINE_GRACE, cancel)
+        .await
+    {
+        Ok(reply) => Ok(reply),
+        Err(BrowserWait::NotAttached) => Err(BrowserChannelError::WindowGone),
+        Err(BrowserWait::Disconnected) => Err(BrowserChannelError::WindowGone),
+        Err(BrowserWait::Timeout { request_id }) => {
+            abandon_browser_operation(&bridge, &request_id, session_id);
+            Err(BrowserChannelError::Timeout)
+        }
+        Err(BrowserWait::Cancelled { request_id }) => {
+            abandon_browser_operation(&bridge, &request_id, session_id);
+            Err(BrowserChannelError::Cancelled)
+        }
+    }
+}
+
+/// Tell the window to stop an operation the daemon no longer waits for: main stops the page
+/// load and abandons the operation's waits. Best effort: a window that is gone has nothing left
+/// to stop.
+fn abandon_browser_operation(
+    bridge: &crate::workspace::bridge::WorkspaceBridge,
+    request_id: &str,
+    session_id: &str,
+) {
+    let _ = bridge.emit(serde_json::json!({
+        "type": "workspace",
+        "cmd": "browser_cancel",
+        // Not `request_id`: nothing waits for an answer to this frame.
+        "cancel_request_id": request_id,
+        "session_id": session_id,
+    }));
 }
 
 /// How long a `wait_result` frame parks for the renderer's `workspace_result`.
@@ -1823,5 +1906,161 @@ mod tests {
             rx.try_recv().is_err(),
             "the same window must not be asked a second time"
         );
+    }
+
+    // --- BB-10: the Biorouter Browser channel. Each test drives `browser_request_on` with a
+    // window of its own, never the process-wide registry.
+
+    fn browser_frame() -> serde_json::Value {
+        serde_json::json!({"type": "workspace", "cmd": "browser", "session_id": "chat-1",
+                           "op": "click", "args": {"ref": "@e1"}})
+    }
+
+    #[tokio::test]
+    async fn a_browser_request_is_answered_by_the_window_that_holds_the_chat() {
+        use crate::workspace::bridge::WorkspaceBridge;
+        let window = WorkspaceBridge::new();
+        let (mut rx, _conn) = window.attach();
+        let replier = {
+            let window = window.clone();
+            tokio::spawn(async move {
+                let frame = rx.recv().await.expect("the frame reaches the window");
+                assert_eq!(frame["cmd"], "browser");
+                let id = frame["request_id"].as_str().unwrap().to_string();
+                window.resolve(&id, serde_json::json!({"ok": true, "detail": "clicked"}));
+            })
+        };
+        let reply = browser_request_on(
+            Some(window),
+            true,
+            browser_frame(),
+            "chat-1",
+            std::time::Duration::from_secs(5),
+            &tokio_util::sync::CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+        replier.await.unwrap();
+        assert_eq!(reply["detail"], "clicked");
+    }
+
+    #[tokio::test]
+    async fn a_browser_request_never_falls_back_to_another_window() {
+        use biorouter::workspace_services::BrowserChannelError;
+        let cancel = tokio_util::sync::CancellationToken::new();
+        let another_window_is_open = true;
+        let err = browser_request_on(
+            None,
+            another_window_is_open,
+            browser_frame(),
+            "chat-1",
+            std::time::Duration::from_secs(5),
+            &cancel,
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(err, BrowserChannelError::ChatNotOnScreen);
+        let err = browser_request_on(
+            None,
+            false,
+            browser_frame(),
+            "chat-1",
+            std::time::Duration::from_secs(5),
+            &cancel,
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(err, BrowserChannelError::NoDesktop);
+    }
+
+    #[tokio::test]
+    async fn a_cancelled_browser_request_is_abandoned_on_the_window() {
+        use crate::workspace::bridge::WorkspaceBridge;
+        use biorouter::workspace_services::BrowserChannelError;
+        let window = WorkspaceBridge::new();
+        let (mut rx, _conn) = window.attach();
+        let cancel = tokio_util::sync::CancellationToken::new();
+        let stopper = {
+            let cancel = cancel.clone();
+            tokio::spawn(async move {
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+                cancel.cancel();
+            })
+        };
+        let err = browser_request_on(
+            Some(window),
+            true,
+            browser_frame(),
+            "chat-1",
+            std::time::Duration::from_secs(30),
+            &cancel,
+        )
+        .await
+        .unwrap_err();
+        stopper.await.unwrap();
+        assert_eq!(err, BrowserChannelError::Cancelled);
+        let sent = rx.recv().await.unwrap();
+        let abandon = rx.recv().await.expect("the window is told to stop");
+        assert_eq!(abandon["cmd"], "browser_cancel");
+        assert_eq!(abandon["cancel_request_id"], sent["request_id"]);
+        assert!(
+            abandon.get("request_id").is_none(),
+            "nothing waits for an answer to the abandon frame"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_browser_request_that_times_out_is_abandoned_and_not_replayed() {
+        use crate::workspace::bridge::WorkspaceBridge;
+        use biorouter::workspace_services::BrowserChannelError;
+        let window = WorkspaceBridge::new();
+        let (mut rx, _conn) = window.attach();
+        let cancel = tokio_util::sync::CancellationToken::new();
+        let err = browser_request_on(
+            Some(window),
+            true,
+            browser_frame(),
+            "chat-1",
+            std::time::Duration::from_millis(100),
+            &cancel,
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(err, BrowserChannelError::Timeout);
+        let first = rx.recv().await.unwrap();
+        assert_eq!(first["cmd"], "browser");
+        let second = rx.recv().await.unwrap();
+        assert_eq!(
+            second["cmd"], "browser_cancel",
+            "the operation is abandoned, never re-sent"
+        );
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn a_window_that_reloads_mid_request_fails_the_request_rather_than_hanging() {
+        use crate::workspace::bridge::WorkspaceBridge;
+        use biorouter::workspace_services::BrowserChannelError;
+        let window = WorkspaceBridge::new();
+        let (_rx, _conn) = window.attach();
+        let reloader = {
+            let window = window.clone();
+            tokio::spawn(async move {
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+                let _ = window.attach(); // a reload claims a new generation
+            })
+        };
+        let err = browser_request_on(
+            Some(window),
+            true,
+            browser_frame(),
+            "chat-1",
+            std::time::Duration::from_secs(30),
+            &tokio_util::sync::CancellationToken::new(),
+        )
+        .await
+        .unwrap_err();
+        reloader.await.unwrap();
+        assert_eq!(err, BrowserChannelError::WindowGone);
     }
 }

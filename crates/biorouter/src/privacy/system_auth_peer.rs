@@ -99,7 +99,17 @@ pub fn peer_is_ours(stream: &std::os::unix::net::UnixStream) -> bool {
     let Some(pid) = peer_pid(stream) else {
         return false;
     };
+    pid_is_ours(pid)
+}
 
+/// Whether the running process `pid` is signed by our team, by the same requirement and the
+/// same fail-closed rules as [`peer_is_ours`]. The caller must know `pid` is still the process
+/// it means: the Chrome import's key helper asks it of its own parent, which cannot be recycled
+/// while the helper is that parent's child.
+pub fn pid_is_ours(pid: i32) -> bool {
+    if pid <= 0 {
+        return false;
+    }
     // SAFETY block covers the whole Security.framework sequence below: each call
     // takes CF types we own and writes an out-pointer we own, and each returned
     // object is released before the function ends.

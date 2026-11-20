@@ -111,6 +111,11 @@ the overlay/side rung switch in `useArtifactPanel`.
 
 ### PP-03 — Browsing is a user capability; the agent's access to it is separate, visible and revocable
 
+> **Note.** Revised by the [built-in browser design](../built-in-browser.md) (BB-02, BB-17) on
+> 2026-11-19: the agent may open and drive pages within per chat grants, while an agent supplied link
+> still never loads by itself and tabs the person opened stay private until shared. Until that work
+> merges, this record describes what ships.
+
 This is the single most valuable pattern in the competitive research, and both mature
 implementations landed on it independently: Codex has `in_app_browser` (a pane a person uses) and
 `browser_use` (an agent capability) as separate flags with separate policy; VS Code's tabs are
@@ -149,6 +154,10 @@ it as a boundary in the UI.
 > `setDisplayMediaRequestHandler`. Deny-all first, allowlist after.
 
 ### PP-04b — A login flow must leave the app
+
+> **Note.** Revised by the [built-in browser design](../built-in-browser.md) (BB-03) on 2026-11-19:
+> login pages load in the panel, Biorouter's own OAuth still uses the system browser, and the agent
+> can never type credentials. Until that work merges, this record describes what ships.
 
 RFC 8252 §8.12: native apps **MUST NOT** use embedded user-agents for authorization, because the
 host can read the credential and log every keystroke, and the user has no browser security
@@ -345,6 +354,10 @@ reasons; blob URLs handle 100 MB. Also enforce a 32,767 px downsample ceiling �
 renders **blank**, which a converted whole-slide TIFF will hit.
 
 ### PP-17 — Privacy: one genuinely new channel, one that only looks new
+
+> **Note.** The second bullet is revised by the [built-in browser design](../built-in-browser.md)
+> (BB-06, BB-20) on 2026-11-19: agent navigation is allowed under a grant, and private network hosts
+> are refused to public chats. Until that work merges, this record describes what ships.
 
 - **The agent screenshotting the panel is not a new exposure class.** A public-capable session
   with `developer__shell` can already read the same file. That is §9.5's general filesystem

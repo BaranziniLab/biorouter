@@ -3,6 +3,7 @@ import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { renderToString } from 'react-dom/server';
 import { displayCopy, projectCopy } from './copy';
 import { SpellcheckRow } from './SpellcheckToggle';
+import { OpenLinksInRow } from './OpenLinksInRow';
 import { ProjectHintsRow } from './BioRouterHintsSection';
 import {
   RESPONSE_STYLE_STORAGE_KEY,
@@ -191,5 +192,16 @@ describe('Project hints', () => {
     render(<ProjectHintsRow />);
     fireEvent.click(screen.getByRole('button', { name: projectCopy.editHints }));
     expect(screen.getByRole('dialog', { name: 'Project hints dialog' })).toBeInTheDocument();
+  });
+});
+
+describe('Open links in (BB-02)', () => {
+  it('starts on the Biorouter Browser and stores the person’s choice', () => {
+    render(<OpenLinksInRow />);
+    const group = screen.getByRole('radiogroup', { name: displayCopy.openLinksIn });
+    expect(group).toBeInTheDocument();
+    expect(screen.getByRole('radio', { name: 'Biorouter Browser' })).toBeChecked();
+    fireEvent.click(screen.getByRole('radio', { name: 'Default browser' }));
+    expect(localStorage.getItem('biorouter:open-links-in')).toBe('default');
   });
 });

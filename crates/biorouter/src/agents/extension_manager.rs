@@ -416,6 +416,8 @@ struct ExtensionReach {
 
 pub struct ExtensionManager {
     pub computer_use: Arc<crate::security::computer_use::ComputerUseConsent>,
+    /// BB-17: the Biorouter Browser's two grants for this chat.
+    pub browser_use: Arc<crate::security::browser_use::BrowserUseConsent>,
     extensions: Mutex<HashMap<String, Extension>>,
     context: PlatformExtensionContext,
     provider: SharedProvider,
@@ -1875,6 +1877,7 @@ impl ExtensionManager {
                 std::env::current_dir().unwrap_or_default(),
             )),
             computer_use: Arc::default(),
+            browser_use: Arc::default(),
         }
     }
 
@@ -1936,6 +1939,138 @@ impl ExtensionManager {
                 .permit(session_id, &self.provider, cancel)
                 .await?,
         ))
+    }
+
+    /// Biorouter Copilot's admission and the Biorouter Browser's, each `None` for every other
+    /// extension. One call in `dispatch_tool_call`, which the `clippy::too_many_lines` baseline
+    /// caps.
+    async fn admit_agent_capabilities(
+        &self,
+        session_id: &str,
+        config: &ExtensionConfig,
+        prefixed_name: &str,
+        arguments: Option<&rmcp::model::JsonObject>,
+        cap: crate::privacy::CallCapability,
+        cancel: &CancellationToken,
+    ) -> Result<(
+        Option<crate::security::computer_use::ComputerUsePermit>,
+        Option<crate::security::browser_use::BrowserPermit>,
+    )> {
+        let computer = self
+            .admit_computer_use(session_id, config, prefixed_name, cap, cancel)
+            .await?;
+        let browser = self
+            .admit_browser(session_id, config, prefixed_name, arguments, cap, cancel)
+            .await?;
+        Ok((computer, browser))
+    }
+
+    /// The Biorouter Browser's consent for this chat, for the status poll (BB-17).
+    pub async fn browser_use_status(
+        &self,
+        session_id: &str,
+    ) -> Result<crate::security::browser_use::BrowserUseStatus> {
+        let mut status = self.browser_use.status(session_id, &self.provider).await?;
+        status.enabled = self
+            .is_extension_enabled(crate::security::browser_use::EXTENSION_KEY)
+            .await;
+        status.available = crate::agents::browser_extension::desktop_browser_available();
+        Ok(status)
+    }
+
+    /// BB-17: admit a Biorouter Browser call. Reserves the `browser__browser_` names to the
+    /// built-in extension (a Copilot grant never admits them, and a browser grant never admits
+    /// `computercontroller__*`), picks the grant from the tool and its arguments, and waits for
+    /// the person when it is not held. `None` for every other extension.
+    async fn admit_browser(
+        &self,
+        session_id: &str,
+        config: &ExtensionConfig,
+        tool: &str,
+        arguments: Option<&rmcp::model::JsonObject>,
+        cap: crate::privacy::CallCapability,
+        cancel: &CancellationToken,
+    ) -> Result<Option<crate::security::browser_use::BrowserPermit>> {
+        use crate::security::browser_use;
+        let builtin = matches!(config, ExtensionConfig::Platform { name, .. }
+            if crate::config::extensions::name_to_key(name) == browser_use::EXTENSION_KEY);
+        anyhow::ensure!(
+            builtin || !browser_use::is_reserved_browser_name(tool),
+            "The Biorouter Browser namespace is reserved for BioRouter's built-in browser"
+        );
+        if !builtin {
+            return Ok(None);
+        }
+        anyhow::ensure!(
+            browser_use::is_browser_tool(tool),
+            "This is not a Biorouter Browser tool. Use the browser_* tools the browser lists."
+        );
+        // Where the browser cannot run, nothing is asked: the tool itself says why (BB-16).
+        if !crate::agents::browser_extension::desktop_browser_available() {
+            return Ok(None);
+        }
+        // Fail closed: a chat whose kind cannot be read is never assumed to be a person's own.
+        let session = self
+            .context
+            .session_manager
+            .get_session(session_id, false)
+            .await
+            .map_err(|_| anyhow::anyhow!(crate::agents::browser_extension::UNKNOWN_CHAT_REFUSAL))?;
+        anyhow::ensure!(
+            session.session_type != crate::session::session_manager::SessionType::SubAgent,
+            crate::agents::browser_extension::SUBAGENT_REFUSAL
+        );
+        let status = self.browser_use.status(session_id, &self.provider).await?;
+        anyhow::ensure!(
+            status.public_model != cap.tier().is_private(),
+            "The Biorouter Browser caller differs from the approved model destination"
+        );
+        let grant = browser_use::grant_for_call(tool, arguments);
+        Ok(Some(
+            self.browser_use
+                .permit(session_id, &self.provider, grant, cancel)
+                .await?,
+        ))
+    }
+
+    /// The act grant for a call admitted under observe whose target turned out to need it
+    /// (`browser_click` on something other than a plain link to the page's own origin). Called
+    /// by the browser extension
+    /// with the same session and the call's own cancel token.
+    pub async fn browser_act_permit(
+        &self,
+        session_id: &str,
+        cancel: &CancellationToken,
+    ) -> Result<crate::security::browser_use::BrowserPermit> {
+        self.browser_use
+            .permit(
+                session_id,
+                &self.provider,
+                crate::security::browser_use::BrowserGrant::Act,
+                cancel,
+            )
+            .await
+    }
+
+    pub async fn bind_browser_use_task(&self, session_id: &str) -> Result<()> {
+        self.browser_use.bind_task(session_id, &self.provider).await
+    }
+
+    pub async fn approve_browser_use(
+        &self,
+        session_id: &str,
+        challenge_id: &str,
+        grant: crate::security::browser_use::BrowserGrant,
+        lifetime: crate::security::browser_use::ActLifetime,
+    ) -> Result<crate::security::browser_use::BrowserUseStatus> {
+        anyhow::ensure!(
+            self.is_extension_enabled(crate::security::browser_use::EXTENSION_KEY)
+                .await,
+            "Turn on the Biorouter Browser for this chat before allowing it"
+        );
+        self.browser_use
+            .approve(session_id, challenge_id, grant, lifetime, &self.provider)
+            .await
     }
 
     pub async fn bind_computer_use_task(&self, session_id: &str) -> Result<()> {
@@ -2045,6 +2180,17 @@ impl ExtensionManager {
         {
             return Err(ExtensionError::ConfigError(
                 "This extension name is reserved for the Biorouter Copilot built-in. Rename the custom extension.".into(),
+            ));
+        }
+        // BB-09: the key `browser` is the Biorouter Browser's. A custom extension that took it
+        // would have its `browser__browser_*` tools refused at dispatch anyway; refusing at load
+        // says why while it can still be renamed.
+        if sanitized_name == crate::security::browser_use::EXTENSION_KEY
+            && !matches!(&config, ExtensionConfig::Platform { name, .. }
+                if crate::config::extensions::name_to_key(name) == crate::security::browser_use::EXTENSION_KEY)
+        {
+            return Err(ExtensionError::ConfigError(
+                "This extension name is reserved for the Biorouter Browser built-in. Rename the custom extension.".into(),
             ));
         }
 
@@ -2349,6 +2495,9 @@ impl ExtensionManager {
         name.eq_ignore_ascii_case(crate::agents::agent::Agent::SPAWN_EXTENSION)
             || name.eq_ignore_ascii_case(crate::agents::decisions_extension::EXTENSION_NAME)
             || name.eq_ignore_ascii_case(crate::agents::dictionary_extension::EXTENSION_NAME)
+            // BB-09: the Biorouter Browser is on by default in every chat, so counting it would
+            // enable delegation everywhere by itself.
+            || name.eq_ignore_ascii_case(crate::security::browser_use::EXTENSION_KEY)
     }
 
     pub async fn add_client(
@@ -2512,6 +2661,9 @@ impl ExtensionManager {
         let sanitized_name = normalize(name);
         if sanitized_name == "computercontroller" {
             self.computer_use.revoke();
+        }
+        if sanitized_name == crate::security::browser_use::EXTENSION_KEY {
+            self.browser_use.revoke();
         }
         self.extensions.lock().await.remove(&sanitized_name);
         self.invalidate_tools_cache_and_bump_version().await;
@@ -3988,11 +4140,12 @@ impl ExtensionManager {
                 "Crew tools must resolve to the built-in scoped extension, not an external tool with a similar name.");
         }
         let computer_use = matches!(&client_config, ExtensionConfig::Builtin { name, .. } if name == "computercontroller");
-        let computer_permit = self
-            .admit_computer_use(
+        let (computer_permit, browser_permit) = self
+            .admit_agent_capabilities(
                 session_id,
                 &client_config,
                 &prefixed_name,
+                tool_call.arguments.as_ref(),
                 cap,
                 &cancellation_token,
             )
@@ -4054,6 +4207,7 @@ impl ExtensionManager {
             computer_permit.as_ref(),
             file_admission.as_ref(),
         );
+        meta.browser_permit = browser_permit;
         // DR-33, design §2.6. Decided here, at admission, off the same sample.
         let private_content =
             self.private_content_probe(&client_name, &tool_name, arguments.as_ref(), cap);
@@ -5100,6 +5254,105 @@ mod tests {
             manager.has_non_injected_extensions().await,
             "an ordinary extension still counts"
         );
+    }
+
+    /// BB-09: the Biorouter Browser is on by default in every chat, so it must not open the
+    /// delegation gate by itself, as `decisions` must not.
+    #[tokio::test]
+    async fn the_default_on_browser_never_opens_the_delegation_gate_by_itself() {
+        let root = tempfile::tempdir().unwrap();
+        let manager = Arc::new(ExtensionManager::new_without_provider(
+            root.path().to_path_buf(),
+        ));
+        manager
+            .add_extension(ExtensionConfig::Platform {
+                name: crate::agents::browser_extension::EXTENSION_NAME.to_string(),
+                description: String::new(),
+                bundled: Some(true),
+                available_tools: Vec::new(),
+            })
+            .await
+            .unwrap();
+        assert!(
+            manager
+                .is_extension_enabled(crate::security::browser_use::EXTENSION_KEY)
+                .await
+        );
+        assert!(!manager.has_non_injected_extensions().await);
+    }
+
+    /// BB-16: the subagent refusal fails closed. A chat whose row cannot be read could be a
+    /// subagent, so no grant is asked for and nothing reaches the window.
+    #[tokio::test]
+    #[serial_test::serial(workspace_services)]
+    async fn a_browser_call_from_a_chat_that_cannot_be_found_is_refused() {
+        let root = tempfile::tempdir().unwrap();
+        let manager = Arc::new(ExtensionManager::new_without_provider(
+            root.path().to_path_buf(),
+        ));
+        let config = ExtensionConfig::Platform {
+            name: crate::agents::browser_extension::EXTENSION_NAME.to_string(),
+            description: String::new(),
+            bundled: Some(true),
+            available_tools: Vec::new(),
+        };
+        crate::agents::browser_extension::set_available_for_tests(Some(true));
+        let refused = manager
+            .admit_browser(
+                "no-such-chat",
+                &config,
+                "browser__browser_snapshot",
+                None,
+                crate::privacy::CallCapability::for_test_restricted(),
+                &CancellationToken::new(),
+            )
+            .await;
+        crate::agents::browser_extension::set_available_for_tests(None);
+        let error = refused.expect_err("refused").to_string();
+        assert_eq!(
+            error,
+            crate::agents::browser_extension::UNKNOWN_CHAT_REFUSAL,
+            "{error}"
+        );
+    }
+
+    /// BB-09 and BB-18: the `browser` key and the `browser__browser_*` names belong to the
+    /// built-in browser. A custom extension cannot load under the key, and a third party that
+    /// answered to those names is refused at dispatch, before any grant is asked for.
+    #[tokio::test]
+    async fn external_servers_cannot_impersonate_the_browser_namespace() {
+        let root = tempfile::tempdir().unwrap();
+        let manager = Arc::new(ExtensionManager::new_without_provider(
+            root.path().to_path_buf(),
+        ));
+        for name in ["browser", "Browser", "BROWSER"] {
+            let config = ExtensionConfig::stdio(name, "must-not-launch", "untrusted", 30_u64);
+            let error = manager
+                .add_extension(config)
+                .await
+                .expect_err("the browser key is reserved");
+            assert!(error.to_string().contains("reserved"), "{error}");
+        }
+        manager
+            .add_mock_third_party_extension("browser", Arc::new(MockClient {}))
+            .await;
+        for tool in ["browser_click", "browser_open", "browser_anything"] {
+            let result = manager
+                .dispatch_tool_call(
+                    "chat",
+                    CallToolRequestParams {
+                        name: format!("browser__{tool}").into(),
+                        arguments: None,
+                        meta: None,
+                        task: None,
+                    },
+                    crate::privacy::CallCapability::for_test_restricted(),
+                    CancellationToken::new(),
+                )
+                .await;
+            let error = result.err().expect("refused").to_string();
+            assert!(error.contains("reserved"), "{error}");
+        }
     }
 
     #[tokio::test]

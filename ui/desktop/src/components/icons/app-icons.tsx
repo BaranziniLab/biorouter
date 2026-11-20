@@ -10,6 +10,7 @@ import {
   AlertTriangle as _AlertTriangle,
   AppWindow as _AppWindow,
   AppWindowMac as _AppWindowMac,
+  Compass as _Compass,
   Archive as _Archive,
   ArrowDown as _ArrowDown,
   ArrowLeft as _ArrowLeft,
@@ -260,6 +261,11 @@ export const Gauge = light(_Gauge);
 export const GitBranch = light(_GitBranch);
 export const Github = light(_Github);
 export const Globe = light(_Globe);
+/**
+ * The Biorouter Browser (BB-09): the side panel browser the agent drives. Its own glyph, so a
+ * browser row reads apart from Copilot's desktop control and from Web & Documents' fetch (Globe).
+ */
+export const Compass = light(_Compass);
 export const GripVertical = light(_GripVertical);
 /** A Crew channel (`# methods`). The channel glyph and nothing else. */
 export const Hash = light(_Hash);

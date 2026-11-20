@@ -1242,6 +1242,26 @@ const CODING_AGENT_BRIDGE_ALLOWED_DICTIONARY_TOOLS: &[&str] = &[
 const CODING_AGENT_BRIDGE_ALLOWED_DECISIONS_TOOLS: &[&str] =
     &["decisions__decide", "decisions__decision_models"];
 
+/// BB-09: every Biorouter Browser tool. Without an entry the Claude Code and Codex providers
+/// silently lose them; each call still passes `admit_browser` on BioRouter's side.
+const CODING_AGENT_BRIDGE_ALLOWED_BROWSER_TOOLS: &[&str] = &[
+    "browser__browser_open",
+    "browser__browser_navigate",
+    "browser__browser_tabs",
+    "browser__browser_snapshot",
+    "browser__browser_read",
+    "browser__browser_screenshot",
+    "browser__browser_scroll",
+    "browser__browser_hover",
+    "browser__browser_wait",
+    "browser__browser_click",
+    "browser__browser_fill",
+    "browser__browser_type",
+    "browser__browser_press",
+    "browser__browser_select",
+    "browser__browser_dialog",
+];
+
 const CODING_AGENT_BRIDGE_REQUIRED_COLLECTOR_TOOLS: &[&str] = &[
     "workspace__workspace_watch",
     "workspace__workspace_read_conversation",
@@ -1361,6 +1381,11 @@ const CODING_AGENT_BRIDGE_POLICIES: &[CodingAgentBridgePolicy] = &[
         capability_name: "Biorouter Copilot",
         target_name: "computercontroller",
         tools: CODING_AGENT_BRIDGE_ALLOWED_COMPUTERCONTROLLER_TOOLS,
+    },
+    CodingAgentBridgePolicy {
+        capability_name: "Biorouter Browser",
+        target_name: "browser",
+        tools: CODING_AGENT_BRIDGE_ALLOWED_BROWSER_TOOLS,
     },
     CodingAgentBridgePolicy {
         capability_name: "Web & Documents",
@@ -6775,6 +6800,9 @@ impl Agent {
         extension_manager
             .computer_use
             .set_mode(config.biorouter_mode);
+        extension_manager
+            .browser_use
+            .set_mode(config.biorouter_mode);
         Self {
             provider: provider.clone(),
             config,
@@ -10209,6 +10237,7 @@ impl Agent {
         let installed = DecisionBoundProvider::bind(inner, axes);
         let installed_public = !installed.tier().is_private();
         self.extension_manager.computer_use.revoke();
+        self.extension_manager.browser_use.revoke();
         *slot = Some(installed);
         // (Server package, DR-33.) A lowering's own observation, made while the
         // slot is still held so Gate B's cache store (after its post-ratchet
@@ -11745,7 +11774,19 @@ impl Agent {
         let session_extensions =
             EnabledExtensionsState::from_extension_data(&session.extension_data);
         let enabled_configs = match session_extensions {
-            Some(state) => state.extensions,
+            Some(state) => {
+                // L6: a default-on capability added after this chat's roster was saved (the
+                // Biorouter Browser) joins it now, unless the person has it off for every chat.
+                // Not persisted here, since opening a chat changes nothing in it; the roster
+                // records it, and marks it offered, the next time the roster is written.
+                let backfill = state.backfill(
+                    &crate::config::extensions::get_enabled_extensions(),
+                    session.session_type == crate::session::session_manager::SessionType::SubAgent,
+                );
+                let mut extensions = state.extensions;
+                extensions.extend(backfill);
+                extensions
+            }
             None => {
                 tracing::warn!(
                     "No extensions found in session {}. This is unexpected.",
@@ -12587,6 +12628,13 @@ impl Agent {
             .extension_manager
             .bind_computer_use_task(&session_config.id)
             .await;
+        // BB-17: a request lifetime browser act grant ends with this reply; the chat's observe
+        // grant lives on.
+        let browser_task = self.extension_manager.browser_use.task_guard();
+        let _ = self
+            .extension_manager
+            .bind_browser_use_task(&session_config.id)
+            .await;
         // Every decision this reply causes (a monitor, a `decide` batch, a
         // phase gate, a decision chat) is logged under one fresh turn id, so
         // surfaces aggregate per turn instead of listing calls. The guard ends
@@ -12626,6 +12674,7 @@ impl Agent {
         .await?;
         Ok(Box::pin(async_stream::try_stream! {
             let _task = task;
+            let _browser_task = browser_task;
             let _decision_turn = decision_turn;
             while let Some(event) = replies.next().await {
                 yield event?;
@@ -18423,6 +18472,7 @@ impl Agent {
             .check_provider_binding(session_id, provider.as_ref())
             .await?;
         self.extension_manager.computer_use.revoke();
+        self.extension_manager.browser_use.revoke();
         // DR-33 (design §3.1, Gate A): the incoming instance is UNWRAPPED before
         // its tier is read, so a parent's decision-bound wrapper handed to a
         // child never decides the child's bind. On a Private row names are inert

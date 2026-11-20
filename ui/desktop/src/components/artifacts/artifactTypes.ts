@@ -15,6 +15,23 @@ export type ArtifactSource =
       kind: 'externalUrl';
       title: string;
       url: string;
+      /**
+       * BB-02: the person clicked a link in a message, which is the whole consent a page load
+       * needs, so the panel opens the page at once instead of showing the Open here card. Set
+       * ONLY by a click handler in the transcript (`withLinkClickOrigin`); an artifact built from
+       * a tool result or an MCP resource never carries it, so an agent supplied link still waits
+       * for the person.
+       */
+      openedBy?: 'click' | 'agent';
+      /** When that click happened: a second click on the same link loads it again. */
+      openedAt?: number;
+      /**
+       * A browser tab that already exists in the main process (a page opened it with
+       * `target=_blank`, or the agent opened it, BB-15), which the panel tab shows instead of
+       * creating its own. `openedBy: 'agent'` with a `viewId` is set only by the renderer when
+       * main asks it to show an agent tab, never by a transcript or a tool result.
+       */
+      viewId?: string;
     }
   | {
       kind: 'file';

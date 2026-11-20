@@ -47,6 +47,39 @@ starts the service writes it with mode 0600 in a 0700 directory, and the service
 it exits. The name stops a model's casual read. The computer belongs to its user, so the design
 does not try to stop an agent the user runs from acting as them. `runtime.json` is not on the floor.
 
+Since 2026-11-20 it also names the cookie and password stores of Google Chrome and of the
+Biorouter Browser (BB-25 in [the built-in browser](../desktop-ui/built-in-browser.md)): `Cookies`,
+`Login Data`, `Login Data For Account` and `Web Data` under a `Google/Chrome/` folder (macOS
+`~/Library/Application Support/Google/Chrome/`, Windows `…/Google/Chrome/User Data/`) or a
+`google-chrome/` folder (Linux `~/.config/google-chrome/`), at any profile depth, and `Cookies`
+under the browser's own partition, `Partitions/biorouter-embedded-browser/`. These hold a person's
+signed in sessions, saved passwords and payment data, which is what the browser's Chrome import
+takes care never to read (passwords) or to let leave the app (cookie values). Chrome's other
+files (`Bookmarks`, `Preferences`, `Local State`) and any file merely called `Cookies` elsewhere
+stay readable. Like the rest of the floor, this stops an accident, not a determined program.
+
+### The Chrome key helper (BB-23)
+
+One command is refused by what it runs rather than by a path: `biorouterd browser-key`, the
+hidden helper that reads the key Chrome encrypts its cookies with, for the desktop app's
+**Import from Chrome**. On macOS a person who once answers the Keychain prompt with **Always
+Allow** has allowed `biorouterd` to read that key silently from then on, and an agent's shell
+runs `biorouterd` as the same person. So the command scan refuses any command that names the
+helper, in every spelling the resolver can read: a path or another case (`BIOROUTERD`, `.exe`),
+quotes and backslashes, `env` and the other wrappers, variables and earlier assignments, `sh -c`,
+`eval`, here-documents, an `alias` body, a command substitution, and a list or string handed to
+`subprocess` or `system`. It judges words, not paths: the subcommand `browser-key` together with
+either the program `biorouterd` or the `--source` option the helper cannot run without, anywhere
+in one tool call, so a renamed copy (`/tmp/x browser-key --source chrome`) is refused too, while
+`rg browser-key` (searching this code) is not. The refusal tells the model to ask the person to
+import from Chrome themselves (`HelperSighting` in `secret_guard/resolve.rs`).
+
+This is the first of two layers. A static scan cannot see a command assembled at run time
+(`printf` pieces, base64), so the helper itself also refuses any caller but the desktop app's
+main process, and answers that one only masked with a one-time request on its standard input
+(`crates/biorouter/src/browser_key.rs`; [the built-in browser](../desktop-ui/built-in-browser.md),
+"The macOS Keychain prompt (BB-23)").
+
 The floor is not only the agent's. Crew's local file registration
 ([`crates/biorouter-server/src/crew/local_files.rs`](../../crates/biorouter-server/src/crew/local_files.rs))
 refuses an upload source or a download destination the floor names (Q3-01), consulting only the
@@ -375,7 +408,7 @@ boundary against a determined adversary — the same ruling that governs
 ## Tests
 
 ```bash
-BIOROUTER_DISABLE_KEYRING=true cargo test -p biorouter-mcp --lib -- secret_guard h1_
+BIOROUTER_DISABLE_KEYRING=true cargo test -p biorouter-mcp --lib -- secret_guard h1_ bb_23_
 BIOROUTER_DISABLE_KEYRING=true cargo test -p biorouter-mcp --test developer_guard_execution
 BIOROUTER_DISABLE_KEYRING=true cargo test -p biorouter --lib -- secret_output extension_manager guardrails::tool_output
 BIOROUTER_DISABLE_KEYRING=true cargo test -p biorouter-server --lib -- crew::local_files
@@ -399,7 +432,9 @@ each body where the guard does. The `issue522` tests hold the
 templates open through both guard constructors, the resolver and the real Developer tools, keep
 their symlinked, globbed and differently named neighbours refused, and, at the dispatch boundary,
 admit the Todo and `execute_code` free text while every other field, lookalike client and
-Compute's `code` stay refused. The fake key material is
+Compute's `code` stay refused. `bb_23_` runs the Chrome key helper's
+spellings through the dispatch scan, `developer__shell`'s check and the code scan, and keeps a
+search for the helper's name allowed. The fake key material is
 assembled at run time so no key-shaped literal sits in the source. None of the tests reads the
 real `~/.aws`, `~/.ssh` or `~/.config/biorouter`.
 

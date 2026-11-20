@@ -82,7 +82,7 @@ describe('Dictate into this application in the live preview', () => {
     const { electron } = installElectron(stateAt(appUrl, true), { value: false });
     await mount();
     await waitFor(() => expect(electron.dictationAnywherePreviewFocused).toHaveBeenCalled());
-    expect(screen.getByRole('button', { name: 'Open in browser' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'More browser actions' })).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: BUTTON })).not.toBeInTheDocument();
     expect(screen.queryByText(dictationMessage('MSG-APPS'))).not.toBeInTheDocument();
   });
@@ -154,7 +154,7 @@ describe('Dictate into this application in the live preview', () => {
     document.documentElement.dataset.biorouterSurface = BROWSER_SURFACE_MARKER;
     const { electron } = installElectron(stateAt(appUrl, true), { value: true });
     await mount();
-    await screen.findByRole('button', { name: 'Open in browser' });
+    await screen.findByRole('button', { name: 'More browser actions' });
     expect(screen.queryByRole('button', { name: BUTTON })).not.toBeInTheDocument();
     expect(electron.dictationAnywherePreviewFocused).not.toHaveBeenCalled();
   });
@@ -165,7 +165,7 @@ describe('Dictate into this application in the live preview', () => {
     await act(async () => {
       render(<WebPagePreview url={site} onOpenExternal={vi.fn()} />);
     });
-    await screen.findByRole('button', { name: 'Open in browser' });
+    await screen.findByRole('button', { name: 'More browser actions' });
     expect(screen.queryByRole('button', { name: BUTTON })).not.toBeInTheDocument();
     expect(electron.dictationAnywherePreviewFocused).not.toHaveBeenCalled();
   });

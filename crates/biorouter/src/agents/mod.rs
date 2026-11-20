@@ -10,6 +10,9 @@ pub mod budget;
 // report, and -- only behind a proof-backed approval showing the exact body --
 // file it on the public issue tracker.
 pub mod bug_report;
+// The Biorouter Browser's agent tools (BB-09): drive the side panel browser of the chat on
+// screen through the workspace socket.
+pub mod browser_extension;
 pub(crate) mod chatrecall_extension;
 pub(crate) mod dictionary_extension;
 // The Chat summary's Code figure for a script's file edits, measured from the

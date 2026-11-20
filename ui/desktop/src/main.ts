@@ -25,6 +25,7 @@ import {
   ipcMain,
   Menu,
   MenuItem,
+  nativeImage,
   nativeTheme,
   Notification,
   powerMonitor,
@@ -54,6 +55,7 @@ import {
   startBiorouterd,
   externalBackendUrlFromEnv,
   getBiorouterCliBinaryPath,
+  getBiorouterdBinaryPath,
   type BiorouterdResult,
   type SharedDaemonLink,
 } from './biorouterd';
@@ -212,19 +214,47 @@ import {
 import { readGitArtifactTree } from './utils/artifactGit';
 import {
   captureEmbeddedBrowser,
+  claimEmbeddedBrowser,
   clearEmbeddedBrowserData,
   controlEmbeddedBrowser,
   createEmbeddedBrowser,
   destroyEmbeddedBrowser,
   destroyEmbeddedBrowsersForWindow,
+  dismissEmbeddedBrowserNotice,
+  embeddedBrowserBookmarks,
+  embeddedBrowserImportTargets,
+  embeddedBrowserSearchEngine,
+  embeddedBrowserSuggestions,
+  findInEmbeddedBrowser,
   navigateEmbeddedBrowser,
   openExternalBrowserNavigation,
   readEmbeddedBrowserText,
   registerEmbeddedBrowserOwnerTeardown,
+  releaseEmbeddedBrowser,
+  setEmbeddedBrowserBookmark,
   setEmbeddedBrowserBounds,
   setEmbeddedBrowserVisible,
+  showEmbeddedBrowserDownload,
+  stopFindInEmbeddedBrowser,
+  zoomEmbeddedBrowser,
   type EmbeddedBrowserBounds,
 } from './utils/embeddedBrowser';
+import { configureBrowserTestHosts, reserveLocalPort } from './browser/localNetwork';
+import { cancelAgentBrowserOperation, runAgentBrowserOperation } from './browser/agent/driver';
+import {
+  BROWSER_AGENT_OPS,
+  type BrowserAgentOp,
+  type BrowserAgentRequest,
+} from './browser/agent/types';
+import { configureBrowserTestDownloads } from './browser/downloads';
+import { browserTestHooksEnabled } from './browser/testHooks';
+import { chromeImportSource } from './browser/chromeImport/appSource';
+import {
+  createChromeImportService,
+  validImportRequest,
+  type ChromeImportService,
+} from './browser/chromeImport/service';
+import type { ImportConfirmationText } from './browser/chromeImport/confirm';
 import { heicToPng } from './utils/heicConvert';
 import {
   managedAppHasFocusedField,
@@ -292,6 +322,7 @@ import {
 import { IMAGE_BLOB_URL_THRESHOLD_BYTES, IMAGE_MIME_TYPES } from './utils/imageFormats';
 import { recordExtensionProvenance } from './utils/extensionProvenance';
 import {
+  agentCaptureDir,
   biorouterConfigDir,
   biorouterExtensionsDir,
   unsandboxedConfigDirCandidates,
@@ -839,6 +870,32 @@ async function ensureTempDirExists(): Promise<string> {
     throw error; // Propagate error
   }
   return biorouterTempDir;
+}
+
+/**
+ * The folder the daemon reads an agent's captures from (M1): `browser_screenshot` and a
+ * `workspace_read_panel` capture. It is Biorouter's state folder, resolved as the daemon resolves
+ * it, never Electron's temporary folder, which a profile (`--user-data-dir`, a development
+ * profile) moves while the daemon's stays. Private to this user; the daemon deletes each file
+ * once it has read it, and anything older than a day is swept here.
+ */
+async function ensureAgentCaptureDir(): Promise<string> {
+  const dir = agentCaptureDir();
+  await fs.mkdir(dir, { recursive: true, mode: 0o700 });
+  const stats = await fs.lstat(dir);
+  if (!stats.isDirectory() || stats.isSymbolicLink()) {
+    throw new Error(`The capture folder is not a plain directory: ${dir}`);
+  }
+  await fs.chmod(dir, 0o700);
+  const now = Date.now();
+  for (const name of await fs.readdir(dir).catch(() => [] as string[])) {
+    const file = path.join(dir, name);
+    const entry = await fs.lstat(file).catch(() => null);
+    if (entry && (entry.isSymbolicLink() || now - entry.mtime.getTime() > 24 * 60 * 60 * 1000)) {
+      await fs.unlink(file).catch(() => {});
+    }
+  }
+  return dir;
 }
 
 async function configureProxy() {
@@ -1714,6 +1771,15 @@ const bindWindowAppPreview = (window: BrowserWindow) => {
     if (managedAppPreviewBindings.get(windowId) !== binding) return;
     if (backend && !window.isDestroyed()) managedAppPreviewBackends.set(windowId, backend);
     else managedAppPreviewBackends.delete(windowId);
+    // BB-06: the daemon's own app listener is reserved too (a shared daemon's differs from
+    // the proxy's port).
+    for (const origin of [backend?.baseUrl, backend?.appOrigin]) {
+      try {
+        if (origin) reserveLocalPort(new URL(origin).port);
+      } catch {
+        // Not a URL: nothing to reserve.
+      }
+    }
   });
   return binding;
 };
@@ -1841,6 +1907,13 @@ const createChat = async (
       });
 
   const { baseUrl, process: biorouterdProcess, errorLog } = biorouterdResult;
+  // BB-06: the daemon (or the local proxy in front of a shared one) is never a page the
+  // browser may open, for anyone.
+  try {
+    reserveLocalPort(new URL(baseUrl).port);
+  } catch {
+    // A malformed base URL fails the readiness check below on its own.
+  }
   // A new window after the shared daemon restarted would otherwise open onto a proxy that
   // refuses every request, fail its readiness check and quit the app: reconnect first (R-1).
   let daemonAttached = true;
@@ -5290,11 +5363,14 @@ ipcMain.on('delete-temp-file', async (_event, filePath: string) => {
     return;
   }
 
-  // Ensure the path is within the designated temp directory
+  // Ensure the path is within the designated temp directory, or the agent capture folder (a
+  // panel capture the renderer drops because the panel changed while it was taken).
   const resolvedPath = path.resolve(filePath);
-  const resolvedTempDir = path.resolve(biorouterTempDir);
+  const tempRoot = [biorouterTempDir, agentCaptureDir()].find((root) =>
+    resolvedPath.startsWith(path.resolve(root) + path.sep)
+  );
 
-  if (!resolvedPath.startsWith(resolvedTempDir + path.sep)) {
+  if (!tempRoot) {
     console.warn(`[Main] Attempted to delete file outside designated temp directory: ${filePath}`);
     return;
   }
@@ -5311,7 +5387,7 @@ ipcMain.on('delete-temp-file', async (_event, filePath: string) => {
     let actualPath = filePath;
 
     try {
-      const realTempDir = await fs.realpath(biorouterTempDir);
+      const realTempDir = await fs.realpath(tempRoot);
       const realPath = await fs.realpath(filePath);
 
       // Double-check that the real path is still within our real temp directory
@@ -5566,7 +5642,10 @@ ipcMain.handle(
     // reject, so the empty case has to be checked rather than assumed.
     if (image.isEmpty()) return null;
 
-    const dir = await ensureTempDirExists();
+    // A capture of the panel for the agent goes where the daemon reads it; anything else (an
+    // annotation the person sends with a message) is a pasted image like any other.
+    const dir =
+      payload.label === 'panel' ? await ensureAgentCaptureDir() : await ensureTempDirExists();
     const safeLabel = (payload.label ?? 'region').replace(/[^a-zA-Z0-9-]/g, '').slice(0, 24);
     const filePath = path.join(
       dir,
@@ -5580,17 +5659,117 @@ ipcMain.handle(
 
 // ── Embedded browser (the artifact panel's live web view) ────────────────────
 //
-// Every handler resolves the owning window from the *event sender*. The main
-// registry keys renderer view ids by that owner, so an identical React id in a
-// second window cannot drive, read, capture, or destroy the first window's view.
+// Every handler resolves the owning window from the *event sender*, and answers only that
+// window's own renderer (`browserOwnerWindow`): a page in the browser has no preload and so no
+// IPC at all, and a popup window it opened has none either, so this is the window's chrome
+// talking. The main registry keys renderer view ids by that owner, so an identical React id in
+// a second window cannot drive, read, capture, or destroy the first window's view.
 //
 // An app link is answered once this window's preview backend is bound, which for a shared
 // daemon waits on the daemon naming its own listener (`bindWindowAppPreview`): a chat reopened
 // as the window starts would otherwise show its app as an external page. ⚠ `create` below stays
 // synchronous and reads the bound backend as it is: the renderer asks this first, and sends
 // `set-visible` and `set-bounds` right behind `create`, which must find the view already made.
-ipcMain.handle('embedded-browser:is-managed-app-url', async (event, payload: { url: string }) => {
+
+// BB-06 and the Electron tests (`tests/e2e/biorouter-browser.spec.ts`): fixture host names and
+// dialog-free downloads exist only in an unpackaged app run with BIOROUTER_E2E=1.
+{
+  const testHooks = browserTestHooksEnabled(process.env, app.isPackaged);
+  configureBrowserTestHosts(process.env.BIOROUTER_BROWSER_TEST_HOSTS, testHooks);
+  configureBrowserTestDownloads(
+    testHooks ? (process.env.BIOROUTER_BROWSER_TEST_DOWNLOAD_DIR ?? null) : null
+  );
+  // The dev renderer's own server is never a page the browser may open.
+  if (MAIN_WINDOW_VITE_DEV_SERVER_URL) {
+    reserveLocalPort(new URL(MAIN_WINDOW_VITE_DEV_SERVER_URL).port);
+  }
+}
+
+function browserOwnerWindow(event: Electron.IpcMainInvokeEvent): BrowserWindow | null {
   const window = BrowserWindow.fromWebContents(event.sender);
+  return window && window.webContents === event.sender ? window : null;
+}
+
+function isViewId(value: unknown): value is string {
+  return typeof value === 'string' && value.length > 0 && value.length <= 200;
+}
+
+// BB-10 and BB-11: one Biorouter Browser operation the daemon sent through this window's
+// workspace socket. The renderer checks the chat is on screen in this window and forwards the
+// frame here; main drives the chat's own agent tabs of THIS window through
+// `webContents.debugger`, and no other caller (a page, a popup, another window) can reach it.
+function agentBrowserRequest(payload: unknown): BrowserAgentRequest | null {
+  if (!payload || typeof payload !== 'object') return null;
+  const p = payload as Record<string, unknown>;
+  const text = (value: unknown) =>
+    typeof value === 'string' && value.length > 0 && value.length <= 200;
+  if (!text(p.requestId) || !text(p.sessionId)) return null;
+  if (typeof p.op !== 'string' || !BROWSER_AGENT_OPS.has(p.op)) return null;
+  if (!p.args || typeof p.args !== 'object' || Array.isArray(p.args)) return null;
+  if (p.grant !== 'observe' && p.grant !== 'act') return null;
+  if (p.tier !== 'public' && p.tier !== 'private') return null;
+  const deadline = Number(p.deadlineMs);
+  if (!Number.isFinite(deadline) || deadline <= 0) return null;
+  let downloadDir: string | undefined;
+  if (p.downloadDir !== undefined && p.downloadDir !== null) {
+    if (typeof p.downloadDir !== 'string' || !path.isAbsolute(p.downloadDir)) return null;
+    downloadDir = path.normalize(p.downloadDir);
+  }
+  return {
+    requestId: p.requestId as string,
+    sessionId: p.sessionId as string,
+    op: p.op as BrowserAgentOp,
+    args: p.args as Record<string, unknown>,
+    grant: p.grant,
+    tier: p.tier,
+    deadlineMs: deadline,
+    downloadDir,
+  };
+}
+
+/** A screenshot goes where the daemon's capture reader accepts it (PP-07, pixels out of band). */
+async function writeAgentScreenshot(png: Buffer): Promise<string> {
+  const dir = await ensureAgentCaptureDir();
+  const filePath = path.join(dir, `browser-shot-${crypto.randomBytes(6).toString('hex')}.png`);
+  await fs.writeFile(filePath, png, { mode: 0o600 });
+  return filePath;
+}
+
+function resizeAgentScreenshot(png: Buffer, maxWidth: number, maxHeight: number): Buffer {
+  const image = nativeImage.createFromBuffer(png);
+  const { width, height } = image.getSize();
+  const scale = Math.min(1, maxWidth / Math.max(1, width), maxHeight / Math.max(1, height));
+  if (scale >= 1) return png;
+  return image
+    .resize({
+      width: Math.max(1, Math.round(width * scale)),
+      height: Math.max(1, Math.round(height * scale)),
+      quality: 'good',
+    })
+    .toPNG();
+}
+
+ipcMain.handle('biorouter-browser:agent', async (event, payload: unknown) => {
+  const window = browserOwnerWindow(event);
+  if (!window) return { ok: false, detail: 'This window cannot drive the browser.' };
+  const request = agentBrowserRequest(payload);
+  if (!request) return { ok: false, detail: 'The browser operation was malformed.' };
+  return runAgentBrowserOperation(window, request, {
+    writeScreenshot: writeAgentScreenshot,
+    resizePng: resizeAgentScreenshot,
+  });
+});
+
+ipcMain.handle('biorouter-browser:agent-cancel', (event, payload: { requestId?: unknown }) => {
+  const window = browserOwnerWindow(event);
+  if (!window || typeof payload?.requestId !== 'string' || payload.requestId.length > 200) {
+    return false;
+  }
+  return cancelAgentBrowserOperation(payload.requestId);
+});
+
+ipcMain.handle('embedded-browser:is-managed-app-url', async (event, payload: { url: string }) => {
+  const window = browserOwnerWindow(event);
   if (!window || typeof payload?.url !== 'string' || !localAppPageId(payload.url)) return false;
   const backend = await windowAppPreviewBackend(window);
   return Boolean(managedAppPreviewScope(payload.url, backend));
@@ -5599,10 +5778,11 @@ ipcMain.handle('embedded-browser:is-managed-app-url', async (event, payload: { u
 ipcMain.handle(
   'embedded-browser:create',
   (event, payload: { viewId: string; url: string; managedOnly?: boolean }) => {
-    const window = BrowserWindow.fromWebContents(event.sender);
+    const window = browserOwnerWindow(event);
     if (
       !window ||
-      typeof payload?.viewId !== 'string' ||
+      !isViewId(payload?.viewId) ||
+      typeof payload.url !== 'string' ||
       (payload.managedOnly !== undefined && typeof payload.managedOnly !== 'boolean')
     )
       return null;
@@ -5624,22 +5804,28 @@ ipcMain.handle(
 ipcMain.handle(
   'embedded-browser:set-bounds',
   (event, payload: { viewId: string; bounds: EmbeddedBrowserBounds }) => {
-    const window = BrowserWindow.fromWebContents(event.sender);
-    if (window) setEmbeddedBrowserBounds(window, payload.viewId, payload.bounds);
+    const window = browserOwnerWindow(event);
+    if (window && isViewId(payload?.viewId) && payload.bounds) {
+      setEmbeddedBrowserBounds(window, payload.viewId, payload.bounds);
+    }
   }
 );
 
 ipcMain.handle(
   'embedded-browser:set-visible',
   (event, payload: { viewId: string; visible: boolean }) => {
-    const window = BrowserWindow.fromWebContents(event.sender);
-    if (window) setEmbeddedBrowserVisible(window, payload.viewId, payload.visible);
+    const window = browserOwnerWindow(event);
+    if (window && isViewId(payload?.viewId)) {
+      setEmbeddedBrowserVisible(window, payload.viewId, payload.visible === true);
+    }
   }
 );
 
 ipcMain.handle('embedded-browser:navigate', (event, payload: { viewId: string; url: string }) => {
-  const window = BrowserWindow.fromWebContents(event.sender);
-  return window ? navigateEmbeddedBrowser(window, payload.viewId, payload.url) : false;
+  const window = browserOwnerWindow(event);
+  return window && isViewId(payload?.viewId) && typeof payload.url === 'string'
+    ? navigateEmbeddedBrowser(window, payload.viewId, payload.url)
+    : false;
 });
 
 ipcMain.handle(
@@ -5648,8 +5834,14 @@ ipcMain.handle(
     event,
     payload: { viewId: string; action: 'back' | 'forward' | 'reload' | 'stop' | 'reload-if-idle' }
   ) => {
-    const window = BrowserWindow.fromWebContents(event.sender);
-    return window ? controlEmbeddedBrowser(window, payload.viewId, payload.action) : false;
+    const window = browserOwnerWindow(event);
+    if (
+      !window ||
+      !isViewId(payload?.viewId) ||
+      !['back', 'forward', 'reload', 'stop', 'reload-if-idle'].includes(payload.action)
+    )
+      return false;
+    return controlEmbeddedBrowser(window, payload.viewId, payload.action);
   }
 );
 
@@ -5665,8 +5857,8 @@ ipcMain.handle(
 ipcMain.handle(
   'embedded-browser:read-text',
   async (event, payload: { viewId: string; maxChars?: number }) => {
-    const window = BrowserWindow.fromWebContents(event.sender);
-    if (!window) return null;
+    const window = browserOwnerWindow(event);
+    if (!window || !isViewId(payload?.viewId)) return null;
     const requested = payload.maxChars ?? 20_000;
     const limit = Number.isFinite(requested)
       ? Math.min(40_000, Math.max(0, Math.floor(requested)))
@@ -5676,11 +5868,12 @@ ipcMain.handle(
 );
 
 ipcMain.handle('embedded-browser:capture', async (event, payload: { viewId: string }) => {
-  const window = BrowserWindow.fromWebContents(event.sender);
-  if (!window) return null;
+  const window = browserOwnerWindow(event);
+  if (!window || !isViewId(payload?.viewId)) return null;
   const shot = await captureEmbeddedBrowser(window, payload.viewId);
   if (!shot) return null;
-  const dir = await ensureTempDirExists();
+  // Only `workspace_read_panel` asks for this, so it goes where the daemon reads it.
+  const dir = await ensureAgentCaptureDir();
   const filePath = path.join(dir, `capture-page-${crypto.randomBytes(6).toString('hex')}.png`);
   await fs.writeFile(filePath, shot.png, { mode: 0o600 });
   return {
@@ -5692,13 +5885,207 @@ ipcMain.handle('embedded-browser:capture', async (event, payload: { viewId: stri
 });
 
 ipcMain.handle('embedded-browser:clear-data', async (event, payload: { viewId: string }) => {
-  const window = BrowserWindow.fromWebContents(event.sender);
-  return window ? clearEmbeddedBrowserData(window, payload.viewId) : false;
+  const window = browserOwnerWindow(event);
+  return window && isViewId(payload?.viewId)
+    ? clearEmbeddedBrowserData(window, payload.viewId)
+    : false;
+});
+
+// BB-01: hiding a tab when the panel shows something else keeps it; destroy ends it.
+ipcMain.handle('embedded-browser:release', (event, payload: { viewId: string }) => {
+  const window = browserOwnerWindow(event);
+  if (window && isViewId(payload?.viewId)) releaseEmbeddedBrowser(window, payload.viewId);
+});
+
+ipcMain.handle('embedded-browser:claim', (event, payload: { viewId: string }) => {
+  const window = browserOwnerWindow(event);
+  return window && isViewId(payload?.viewId) ? claimEmbeddedBrowser(window, payload.viewId) : false;
 });
 
 ipcMain.handle('embedded-browser:destroy', (event, payload: { viewId: string }) => {
-  const window = BrowserWindow.fromWebContents(event.sender);
-  if (window) destroyEmbeddedBrowser(window, payload.viewId);
+  const window = browserOwnerWindow(event);
+  if (window && isViewId(payload?.viewId)) destroyEmbeddedBrowser(window, payload.viewId);
+});
+
+ipcMain.handle(
+  'embedded-browser:zoom',
+  (event, payload: { viewId: string; direction: 'in' | 'out' | 'reset' }) => {
+    const window = browserOwnerWindow(event);
+    if (
+      !window ||
+      !isViewId(payload?.viewId) ||
+      !['in', 'out', 'reset'].includes(payload.direction)
+    )
+      return null;
+    return zoomEmbeddedBrowser(window, payload.viewId, payload.direction);
+  }
+);
+
+ipcMain.handle(
+  'embedded-browser:find',
+  (event, payload: { viewId: string; text: string; forward?: boolean; findNext?: boolean }) => {
+    const window = browserOwnerWindow(event);
+    if (!window || !isViewId(payload?.viewId) || typeof payload.text !== 'string') return false;
+    return findInEmbeddedBrowser(window, payload.viewId, payload.text, {
+      forward: payload.forward !== false,
+      findNext: payload.findNext === true,
+    });
+  }
+);
+
+ipcMain.handle('embedded-browser:stop-find', (event, payload: { viewId: string }) => {
+  const window = browserOwnerWindow(event);
+  if (window && isViewId(payload?.viewId)) stopFindInEmbeddedBrowser(window, payload.viewId);
+});
+
+ipcMain.handle('embedded-browser:dismiss-notice', (event, payload: { viewId: string }) => {
+  const window = browserOwnerWindow(event);
+  if (window && isViewId(payload?.viewId)) dismissEmbeddedBrowserNotice(window, payload.viewId);
+});
+
+ipcMain.handle('embedded-browser:show-download', (event, payload: { viewId: string }) => {
+  const window = browserOwnerWindow(event);
+  return window && isViewId(payload?.viewId)
+    ? showEmbeddedBrowserDownload(window, payload.viewId)
+    : false;
+});
+
+ipcMain.handle(
+  'embedded-browser:bookmark',
+  (event, payload: { viewId: string; bookmarked: boolean }) => {
+    const window = browserOwnerWindow(event);
+    if (!window || !isViewId(payload?.viewId) || typeof payload.bookmarked !== 'boolean')
+      return false;
+    return setEmbeddedBrowserBookmark(window, payload.viewId, payload.bookmarked);
+  }
+);
+
+ipcMain.handle('embedded-browser:bookmarks', (event) =>
+  browserOwnerWindow(event) ? embeddedBrowserBookmarks() : []
+);
+
+ipcMain.handle('embedded-browser:suggest', (event, payload: { query: string }) =>
+  browserOwnerWindow(event) && typeof payload?.query === 'string'
+    ? embeddedBrowserSuggestions(payload.query)
+    : []
+);
+
+ipcMain.handle('embedded-browser:search-engine', (event) =>
+  browserOwnerWindow(event) ? embeddedBrowserSearchEngine() : null
+);
+
+// ── Importing from Chrome (BB-21 to BB-25) ──────────────────────────────────
+//
+// Only the person can start an import: these handlers answer the main frame of one of the app's
+// own windows on the app's own origin (`browserImportOwner`), never a page in the browser, a
+// popup, an artifact frame or another process. There is no daemon route, workspace frame or tool
+// for any of it, so an agent can neither start an import nor answer the operating system's prompt
+// (a census test, `chromeImport/census.test.ts`, holds that line).
+//
+// What crosses back to the renderer is counts, site names and profile names. Cookie values and
+// the key stay in this process and the browser's own partition.
+
+let chromeImport: ChromeImportService | null = null;
+
+function chromeImportService(): ChromeImportService {
+  if (chromeImport) return chromeImport;
+  const source = chromeImportSource({
+    env: process.env,
+    isPackaged: app.isPackaged,
+    platform: process.platform,
+    home: os.homedir(),
+    helperBinary: () => getBiorouterdBinaryPath(app),
+  });
+  const targets = embeddedBrowserImportTargets();
+  chromeImport = createChromeImportService({
+    platform: source.platform,
+    dataRoot: source.dataRoot,
+    stateDir: targets.stateDir,
+    cookies: targets.cookies,
+    store: targets.store,
+    preferences: targets.preferences,
+    onPreferencesChanged: targets.onPreferencesChanged,
+    keyProvider: source.keyProvider,
+    // Counts, outcomes and site names only (the importer never passes a value here).
+    log: (message, details) => log.info(`[ChromeImport] ${message}`, details ?? {}),
+  });
+  return chromeImport;
+}
+
+function browserImportOwner(event: Electron.IpcMainInvokeEvent): BrowserWindow | null {
+  const owner = BrowserWindow.fromWebContents(event.sender);
+  const frame = event.senderFrame;
+  if (
+    !owner ||
+    owner.isDestroyed() ||
+    windowMap.get(owner.id) !== owner ||
+    owner.webContents !== event.sender ||
+    !frame ||
+    frame !== event.sender.mainFrame ||
+    !isAppOrigin(frame.url, rendererEntryUrl())
+  ) {
+    return null;
+  }
+  return owner;
+}
+
+ipcMain.handle('biorouter-browser-import:status', (event) =>
+  browserImportOwner(event) ? chromeImportService().status() : null
+);
+
+ipcMain.handle('biorouter-browser-import:profiles', (event) =>
+  browserImportOwner(event) ? chromeImportService().profiles() : []
+);
+
+ipcMain.handle('biorouter-browser-import:sites', (event, payload: { profileId?: unknown }) =>
+  browserImportOwner(event) &&
+  typeof payload?.profileId === 'string' &&
+  payload.profileId.length <= 64
+    ? chromeImportService().sites(payload.profileId)
+    : { readable: false, sites: [], total: 0 }
+);
+
+/**
+ * S3: the import's own confirmation, a native dialog this process shows over the window that
+ * asked. A page cannot answer it, so a compromised or buggy renderer cannot start an import
+ * alone; the service reads nothing from the profile but its name before the answer.
+ */
+async function confirmChromeImport(
+  owner: BrowserWindow,
+  text: ImportConfirmationText
+): Promise<boolean> {
+  if (owner.isDestroyed()) return false;
+  const { response } = await dialog.showMessageBox(owner, {
+    type: 'question',
+    buttons: ['Cancel', text.confirmLabel],
+    defaultId: 1,
+    cancelId: 0,
+    noLink: true,
+    message: text.message,
+    detail: text.detail,
+  });
+  return response === 1;
+}
+
+ipcMain.handle('biorouter-browser-import:run', async (event, payload: unknown) => {
+  const owner = browserImportOwner(event);
+  if (!owner) return { ok: false, error: 'This window cannot import.' };
+  const request = validImportRequest(payload);
+  if (!request) return { ok: false, error: 'The import request was malformed.' };
+  return chromeImportService().run(request, (text) => confirmChromeImport(owner, text));
+});
+
+ipcMain.handle('biorouter-browser-import:remove', async (event, payload: { id?: unknown }) => {
+  if (!browserImportOwner(event) || typeof payload?.id !== 'string' || payload.id.length > 64) {
+    return false;
+  }
+  return chromeImportService().remove(payload.id);
+});
+
+ipcMain.handle('biorouter-browser-import:dismiss', (event) => {
+  if (!browserImportOwner(event)) return false;
+  chromeImportService().dismissOffer();
+  return true;
 });
 
 ipcMain.handle('read-artifact-file', async (event, filePath: string) => {

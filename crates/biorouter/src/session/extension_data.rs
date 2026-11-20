@@ -765,7 +765,22 @@ fn parse_checklist_line(line: &str) -> Option<(TodoStatus, &str)> {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EnabledExtensionsState {
     pub extensions: Vec<ExtensionConfig>,
+    /// The capabilities in [`BACKFILLED_CAPABILITIES`] this roster was written knowing about.
+    ///
+    /// A roster is exact: a capability turned off in a chat is expressed by its absence. So a
+    /// default-on capability that arrived after a chat's roster was saved would never reach that
+    /// chat, because nothing tells "turned off here" from "did not exist yet". Every roster this
+    /// build writes ([`Self::new`]) names the capabilities it knew; one that does not name a
+    /// capability predates it, and the chat is offered it when it opens (L6).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub offered: Vec<String>,
 }
+
+/// Default-on capabilities that reach chats whose saved roster predates them (L6): the
+/// Biorouter Browser, added in 1.94.6. A capability added later and meant for existing chats
+/// joins this list; the ones that came before it are not added to old chats, because their
+/// rosters cannot tell a capability someone turned off from one that did not exist.
+pub const BACKFILLED_CAPABILITIES: &[&str] = &["browser"];
 
 impl ExtensionState for EnabledExtensionsState {
     const EXTENSION_NAME: &'static str = "enabled_extensions";
@@ -774,7 +789,30 @@ impl ExtensionState for EnabledExtensionsState {
 
 impl EnabledExtensionsState {
     pub fn new(extensions: Vec<ExtensionConfig>) -> Self {
-        Self { extensions }
+        Self {
+            extensions,
+            offered: BACKFILLED_CAPABILITIES
+                .iter()
+                .map(|key| key.to_string())
+                .collect(),
+        }
+    }
+
+    /// The capabilities this chat should be offered on top of its saved roster: each
+    /// default-on capability the roster predates and that the person has on for every chat
+    /// (`machine`, the machine-wide enabled extensions). Never for a subagent, whose roster is
+    /// its runtime profile.
+    pub fn backfill(&self, machine: &[ExtensionConfig], subagent: bool) -> Vec<ExtensionConfig> {
+        if subagent {
+            return Vec::new();
+        }
+        BACKFILLED_CAPABILITIES
+            .iter()
+            .filter(|key| !self.offered.iter().any(|offered| offered == **key))
+            .filter(|key| !self.extensions.iter().any(|config| config.key() == **key))
+            .filter_map(|key| machine.iter().find(|config| config.key() == *key))
+            .cloned()
+            .collect()
     }
 }
 
@@ -782,6 +820,52 @@ impl EnabledExtensionsState {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    fn platform(name: &str) -> ExtensionConfig {
+        ExtensionConfig::Platform {
+            name: name.to_string(),
+            description: String::new(),
+            bundled: Some(true),
+            available_tools: Vec::new(),
+        }
+    }
+
+    /// L6: a chat saved before the Biorouter Browser existed is offered it when it opens; a
+    /// chat whose roster this build wrote keeps whatever the person chose, including off.
+    #[test]
+    fn a_roster_that_predates_the_browser_is_offered_it_once() {
+        let machine = vec![platform("developer"), platform("Browser"), platform("todo")];
+        let old: EnabledExtensionsState =
+            serde_json::from_value(json!({ "extensions": [] })).unwrap();
+        assert!(old.offered.is_empty());
+        let offered = old.backfill(&machine, false);
+        assert_eq!(
+            offered.iter().map(ExtensionConfig::key).collect::<Vec<_>>(),
+            vec!["browser".to_string()]
+        );
+        // Never into a subagent's profile, and never when the person turned it off everywhere.
+        assert!(old.backfill(&machine, true).is_empty());
+        assert!(old
+            .backfill(&[platform("developer"), platform("todo")], false)
+            .is_empty());
+
+        // A roster this build writes knows the browser: off in this chat stays off.
+        let written = EnabledExtensionsState::new(vec![platform("developer")]);
+        assert_eq!(written.offered, vec!["browser".to_string()]);
+        assert!(written.backfill(&machine, false).is_empty());
+        let round_trip: EnabledExtensionsState =
+            serde_json::from_value(written.to_value().unwrap()).unwrap();
+        assert!(round_trip.backfill(&machine, false).is_empty());
+
+        // Already there: nothing to add.
+        let with_browser: EnabledExtensionsState =
+            serde_json::from_value(json!({ "extensions": [] })).unwrap();
+        let with_browser = EnabledExtensionsState {
+            extensions: vec![platform("Browser")],
+            ..with_browser
+        };
+        assert!(with_browser.backfill(&machine, false).is_empty());
+    }
 
     fn checklist(markdown: &str) -> TodoState {
         let mut state = TodoState::new();

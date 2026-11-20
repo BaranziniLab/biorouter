@@ -18,6 +18,7 @@ import { useTransientFlag } from '../../../hooks/useTransientFlag';
 import { aboutCopy, appearanceCopy, generalCopy } from './copy';
 import FeedbackLinks from './FeedbackLinks';
 import ExternalBackendSection from './ExternalBackendSection';
+import BrowserSettingsSection from './BrowserSettingsSection';
 
 /** Whether costs are shown; on unless the person turned them off (and on when storage is closed). */
 function readShowPricing(): boolean {
@@ -30,8 +31,8 @@ function readShowPricing(): boolean {
 
 /**
  * Settings > App, after Configuration and Privacy (the operator's order, kept by `SettingsView`):
- * General, Appearance, Usage, About (spec §3.13), then Server (PR-29, `ExternalBackendSection`)
- * and the Danger zone, which stays last.
+ * General, Appearance, Browser (BB-25, desktop only), Usage, About (spec §3.13), then Server
+ * (PR-29, `ExternalBackendSection`) and the Danger zone, which stays last.
  *
  * Every row is one `SettingRow`: a label (which is also the control's accessible name, so a
  * person driving the app by voice says what they read), an optional InfoTip, and ONE control
@@ -196,6 +197,8 @@ export default function AppSettingsSection() {
           <FontSizeSelector />
         </SettingRow>
       </SettingSection>
+
+      <BrowserSettingsSection />
 
       {/*
         Usage: accumulated (billed) tokens and cost. WS-USAGE owns the section. It stays mounted

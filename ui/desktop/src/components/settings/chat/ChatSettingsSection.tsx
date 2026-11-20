@@ -5,6 +5,7 @@ import { CapabilitiesSection } from '../capabilities/CapabilitiesSection';
 import { BrsdkSection } from '../brsdk/BrsdkSection';
 import { ProjectHintsRow } from './BioRouterHintsSection';
 import { SpellcheckRow } from './SpellcheckToggle';
+import { OpenLinksInRow } from './OpenLinksInRow';
 import MemorySection from '../memory/MemorySection';
 import { SettingSection } from '../../ui/setting-row';
 import { SETTINGS_SECTION_IDS } from '../settingsSections';
@@ -26,6 +27,7 @@ export default function ChatSettingsSection() {
 
       <SettingSection id={SETTINGS_SECTION_IDS.display} title={displayCopy.section}>
         <ToolCallDetailsRow />
+        <OpenLinksInRow />
         <SpellcheckRow />
       </SettingSection>
 

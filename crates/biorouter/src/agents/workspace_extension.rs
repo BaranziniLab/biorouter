@@ -207,7 +207,7 @@ fn panel_trust_notice(untrusted_external: bool) -> &'static str {
 /// to distrust — a total bypass rather than a leak. Substituting rather than
 /// deleting keeps the text readable, and a look-alike cannot be mis-decoded
 /// back into markup the way an entity reference can.
-fn neutralize_panel_markup(value: &str) -> String {
+pub(crate) fn neutralize_panel_markup(value: &str) -> String {
     value.replace('<', "‹").replace('>', "›")
 }
 
@@ -1013,10 +1013,23 @@ struct WorkspacePanelParams {
 
 const PANEL_CAPTURE_MAX_BYTES: u64 = 16 * 1024 * 1024;
 
-fn materialize_panel_capture(path: &str) -> Result<Content, String> {
+/// Where the desktop app's main process writes the PNGs an agent asked for
+/// (`workspace_read_panel` with `capture`, `browser_screenshot`), and the one folder this
+/// process reads them from: `captures/` in Biorouter's state folder.
+///
+/// It is resolved through [`crate::config::paths::Paths`], the resolution main mirrors in
+/// `ui/desktop/src/utils/biorouterPaths.ts` (`agentCaptureDir`), so both name one folder under
+/// `BIOROUTER_PATH_ROOT`, `XDG_STATE_HOME` and the Windows layout alike. It used to be
+/// `biorouter-pasted-images/` under each process's own temporary folder, and a profile that moves
+/// Electron's (`--user-data-dir`, a development profile) left every capture outside the folder
+/// this side trusts: "the captured panel image is no longer available".
+pub fn panel_capture_root() -> std::path::PathBuf {
+    crate::config::paths::Paths::in_state_dir("captures")
+}
+
+pub(crate) fn materialize_panel_capture(path: &str) -> Result<Content, String> {
     let candidate = Path::new(path);
-    let temp_root = std::env::temp_dir().join("biorouter-pasted-images");
-    let canonical_root = temp_root
+    let canonical_root = panel_capture_root()
         .canonicalize()
         .map_err(|_| "the captured panel image is no longer available".to_string())?;
     let link_metadata = std::fs::symlink_metadata(candidate)
@@ -7858,9 +7871,39 @@ pub(crate) mod tests {
         assert!(!schema.contains("/agent/start"), "{schema}");
     }
 
+    /// M1: the capture folder follows Biorouter's own folder resolution, so a sandboxed or
+    /// relocated profile reads what the desktop wrote. This binary runs under a
+    /// `BIOROUTER_PATH_ROOT` sandbox, as such a profile does; the old per-process temporary
+    /// folder is no longer trusted at all.
+    #[test]
+    fn panel_captures_are_read_from_the_profile_aware_capture_folder() {
+        let root = panel_capture_root();
+        let path_root = crate::config::paths::Paths::path_root_override()
+            .expect("lib tests run under a BIOROUTER_PATH_ROOT sandbox");
+        assert_eq!(
+            root,
+            std::path::Path::new(&path_root)
+                .join("state")
+                .join("captures")
+        );
+        std::fs::create_dir_all(&root).unwrap();
+        let path = root.join(format!("browser-shot-{}.png", uuid::Uuid::new_v4()));
+        std::fs::write(&path, [0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a]).unwrap();
+        let content = materialize_panel_capture(path.to_str().unwrap()).unwrap();
+        assert!(matches!(content.raw, rmcp::model::RawContent::Image(_)));
+
+        let old_root = std::env::temp_dir().join("biorouter-pasted-images");
+        std::fs::create_dir_all(&old_root).unwrap();
+        let stray = old_root.join(format!("browser-shot-{}.png", uuid::Uuid::new_v4()));
+        std::fs::write(&stray, [0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a]).unwrap();
+        let refused = materialize_panel_capture(stray.to_str().unwrap()).unwrap_err();
+        assert!(refused.contains("trust boundary"), "{refused}");
+        let _ = std::fs::remove_file(&stray);
+    }
+
     #[test]
     fn panel_capture_becomes_image_content_and_consumes_the_temp_file() {
-        let root = std::env::temp_dir().join("biorouter-pasted-images");
+        let root = panel_capture_root();
         std::fs::create_dir_all(&root).unwrap();
         let path = root.join(format!("panel-{}.png", uuid::Uuid::new_v4()));
         std::fs::write(&path, [0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a]).unwrap();
@@ -7875,7 +7918,7 @@ pub(crate) mod tests {
 
     #[test]
     fn rejected_panel_capture_is_still_consumed() {
-        let root = std::env::temp_dir().join("biorouter-pasted-images");
+        let root = panel_capture_root();
         std::fs::create_dir_all(&root).unwrap();
         let path = root.join(format!("panel-invalid-{}.png", uuid::Uuid::new_v4()));
         std::fs::write(&path, b"not a png").unwrap();
@@ -12148,7 +12191,7 @@ pub(crate) mod tests {
         .unwrap();
         let private = preview_project.path().join("private.txt");
         std::fs::write(&private, "OTHER_PROJECT_SECRET_MUST_NOT_LEAK").unwrap();
-        let image_root = std::env::temp_dir().join("biorouter-pasted-images");
+        let image_root = panel_capture_root();
         std::fs::create_dir_all(&image_root).unwrap();
         let denied_capture =
             image_root.join(format!("panel-cross-project-{}.png", uuid::Uuid::new_v4()));
@@ -12233,7 +12276,7 @@ pub(crate) mod tests {
     #[tokio::test]
     #[serial_test::serial(workspace_services)]
     async fn panel_capture_consumes_and_redacts_top_level_and_wrapped_paths() {
-        let image_root = std::env::temp_dir().join("biorouter-pasted-images");
+        let image_root = panel_capture_root();
         std::fs::create_dir_all(&image_root).unwrap();
         let top_path = image_root.join(format!("panel-top-{}.png", uuid::Uuid::new_v4()));
         let wrapped_path = image_root.join(format!("panel-wrapped-{}.png", uuid::Uuid::new_v4()));

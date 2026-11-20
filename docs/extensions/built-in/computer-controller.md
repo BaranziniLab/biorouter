@@ -1,6 +1,8 @@
 # Biorouter Copilot capability
 
-Biorouter Copilot (`computercontroller`) observes and controls applications through BioRouter's bundled native helper. It is the only built-in desktop observation and control capability. Web fetching and document processing are provided separately by [Web & Documents](web-documents.md).
+Biorouter Copilot (`computercontroller`) observes and controls applications through BioRouter's bundled native helper. It is the built-in capability for native applications and the desktop. Web fetching and document processing are provided separately by [Web & Documents](web-documents.md).
+
+Biorouter Copilot is for native apps, the operating system and file dialogs. For web pages use the [Biorouter Browser](browser.md); use Copilot on a browser only when the person asks for their own browser window or its logins. A decline in one capability is not consent in the other, one Stop ends both, and Copilot is not used to drive Biorouter's own browser panel.
 
 ## Tools
 
@@ -60,5 +62,6 @@ The previous script-driven controller and Developer capture tools have been remo
 
 - [Developer](developer.md): code, shell, and file tools.
 - [Web & Documents](web-documents.md): URL and document utilities.
+- [Biorouter Browser](browser.md): web pages in the chat's side panel, the capability Copilot hands web work to.
 - [Permission modes](../../security/permission-modes.md): ordinary tool approval behavior.
 - [Integration plan](../../design/computer-use-integration-plan.md): runtime, isolation, packaging, and validation requirements.

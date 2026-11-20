@@ -162,7 +162,7 @@ fn migrate_computer_use_capabilities(extensions: &mut IndexMap<String, Extension
     let mut web = builtin_entry(
         "webdocuments",
         "Web & Documents",
-        "Read web pages and work with spreadsheets, documents, and PDFs.",
+        "Fetch web pages and read spreadsheets, documents, and PDFs.",
     );
     web.enabled = computer.enabled;
     if !available_tools.is_empty() {
@@ -202,7 +202,7 @@ const BUILTIN_EXTENSION_METADATA: &[(&str, &str, &str)] = &[
     (
         "webdocuments",
         "Web & Documents",
-        "Read web pages and work with spreadsheets, documents, and PDFs.",
+        "Fetch web pages and read spreadsheets, documents, and PDFs.",
     ),
     (
         "autovisualiser",
@@ -281,6 +281,8 @@ pub fn bundled_extension_display_name(name: &str) -> Option<&'static str> {
         "crew" => return Some("Crew"),
         // The decision-model tools (`decide`, `decision_models`).
         "decisions" => return Some("Decisions"),
+        // BB-09: the side panel browser the agent drives.
+        "Browser" | "browser" => return Some("Biorouter Browser"),
         _ => {}
     }
     BUILTIN_EXTENSION_METADATA
