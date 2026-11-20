@@ -1056,7 +1056,10 @@ describe('chat access: focus when the consent opens', () => {
     });
     expect(close).toHaveFocus();
     expect(allow).not.toHaveFocus();
-  });
+    // Four sequential waits (each up to 1 s) plus a held grant: on a loaded CI shard
+    // this ran past vitest's 5 s default (PR #551, vitest 2/3) while it passes in
+    // ~130 ms locally. The assertions are unchanged; only the budget is.
+  }, 15_000);
 
   it('never presses Allow with the repeats of a held Enter', async () => {
     installDaemon(mocks, { grants: () => [] });
