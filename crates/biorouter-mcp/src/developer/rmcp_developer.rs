@@ -294,7 +294,10 @@ pub struct ShellParams {
     /// Run the command in the background instead of waiting for it to finish.
     /// Use this for long-lived commands (dev servers, builds, test suites,
     /// training runs) you need to keep running and observe. Returns a job_id
-    /// immediately; then use shell_status / shell_kill. Do NOT
+    /// and a log file that receives the job's output and, once it ends, a last
+    /// line with its exit status; read the file with `tail`. shell_status /
+    /// shell_kill also watch and stop the job when you have them. A job that
+    /// ends within 2 seconds reports its exit status and output at once. Do NOT
     /// append `&` yourself for this — set background=true.
     #[serde(default)]
     pub background: Option<bool>,
@@ -325,6 +328,11 @@ const SHELL_INLINE_MAX_CHARS: usize = 40_000;
 /// The tail preview of a spilled output never exceeds this many characters,
 /// however long its last lines are.
 const SHELL_PREVIEW_MAX_CHARS: usize = 8_000;
+
+/// How long a `background=true` call waits before answering, so a job that
+/// fails at once reports its exit status and output instead of "Started"
+/// (issue #538). A job still running at the end of it costs this much once.
+const BACKGROUND_EARLY_EXIT_WINDOW: std::time::Duration = std::time::Duration::from_secs(2);
 
 /// The last `max_chars` characters of `text`, and whether anything was cut.
 /// Char-based, so it never splits a multibyte character.
@@ -644,8 +652,9 @@ impl ServerHandler for DeveloperServer {
 
             A command run in the foreground has a wall-clock budget (240 seconds by default). When it
             expires the command's whole process group is killed and the call fails, and nothing is left
-            running. Work that may legitimately take longer belongs in background=true, where
-            shell_status / shell_kill let you watch it without blocking the turn.
+            running. Work that may legitimately take longer belongs in background=true, where its log
+            file (and shell_status / shell_kill, when you have them) let you watch it without blocking
+            the turn.
 
             Use this shell tool directly for filesystem operations (ls, cp, mv, rm, mkdir, rg) rather than
             wrapping them in a code-execution script. To read or write a file's contents, prefer the
@@ -682,10 +691,12 @@ impl ServerHandler for DeveloperServer {
         let unix_specific = indoc! {r#"
             For a long-lived command (dev server, build, test suite, training run) that you need to
             keep running and observe, run shell with `background=true` rather than appending `&`. That
-            returns a job_id and keeps the process alive across tool calls; then call `shell_status` to
-            wait for it to finish (it returns the moment it exits, or after a timeout still running, so
-            it never blocks your turn or kills the job), `shell_status` with no timeout to peek at new output, and
-            `shell_kill` to stop it. Completion is decided by the command's exit status.
+            returns a job_id and the path of a log file, and keeps the process alive across tool calls.
+            Read the log with `tail`; its last line gives the exit status once the job ends. If you have
+            them, call `shell_status` to wait for it to finish (it returns the moment it exits, or after
+            a timeout still running, so it never blocks your turn or kills the job), `shell_status` with
+            no timeout to peek at new output, and `shell_kill` to stop it. Completion is decided by the
+            command's exit status.
 
             **Important**: Use ripgrep - `rg` - exclusively when you need to locate a file or a code reference,
             other solutions may produce too large output because of hidden files! For example *do not* use `find` or `ls -r`
@@ -1343,10 +1354,10 @@ impl DeveloperServer {
     ///
     /// Avoid commands that produce a large amount of output, and consider piping those outputs to files.
     /// For long-lived commands (dev servers, builds, test suites), set `background=true` instead of
-    /// appending `&`; this returns a job_id you can watch with shell_status / shell_kill.
+    /// appending `&`; this returns a job_id and a log file you can read with `tail`.
     #[tool(
         name = "shell",
-        description = "Execute a command in the shell.This will return the output and error concatenated into a single string, as you would see from running on the command line. There will also be an indication of if the command succeeded or failed. Avoid commands that produce a large amount of output, and consider piping those outputs to files. For a long-lived command (dev server, build, test suite, training run) that you need to keep running and observe, set background=true instead of appending `&`: it returns a job_id immediately, and you then use shell_status to peek or wait, or shell_kill to stop it. A foreground command has a wall-clock budget (240s by default): if it exceeds it, its whole process group is killed and the call fails, so anything that may run longer belongs in background=true."
+        description = "Execute a command in the shell.This will return the output and error concatenated into a single string, as you would see from running on the command line. There will also be an indication of if the command succeeded or failed. Avoid commands that produce a large amount of output, and consider piping those outputs to files. For a long-lived command (dev server, build, test suite, training run) that you need to keep running and observe, set background=true instead of appending `&`: it returns a job_id and the path of a log file that receives the job's output and ends with its exit status, which you can read with `tail`; if you have shell_status and shell_kill, they also peek at, wait for and stop the job. A foreground command has a wall-clock budget (240s by default): if it exceeds it, its whole process group is killed and the call fails, so anything that may run longer belongs in background=true."
     )]
     pub async fn shell(
         &self,
@@ -1386,16 +1397,31 @@ impl DeveloperServer {
         self.snapshot_shell_redirect_targets(command, working_dir.as_deref());
 
         // Background mode: start the command in its own process group, register
-        // it, and return a job_id immediately instead of waiting for it.
+        // it, and return a job_id without waiting for it to finish. A job that
+        // ends inside a short window reports how it ended instead (issue #538).
         if params.background.unwrap_or(false) {
             let id = self
                 .background_jobs
                 .spawn(command, params.label.clone(), working_dir, session_id)
                 .await
                 .map_err(|e| ErrorData::new(ErrorCode::INTERNAL_ERROR, e, None))?;
-            return Ok(CallToolResult::success(vec![Content::text(format!(
-                "Started background job {id}. It keeps running across tool calls. Use shell_status with this job_id to peek at new output, add timeout_secs to wait for completion, omit job_id to see every background job, or shell_kill to stop it."
-            ))]));
+            // A cancelled call stops waiting; the job itself keeps running.
+            let report = tokio::select! {
+                report = self.background_jobs.start_report(&id, BACKGROUND_EARLY_EXIT_WINDOW) => report,
+                _ = request_ct.cancelled() => {
+                    self.background_jobs.start_report(&id, std::time::Duration::ZERO).await
+                }
+            }
+            .map_err(|e| ErrorData::new(ErrorCode::INTERNAL_ERROR, e, None))?;
+            let (text, failure) = report.reply(&id, BACKGROUND_EARLY_EXIT_WINDOW);
+            let mut result = CallToolResult::success(vec![Content::text(text)]);
+            result.is_error = Some(failure.is_some());
+            if let Some(line) = failure {
+                result.structured_content = Some(serde_json::json!({
+                    "error": { "kind": "tool_failure", "message": line }
+                }));
+            }
+            return Ok(result);
         }
 
         let cancellation_token = CancellationToken::new();
@@ -1502,7 +1528,7 @@ impl DeveloperServer {
 
     #[tool(
         name = "shell_status",
-        description = "Look at background shell jobs (started by `shell` with background=true). Omit job_id to list every job with its id, label, status, runtime and command. Give job_id for one job's status and the output produced since your last look. Add timeout_secs to that to BLOCK until it exits instead of peeking: up to 270 seconds per call (the tool-call timeout is 300), and the job is never killed by waiting. Prefer one long blocking wait over repeated quick checks; each check costs a full model request."
+        description = "Look at background shell jobs (started by `shell` with background=true). Omit job_id to list every job with its id, label, status, runtime and command. Give job_id for one job's status and the output produced since your last look, as a terminal shows it; long output comes back as its first and last lines plus the path of a file holding all of it. Add timeout_secs to that to BLOCK until it exits instead of peeking: up to 270 seconds per call (the tool-call timeout is 300), and the job is never killed by waiting. Prefer one long blocking wait over repeated quick checks; each check costs a full model request."
     )]
     pub async fn shell_status(
         &self,

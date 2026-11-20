@@ -764,8 +764,9 @@ pub fn foreground_timeout_message(
         "The foreground shell command was killed after {} because it exceeded the {}s \
          foreground limit: {}\n\
          Its whole process group was terminated, so nothing is left running.\n\
-         If this command legitimately takes that long, re-run it with background=true and \
-         watch it with shell_status / shell_kill. Otherwise narrow it (a \
+         If this command legitimately takes that long, re-run it with background=true, whose \
+         reply names a log file that receives its output and exit status (read it with `tail`); \
+         shell_status / shell_kill also watch it if you have them. Otherwise narrow it (a \
          smaller search root, a more specific pattern) and try again. Operators can change \
          the limit with {} (seconds; 0 disables it).",
         humanize_secs(elapsed),
