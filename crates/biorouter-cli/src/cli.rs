@@ -2138,6 +2138,15 @@ struct ServeOptions {
     )]
     no_token: bool,
 
+    /// Print the address with its access token
+    #[arg(
+        long,
+        help = "Print the address with its access token, whatever the output is. Without it, \
+                the token is printed only when it was made for this launch and the output is a \
+                terminal; `biorouter serve url` shows it otherwise."
+    )]
+    print_url: bool,
+
     /// Keep model installation on the host, not in a served browser
     #[arg(
         long,
@@ -2159,8 +2168,9 @@ struct ServeOptions {
         value_name = "URL",
         help = "The https:// address a reverse proxy serves the interface at, path prefix \
                 included (for example https://hub.example.org/user/me/proxy/8765/). The proxy \
-                must strip the prefix. Printed with the access token, and admitted by the \
-                live views' origin check. Takes precedence over BIOROUTER_PUBLIC_URL."
+                must strip the prefix. Printed as the address to open (with the access token \
+                only as --print-url describes), and admitted by the live views' origin check. \
+                Takes precedence over BIOROUTER_PUBLIC_URL."
     )]
     public_url: Option<String>,
 
@@ -2191,15 +2201,43 @@ struct ServeOptions {
                 program holding its secret."
     )]
     allow_public_decision_models: bool,
+
+    /// Something to do instead of serving
+    #[command(subcommand)]
+    action: Option<ServeAction>,
+}
+
+/// What `biorouter serve` does instead of serving.
+#[derive(Subcommand)]
+enum ServeAction {
+    /// Show the address of a running `biorouter serve`, access token included (issue #524)
+    #[command(
+        about = "Show the address, access token included, of the biorouter serve running for \
+                 this account"
+    )]
+    Url {
+        /// The port that serve listens on
+        #[arg(
+            short,
+            long,
+            default_value_t = crate::commands::serve::DEFAULT_PORT,
+            help = "The port that biorouter serve listens on"
+        )]
+        port: u16,
+    },
 }
 
 impl ServeOptions {
     async fn run(self) -> anyhow::Result<()> {
+        if let Some(ServeAction::Url { port }) = self.action {
+            return crate::commands::serve::handle_serve_url(port);
+        }
         crate::commands::serve::handle_serve(
             self.host,
             self.port,
             self.token,
             self.no_token,
+            self.print_url,
             self.no_dictation_install,
             self.web_dir,
             self.public_url,
@@ -2616,7 +2654,8 @@ enum Command {
     /// lands in the right place.
     #[command(
         about = "Run Biorouter and open it in a browser",
-        visible_alias = "headless"
+        visible_alias = "headless",
+        args_conflicts_with_subcommands = true
     )]
     Serve(ServeOptions),
 
@@ -5965,5 +6004,50 @@ mod issue_526_cli_tests {
             Cli::try_parse_from(["biorouter", "configure", "--provider", "versa_azure"]).is_err()
         );
         assert!(Cli::try_parse_from(["biorouter", "run", "--secret-stdin"]).is_err());
+    }
+}
+
+#[cfg(test)]
+mod issue_524_serve_url_cli_tests {
+    use super::*;
+
+    /// `biorouter serve url` shows the address the banner leaves the token out
+    /// of. It takes its own port and nothing of `serve`'s, so `serve --port 9
+    /// url` is a mistake clap names rather than a server started by accident.
+    #[test]
+    fn issue_524_serve_url_is_a_subcommand_that_takes_only_its_port() {
+        let parsed = Cli::try_parse_from(["biorouter", "serve", "url"]).unwrap();
+        let Some(Command::Serve(options)) = parsed.command else {
+            panic!("serve command expected");
+        };
+        assert!(matches!(
+            options.action,
+            Some(ServeAction::Url { port }) if port == crate::commands::serve::DEFAULT_PORT
+        ));
+
+        let parsed =
+            Cli::try_parse_from(["biorouter", "headless", "url", "--port", "9001"]).unwrap();
+        let Some(Command::Serve(options)) = parsed.command else {
+            panic!("the alias selects serve");
+        };
+        assert!(matches!(
+            options.action,
+            Some(ServeAction::Url { port: 9001 })
+        ));
+
+        assert!(Cli::try_parse_from(["biorouter", "serve", "--port", "9001", "url"]).is_err());
+        assert!(Cli::try_parse_from(["biorouter", "serve", "--print-url", "url"]).is_err());
+
+        let parsed = Cli::try_parse_from(["biorouter", "serve", "--print-url"]).unwrap();
+        let Some(Command::Serve(options)) = parsed.command else {
+            panic!("serve command expected");
+        };
+        assert!(options.print_url && options.action.is_none());
+
+        let parsed = Cli::try_parse_from(["biorouter", "serve"]).unwrap();
+        let Some(Command::Serve(options)) = parsed.command else {
+            panic!("serve command expected");
+        };
+        assert!(!options.print_url && options.action.is_none());
     }
 }

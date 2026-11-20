@@ -114,8 +114,11 @@ Prove the deployment works interactively before wrapping it in a service:
 biorouter serve --host 0.0.0.0
 ```
 
-For a non-loopback bind, `serve` prints an SSH tunnel command and the local browser address with
-its `?t=` access token. It does not offer a plain HTTP network address to open. A token is
+For a non-loopback bind, `serve` prints an SSH tunnel command and the local browser address to
+open, `http://127.0.0.1:<port>/`. Its `?t=` access token is printed only to a terminal, for a token
+made for this launch; otherwise `biorouter serve url` prints the whole address (see
+[Where the token is printed](browser-access.md#where-the-token-is-printed)). It does not offer a
+plain HTTP network address to open. A token is
 mandatory for this bind; `--no-token` is refused. `Ctrl-C` stops it.
 
 If it cannot find the interface, pass `--web-dir /usr/share/biorouter/web` explicitly; the error
@@ -149,7 +152,9 @@ sudo chmod 600 /etc/biorouter/env
 Generate the token with something that is actually random, for example `openssl rand -hex 32`.
 
 `serve` reads `BIOROUTER_BROWSER_TOKEN` from the environment the unit gives it and uses that token
-as the address's `?t=`, so the URL below is the one it prints. (Until 2026-09 it did not: it minted
+as the address's `?t=`, so the URL below is the one to open. It does not print the token: a
+service's output is the journal, which other accounts on the host can read (on Ubuntu, the `adm`
+group), so the banner there shows the address without it. (Until 2026-09 it did not: it minted
 a random token over the operator's own and answered the published address with 401. Pass `--token`
 only from an interactive shell — on a service's `ExecStart` it would be visible in `ps` to every
 user on the host.)
@@ -183,6 +188,18 @@ systemctl status biorouter.service
 Give users the HTTPS address from the reverse proxy, with `?t=<the token from the environment
 file>`, or have them use an SSH tunnel and open `http://127.0.0.1:8765/?t=<token>`. Do not hand
 out a plain HTTP network address. The token stays valid until you change it.
+
+To show the whole address on the host, token included, run `biorouter serve url` as the service
+account:
+
+```bash
+sudo -u biorouter -H biorouter serve url --port 8765
+```
+
+It reads a file only that account can read, which `serve` writes when it starts and removes when it
+stops. Never search the journal for the address: reading the service log should never be a way to
+hold the token, and nothing there carries it. Whatever prints the address puts it on your screen
+and in any recording of the session, so run it where you would type a password.
 
 > **Note.** `biorouter serve` starts `biorouterd` as a child process and stops it whenever it stops
 > itself — `systemctl stop` sends `serve` SIGTERM, and `serve` gives the daemon ten seconds to

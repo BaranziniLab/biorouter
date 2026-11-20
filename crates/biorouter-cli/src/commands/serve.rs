@@ -52,6 +52,16 @@
 //! nobody is watching. It used to be ignored here and overwritten with a random
 //! token, so the documented service deployment printed an address the operator
 //! could not know and refused the one they had published.
+//!
+//! # Where the token is printed
+//!
+//! Only to a terminal, and only when nobody else knows it (issue #524). Under a
+//! service manager this command's output is a log (the systemd journal), which
+//! other accounts may read, and the token works until the daemon stops (SD-9).
+//! So the banner prints the address without its token unless the token was
+//! minted here and stdout is a terminal, or `--print-url` asked for it. The whole
+//! address goes to a file only this account can read, and `biorouter serve url`
+//! prints it on request ([`handle_serve_url`]).
 
 use crate::commands::apps::{launch_pages_dir, open_launch_link, open_page_in_browser};
 use crate::commands::exe_path::{biorouterd_for, current_exe_resolved, daemon_file_name};
@@ -62,6 +72,7 @@ use biorouter::dictation::paths::{self, Roots};
 use biorouter::dictation::service::{self, EngineState};
 use biorouter::managed::{DictationPolicy, ManagedPolicy, MANAGED_DICTATION_CAPTURE_OFF};
 use biorouter::serve_update::records::Resume;
+use std::io::IsTerminal;
 use std::net::{TcpListener, ToSocketAddrs};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
@@ -104,6 +115,7 @@ pub async fn handle_serve(
     port: u16,
     token: Option<String>,
     no_token: bool,
+    print_url: bool,
     no_dictation_install: bool,
     web_dir: Option<PathBuf>,
     public_url: Option<String>,
@@ -112,6 +124,12 @@ pub async fn handle_serve(
     folder_access_approval: bool,
     allow_public_decision_models: bool,
 ) -> Result<()> {
+    // Issue #524: where this command's output goes is sampled once, here, and
+    // decides whether the banner prints the token.
+    let token_display = TokenDisplay {
+        print_url,
+        stdout_is_terminal: std::io::stdout().is_terminal(),
+    };
     // SD-19: before anything an update could change. A `serve` re-executed by an
     // update carries its token and approvals in a resume record instead of
     // minting or asking for them again.
@@ -127,6 +145,7 @@ pub async fn handle_serve(
         port,
         token,
         no_token,
+        token_display,
         no_dictation_install,
         web_dir,
         public_url,
@@ -157,6 +176,7 @@ async fn serve_resumed(
     port: u16,
     token: Option<String>,
     no_token: bool,
+    token_display: TokenDisplay,
     no_dictation_install: bool,
     web_dir: Option<PathBuf>,
     public_url: Option<String>,
@@ -201,7 +221,7 @@ async fn serve_resumed(
     let web_dir = resolve_web_dir(web_dir)?;
 
     let carried = carried_over(&browser_token, &computer_use_digest, &folder_access_digest);
-    token_flag_warning(&browser_token).inspect(|note| eprintln!("{note}"));
+    print_token_notes(&browser_token, token_display);
     let secret_key = random_hex(32);
 
     // Fail on an occupied port here, with a clear message, rather than letting
@@ -261,7 +281,9 @@ async fn serve_resumed(
             (Err(error), None) => return Err(error),
         }
 
-        let url = announce_started(&Started {
+        // The address `biorouter serve url` reads lives until this block ends,
+        // which is when `serve` stops (issue #524).
+        let (url, _saved_address) = announce_started(&Started {
             host: &host,
             port,
             browser_token: &browser_token,
@@ -271,6 +293,7 @@ async fn serve_resumed(
             allow_public_decision_models,
             computer_use_approval,
             folder_access_approval,
+            shows_token: token_display.shows(&browser_token),
         });
         // Not again after a restart for an update: the page is already open.
         if open_browser
@@ -378,11 +401,26 @@ struct Started<'a> {
     allow_public_decision_models: bool,
     computer_use_approval: bool,
     folder_access_approval: bool,
+    /// Whether the banner prints the access token ([`TokenDisplay::shows`]).
+    shows_token: bool,
 }
 
-/// Prints the banner and the notes for a daemon that answered, and returns the address a
-/// browser opens.
-fn announce_started(started: &Started<'_>) -> String {
+/// Saves the address for `biorouter serve url`, prints the banner and the notes for a daemon
+/// that answered, and returns the address a browser opens (the whole of it, token included, for
+/// `--open`'s private page whatever the banner showed) and the saved address, which is removed
+/// when it is dropped.
+fn announce_started(started: &Started<'_>) -> (String, Option<SavedAddress>) {
+    // Before the banner, which tells the operator to read it.
+    let saved = save_address_for_url_command(
+        started.port,
+        address_to_open(
+            started.host,
+            started.port,
+            started.browser_token.value(),
+            started.public_url,
+            started.bind_is_loopback,
+        ),
+    );
     let local_url = browser_url(started.host, started.port, started.browser_token.value());
     let url = match started.public_url {
         Some(public) => with_token(public, started.browser_token.value()),
@@ -399,6 +437,7 @@ fn announce_started(started: &Started<'_>) -> String {
         started.bind_is_loopback,
         proxied_to.as_deref(),
         &dictation_readiness(),
+        started.shows_token,
     );
     if started.restarted {
         println!(
@@ -416,7 +455,7 @@ fn announce_started(started: &Started<'_>) -> String {
     if started.folder_access_approval {
         eprintln!("  Folder approval is configured. Enter its separate key only in the browser folder-access approval field. The key does not authorize other protected actions.");
     }
-    url
+    (url, saved)
 }
 
 /// Waits for a stop signal or the daemon's exit; SD-19, a daemon that installed an update and
@@ -617,8 +656,9 @@ const LAUNCH_PAGE_KEPT: Duration = Duration::from_secs(120);
 /// read, which sends it on (`apps::write_launch_page`,
 /// `apps::open_page_in_browser`), and the daemon answers the token with a page
 /// of its own origin so the cookie survives a navigation a `file:` page started
-/// (`routes::web_ui` in `biorouter-server`). The address is on the banner, for
-/// a browser that cannot read the page.
+/// (`routes::web_ui` in `biorouter-server`). For a browser that cannot read the
+/// page, the address is on the banner, or, when the banner left its token out,
+/// `biorouter serve url` shows it.
 ///
 /// Runs inside the runtime: the page is removed after [`LAUNCH_PAGE_KEPT`] by a
 /// task of its own, and by the caller when `serve` stops, whichever is first.
@@ -641,9 +681,24 @@ fn open_in_browser_with(
     match open_launch_link(url, directory, opener) {
         Ok(page) => Some(page),
         Err(error) => {
-            eprintln!("  {error}. Open the address above instead.\n");
+            eprintln!(
+                "  {error}. Open the address above instead; `biorouter serve url` shows it with \
+                 its access token.\n"
+            );
             None
         }
+    }
+}
+
+/// The notes about the token, said before anything starts: where a `--token`
+/// can be read ([`token_flag_warning`]), and where `--print-url` will write it
+/// ([`TokenDisplay::warning`]).
+fn print_token_notes(token: &BrowserToken, display: TokenDisplay) {
+    for note in [token_flag_warning(token), display.warning(token)]
+        .into_iter()
+        .flatten()
+    {
+        eprintln!("{note}");
     }
 }
 
@@ -666,6 +721,9 @@ fn token_flag_warning(token: &BrowserToken) -> Option<&'static str> {
 ///
 /// `proxied_to` is this daemon's own address when `url` is a reverse proxy's
 /// (`--public-url`), so the operator can check the proxy forwards there.
+/// `shows_token` is [`TokenDisplay::shows`]: without it the token is left out
+/// of every address the banner prints (issue #524).
+#[allow(clippy::too_many_arguments)]
 fn print_banner(
     url: &str,
     host: &str,
@@ -674,9 +732,23 @@ fn print_banner(
     bind_is_loopback: bool,
     proxied_to: Option<&str>,
     dictation: &str,
+    shows_token: bool,
 ) {
-    print!(
-        "{}",
+    let container = inside_container();
+    let ssh_target = ssh_host(host);
+    let text = if shows_token {
+        banner_text_showing_the_token(
+            url,
+            host,
+            port,
+            browser_token,
+            bind_is_loopback,
+            proxied_to,
+            dictation,
+            container,
+            &ssh_target,
+        )
+    } else {
         banner_text(
             url,
             host,
@@ -685,12 +757,21 @@ fn print_banner(
             bind_is_loopback,
             proxied_to,
             dictation,
-            inside_container(),
-            &ssh_host(host),
+            container,
+            &ssh_target,
         )
-    );
+    };
+    print!("{text}");
 }
 
+/// The banner as `serve` prints it by default: every address without its
+/// access token, and a line saying how to show the whole address (issue #524).
+///
+/// The default because this command's output is often a log. Under systemd it
+/// is the journal, which other accounts (the `adm` group on Ubuntu) can read,
+/// and the token opens the interface for anyone until the daemon stops (SD-9).
+/// Neither the token nor its percent-encoded form appears; `url` may carry it,
+/// and its query is cut off here.
 #[allow(clippy::too_many_arguments)]
 fn banner_text(
     url: &str,
@@ -703,8 +784,90 @@ fn banner_text(
     container: bool,
     ssh_target: &str,
 ) -> String {
+    compose_banner(
+        &Banner {
+            url,
+            host,
+            port,
+            browser_token,
+            bind_is_loopback,
+            proxied_to,
+            dictation,
+            container,
+            ssh_target,
+        },
+        false,
+    )
+}
+
+/// The banner with the access token in every address it prints: for a token
+/// minted here when stdout is a terminal, and for `--print-url`.
+#[allow(clippy::too_many_arguments)]
+fn banner_text_showing_the_token(
+    url: &str,
+    host: &str,
+    port: u16,
+    browser_token: &BrowserToken,
+    bind_is_loopback: bool,
+    proxied_to: Option<&str>,
+    dictation: &str,
+    container: bool,
+    ssh_target: &str,
+) -> String {
+    compose_banner(
+        &Banner {
+            url,
+            host,
+            port,
+            browser_token,
+            bind_is_loopback,
+            proxied_to,
+            dictation,
+            container,
+            ssh_target,
+        },
+        true,
+    )
+}
+
+/// What a banner is made of; see [`print_banner`].
+struct Banner<'a> {
+    url: &'a str,
+    host: &'a str,
+    port: u16,
+    browser_token: &'a BrowserToken,
+    bind_is_loopback: bool,
+    proxied_to: Option<&'a str>,
+    dictation: &'a str,
+    container: bool,
+    ssh_target: &'a str,
+}
+
+fn compose_banner(banner: &Banner<'_>, shows_token: bool) -> String {
+    let Banner {
+        url,
+        host,
+        port,
+        browser_token,
+        bind_is_loopback,
+        proxied_to,
+        dictation,
+        container,
+        ssh_target,
+    } = *banner;
+    let token = if shows_token {
+        browser_token.value()
+    } else {
+        None
+    };
+    // `with_token` puts the token in a query of its own, and no address this
+    // banner is handed has another one (`choose_public_url` refuses a query).
+    let shown_url = match token {
+        Some(_) => url,
+        None => url.split_once('?').map_or(url, |(address, _)| address),
+    };
     let mut out = if bind_is_loopback || proxied_to.is_some() {
-        format!("\n  Biorouter is serving at\n\n      {url}\n\n")
+        format!("\n  Biorouter is serving at\n\n      {shown_url}\n\n")
     } else {
         format!("\n  Biorouter is listening on {host}:{port}.\n\n")
     };
@@ -712,9 +875,12 @@ fn banner_text(
         out.push_str(&format!("  through a reverse proxy that forwards it to {local},\n  removing any path prefix on the way and passing WebSocket upgrades through.\n\n"));
     }
     if !bind_is_loopback && proxied_to.is_none() {
-        let token_suffix = browser_token
-            .value()
-            .map_or(String::new(), |value| format!("?t={}", query_value(value)));
+        // A network bind needs a token (`--no-token` is refused there), so the
+        // address either carries it or says that it needs it.
+        let token_suffix = token.map_or_else(
+            || " with its access token".to_string(),
+            |value| format!("?t={}", query_value(value)),
+        );
         if container {
             out.push_str(&format!("  This runs in a container. On the computer that publishes its port, open http://127.0.0.1:<host port>/{token_suffix}, where <host port> is the port published for container port {port} (with Docker: -p 127.0.0.1:<host port>:{port}). Browsers refuse the microphone on other plain http addresses.\n\n"));
         } else {
@@ -723,11 +889,196 @@ fn banner_text(
             ));
         }
     }
-    out.push_str(&format!("  {}\n\n", browser_token.provenance()));
+    match browser_token.withheld(port).filter(|_| token.is_none()) {
+        Some(withheld) => out.push_str(&format!("  {withheld}\n\n")),
+        None => out.push_str(&format!("  {}\n\n", browser_token.provenance())),
+    }
     out.push_str(&format!("  {}\n", model_line(browser_token)));
     out.push_str(&format!("  {dictation}\n"));
     out.push_str("  Press Ctrl-C to stop.\n\n");
     out
+}
+
+/// Whether the banner may print the access token (issue #524), decided from
+/// where this command's output goes, sampled once at the start.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct TokenDisplay {
+    /// `--print-url`: the operator asked for the whole address.
+    pub(crate) print_url: bool,
+    /// Whether stdout is a terminal, rather than a log, a pipe or a file.
+    pub(crate) stdout_is_terminal: bool,
+}
+
+impl TokenDisplay {
+    /// Whether the banner prints `token`.
+    ///
+    /// A token minted here is printed to a terminal, because nobody else knows
+    /// it and the person at that terminal is the one who has to open it. It is
+    /// left out of anything else: that is a service log, a pipe or a file, and
+    /// whoever reads it later could open the interface. A token the operator
+    /// supplied (`--token`, `BIOROUTER_BROWSER_TOKEN`) is left out wherever the
+    /// output goes, since the operator already has it. `--print-url` prints any
+    /// token, with [`Self::warning`] when the output is not a terminal.
+    pub(crate) fn shows(&self, token: &BrowserToken) -> bool {
+        match token {
+            BrowserToken::Off => false,
+            BrowserToken::Minted(_) => self.print_url || self.stdout_is_terminal,
+            BrowserToken::Flag(_) | BrowserToken::Variable(_) => self.print_url,
+        }
+    }
+
+    /// The note for `--print-url` when this command's output is not a
+    /// terminal. The operator asked, so the address is printed; the note says
+    /// where it will end up.
+    pub(crate) fn warning(&self, token: &BrowserToken) -> Option<&'static str> {
+        (self.print_url && !self.stdout_is_terminal && token.value().is_some()).then_some(
+            "  Note: --print-url writes the access token to this command's output, which is not \
+             a terminal. Anything that keeps that output (a service log such as the systemd \
+             journal, or a file) can open Biorouter until the token changes. Without \
+             --print-url, `biorouter serve url` shows the address to the person who asks.\n",
+        )
+    }
+}
+
+/// The address with its token that a browser opens, as `biorouter serve url`
+/// prints it: the reverse proxy's with `--public-url`, the bound address for a
+/// loopback bind, and otherwise this computer's loopback address, which the
+/// banner's SSH tunnel (or a published container port) reaches.
+fn address_to_open(
+    host: &str,
+    port: u16,
+    token: Option<&str>,
+    public_url: Option<&str>,
+    bind_is_loopback: bool,
+) -> String {
+    match public_url {
+        Some(public) => with_token(public, token),
+        None if bind_is_loopback => browser_url(host, port, token),
+        None => browser_url("127.0.0.1", port, token),
+    }
+}
+
+/// The folder `serve` keeps its address in for `biorouter serve url`.
+fn saved_address_dir() -> PathBuf {
+    biorouter::config::paths::Paths::state_dir().join("serve-address")
+}
+
+/// The file in `dir` that holds the address of the `serve` on `port`.
+fn saved_address_file(dir: &Path, port: u16) -> PathBuf {
+    dir.join(format!("{port}.url"))
+}
+
+/// The address this `serve` saved for `biorouter serve url`, removed when it
+/// is dropped, which is when `serve` stops. A restart for an update replaces
+/// this process without dropping it, and the new one writes the file again.
+struct SavedAddress {
+    path: PathBuf,
+    address: String,
+}
+
+impl Drop for SavedAddress {
+    /// Remove the file, unless it no longer holds this `serve`'s address: a
+    /// later `serve` on the same port wrote its own.
+    fn drop(&mut self) {
+        if std::fs::read_to_string(&self.path).is_ok_and(|held| held.trim() == self.address) {
+            let _ = std::fs::remove_file(&self.path);
+        }
+    }
+}
+
+/// [`save_address`] in this account's state folder. A failure is said, and
+/// `serve` carries on: the address can still be shown with `--print-url`.
+fn save_address_for_url_command(port: u16, address: String) -> Option<SavedAddress> {
+    match save_address(&saved_address_dir(), port, &address) {
+        Ok(path) => Some(SavedAddress { path, address }),
+        Err(error) => {
+            eprintln!(
+                "  Could not save the address for `biorouter serve url`: {error:#}. Start serve \
+                 at a terminal, or with --print-url, to see it.\n"
+            );
+            None
+        }
+    }
+}
+
+/// Write `address` to the file for `port` in `dir`, readable by this account
+/// alone: mode 0600 in a folder of mode 0700 this account owns
+/// (`daemon_runtime::private_directory`), replaced in one rename so a reader
+/// never sees half of it.
+///
+/// ⚠ The address carries the token, which works until the daemon stops. The
+/// file is as private as the token already is to this account: the daemon's
+/// environment holds it too, and so does a service's environment file.
+fn save_address(dir: &Path, port: u16, address: &str) -> Result<PathBuf> {
+    use std::io::Write;
+    biorouter::daemon_runtime::private_directory(dir)?;
+    let mut file = tempfile::Builder::new()
+        .prefix(".address-")
+        .rand_bytes(16)
+        .tempfile_in(dir)?;
+    writeln!(file, "{address}")?;
+    file.as_file().sync_all()?;
+    let path = saved_address_file(dir, port);
+    file.persist(&path).map_err(|error| error.error)?;
+    Ok(path)
+}
+
+/// The address the `serve` on `port` saved in `dir`, after checking that the
+/// folder and the file are this account's alone.
+fn read_saved_address(dir: &Path, port: u16) -> Result<String> {
+    let missing = || {
+        anyhow::anyhow!(
+            "no `biorouter serve` on port {port} has saved its address for this account. Run \
+             this as the account that runs `biorouter serve`, with the port it serves on \
+             (--port); the address is removed when `serve` stops."
+        )
+    };
+    match std::fs::symlink_metadata(dir) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Err(missing()),
+        Err(error) => return Err(error.into()),
+        Ok(_) => biorouter::daemon_runtime::private_directory(dir)?,
+    }
+    let path = saved_address_file(dir, port);
+    let metadata = match std::fs::symlink_metadata(&path) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Err(missing()),
+        Err(error) => return Err(error.into()),
+        Ok(metadata) => metadata,
+    };
+    if !metadata.file_type().is_file() {
+        bail!("{} is not a plain file; remove it", path.display());
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if metadata.permissions().mode() & 0o077 != 0 {
+            bail!(
+                "{} can be read by other accounts; remove it and restart `biorouter serve`",
+                path.display()
+            );
+        }
+    }
+    let address = std::fs::read_to_string(&path)?.trim().to_string();
+    if address.is_empty() {
+        return Err(missing());
+    }
+    Ok(address)
+}
+
+/// `biorouter serve url`: print the address, access token included, of the
+/// `serve` running on `port` for this account (issue #524).
+///
+/// The safe way to the address the banner leaves the token out of: it goes to
+/// the terminal of the person who asked, and to no log.
+pub fn handle_serve_url(port: u16) -> Result<()> {
+    let address = read_saved_address(&saved_address_dir(), port)?;
+    if !std::io::stdout().is_terminal() {
+        eprintln!(
+            "Note: this address carries the access token, and this output is not a terminal. \
+             Anything that keeps it can open Biorouter until the token changes."
+        );
+    }
+    println!("{address}");
+    Ok(())
 }
 
 fn inside_container() -> bool {
@@ -984,6 +1335,37 @@ impl BrowserToken {
             }
             BrowserToken::Minted(_) => "The token above is shown once, and is new on every launch.",
         }
+    }
+
+    /// The lines under a banner that left the token out (issue #524): where the
+    /// token came from, and how to show the whole address. `None` without a
+    /// token, which has nothing to leave out.
+    ///
+    /// ⚠ Never the token, and never `?t=`: a service's journal is searched for
+    /// exactly that.
+    fn withheld(&self, port: u16) -> Option<String> {
+        let source = match self {
+            BrowserToken::Off => return None,
+            BrowserToken::Flag(_) => {
+                "The access token is the one --token named. It is not printed here."
+            }
+            BrowserToken::Variable(_) => {
+                "The access token is the value of BIOROUTER_BROWSER_TOKEN. It is not printed \
+                 here, so it stays out of logs."
+            }
+            BrowserToken::Minted(_) => {
+                "A new access token was made for this launch. It is not printed, because this \
+                 output is not a terminal."
+            }
+        };
+        let command = if port == DEFAULT_PORT {
+            "biorouter serve url".to_string()
+        } else {
+            format!("biorouter serve url --port {port}")
+        };
+        Some(format!(
+            "{source}\n  To show the whole address, run `{command}` on this computer, as this account."
+        ))
     }
 }
 
@@ -1486,7 +1868,7 @@ mod tests {
     fn dictation_banners_name_the_address_a_browser_can_open() {
         let token = BrowserToken::Flag("test-token".into());
         let ready = "Dictation: ready (whisper-small.en-q8_0)";
-        let loopback = banner_text(
+        let loopback = banner_text_showing_the_token(
             "http://127.0.0.1:8765/?t=test-token",
             "127.0.0.1",
             8765,
@@ -1501,7 +1883,7 @@ mod tests {
         assert!(loopback.contains(ready));
         assert!(!loopback.contains("ssh -N"));
 
-        let network = banner_text(
+        let network = banner_text_showing_the_token(
             "http://0.0.0.0:8765/?t=test-token",
             "0.0.0.0",
             8765,
@@ -1516,7 +1898,7 @@ mod tests {
         assert!(network.contains("ssh -N -L 8765:127.0.0.1:8765 lab.example"));
         assert!(network.contains("http://127.0.0.1:8765/?t=test-token"));
 
-        let container = banner_text(
+        let container = banner_text_showing_the_token(
             "http://0.0.0.0:8765/?t=test-token",
             "0.0.0.0",
             8765,
@@ -1530,7 +1912,7 @@ mod tests {
         assert!(container.contains("http://127.0.0.1:<host port>/?t=test-token"));
         assert!(!container.contains("ssh -N"));
 
-        let public = banner_text(
+        let public = banner_text_showing_the_token(
             "https://hub.example/user/a/biorouter/?t=test-token",
             "0.0.0.0",
             8765,
@@ -1943,6 +2325,10 @@ mod tests {
             free_port(),
             Some("   ".to_string()),
             false,
+            TokenDisplay {
+                print_url: false,
+                stdout_is_terminal: false,
+            },
             false,
             Some(tmp.path().join("no-interface-here")),
             None,
@@ -2004,7 +2390,7 @@ mod tests {
     fn the_network_banner_lines_carry_a_token_with_reserved_characters() {
         let token = BrowserToken::Flag("a b&c#d".into());
         for (container, ssh_target) in [(true, "container"), (false, "lab.example")] {
-            let banner = banner_text(
+            let banner = banner_text_showing_the_token(
                 "http://0.0.0.0:8765/?t=a%20b%26c%23d",
                 "0.0.0.0",
                 8765,
@@ -2591,5 +2977,190 @@ mod tests {
         assert!(!shown.contains("synthetic%20a%26b%23c"));
         assert!(!shown.contains("?t="));
         assert!(shown.contains("http://127.0.0.1:18765/"));
+    }
+
+    /// Issue #524: who sees the token. A token minted here goes to a terminal,
+    /// because nobody else knows it; a token the operator supplied goes
+    /// nowhere; `--print-url` shows any token, with a note when the output is
+    /// not a terminal.
+    #[test]
+    fn issue_524_the_token_is_shown_only_where_the_policy_allows() {
+        let minted = BrowserToken::Minted("m".into());
+        let flag = BrowserToken::Flag("f".into());
+        let variable = BrowserToken::Variable("v".into());
+        for (print_url, stdout_is_terminal) in
+            [(false, false), (false, true), (true, false), (true, true)]
+        {
+            let display = TokenDisplay {
+                print_url,
+                stdout_is_terminal,
+            };
+            assert!(!display.shows(&BrowserToken::Off));
+            assert_eq!(display.shows(&minted), print_url || stdout_is_terminal);
+            assert_eq!(display.shows(&flag), print_url);
+            assert_eq!(display.shows(&variable), print_url);
+            for token in [&minted, &flag, &variable] {
+                assert_eq!(
+                    display.warning(token).is_some(),
+                    print_url && !stdout_is_terminal,
+                    "print_url={print_url} terminal={stdout_is_terminal}"
+                );
+            }
+            assert!(display.warning(&BrowserToken::Off).is_none());
+        }
+        let note = TokenDisplay {
+            print_url: true,
+            stdout_is_terminal: false,
+        }
+        .warning(&flag)
+        .unwrap();
+        assert!(
+            note.contains("journal") && note.contains("biorouter serve url"),
+            "{note}"
+        );
+    }
+
+    /// The journal check the issue asks for, `grep -c '?t='`, finds nothing in
+    /// a default banner on any route, and the banner says how to show the
+    /// whole address instead.
+    #[test]
+    fn issue_524_a_default_banner_has_no_token_query_and_names_the_url_command() {
+        let token_value = "issue-524-token";
+        for token in [
+            BrowserToken::Minted(token_value.into()),
+            BrowserToken::Flag(token_value.into()),
+            BrowserToken::Variable(token_value.into()),
+        ] {
+            for (port, command) in [
+                (DEFAULT_PORT, "`biorouter serve url`".to_string()),
+                (18765, "`biorouter serve url --port 18765`".to_string()),
+            ] {
+                for (host, loopback, proxy, container) in [
+                    ("127.0.0.1", true, false, false),
+                    ("0.0.0.0", false, false, false),
+                    ("0.0.0.0", false, false, true),
+                    ("0.0.0.0", false, true, false),
+                ] {
+                    let url = if proxy {
+                        with_token("https://hub.example/user/a/", token.value())
+                    } else {
+                        browser_url(host, port, token.value())
+                    };
+                    let banner = banner_text(
+                        &url,
+                        host,
+                        port,
+                        &token,
+                        loopback,
+                        proxy.then_some("http://127.0.0.1:18765/"),
+                        "Dictation: fixture",
+                        container,
+                        "lab.example",
+                    );
+                    assert!(!banner.contains("?t="), "{banner}");
+                    assert!(!banner.contains(token_value), "{banner}");
+                    assert!(banner.contains(&command), "{banner}");
+                    assert!(!banner.contains("The token above"), "{banner}");
+                }
+            }
+        }
+    }
+
+    /// `--print-url` and a terminal keep the banner as it was: the whole
+    /// address, and the provenance line about the token above it.
+    #[test]
+    fn issue_524_a_banner_showing_the_token_is_unchanged() {
+        let token = BrowserToken::Minted("c0ffee".into());
+        let banner = banner_text_showing_the_token(
+            &browser_url("127.0.0.1", DEFAULT_PORT, token.value()),
+            "127.0.0.1",
+            DEFAULT_PORT,
+            &token,
+            true,
+            None,
+            "Dictation: fixture",
+            false,
+            "lab.example",
+        );
+        assert!(
+            banner.contains("http://127.0.0.1:8765/?t=c0ffee"),
+            "{banner}"
+        );
+        assert!(banner.contains(token.provenance()), "{banner}");
+        assert!(!banner.contains("biorouter serve url"), "{banner}");
+    }
+
+    /// `biorouter serve url` prints the address a browser opens: the proxy's,
+    /// the loopback bind's, or for a network bind the loopback end of the SSH
+    /// tunnel the banner describes.
+    #[test]
+    fn issue_524_the_saved_address_is_the_one_a_browser_opens() {
+        assert_eq!(
+            address_to_open("127.0.0.1", 8765, Some("t1"), None, true),
+            "http://127.0.0.1:8765/?t=t1"
+        );
+        assert_eq!(
+            address_to_open("0.0.0.0", 8765, Some("a b"), None, false),
+            "http://127.0.0.1:8765/?t=a%20b"
+        );
+        assert_eq!(
+            address_to_open(
+                "0.0.0.0",
+                8765,
+                Some("t1"),
+                Some("https://hub.example/user/a/"),
+                false
+            ),
+            "https://hub.example/user/a/?t=t1"
+        );
+        assert_eq!(
+            address_to_open("127.0.0.1", 8765, None, None, true),
+            "http://127.0.0.1:8765/"
+        );
+    }
+
+    /// The address is kept where only this account reads it, read back as it
+    /// was written, and removed by the `serve` that wrote it, never over a
+    /// later one's.
+    #[cfg(unix)]
+    #[test]
+    fn issue_524_the_saved_address_is_private_and_removed_by_its_writer() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = tempfile::tempdir().unwrap();
+        let dir = root.path().join("serve-address");
+        let mode = |path: &Path| std::fs::metadata(path).unwrap().permissions().mode() & 0o777;
+
+        let missing = read_saved_address(&dir, 18765).unwrap_err().to_string();
+        assert!(missing.contains("port 18765"), "{missing}");
+
+        let address = "http://127.0.0.1:18765/?t=secret-524";
+        let path = save_address(&dir, 18765, address).unwrap();
+        assert_eq!(path, saved_address_file(&dir, 18765));
+        assert_eq!(mode(&dir), 0o700, "the folder is this account's alone");
+        assert_eq!(mode(&path), 0o600, "and so is the file");
+        assert_eq!(read_saved_address(&dir, 18765).unwrap(), address);
+        assert!(read_saved_address(&dir, 18766).is_err());
+
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        let loose = read_saved_address(&dir, 18765).unwrap_err().to_string();
+        assert!(loose.contains("other accounts"), "{loose}");
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+
+        // A later `serve` on the same port wrote its own: the first leaves it.
+        let first = SavedAddress {
+            path: path.clone(),
+            address: address.to_string(),
+        };
+        save_address(&dir, 18765, "http://127.0.0.1:18765/?t=later").unwrap();
+        drop(first);
+        assert_eq!(
+            read_saved_address(&dir, 18765).unwrap(),
+            "http://127.0.0.1:18765/?t=later"
+        );
+        drop(SavedAddress {
+            path: path.clone(),
+            address: "http://127.0.0.1:18765/?t=later".to_string(),
+        });
+        assert!(!path.exists());
     }
 }

@@ -1879,9 +1879,10 @@ Run Biorouter and reach it from a browser. `serve` starts the `biorouterd` daemo
 - **`-p, --port <PORT>`**: Port to listen on. Default is `8765` — deliberately not `3000`, which is `biorouterd`'s own default
 - **`--token <TOKEN>`**: Use this access token instead of generating a fresh one. The flag stays on the command line while `serve` runs, where other accounts on the machine can read it, so `serve` prints a note saying so. To keep a token private, set `BIOROUTER_BROWSER_TOKEN` in the environment instead
 - **`--no-token`**: Serve without an access token. Refused for a non-loopback bind, and cannot be combined with `--token`
+- **`--print-url`**: Print the address with its access token wherever the output goes. Without it the token is printed only when it was made for this launch and the output is a terminal. When the output is not a terminal, `serve` prints a note that the token will be kept wherever the output goes
 - **`--no-dictation-install`**: Stop browsers on this daemon from installing speech models. The host can still run `biorouter dictation install`. `BIOROUTER_DICTATION_BROWSER_INSTALL=false` and managed policy also stop browser installs
 - **`--web-dir <DIR>`**: Directory holding the built interface. Takes precedence over `BIOROUTER_SERVE_UI`; whichever of the two is used must contain an `index.html`, or `serve` refuses to start. Located automatically when neither is set
-- **`--public-url <URL>`**: The `https://` address a reverse proxy serves the interface at, path prefix included, for example `https://hub.example.org/user/me/proxy/8765/`. The proxy must strip the prefix. It is printed with the access token and admitted by the live views' origin check. Takes precedence over `BIOROUTER_PUBLIC_URL`
+- **`--public-url <URL>`**: The `https://` address a reverse proxy serves the interface at, path prefix included, for example `https://hub.example.org/user/me/proxy/8765/`. The proxy must strip the prefix. It is printed as the address to open, with the access token only as `--print-url` describes, and admitted by the live views' origin check. Takes precedence over `BIOROUTER_PUBLIC_URL`
 - **`--computer-use-approval`**: Interactively set a Biorouter Copilot approval key for the browser session. Requires a terminal
 - **`--folder-access-approval`**: Interactively set a folder-access approval key, a separate key for external-folder decisions in the browser. Requires a terminal
 - **`--open`**: Open a browser once the server is ready. The browser is handed a page only your account can read, which carries the address, and never the address itself: the address holds the access token, and a browser's command line can be read by other accounts on the machine. The page is removed two minutes later, or when `serve` stops
@@ -1901,9 +1902,19 @@ biorouter serve --host 0.0.0.0
 
 # Reuse one address across restarts, for a bookmark or a service unit
 BIOROUTER_BROWSER_TOKEN="$(openssl rand -hex 32)" biorouter serve --host 0.0.0.0
+
+# Show the address of the serve running for this account, token included
+biorouter serve url --port 9000
 ```
 
-The printed URL carries an access token as `?t=<token>`, minted per launch and shown once. Opening it exchanges the token for a session cookie and answers a short page that moves on to the interface, so the token leaves the address bar. It is not used up, and opens the interface again for anyone who has it until the daemon stops. Use `Ctrl+C` to stop the server, or send `serve` `SIGTERM` (`kill <pid>`); either way it stops the daemon it started and frees the port.
+**`serve url [--port <PORT>]`**: Print the address, access token included, of the `serve` this
+account runs on that port (default `8765`). `serve` keeps it in a file only this account can read,
+and removes it when it stops. It takes no other option of `serve`.
+
+The URL carries an access token as `?t=<token>`, minted per launch unless `--token` or
+`BIOROUTER_BROWSER_TOKEN` names one. The banner prints the token only for a token minted for this
+launch when its output is a terminal, or with `--print-url`. Anywhere else, such as a service's
+journal, it prints the address without the token and says to run `biorouter serve url`. Opening it exchanges the token for a session cookie and answers a short page that moves on to the interface, so the token leaves the address bar. It is not used up, and opens the interface again for anyone who has it until the daemon stops. Use `Ctrl+C` to stop the server, or send `serve` `SIGTERM` (`kill <pid>`); either way it stops the daemon it started and frees the port.
 
 > **Note.** A browser session cannot move an open chat to another model, and a program that holds only the daemon's secret (such as an agent in a chat) cannot change the provider. The person in the served page can choose, add and edit the host's providers and default model, including on the first page when nothing is configured yet, but only over an `https` address or on the serving machine itself, and not with `--no-token` ([SD-18](../deployment/serve-decisions.md#sd-18-the-person-in-the-served-page-sets-up-providers-and-an-agent-still-cannot)). `biorouter configure` still works before or while `serve` runs; its changes reach new chats after `serve` restarts, while changes made in the browser apply at once. When a new release is out, the page can also update `serve` and restart it on the same address ([SD-19](../deployment/serve-decisions.md#sd-19-the-person-on-the-page-updates-serve-and-it-comes-back-on-the-same-address)). [Reaching Biorouter from a browser](../deployment/browser-access.md) covers the access token, remote access and troubleshooting.
 
