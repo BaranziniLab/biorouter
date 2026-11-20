@@ -11,6 +11,9 @@
 .br-speech-model-progress {
   inline-size: 96px;
   flex: none;
+  /* The row's trailing cluster is 4px apart (the `⋯` beside its control); a bar that ends 4px
+     from Cancel read as running into it, so it keeps the 8px two buttons keep. */
+  margin-inline-end: 4px;
 }
 
 /* Two controls that share one row: Show in Finder and Rescan; the microphone and its test. */

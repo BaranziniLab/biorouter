@@ -529,6 +529,49 @@ describe('the model rows', () => {
     expect(within(row(SMALL)).getByRole('button', { name: /^Install / })).toBeEnabled();
   });
 
+  it('says a failure in ink with its command as code, and a cancel as a muted record', async () => {
+    serve(
+      status({
+        install_job: {
+          model: SMALL,
+          bytes_done: 0,
+          bytes_total: 2,
+          bytes_per_second: 0,
+          phase: 'failed',
+          error:
+            "This computer cannot reach Biorouter's model repository. On a computer that can, run `biorouter dictation urls` and download the files it lists.",
+        },
+      })
+    );
+    const { unmount } = await renderSection();
+    const failure = within(row(SMALL)).getByRole('alert');
+    // Red is rare (design.md 9.14): a failure's sentence is ink, not a paragraph in a status hue.
+    expect(failure).toHaveClass('text-text-default');
+    expect(failure).not.toHaveClass('text-text-warning');
+    expect(failure.textContent).not.toContain('`');
+    expect(failure.querySelector('code')).toHaveTextContent('biorouter dictation urls');
+    unmount();
+
+    serve(
+      status({
+        install_job: {
+          model: SMALL,
+          bytes_done: 1,
+          bytes_total: 2,
+          bytes_per_second: 0,
+          phase: 'failed',
+          error: 'The install was cancelled.',
+        },
+      })
+    );
+    await renderSection();
+    expect(within(row(SMALL)).queryByRole('alert')).toBeNull();
+    const note = within(row(SMALL)).getByText('The install was cancelled.');
+    expect(note).toHaveAttribute('role', 'status');
+    expect(note).toHaveClass('text-text-muted');
+    expect(within(row(SMALL)).getByRole('button', { name: /^Install / })).toBeEnabled();
+  });
+
   it('shows status.install.reason in place of every Install button when the daemon refuses it', async () => {
     const reason =
       "Speech models are installed by a person from Biorouter's Settings; an agent cannot install one.";
