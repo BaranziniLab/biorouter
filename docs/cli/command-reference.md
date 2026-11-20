@@ -1381,6 +1381,7 @@ Execute commands from an instruction file or stdin.
 - **`--debug`**: Output complete tool responses, detailed parameter values, and full file paths
 - **`--max-tool-repetitions <NUMBER>`**: Maximum number of times the same tool can be called consecutively with identical parameters. Helps prevent infinite loops
 - **`--max-turns <NUMBER>`**: Maximum number of turns allowed without user input (`0` means Unlimited, the default)
+- **`--require-file <PATH>`**: Require `PATH` to be a non-empty regular file when the run ends. Can be specified multiple times. While a required file is missing, empty or not a regular file, the agent is sent back to work with an instruction to write it, up to `BIOROUTER_DONE_GATE_MAX_ITERATIONS` times (default `3`). A run that still ends without it exits with status `4` and lists it in `missing_files`. A relative `PATH` resolves against the session's working directory, and a symbolic link to a non-empty file counts. Only `run` takes it, and not with `--interactive` or `--shared-daemon`. Nothing checks what the file contains
 - **`--explain`**: Show a workflow's title, description, and parameters, and a "Supervision:" section when it declares monitors or a phase plan. It first runs the same checks `run` and an import run, so a workflow `run` would refuse is refused here too, with the same sentence after "This workflow would not start: ". `run` prints that sentence as it is, without a "Template rendering failed:" prefix. See [What `--explain` prints](#what---explain-prints)
 - **`--render-workflow`**: Print the rendered workflow instead of running it
 - **`-q, --quiet`**: Quiet mode. Suppress non-response output, printing only the model response to stdout
@@ -1429,8 +1430,14 @@ on.
 | 0 | The run finished, including a run whose phase plan still has phases pending |
 | 1 | A failure, such as a workflow that was not started |
 | 2 | The command needs a terminal it does not have |
-| 3 | The chat's supervision ended the run short of its work: a monitor stopped the turn, or the plan ended with a phase its gate holds (its last check did not pass) or a phase left blocked |
+| 3 | The run ended short of its work: a monitor stopped the turn, the plan ended with a phase its gate holds (its last check did not pass) or a phase left blocked, or a limit stopped the turn (`--max-turns`, `BIOROUTER_MAX_TOOL_CALLS`, the stall stop, the per-reply budget or a usage limit) |
+| 4 | The run ended without a file it was given with `--require-file`, whatever ended its turn |
+| 5 | The run finished, but its session store ran out of space and some of its rows were never saved, so the stored chat is incomplete |
 | 70 and up | A turn that aborted: 70 a provider failure, 75 a provider that refused the credentials, 76 a tool loop, 77 a worker that never answered, 78 a session store failure, 79 to 81 a provider reply that could not be completed |
+
+When more than one applies, the status is the first that applies in this order: an abort (70 and
+up), then `4`, then `3`, then `5`. Every line that applies is still printed on stderr, and every
+field below is still in the output.
 
 On status 3, one line on stderr says what stopped the run and how to carry the chat on, with no
 "Error:" before it, because nothing failed:
@@ -1440,8 +1447,46 @@ Monitor 'Form reached' stopped this run (exit status 3). To carry on, send the c
 This run ended with phase "verify" held by its gate, which did not pass (exit status 3). See the gates with biorouter session gates 20261110_5. To carry on, …
 ```
 
+A limit stop prints a line of the same kind, naming the limit:
+
+```text
+This run stopped at its limit of 40 actions without user input (--max-turns or BIOROUTER_MAX_TURNS), not because the work was done (stop reason turn_limit, exit status 3). To carry on, …
+```
+
 A `--no-session` run has no chat to carry on and says so. Only `biorouter run` exits 3 for this:
 the debug chat for a failed extension and `biorouter bench` treat such a turn as completed.
+
+**How the run ended.** With `--output-format stream-json`, the last line is the `complete` event;
+with `--output-format json`, the document's `metadata`. Both carry these fields beside
+`total_tokens` (and `status` in `json`):
+
+| Field | Meaning |
+|---|---|
+| `stop_reason` | Why the turn ended: `end_turn`, `turn_limit`, `tool_call_limit`, `stall_stop`, `budget_stop`, `usage_limit_stop`, `monitor_stop`, `aborted` or `cancelled`. The abort's own code stays in the `aborted` event and in `metadata.error` |
+| `actions` | Model requests the turn made, length continuations included. Provider retries and side requests (a title, a summary, a compaction) are not counted |
+| `tool_calls` | Tool calls the turn dispatched |
+| `wall_s` | Seconds from the start of the turn to its final output |
+| `missing_files` | Only with `--require-file`: each required file the run ended without, as `{"path": …, "reason": …}`, where the reason is `does not exist`, `is empty`, `is not a regular file` or `could not be read`. Empty when every file was there |
+| `store_degraded`, `unsaved_rows` | Only when the session store ran out of space during the run: `true`, and how many rows were still not saved at the end |
+
+`metadata.status` keeps its meaning: `failed` only for a turn that aborted. A run a limit stopped
+still says `completed`, and `stop_reason` and the exit status say why it stopped. Every
+stream-json line also carries `ts`, the time it was written in milliseconds since the Unix epoch,
+so a tool call's duration is the gap between its request line and its response line.
+
+**When the session store runs out of space.** A store write that fails because the disk or the
+database is full (SQLite `SQLITE_FULL` or `SQLITE_IOERR`, or a full file system) no longer ends a
+`biorouter run` with status `78`. The run prints one warning on stderr, keeps the rows it could
+not save in memory, and goes on to finish its answer. Before each later write it tries again to
+save them, oldest first, so a later row is never stored ahead of an earlier one, and it tries once
+more at the end. If space came back, everything is saved and the run exits as it would have;
+`store_degraded` is `true` and `unsaved_rows` is `0`. If rows are still unsaved at the end, it
+exits with status `5`, and resuming the chat will not show everything the run did. Other store
+errors still end the run with `78`, and so does a full store when a usage limit applies to the
+chat (an unrecorded request would hide spend from the limit), when more than 4096 rows or 64 MiB
+would wait, or when the turn needs to rewrite its history (a compaction) while rows still wait.
+Only a headless `run` behaves this way: interactive sessions, `biorouter session`, `biorouter
+bench`, the desktop app and subagents keep failing on the first store error.
 
 **Usage:**
 

@@ -1,6 +1,7 @@
 use biorouter::agents::turn_abort::{exit as abort_exit, TurnFailed};
 use biorouter_cli::cli::{cli, read_command_line};
 use biorouter_cli::commands::needs_terminal::{self, NeedsTerminal};
+use biorouter_cli::commands::run_report::{self, DeliverablesMissing, StoreIncomplete};
 use biorouter_cli::commands::supervision_stop::{self, SupervisionStopped};
 use std::process::ExitCode;
 
@@ -115,6 +116,18 @@ async fn async_main() -> ExitCode {
             if let Some(stopped) = e.downcast_ref::<SupervisionStopped>() {
                 eprintln!("{stopped}");
                 return ExitCode::from(supervision_stop::EXIT_CODE);
+            }
+            // A run told to leave files behind (`--require-file`) that ended
+            // without them (#535): one line naming them, exit 4.
+            if let Some(missing) = e.downcast_ref::<DeliverablesMissing>() {
+                eprintln!("{missing}");
+                return ExitCode::from(run_report::DELIVERABLES_EXIT_CODE);
+            }
+            // A run that finished while its session store could not save
+            // every row (#549): one line saying so, exit 5.
+            if let Some(incomplete) = e.downcast_ref::<StoreIncomplete>() {
+                eprintln!("{incomplete}");
+                return ExitCode::from(run_report::STORE_INCOMPLETE_EXIT_CODE);
             }
             eprintln!("Error: {e:?}");
             // A turn that ran but did not complete its work gets its own exit

@@ -217,6 +217,28 @@ class HiddenCliContract(unittest.TestCase):
                 with self.assertRaises(SMOKE.EvidenceError):
                     SMOKE.validate_trace(trace(data))
 
+    def test_the_run_report_and_line_timestamps_are_accepted_only_as_documented(self):
+        data = events()
+        for event in data:
+            event['ts'] = 1763600000000
+        data[-1].update(stop_reason='end_turn', actions=1, tool_calls=0, wall_s=0.25)
+        self.assertTrue(SMOKE.validate_trace(trace(data))['completed'])
+        mutants = {
+            'limit-stop': lambda d: d[-1].update(stop_reason='turn_limit'),
+            'tool-call-count': lambda d: d[-1].update(tool_calls=1),
+            'text-timestamp': lambda d: d[0].update(ts='synthetic'),
+            'negative-actions': lambda d: d[-1].update(actions=-1),
+            'boolean-wall': lambda d: d[-1].update(wall_s=True),
+            'missing-files': lambda d: d[-1].update(missing_files=[]),
+            'store-report': lambda d: d[-1].update(store_degraded=True),
+        }
+        for label, mutate in mutants.items():
+            with self.subTest(report=label):
+                mutated = copy.deepcopy(data)
+                mutate(mutated)
+                with self.assertRaises(SMOKE.EvidenceError):
+                    SMOKE.validate_trace(trace(mutated))
+
     def test_extra_text_and_payload_fields_are_rejected(self):
         mutants = {
             'additional-text': lambda d: d[1]['message']['content'].append(

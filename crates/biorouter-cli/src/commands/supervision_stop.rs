@@ -11,7 +11,12 @@
 //!   An open phase whose gate did not pass at its last check, or a phase that
 //!   is blocked (marked so, or by its gate), is work the run did not finish.
 //!
-//! Both exit with [`EXIT_CODE`], 3, so a script can tell "the run was stopped
+//! #540 adds a third: **a limit stopped the turn** before the work was done
+//! (the action limit, the tool-call limit, the stall stop, the per-reply budget
+//! or a usage limit, [`limit_stopped`]). It used to exit 0, indistinguishable
+//! from a run that chose to stop.
+//!
+//! All three exit with [`EXIT_CODE`], 3, so a script can tell "the run was stopped
 //! or is waiting on a gate" from a run that finished (0), from a command that
 //! needs a terminal (2, [`super::needs_terminal::EXIT_CODE`]), from a generic
 //! failure (1) and from a turn that aborted (70 and up,
@@ -19,6 +24,7 @@
 //! including one whose plan simply has phases still pending, still exits 0.
 
 use biorouter::agents::orchestration_plan::{OrchestrationSnapshot, PhaseSnapshot, PhaseStatus};
+use biorouter::agents::turn_stop_record::{TurnStopReason, TurnStopRecord};
 
 use super::decide::clip;
 
@@ -67,6 +73,45 @@ pub fn monitor_stopped(monitor: &str, session_id: &str, no_session: bool) -> Sup
         clip(monitor, 60),
         carry_on(session_id, no_session)
     ))
+}
+
+/// The line for a run a limit stopped (#540), or `None` when `stop` is not a
+/// limit stop ([`TurnStopReason::is_limit_stop`]).
+pub fn limit_stopped(
+    stop: &TurnStopRecord,
+    session_id: &str,
+    no_session: bool,
+) -> Option<SupervisionStopped> {
+    if !stop.reason.is_limit_stop() {
+        return None;
+    }
+    let what = match (stop.reason, stop.limit) {
+        (TurnStopReason::TurnLimit, Some(limit)) => format!(
+            "its limit of {limit} {} without user input (--max-turns or BIOROUTER_MAX_TURNS)",
+            if limit == 1 { "action" } else { "actions" }
+        ),
+        (TurnStopReason::TurnLimit, None) => {
+            "its limit on actions without user input (--max-turns)".to_string()
+        }
+        (TurnStopReason::ToolCallLimit, Some(limit)) => format!(
+            "its limit of {limit} tool {} (BIOROUTER_MAX_TOOL_CALLS)",
+            if limit == 1 { "call" } else { "calls" }
+        ),
+        (TurnStopReason::ToolCallLimit, None) => {
+            "its tool-call limit (BIOROUTER_MAX_TOOL_CALLS)".to_string()
+        }
+        (TurnStopReason::StallStop, _) => {
+            "the stall check, after the model kept repeating itself without progress".to_string()
+        }
+        (TurnStopReason::BudgetStop, _) => "its budget for one reply".to_string(),
+        _ => "a usage limit".to_string(),
+    };
+    Some(SupervisionStopped(format!(
+        "This run stopped at {what}, not because the work was done (stop reason {}, exit \
+         status {EXIT_CODE}). {}",
+        stop.reason.as_str(),
+        carry_on(session_id, no_session)
+    )))
 }
 
 fn is_open(phase: &PhaseSnapshot) -> bool {
@@ -301,6 +346,59 @@ mod tests {
             phase("polish", PhaseStatus::Pending, None),
         ]);
         assert_eq!(plan_held(&done, "s1", false), None);
+    }
+
+    /// #540: a limit stop names the limit, the stop reason, the exit status
+    /// and how to carry on, in one line; an ordinary end, a monitor's stop, an
+    /// abort and a cancel are not limit stops.
+    #[test]
+    fn a_run_a_limit_stopped_says_which_limit_and_how_to_carry_on() {
+        let stop = |reason, limit| TurnStopRecord {
+            reason,
+            actions: 1,
+            tool_calls: 1,
+            limit,
+        };
+        let line = limit_stopped(&stop(TurnStopReason::TurnLimit, Some(1)), "s1", false)
+            .unwrap()
+            .to_string();
+        assert!(
+            line.starts_with("This run stopped at its limit of 1 action without user input"),
+            "{line}"
+        );
+        assert!(
+            line.contains("stop reason turn_limit, exit status 3"),
+            "{line}"
+        );
+        assert!(
+            line.contains("biorouter run --resume --session-id s1"),
+            "{line}"
+        );
+        assert!(!line.contains('\n'), "one line: {line}");
+
+        let calls = limit_stopped(&stop(TurnStopReason::ToolCallLimit, Some(200)), "s1", true)
+            .unwrap()
+            .to_string();
+        assert!(calls.contains("200 tool calls"), "{calls}");
+        assert!(calls.contains("--no-session"), "{calls}");
+        for reason in [
+            TurnStopReason::StallStop,
+            TurnStopReason::BudgetStop,
+            TurnStopReason::UsageLimitStop,
+        ] {
+            let line = limit_stopped(&stop(reason, None), "s1", false)
+                .unwrap()
+                .to_string();
+            assert!(line.contains(reason.as_str()), "{line}");
+        }
+        for reason in [
+            TurnStopReason::EndTurn,
+            TurnStopReason::MonitorStop,
+            TurnStopReason::Aborted,
+            TurnStopReason::Cancelled,
+        ] {
+            assert_eq!(limit_stopped(&stop(reason, None), "s1", false), None);
+        }
     }
 
     #[test]

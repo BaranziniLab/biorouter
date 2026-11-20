@@ -48,6 +48,9 @@ use tokio::signal::ctrl_c;
 use tokio_util::task::AbortOnDropHandle;
 
 pub use self::export::message_to_markdown;
+use crate::commands::run_report::{
+    missing_required_files, DeliverablesMissing, RunReport, StoreIncomplete,
+};
 use biorouter::agents::turn_abort::{exit as abort_exit, TurnAbortCode, TurnFailed};
 use biorouter::agents::AgentEvent;
 use biorouter::permission::permission_confirmation::PrincipalType;
@@ -129,6 +132,9 @@ struct JsonMetadata {
     /// The abort code, when `status == "failed"`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     error: Option<String>,
+    /// #535 / #540 / #549: how the run ended, beyond `status`.
+    #[serde(flatten)]
+    report: RunReport,
 }
 
 #[derive(Serialize, Debug)]
@@ -158,6 +164,10 @@ enum StreamEvent {
     },
     Complete {
         total_tokens: Option<i32>,
+        /// #535 / #540 / #549: how the run ended, as in the `json` document's
+        /// metadata.
+        #[serde(flatten)]
+        report: RunReport,
     },
 }
 
@@ -253,6 +263,22 @@ pub struct CliSession {
     /// queries the (by then closed) store — without this snapshot every
     /// `--no-session` run reported zero tokens and zero messages.
     final_session_snapshot: Option<biorouter::session::Session>,
+    /// #540: when the current turn began, for the final output's `wall_s`.
+    turn_started: Option<Instant>,
+    /// #540: the person cancelled the current turn, so its stop reason is
+    /// `cancelled` whatever the loop recorded.
+    turn_cancelled: bool,
+    /// #535: the files this headless run must leave behind
+    /// ([`Self::require_files`]), and the directory relative ones resolve
+    /// against. `None` for every other session.
+    required_files: Option<(Vec<String>, PathBuf)>,
+    /// #535 / #540 / #549: what the last turn's final output reported. Behind a
+    /// lock because that output is written while the reply stream still
+    /// borrows the session.
+    last_report: std::sync::Mutex<Option<RunReport>>,
+    /// #549: set for a headless run only ([`Self::defer_store_writes_when_full`]),
+    /// so its chat outlives a session store that runs out of space.
+    store_deferral: Option<biorouter::session::DeferredWritesGuard>,
 }
 
 #[cfg(feature = "dictation")]
@@ -487,6 +513,121 @@ impl CliSession {
             last_abort: None,
             ephemeral_store_dir: None,
             final_session_snapshot: None,
+            turn_started: None,
+            turn_cancelled: false,
+            required_files: None,
+            last_report: std::sync::Mutex::new(None),
+            store_deferral: None,
+        }
+    }
+
+    /// #549: let this headless run go on when its session store runs out of
+    /// space, holding the rows it cannot save in memory and saving them, in
+    /// order, if space comes back. Never called for an interactive session.
+    pub fn defer_store_writes_when_full(&mut self) {
+        self.store_deferral = Some(
+            self.agent
+                .config
+                .session_manager
+                .defer_writes_when_full(&self.session_id),
+        );
+    }
+
+    /// #549: the one stderr line, the first time the store is seen full.
+    fn warn_if_store_degraded(&self) {
+        if self
+            .store_deferral
+            .as_ref()
+            .is_some_and(|deferral| deferral.take_warning())
+        {
+            eprintln!("{}", crate::commands::run_report::store_degraded_warning());
+        }
+    }
+
+    /// #535: give this headless run its required files. The agent is kept
+    /// working while any of `paths` is missing, empty or not a regular file (a
+    /// done gate for this session alone, `Agent::set_session_done_gate`), and a
+    /// run that still ends without one exits 4 with the files named
+    /// ([`crate::commands::run_report`]). Relative paths resolve against the
+    /// session's working directory, as the gate resolves them; when that cannot
+    /// be read the run is refused before it starts.
+    pub async fn require_files(&mut self, paths: Vec<String>) -> Result<()> {
+        use anyhow::Context as _;
+        let mut unique: Vec<String> = Vec::with_capacity(paths.len());
+        for path in paths {
+            if !unique.contains(&path) {
+                unique.push(path);
+            }
+        }
+        if unique.is_empty() {
+            return Ok(());
+        }
+        let working_dir = self
+            .agent
+            .config
+            .session_manager
+            .get_session(&self.session_id, false)
+            .await
+            .context("--require-file needs the session's working directory")?
+            .working_dir;
+        self.agent.set_session_done_gate(
+            &self.session_id,
+            Some(biorouter::agents::done_gate::DoneGateConfig::required_files(&unique)),
+        );
+        self.required_files = Some((unique, working_dir));
+        Ok(())
+    }
+
+    fn lock_report(&self) -> std::sync::MutexGuard<'_, Option<RunReport>> {
+        self.last_report
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// What the final output reports about how the turn ended (#540), and
+    /// which required files are missing (#535), checked now, once, on every
+    /// way out of the turn.
+    async fn run_report(&self) -> RunReport {
+        let stop = self.agent.last_turn_stop();
+        let stop_reason = if self.last_abort.is_some() {
+            "aborted"
+        } else if self.turn_cancelled {
+            "cancelled"
+        } else {
+            stop.map_or("end_turn", |stop| stop.reason.as_str())
+        };
+        let missing_files = match &self.required_files {
+            Some((paths, dir)) => Some(missing_required_files(paths, dir).await),
+            None => None,
+        };
+        // #549: one last attempt to save what the store could not hold.
+        let (store_degraded, unsaved_rows) = match &self.store_deferral {
+            Some(deferral) => {
+                if let Err(error) = deferral.flush(&self.agent.config.session_manager).await {
+                    eprintln!(
+                        "Warning: the session store could not save this run's held rows: {error:#}"
+                    );
+                }
+                self.warn_if_store_degraded();
+                let status = deferral.status();
+                if status.degraded {
+                    (Some(true), Some(status.unsaved_rows as u64))
+                } else {
+                    (None, None)
+                }
+            }
+            None => (None, None),
+        };
+        RunReport {
+            stop_reason: Some(stop_reason.to_string()),
+            actions: Some(stop.map_or(0, |stop| stop.actions)),
+            tool_calls: Some(stop.map_or(0, |stop| stop.tool_calls)),
+            wall_s: self
+                .turn_started
+                .map(|started| (started.elapsed().as_secs_f64() * 1000.0).round() / 1000.0),
+            missing_files,
+            store_degraded,
+            unsaved_rows,
         }
     }
 
@@ -1755,15 +1896,49 @@ impl CliSession {
         let stopped = self.supervision_stopped().await;
         self.end_session("prompt_input_exit").await;
         result?;
+        // The status says the most important thing about the work: an abort
+        // (70 and up), then missing required files (4, #535), then a stop by
+        // supervision or a limit (3), then rows the store could not save (5,
+        // #549). Every line that applies is printed.
+        let report = self.lock_report().clone().unwrap_or_default();
+        let missing =
+            (!report.missing().is_empty()).then(|| DeliverablesMissing::new(report.missing()));
+        let incomplete = (report.unsaved() > 0)
+            .then(|| StoreIncomplete::new(report.unsaved(), self.ephemeral_store_dir.is_some()));
         if let Some(code) = self.last_abort.clone() {
-            if let Some(stopped) = &stopped {
-                eprintln!("{stopped}");
+            for line in [
+                stopped.as_ref().map(ToString::to_string),
+                missing.as_ref().map(ToString::to_string),
+                incomplete.as_ref().map(ToString::to_string),
+            ]
+            .into_iter()
+            .flatten()
+            {
+                eprintln!("{line}");
             }
             let message = format!("the turn did not complete: {}", code.wire_code());
             return Err(TurnFailed::new(code, message).into());
         }
-        match stopped {
-            Some(stopped) => Err(stopped.into()),
+        if let Some(missing) = missing {
+            for line in [
+                stopped.as_ref().map(ToString::to_string),
+                incomplete.as_ref().map(ToString::to_string),
+            ]
+            .into_iter()
+            .flatten()
+            {
+                eprintln!("{line}");
+            }
+            return Err(missing.into());
+        }
+        if let Some(stopped) = stopped {
+            if let Some(incomplete) = &incomplete {
+                eprintln!("{incomplete}");
+            }
+            return Err(stopped.into());
+        }
+        match incomplete {
+            Some(incomplete) => Err(incomplete.into()),
             None => Ok(()),
         }
     }
@@ -1775,10 +1950,21 @@ impl CliSession {
     async fn supervision_stopped(
         &self,
     ) -> Option<crate::commands::supervision_stop::SupervisionStopped> {
-        use crate::commands::supervision_stop::{monitor_stopped, plan_held};
+        use crate::commands::supervision_stop::{limit_stopped, monitor_stopped, plan_held};
         let no_session = self.ephemeral_store_dir.is_some();
         if let Some(stop) = self.agent.take_monitor_stop(&self.session_id) {
             return Some(monitor_stopped(&stop.name, &self.session_id, no_session));
+        }
+        // #540: a limit that ended the turn short of its work. Not after a
+        // cancel or an abort, which say so themselves.
+        if !self.turn_cancelled && self.last_abort.is_none() {
+            if let Some(line) = self
+                .agent
+                .last_turn_stop()
+                .and_then(|stop| limit_stopped(&stop, &self.session_id, no_session))
+            {
+                return Some(line);
+            }
         }
         let plan = biorouter::agents::orchestration_plan::snapshot(
             &self.agent.config.session_manager,
@@ -1796,6 +1982,8 @@ impl CliSession {
         cancel_token: CancellationToken,
     ) -> Result<()> {
         self.last_abort = None;
+        self.turn_started = Some(Instant::now());
+        self.turn_cancelled = false;
         let is_json_mode = self.output_format == "json";
         let is_stream_json_mode = self.output_format == "stream-json";
 
@@ -1878,6 +2066,7 @@ impl CliSession {
 
         use futures::StreamExt;
         loop {
+            self.warn_if_store_degraded();
             let shell_release_at = shell_order.next_release_at();
             tokio::select! {
                 // A line has waited out its gap: the line before it is not
@@ -2311,6 +2500,7 @@ impl CliSession {
                     .retire_unanswered_retry_note(&self.session_id)
                     .await;
             } else {
+                self.turn_cancelled = true;
                 // CANCEL-NOTE: the person cancelled the turn before it finished.
                 // It leaves the one note every surface leaves, which also retires
                 // an unanswered retry note, and the person's message stays.
@@ -2341,6 +2531,10 @@ impl CliSession {
     async fn emit_final_output(&self) -> Result<()> {
         let is_json_mode = self.output_format == "json";
         let is_stream_json_mode = self.output_format == "stream-json";
+        // Computed here, on every way out of a turn, so the final output and
+        // the exit status agree (#535 / #540 / #549).
+        let report = self.run_report().await;
+        *self.lock_report() = Some(report.clone());
         if is_json_mode {
             println!("{}", self.build_json_document().await?);
         } else if is_stream_json_mode {
@@ -2352,7 +2546,10 @@ impl CliSession {
                 .await
                 .ok()
                 .and_then(|s| s.total_tokens);
-            emit_stream_event(&StreamEvent::Complete { total_tokens });
+            emit_stream_event(&StreamEvent::Complete {
+                total_tokens,
+                report,
+            });
         } else {
             println!();
         }
@@ -2373,6 +2570,7 @@ impl CliSession {
             "completed"
         };
         let error = self.last_abort.as_ref().map(|c| c.wire_code().to_string());
+        let report = self.lock_report().clone().unwrap_or_default();
         let metadata = match self
             .agent
             .config
@@ -2384,11 +2582,13 @@ impl CliSession {
                 total_tokens: session.total_tokens,
                 status: status.to_string(),
                 error,
+                report,
             },
             Err(_) => JsonMetadata {
                 total_tokens: None,
                 status: status.to_string(),
                 error,
+                report,
             },
         };
         let json_output = JsonOutput {
@@ -2837,8 +3037,23 @@ fn compact_confirmation(provider_name: &str) -> Option<&'static str> {
 
 fn emit_stream_event(event: &StreamEvent) {
     if let Ok(json) = serde_json::to_string(event) {
-        println!("{}", json);
+        println!("{}", with_stream_timestamp(json));
     }
+}
+
+/// #540: every stream-json line carries `ts`, the epoch milliseconds it was
+/// written at, so a reader can time each tool call from its request line to its
+/// response line. Appended last, so each event keeps its field order.
+fn with_stream_timestamp(mut json: String) -> String {
+    let ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |since| since.as_millis());
+    if json.ends_with('}') {
+        json.pop();
+        let separator = if json.ends_with('{') { "" } else { "," };
+        json.push_str(&format!("{separator}\"ts\":{ts}}}"));
+    }
+    json
 }
 
 /// Print missing required prerequisites and an available update at session
@@ -4843,5 +5058,49 @@ mod tests {
         );
         assert_eq!(order.next_release_at(), None);
         assert!(order.finish_all().is_empty());
+    }
+}
+
+#[cfg(test)]
+mod stream_timestamp_tests {
+    use super::*;
+
+    /// #540: every stream-json line ends with `ts`, epoch milliseconds, after
+    /// the event's own fields, and the `complete` event carries the run report
+    /// beside `total_tokens`.
+    #[test]
+    fn every_stream_line_ends_with_its_timestamp() {
+        let line = with_stream_timestamp(
+            serde_json::to_string(&StreamEvent::Complete {
+                total_tokens: Some(7),
+                report: RunReport {
+                    stop_reason: Some("turn_limit".into()),
+                    actions: Some(1),
+                    tool_calls: Some(1),
+                    ..RunReport::default()
+                },
+            })
+            .unwrap(),
+        );
+        assert!(
+            line.starts_with(r#"{"type":"complete","total_tokens":7,"#),
+            "{line}"
+        );
+        let value: serde_json::Value = serde_json::from_str(&line).unwrap();
+        assert_eq!(value["stop_reason"], "turn_limit");
+        assert_eq!(value["actions"], 1);
+        assert!(
+            value["ts"]
+                .as_u64()
+                .is_some_and(|ts| ts > 1_600_000_000_000),
+            "{line}"
+        );
+        assert_eq!(
+            with_stream_timestamp("{}".into()).matches("\"ts\"").count(),
+            1
+        );
+        assert!(
+            serde_json::from_str::<serde_json::Value>(&with_stream_timestamp("{}".into())).is_ok()
+        );
     }
 }
