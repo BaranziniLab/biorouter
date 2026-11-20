@@ -41,9 +41,9 @@ pub const LOCK_FILE: &str = ".lock";
 /// that person's own **Keep** and **Dismiss**, kept in [`ChatLearning`] on this computer, and
 /// it suggests fewer words when most are dismissed.
 ///
-/// The extractor reads the settings of a store that exists (`extractor::admission_stamp`
-/// counts a missing file as off), so nothing is read from chats until the dictionary holds
-/// its first write: a term, an agent's suggestion or **Find words in my recent chats**.
+/// A store with no file yet reads as a new store, with this default, and the live hooks
+/// follow it: `extractor::admission_stamp` admits such a store at version 0, and the first
+/// observation's write creates the file, so the switch Settings shows is what happens.
 pub const LEARN_FROM_CHATS_DEFAULT: bool = true;
 
 /// The current time as the store writes it: whole seconds, so a timestamp reads

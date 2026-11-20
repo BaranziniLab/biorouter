@@ -2389,8 +2389,10 @@ binary, from `BaranziniLab/biorouter-models`.
   counts it. The chat
   extractor is on in a new store (`LEARN_FROM_CHATS_DEFAULT = true` in
   `crates/biorouter-dictation/src/store/schema.rs`, owner 2026-11-19, replacing O-44's off); a
-  store that saved its setting keeps it, and nothing is read from chats until the dictionary file
-  exists, because `extractor::admission_stamp` counts a missing file as off. Its switch, the
+  store that saved its setting keeps it, and a store with no file yet reads as a new one, so
+  `extractor::admission_stamp` admits it at version 0 and the first observation creates the file.
+  ⚠ Zero is a real version there (no file); the watcher's "not admitted" is `u64::MAX`, never 0,
+  or the switch would read on while nothing is learned. Its switch, the
   `agent_writes` select, the capability switch and **Find words** are Settings rows
   (`settings/models/DictionarySettingsRows.tsx`); the Dictionary page holds the words alone. A row
   left out changes no field of a response. All of it is accident prevention for cooperative
