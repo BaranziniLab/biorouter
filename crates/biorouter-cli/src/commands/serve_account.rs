@@ -335,10 +335,17 @@ mod tests {
             warning.contains("running as biorouter (process 812)"),
             "{warning}"
         );
-        assert!(
-            warning.contains("/var/lib/biorouter/.config/biorouter"),
-            "{warning}"
-        );
+        // The settings folder is built from the account's home with `join`, so
+        // it is displayed with the host's separator: a backslash on Windows.
+        // Where this warning can really fire (Unix), it must read as the literal.
+        let reads_from = PathBuf::from("/var/lib/biorouter")
+            .join(".config")
+            .join("biorouter")
+            .display()
+            .to_string();
+        #[cfg(unix)]
+        assert_eq!(reads_from, "/var/lib/biorouter/.config/biorouter");
+        assert!(warning.contains(&reads_from), "{warning}");
         assert!(
             warning.contains("goes to /home/ssm-user/.config/biorouter instead"),
             "{warning}"
@@ -349,10 +356,7 @@ mod tests {
         );
         let note = note_after_saving(&elsewhere).unwrap();
         assert!(note.contains("does not read this key"), "{note}");
-        assert!(
-            note.contains("/var/lib/biorouter/.config/biorouter"),
-            "{note}"
-        );
+        assert!(note.contains(&reads_from), "{note}");
 
         let unnamed = [ServeElsewhere {
             pid: 7,
