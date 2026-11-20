@@ -142,6 +142,7 @@ use crate::tool_inspection::{InspectionResult, ToolInspectionManager};
 
 use super::tool_execution::{
     denied_response_text, CANCELLED_RESPONSE, DECLINED_RESPONSE, EXPIRED_RESPONSE,
+    UNATTENDED_APPROVAL_RESPONSE,
 };
 
 tokio::task_local! {
@@ -765,15 +766,12 @@ impl ScriptCallGate {
             }
             // `park` answers Cancelled at once where nobody could ever answer —
             // a scheduled run, say. Say so, rather than "cancelled", which reads
-            // as though someone decided.
+            // as though someone decided. The sentence a direct call gets (#543),
+            // with the tool named, since a script may make several calls.
             UserActionOutcome::Cancelled if crate::user_surface::no_human_surface() => {
                 ScriptCallVerdict::Refuse(ScriptCallRefusal::new(
                     "approval_unavailable",
-                    format!(
-                        "`{name}` needs a person's approval, and nobody can be asked in this \
-                         run, so it was not run. Do not retry it here; say what you needed it \
-                         for."
-                    ),
+                    format!("`{name}`: {UNATTENDED_APPROVAL_RESPONSE}"),
                     "Not run: nobody could be asked",
                 ))
             }

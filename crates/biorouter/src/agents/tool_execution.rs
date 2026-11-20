@@ -40,6 +40,19 @@ pub const DECLINED_RESPONSE: &str = "The user has declined to run this tool. \
     DO NOT attempt to call this tool again. \
     If there are no alternative methods to proceed, clearly explain the situation and STOP.";
 
+/// #543: what the model is told when a call needs a person's approval and the
+/// run has nobody to give it (a headless `biorouter run`, a scheduled run).
+///
+/// Not [`DECLINED_RESPONSE`]: nobody declined, and "explain the situation and
+/// STOP" ended tasks that had other ways forward. It keeps the instruction not to
+/// retry the same call, because every variant of it still needs approval and is
+/// refused the same way. A Code Execution script's call is told the same
+/// sentence (`script_call_gate`), so a direct call and a script call read alike.
+pub const UNATTENDED_APPROVAL_RESPONSE: &str = "This tool call was not run: it needs a person's \
+    approval, and nobody can be asked in this unattended run, so the run's policy does not \
+    permit it. Nobody declined it, and the tool itself still works: continue the task another \
+    way, with a call that does not need approval. Do not retry the same call.";
+
 pub const CHAT_MODE_TOOL_SKIPPED_RESPONSE: &str = "Let the user know the tool call was skipped in biorouter chat mode. \
                                         DO NOT apologize for skipping the tool call. DO NOT say sorry. \
                                         Provide an explanation of what the tool call would do, structured as a \
@@ -402,7 +415,8 @@ impl Agent {
 
                 // No hook decision: notify hooks that a permission prompt is
                 // being shown, then fall through to the normal confirmation.
-                {
+                // Where nobody can be asked (#543) no prompt is shown.
+                if !crate::user_surface::no_human_surface() {
                     let mut payload = crate::hooks::HookPayload::new(
                         crate::hooks::HookEvent::Notification,
                         &session.id,
@@ -454,6 +468,40 @@ impl Agent {
                     inspection_results,
                 )
                 .await;
+
+                // #543: nobody can answer a card in an unattended run (a headless
+                // `biorouter run`, a scheduled run). Refuse now, in words that say
+                // so, rather than park for the TTL or have the CLI answer
+                // "declined" for a person who was never there. A hook `allow` on
+                // an ask a hook may answer has already run the call above, and an
+                // ancestor that decided within its own authority still decides
+                // (`DecidedByAncestor`).
+                if !matches!(
+                    delegation,
+                    crate::agents::approval_relay::Delegation::DecidedByAncestor(_)
+                ) && crate::user_surface::no_human_surface()
+                {
+                    self.forget_confirmation(&request.id);
+                    crate::agents::approval_relay::forget(&ask);
+                    tracing::info!(
+                        tool_name = %tool_call.name,
+                        request_id = %request.id,
+                        "Tool call needs approval and nobody can be asked; not run"
+                    );
+                    write_tool_response(request, request_to_response_map, UNATTENDED_APPROVAL_RESPONSE)
+                        .await;
+                    yield Message::assistant()
+                        .with_system_notification(
+                            crate::conversation::message::SystemNotificationType::InlineMessage,
+                            format!(
+                                "{} needs a person's approval, and nobody can be asked in this \
+                                 run, so it was not run.",
+                                tool_call.name
+                            ),
+                        )
+                        .user_only();
+                    continue;
+                }
 
                 // A card for an ask an ancestor already answered would flash and
                 // vanish. `deliver` has already sent the decision into

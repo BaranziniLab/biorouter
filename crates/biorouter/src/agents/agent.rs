@@ -20,6 +20,9 @@ use super::platform_tools;
 /// a classifier that silently stops matching, and a scheduled run that stops
 /// matching is one that reports success for having done nothing.
 pub(crate) use super::tool_execution::EXPIRED_RESPONSE;
+/// Re-exported for [`crate::scheduler`] like [`EXPIRED_RESPONSE`]: an unattended
+/// run's prompt is now refused at once with this text instead of expiring (#543).
+pub(crate) use super::tool_execution::UNATTENDED_APPROVAL_RESPONSE;
 use super::tool_execution::{ToolCallResult, CHAT_MODE_TOOL_SKIPPED_RESPONSE};
 // The denial text itself is written by `tool_execution::denied_response_text`
 // now; the tests below still assert against the constant.
@@ -8119,7 +8122,7 @@ impl Agent {
                     ) else {
                         continue;
                     };
-                    if crate::agents::mistakes::is_user_decline(&outcome) {
+                    if crate::agents::mistakes::is_approval_refusal(&outcome) {
                         continue;
                     }
                     outcomes.push(outcome);

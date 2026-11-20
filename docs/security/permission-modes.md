@@ -124,6 +124,25 @@ backslashes and a `$(...)` inside the target keep it whole, so
 `> "/tmp/x)/../../etc/passwd"` is still a write to `/etc/passwd`. `>|`, the noclobber override,
 is a write like `>`.
 
+## When nobody can be asked
+
+Some runs have no person to answer an approval: `biorouter run` without `-s`, and a scheduled
+run. In such a run a call that needs approval is not run, no card is raised, and the model is
+told that the call needed a person's approval, that nobody could be asked, that nobody declined
+it, and that it should carry on with a call that does not need approval rather than retry the
+same one. It is not told that you declined: you were never asked. The run's output shows one
+line naming the tool.
+
+What still decides without a person keeps deciding:
+
+- A `PermissionRequest` hook returning `allow` still runs a call a hook may approve. It still
+  cannot approve the actions in the table above.
+- In a chat a Biorouter agent created, the agent that created it still decides what it may
+  decide within its own authority.
+
+A scheduled run in which a call was refused this way is reported as not finished, the same as a
+run whose approval expired, so its last-run cursor does not move.
+
 ## File tool scopes
 
 The developer text editor confines writes to the session's working directory,
