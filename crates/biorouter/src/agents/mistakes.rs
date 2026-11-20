@@ -39,12 +39,13 @@
 //!
 //! ## What does not count as a mistake
 //!
-//! Only failures the model can actually learn from. A call the **user declined**
-//! and a call a **loop guard refused to run** are policy verdicts, not the
-//! model's failures: counting them would nudge the model for a decision it never
-//! made, and pile a second warning on top of the one BR-29/30/31 already sent.
-//! The reply loop drops guard denials by request id; user declines are dropped
-//! here by [`is_user_decline`].
+//! Only failures the model can actually learn from. A call the **user declined**,
+//! a call that needed approval in a run with **nobody to ask** (#543), and a call
+//! a **loop guard refused to run** are policy verdicts, not the model's failures:
+//! counting them would nudge the model for a decision it never made, and pile a
+//! second warning on top of the one BR-29/30/31 already sent. The reply loop
+//! drops guard denials by request id; the other two are dropped here by
+//! [`is_approval_refusal`].
 //!
 //! Everything is config-gated — `BIOROUTER_MISTAKE_STREAK_DETECTION=false` turns
 //! the whole thing off (restoring the old end-the-turn-on-provider-error
@@ -78,6 +79,12 @@ pub const MALFORMED_TOOL_NAME: &str = "a malformed tool call";
 /// A declined call comes back flagged `is_error`, so without this it would read
 /// as a model mistake. Guarded by a test against the real constant.
 const DECLINE_SIGNATURE_PREFIX: &str = "the user has declined to run this tool";
+
+/// Normalized-signature prefix of
+/// [`crate::agents::tool_execution::UNATTENDED_APPROVAL_RESPONSE`]. Guarded by a
+/// test against the real constant, like [`DECLINE_SIGNATURE_PREFIX`].
+const UNATTENDED_SIGNATURE_PREFIX: &str =
+    "this tool call was not run: it needs a person's approval";
 
 /// BR-66 thresholds. Each stage is independently disablable (`None` / `0`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -411,15 +418,16 @@ impl MistakeTracker {
     }
 }
 
-/// Is this outcome a call the *user* declined rather than a failure of the
-/// model's? A decline already tells the model, in the tool result itself, to
-/// stop and explain — counting it as a mistake would nudge the model for the
-/// user's decision.
-pub fn is_user_decline(outcome: &ToolOutcome) -> bool {
-    outcome
-        .failure
-        .as_deref()
-        .is_some_and(|signature| signature.starts_with(DECLINE_SIGNATURE_PREFIX))
+/// Is this outcome a call refused at its approval rather than a failure of the
+/// model's? Either the *user* declined it, or it needed a person's approval in a
+/// run that had nobody to ask (#543). Each already tells the model, in the tool
+/// result itself, what to do next; counting it as a mistake would nudge the
+/// model for a decision it did not make.
+pub fn is_approval_refusal(outcome: &ToolOutcome) -> bool {
+    outcome.failure.as_deref().is_some_and(|signature| {
+        signature.starts_with(DECLINE_SIGNATURE_PREFIX)
+            || signature.starts_with(UNATTENDED_SIGNATURE_PREFIX)
+    })
 }
 
 /// The structured reflect-and-replan nudge. It does not tell the model *what* to
@@ -821,11 +829,31 @@ mod tests {
         );
         assert!(declined.failure.is_some(), "a decline is flagged is_error");
         assert!(
-            is_user_decline(&declined),
+            is_approval_refusal(&declined),
             "and must be recognised as a decline, not a mistake"
         );
-        assert!(!is_user_decline(&failed("shell")));
-        assert!(!is_user_decline(&succeeded("shell")));
+        assert!(!is_approval_refusal(&failed("shell")));
+        assert!(!is_approval_refusal(&succeeded("shell")));
+    }
+
+    /// #543: a call that needed approval in a run with nobody to ask is a policy
+    /// verdict too, decided on purpose: the result already says to go another
+    /// way, so it is not counted as the model's mistake.
+    #[test]
+    fn an_unattended_approval_refusal_is_not_the_models_mistake() {
+        let refused = tool_outcome(
+            "shell",
+            &Ok(CallToolResult {
+                content: vec![Content::text(
+                    crate::agents::tool_execution::UNATTENDED_APPROVAL_RESPONSE,
+                )],
+                structured_content: None,
+                is_error: Some(true),
+                meta: None,
+            }),
+        );
+        assert!(refused.failure.is_some(), "the refusal is flagged is_error");
+        assert!(is_approval_refusal(&refused));
     }
 
     #[test]

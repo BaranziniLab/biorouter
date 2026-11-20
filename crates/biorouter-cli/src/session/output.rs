@@ -644,6 +644,9 @@ const AGENT_CANCELLED_MID_RUN: &str =
     "The user cancelled this turn while the tool call was still running";
 const AGENT_EXPIRED: &str =
     "The permission prompt for this tool call expired before the user answered it";
+/// #543: a call that needed approval in a run with nobody to ask.
+const AGENT_UNATTENDED: &str =
+    "This tool call was not run: it needs a person's approval, and nobody can be asked";
 /// What a hook's denial adds after [`AGENT_DECLINED`]'s text.
 const HOOK_FEEDBACK: &str = "Hook feedback:";
 
@@ -655,6 +658,10 @@ pub(crate) const PERSON_CANCELLED: &str =
 /// What the person reads for a call that was running when they stopped the turn.
 pub(crate) const PERSON_CANCELLED_MID_RUN: &str =
     "You stopped the turn while this tool call ran. It may have partly finished.";
+/// What the person reads for a call that needed approval in a run nobody could
+/// answer (a `biorouter run` without `-s`, say).
+pub(crate) const PERSON_UNATTENDED: &str =
+    "This tool call needs approval, and nobody could be asked in this run, so it did not run.";
 
 /// The person's line for a result Biorouter wrote to the model instead of a
 /// tool's answer, or None for any other text. An expired approval reads as the
@@ -677,6 +684,8 @@ fn agent_written_result_line(text: &str) -> Option<std::borrow::Cow<'static, str
         PERSON_CANCELLED
     } else if text.starts_with(AGENT_EXPIRED) {
         super::APPROVAL_EXPIRED
+    } else if text.starts_with(AGENT_UNATTENDED) {
+        PERSON_UNATTENDED
     } else {
         return None;
     };
@@ -3394,6 +3403,7 @@ mod tests {
             ("CANCELLED_RESPONSE", PERSON_CANCELLED),
             ("CANCELLED_MID_RUN_RESPONSE", PERSON_CANCELLED_MID_RUN),
             ("EXPIRED_RESPONSE", super::super::APPROVAL_EXPIRED),
+            ("UNATTENDED_APPROVAL_RESPONSE", PERSON_UNATTENDED),
         ] {
             let text = agent_constant(name);
             assert_eq!(tool_result_display_text(&text, true), line, "{name}");

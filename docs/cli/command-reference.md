@@ -1443,6 +1443,12 @@ This run ended with phase "verify" held by its gate, which did not pass (exit st
 A `--no-session` run has no chat to carry on and says so. Only `biorouter run` exits 3 for this:
 the debug chat for a failed extension and `biorouter bench` treat such a turn as completed.
 
+**Approvals in a run without `-s`.** Nobody can answer an approval in such a run, so a call that
+needs one is not run and no prompt is shown. The output has one line naming the tool, and the
+model is told that nobody could be asked and nobody declined, and to carry on with a call that
+does not need approval. To approve calls yourself, run with `-s` in a terminal. See
+[When nobody can be asked](../security/permission-modes.md#when-nobody-can-be-asked).
+
 **Usage:**
 
 ```bash

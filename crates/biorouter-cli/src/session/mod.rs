@@ -1746,9 +1746,20 @@ impl CliSession {
         let message = Message::user().with_text(&prompt);
         // #40: a headless run has nobody at the terminal — approvals
         // auto-deny and elicitations auto-cancel.
-        let result = self
-            .process_message(message, false, CancellationToken::default())
-            .await;
+        //
+        // #543: and the agent is told so. Inside this scope an approval is
+        // refused in the agent itself, with words that say nobody could be
+        // asked, instead of a card this loop answers "declined" for a person
+        // who was never there. The scope must cover the whole stream drain,
+        // which `process_message` does inline (a task-local does not follow a
+        // spawn); `headless_auto_decision` stays as the fallback for a card
+        // that arrives from outside the scope.
+        let result = biorouter::user_surface::without_human_surface(self.process_message(
+            message,
+            false,
+            CancellationToken::default(),
+        ))
+        .await;
         // H-6 / D-4: a run a monitor stopped, or whose plan ended with a
         // phase held by its gate or left blocked, exits 3 with one line that
         // says so and how to carry on. Read before the session ends: a
@@ -4048,6 +4059,31 @@ mod tests {
     /// so a structured stdout stays a valid document). Everything else
     /// auto-denies so a headless run cannot block on a keypress that will
     /// never come (the ~30-minute hang) or die as `Error: not connected`.
+    /// #543: a headless run's whole turn, stream drain included, runs inside the
+    /// unattended scope, so the agent refuses an approval in words that say
+    /// nobody could be asked rather than this loop answering "declined". A
+    /// source pin like the scheduler's: the property is where the scope sits.
+    #[test]
+    fn a_headless_run_drains_its_turn_inside_the_unattended_scope() {
+        let source = include_str!("mod.rs");
+        let headless = source
+            .split("pub async fn headless(&mut self, prompt: String)")
+            .nth(1)
+            .and_then(|rest| rest.split("\n    }\n").next())
+            .expect("Session::headless body");
+        assert!(
+            headless.contains("without_human_surface(self.process_message("),
+            "the turn must run inside the unattended scope: {headless}"
+        );
+        // `process_message` drains the reply stream inline; a spawned drain
+        // would leave the task-local scope behind.
+        let process = source
+            .split("async fn process_agent_response(")
+            .nth(1)
+            .expect("process_agent_response body");
+        assert!(process.contains("result = stream.next() =>"));
+    }
+
     #[test]
     fn headless_auto_decision_covers_the_full_matrix() {
         // Interactive TTY runs keep the prompt — for EVERY output format.

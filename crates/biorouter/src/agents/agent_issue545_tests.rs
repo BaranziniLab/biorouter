@@ -542,3 +542,181 @@ async fn issue545_ambiguous_or_prefixed_unknown_names_never_dispatch_or_disclose
         }
     }
 }
+
+/// A chat model behind the toolshim: it writes its call as prose, which the
+/// interpreter (a stand-in Ollama below) turns into a structured call.
+struct ShimProvider {
+    calls: AtomicUsize,
+    offered: StdMutex<Vec<Vec<String>>>,
+}
+
+#[async_trait]
+impl Provider for ShimProvider {
+    fn metadata() -> ProviderMetadata {
+        ProviderMetadata::new(
+            "issue545-shim",
+            "Issue 545 shim",
+            "",
+            "mock",
+            vec![],
+            "",
+            vec![],
+        )
+    }
+
+    fn get_name(&self) -> &str {
+        "issue545-shim"
+    }
+
+    fn get_model_config(&self) -> ModelConfig {
+        ModelConfig::new_or_fail("mock")
+            .with_context_limit(Some(1_000_000))
+            .with_toolshim(true)
+            .with_toolshim_model(Some("issue545-interpreter".into()))
+    }
+
+    async fn complete_with_model(
+        &self,
+        _model: &ModelConfig,
+        system: &str,
+        _messages: &[Message],
+        tools: &[Tool],
+    ) -> Result<(Message, ProviderUsage), ProviderError> {
+        let usage = ProviderUsage::new("mock".to_string(), Usage::default());
+        if system.contains("You are a loop monitor") {
+            return Ok((
+                Message::assistant().with_text(r#"{"looping":false}"#),
+                usage,
+            ));
+        }
+        self.offered
+            .lock()
+            .unwrap()
+            .push(tools.iter().map(|t| t.name.to_string()).collect());
+        let text = if self.calls.fetch_add(1, Ordering::SeqCst) == 0 {
+            "ISSUE545_SHIM_CALL: run the counted probe with a count of seven."
+        } else {
+            "ISSUE545_SHIM_FINISHED"
+        };
+        Ok((Message::assistant().with_text(text), usage))
+    }
+}
+
+/// #545 under the toolshim. The shim empties the native tool list for transport
+/// and keeps its own copy (`toolshim_tools`), so the offered roster that names
+/// are matched against is that copy. Matched against the empty native list, a
+/// recovered call loses its schema coercion (and a stricter admission would
+/// refuse every shim call): here the interpreter hands back `"7"` for an
+/// integer, and only the shim roster turns it into `7`.
+#[tokio::test]
+#[serial_test::serial]
+async fn issue545_toolshim_calls_are_matched_against_the_shim_roster() {
+    use wiremock::matchers::{body_string_contains, method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    let interpreter = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/api/show"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "capabilities": ["completion"]
+        })))
+        .mount(&interpreter)
+        .await;
+    // Only the first reply is read as a call; the final reply's interpretation
+    // finds no stand-in and is kept as text.
+    Mock::given(method("POST"))
+        .and(path("/api/chat"))
+        .and(body_string_contains("ISSUE545_SHIM_CALL"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "message": {
+                "role": "assistant",
+                "content": json!({"tool_calls": [{
+                    "name": "issue545shim__probe",
+                    "arguments": {"count": "7"}
+                }]})
+                .to_string()
+            }
+        })))
+        .mount(&interpreter)
+        .await;
+    let _env = env_lock::lock_env([("OLLAMA_HOST", Some(interpreter.uri()))]);
+
+    let root = TempDir::new().unwrap();
+    let sessions = Arc::new(SessionManager::new(root.path().join("sessions")));
+    let permissions = Arc::new(PermissionManager::new(root.path().join("permissions")));
+    let agent = Agent::with_config(
+        AgentConfig::new(sessions.clone(), permissions, None, BioRouterMode::Auto)
+            .with_project_hooks(false),
+    );
+    let calls = Arc::new(StdMutex::new(Vec::new()));
+    let config = ExtensionConfig::stdio("issue545shim", "unused-issue545-shim", "fixture", 30_u64);
+    agent
+        .extension_manager
+        .add_client(
+            config.key(),
+            config,
+            Arc::new(ProbeClient {
+                name: "probe",
+                calls: calls.clone(),
+            }),
+            None,
+            None,
+        )
+        .await;
+    let session = sessions
+        .create_session(
+            root.path().to_path_buf(),
+            "issue545-shim".to_string(),
+            SessionType::Hidden,
+        )
+        .await
+        .unwrap();
+    let provider = Arc::new(ShimProvider {
+        calls: AtomicUsize::new(0),
+        offered: StdMutex::new(Vec::new()),
+    });
+    agent
+        .update_provider(provider.clone(), &session.id)
+        .await
+        .unwrap();
+
+    let drain = async {
+        let mut stream = agent
+            .reply(
+                Message::user().with_text("Use the synthetic offered probe once."),
+                SessionConfig {
+                    id: session.id.clone(),
+                    schedule_id: None,
+                    max_turns: Some(3),
+                    max_tool_calls: Some(3),
+                    budget: None,
+                    retry_config: None,
+                    reasoning_effort: None,
+                },
+                None,
+            )
+            .await
+            .unwrap();
+        while let Some(event) = stream.next().await {
+            event.unwrap();
+        }
+    };
+    tokio::time::timeout(Duration::from_secs(30), drain)
+        .await
+        .expect("the toolshim turn did not finish");
+
+    let offered = provider.offered.lock().unwrap().clone();
+    assert!(!offered.is_empty(), "the chat model was never asked");
+    assert!(
+        offered.iter().all(Vec::is_empty),
+        "premise: the toolshim sends the chat model no native tools: {offered:?}"
+    );
+    let calls = calls.lock().unwrap();
+    assert_eq!(calls.len(), 1, "the recovered call must run exactly once");
+    assert_eq!(calls[0].0, "probe");
+    assert_eq!(
+        calls[0].1.as_ref().unwrap()["count"],
+        json!(7),
+        "the shim roster's schema coercion was skipped"
+    );
+}

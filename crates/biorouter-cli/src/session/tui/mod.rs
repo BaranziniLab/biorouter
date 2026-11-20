@@ -6414,6 +6414,13 @@ mod tests {
                  assume it succeeded, and do not silently retry it.",
                 crate::session::output::PERSON_CANCELLED_MID_RUN,
             ),
+            (
+                "This tool call was not run: it needs a person's approval, and nobody can be \
+                 asked in this unattended run, so the run's policy does not permit it. Nobody \
+                 declined it, and the tool itself still works: continue the task another way, \
+                 with a call that does not need approval. Do not retry the same call.",
+                crate::session::output::PERSON_UNATTENDED,
+            ),
         ] {
             let mut app = App::new(StatusInfo::default());
             app.push_message(&failed_tool_message(agent_text), false);
