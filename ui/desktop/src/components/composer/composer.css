@@ -777,8 +777,20 @@
   color: var(--text-muted);
 }
 
+/* The model's name moves to the next line whole rather than breaking at a hyphen of
+   "large-v3-turbo". Catalog names are short enough for the popover's line. */
+.br-dictation-setup__name {
+  white-space: nowrap;
+}
+
 .br-dictation-setup__warning {
   color: var(--text-danger);
+}
+
+/* A command in a sentence (MSG-OFFLINE) keeps the sentence's 16px line: the code role's own
+   20px line made every line holding a command taller than its neighbours. */
+.br-dictation-setup__warning code {
+  line-height: inherit;
 }
 
 /* A record of what the person did (a cancelled install): the privacy line's muted ink, not

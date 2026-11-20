@@ -119,6 +119,8 @@ describe('the setup popover', () => {
     expect(text.split('Audio is not saved.').length - 1).toBe(1);
     // A display name that carries its own parentheses gets no second pair for the size.
     expect(text).not.toMatch(/\) \(/);
+    // The name is drawn whole, so it never breaks at a hyphen of "large-v3-turbo".
+    expect(screen.getByText('Whisper large-v3 turbo')).toHaveClass('br-dictation-setup__name');
   });
 
   it('draws a command in a failure as code, never with its backticks', () => {

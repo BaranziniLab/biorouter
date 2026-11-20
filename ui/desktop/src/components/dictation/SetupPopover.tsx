@@ -85,6 +85,25 @@ export function DisclosureDetail({ place }: { place: DictationDaemonPlace }) {
   );
 }
 
+/** Stands in for the model's name while MSG-SETUP is filled, so the name can be drawn whole. */
+const NAME_SLOT = '\u0000name\u0000';
+
+/**
+ * MSG-SETUP with the model's name kept on one line: "Whisper large-v3-turbo (q5_0)" broke at its
+ * hyphen into "large-v3-" and "turbo (q5_0)". The folder may still wrap anywhere; it is a path.
+ */
+function SetupSentence({ sentence, name }: { sentence: string; name: string }) {
+  const [before, ...rest] = sentence.split(NAME_SLOT);
+  if (rest.length === 0) return <>{sentence}</>;
+  return (
+    <>
+      {before}
+      <span className="br-dictation-setup__name">{name}</span>
+      {rest.join(name)}
+    </>
+  );
+}
+
 export interface SetupPopoverProps {
   status: DictationStatus | null;
   /** 0 to 100 while a model installs; null otherwise. */
@@ -122,12 +141,15 @@ export function SetupPopover({ status, progress, onNotNow, onMoreInSettings }: S
       <p className="br-dictation-setup__title">{DICTATION_LABELS.setUp}</p>
       {model && status ? (
         <p className="br-dictation-setup__text">
-          {dictationMessage('MSG-SETUP', {
-            where,
-            name: model.display_name,
-            size: speechModelsCopy.megabytes(model.bytes),
-            folder: status.models_dir,
-          })}
+          <SetupSentence
+            sentence={dictationMessage('MSG-SETUP', {
+              where,
+              name: NAME_SLOT,
+              size: speechModelsCopy.megabytes(model.bytes),
+              folder: status.models_dir,
+            })}
+            name={model.display_name}
+          />
         </p>
       ) : (
         <p className="br-dictation-setup__text">{dictationMessage('MSG-SETTINGS-UNREACHABLE')}</p>

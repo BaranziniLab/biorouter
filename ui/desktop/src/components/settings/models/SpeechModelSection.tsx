@@ -220,7 +220,13 @@ function SpeechModelRows({ status }: { status: DictationStatus }) {
       {(!hasUsableModel(status) || activation.needsSave) &&
       status.policy.dictionary.allowed !== false &&
       activation.showChoice ? (
-        <div className="flex items-center gap-1 text-label" data-testid="speech-suggest-from-chats">
+        // `px-2`: the square (4px inside its 24px target) sits on the rows' label column, 12px in;
+        // the words take the rows' label ink rather than the section's muted one, and the
+        // InfoTip's glyph sits 4px after them (its own 24px target holds the rest).
+        <div
+          className="flex items-center px-2 text-label text-text-default"
+          data-testid="speech-suggest-from-chats"
+        >
           {/* The label sits 8px from the square: the hit target's 4px inset and this 4px gap. */}
           <label className="inline-flex cursor-pointer items-center gap-1">
             <Checkbox
@@ -487,7 +493,10 @@ function SpeechModelRowView({
         ) : problem ? (
           // A failure is said in ink, not in a status hue (design.md 9.14), with a command in it
           // (MSG-OFFLINE) drawn as code rather than with its backticks.
-          <span role="alert" className="text-supporting text-text-default [overflow-wrap:anywhere]">
+          <span
+            role="alert"
+            className="br-speech-problem text-supporting text-text-default [overflow-wrap:anywhere]"
+          >
             <InlineCodeText text={problem} />
           </span>
         ) : (

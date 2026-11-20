@@ -44,3 +44,9 @@
   max-inline-size: 100%;
   margin-block: 4px 2px;
 }
+
+/* A failed install's sentence on its row. A command in it (MSG-OFFLINE) keeps the facts line's
+   16px line rather than the code role's 20px, so the lines holding one are not taller. */
+.br-speech-problem code {
+  line-height: inherit;
+}
