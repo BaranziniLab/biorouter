@@ -2362,13 +2362,29 @@ mod tests {
         assert!(open_daemon_owner_lock().is_err());
         fs::remove_file(directory.join("owner.lock")).expect("symlink removes");
         fs::write(directory.join("owner.lock"), b"lock").expect("lock writes");
+        // On macOS a new file takes its directory's group, and chmod silently
+        // drops S_ISGID when that group is not one of ours: under /tmp (group
+        // wheel) 0o2600 lands as 0o600, a secure mode, and the refusal below
+        // then fails for the fixture's sake. Give the file our own group first.
+        std::os::unix::fs::chown(
+            directory.join("owner.lock"),
+            None,
+            Some(unsafe { libc::getegid() }),
+        )
+        .expect("lock group sets");
         for mode in [0o400, 0o644, 0o700, 0o4600, 0o2600, 0o1600] {
             fs::set_permissions(
                 directory.join("owner.lock"),
                 fs::Permissions::from_mode(mode),
             )
             .expect("insecure mode sets");
-            assert!(open_daemon_owner_lock().is_err());
+            let applied = fs::symlink_metadata(directory.join("owner.lock"))
+                .expect("lock metadata reads")
+                .permissions()
+                .mode()
+                & 0o7777;
+            assert_eq!(applied, mode, "the fixture did not apply mode {mode:o}");
+            assert!(open_daemon_owner_lock().is_err(), "mode {mode:o}");
         }
         fs::remove_file(target).expect("target removes");
     }
