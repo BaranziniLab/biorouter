@@ -2693,22 +2693,42 @@ no Swift). ⚠ At the 13.0 floor one upstream Objective-C deprecation fails the 
 `-Werror`; the build keeps it a warning with clang's `CCC_OVERRIDE_OPTIONS` rather than
 patching the vendored tree. `verify` reads the binaries themselves (Mach-O minimum, ELF glibc
 floor and libraries, PE subsystem and MinGW imports), and `contract` runs `version` and a
-refused bare reference with no desktop access. ⚠ Until the wrapper phase lands,
-`crates/biorouter-mcp/src/computer_use/runtime.rs` still speaks the retired engine's MCP
-protocol, so a packaged build's Copilot reports an incompatible runtime; the old
-`vendor/computer-use/` tree and its OCU-only test scripts are unused and go in the retirement
-phase (AD-18).
+refused bare reference with no desktop access. The old `vendor/computer-use/` tree and its
+OCU-only test scripts are unused and go in the retirement phase (AD-18).
 
+**The wrapper** (`crates/biorouter-mcp/src/computer_use/`, AD-07 to AD-15) runs ONE engine
+command per operation, never `agent-desktop mcp`: `plan.rs` is the only place a command line is
+built (model strings only as `--flag=value` or after `--`, `--headed` only where the AD-11 table
+says, never `--cdp`/`--force`/`--trace`), `runner.rs` spawns it (cleared environment, the task's
+own `AGENT_DESKTOP_HOME`, text on stdin, 16 MiB cap, deadline + 5 s, Stop = SIGTERM, 1 s for
+the release guard, then SIGKILL of the group). ⚠ On macOS the spawn is `posix_spawn` with
+`responsibility_spawnattrs_setdisclaim` (AD-04), so TCC grants belong to `Biorouter Copilot.app`
+and never to Biorouter itself; it fails closed rather than spawning normally. `guard.rs` holds
+the AD-12 refusals (Biorouter's own pids, ancestors, install folder and bundle ids; security
+prompts; terminals; privacy settings; lock screen; secure input), `render.rs` frames app text as
+untrusted, and `mod.rs` keeps each chat's references per task generation (a reference this task
+never observed is refused before the engine is even located). Tests: `cargo test -p
+biorouter-mcp --lib computer_use` (a fake engine script, no desktop) and, with
+`BIOROUTER_COMPUTER_USE_DIR` naming a built payload, `-- --ignored` checks every option the
+wrapper writes against the pinned engine's `--help` and runs it through the disclaimed spawn.
 
 `computercontroller` — the extension key Biorouter Copilot kept for config
-compatibility — exposes exactly ten native tools: `list_apps`, `get_app_state`, `click`,
-`perform_secondary_action`, `scroll`, `drag`, `type_text`, `press_key`, `set_value`,
-`screen_capture`. The native helper owns all desktop observation/control; Developer has no
-capture or control tool. `webdocuments` owns web/document/cache utilities. Old scripting,
-control and capture implementations and aliases are removed, not migrated or hidden.
+compatibility — exposes thirteen native tools: the ten earlier names (`list_apps`,
+`get_app_state`, `click`, `perform_secondary_action`, `scroll`, `drag`, `type_text`,
+`press_key`, `set_value`, `screen_capture`, now with reference arguments such as `@s1abc:e4`)
+plus `find_elements`, `wait_for` and `open_app`. A restricted `available_tools` list never
+gains the three new names. The native engine owns all desktop observation/control; Developer
+has no capture or control tool, and the secret guard refuses a shell that starts the Copilot
+engine. `webdocuments` owns web/document/cache utilities.
 
-The host obtains one Biorouter Copilot grant per task/chat/model/target before observation. Respect
-Stop/revoke, avoid retry loops and script fallbacks, refresh stale state, and verify outcomes.
-Private/public chats retain separate observations and consent. Pause before private-to-public
-handoff because the physical desktop is shared. See `docs/design/computer-use-integration-plan.md`
-and the implementation-status ledger for all acceptance gates, including real-app validation.
+The host obtains one Biorouter Copilot grant per request: **Allow** (look and control) or look
+only (`ComputerUseConsent::approve_with`, `permit_for`; the classifier `grant_for_call` is
+`contract::grant_for`, shared with the wrapper, which refuses an act call again unless the
+dispatch meta carries `computer_use_grant: act`). Under look only an act call fails at once
+with `LOOK_ONLY_REFUSAL` and no second card. Respect Stop/revoke, avoid retry loops and script
+fallbacks, refresh stale state, and verify outcomes. Private/public chats retain separate
+observations and consent. Pause before private-to-public handoff because the physical desktop is
+shared. Routing between Copilot and the Biorouter Browser is one sentence,
+`contract::ROUTING_SENTENCE`, which `browser_extension::COPILOT_ROUTING_SENTENCE` re-exports.
+See [the design](docs/design/copilot-agent-desktop.md) for the acceptance gates, including live
+macOS permission attribution and real-app drag and drop.
