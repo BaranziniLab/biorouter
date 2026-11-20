@@ -1,5 +1,5 @@
 import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import FontSizeSelector from '../components/settings/app/FontSizeSelector';
@@ -12,6 +12,7 @@ import {
   fontSizeFromLegacy,
   loadFontSize,
   migrateLegacyFontSize,
+  setFontSize,
   useFontSize,
 } from './useFontSize';
 
@@ -121,6 +122,32 @@ describe('app font size', () => {
     expect(loadFontSize(storage)).toBe('standard');
     expect(loadFontSize(null)).toBe('standard');
     expect(() => migrateLegacyFontSize(storage)).not.toThrow();
+  });
+
+  it('applies and shows a choice storage refuses to keep, without throwing', () => {
+    const blocked = vi.spyOn(localStorage, 'setItem').mockImplementation(() => {
+      throw new DOMException('The operation is insecure.', 'SecurityError');
+    });
+    try {
+      render(
+        <>
+          <FontSizeSelector />
+          <Observer />
+        </>
+      );
+      expect(() => fireEvent.click(screen.getByRole('radio', { name: 'Large' }))).not.toThrow();
+      expect(screen.getByRole('radio', { name: 'Large' })).toBeChecked();
+      expect(screen.getByRole('status')).toHaveTextContent('large:1.15');
+      expect(document.documentElement.style.getPropertyValue('--app-font-scale')).toBe('1.15');
+      expect(document.documentElement.dataset.fontSize).toBe('large');
+      expect(localStorage.getItem(FONT_SIZE_STORAGE_KEY)).toBeNull();
+    } finally {
+      blocked.mockRestore();
+    }
+    // Once storage keeps a choice again, it is the one read.
+    act(() => setFontSize('small'));
+    expect(localStorage.getItem(FONT_SIZE_STORAGE_KEY)).toBe('small');
+    expect(screen.getByRole('radio', { name: 'Small' })).toBeChecked();
   });
 });
 
