@@ -210,6 +210,30 @@ fn reference(observation: &str, name: &str) -> String {
         .unwrap_or_else(|| panic!("no reference named {name:?} in:\n{observation}"))
 }
 
+/// The fixture's password field: by its name where the platform reports one. Windows UI
+/// Automation reports a password edit without its name, so there it is the one element the
+/// observation marks as a password field (the same mark the refusal is decided on).
+fn password_reference(observation: &str) -> String {
+    if let Some((reference, _, _)) = references(observation)
+        .into_iter()
+        .find(|(_, _, name)| name == "FixtureSecret")
+    {
+        return reference;
+    }
+    let marked =
+        regex::Regex::new(r#"(@s[0-9A-Za-z]+:e\d+) \[[^\]]+\][^\n]*\(password field\)"#).unwrap();
+    let found: Vec<String> = marked
+        .captures_iter(observation)
+        .map(|found| found[1].to_owned())
+        .collect();
+    assert_eq!(
+        found.len(),
+        1,
+        "expected exactly one password field in:\n{observation}"
+    );
+    found[0].clone()
+}
+
 fn scroll_reference(observation: &str) -> String {
     references(observation)
         .into_iter()
@@ -274,7 +298,6 @@ async fn copilot_drives_the_fixture_app_through_its_own_tools() {
         "FixtureInput",
         "Apply fixture",
         "Fixture option",
-        "FixtureSecret",
         "Alpha",
         "Beta",
         "Gamma",
@@ -282,6 +305,7 @@ async fn copilot_drives_the_fixture_app_through_its_own_tools() {
     ] {
         reference(&window, name);
     }
+    password_reference(&window);
     println!("PASS observe: list_apps and get_app_state name every fixture target");
 
     // Look only (AD-10): a write under an observe grant is refused and nothing reaches the app.
@@ -342,7 +366,7 @@ async fn copilot_drives_the_fixture_app_through_its_own_tools() {
         .call(
             generation,
             "type_text",
-            json!({"ref": reference(&window, "FixtureSecret"), "text": "hunter2"}),
+            json!({"ref": password_reference(&window), "text": "hunter2"}),
         )
         .await;
     assert!(
