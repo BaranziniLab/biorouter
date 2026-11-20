@@ -279,8 +279,18 @@ const UNEXPOSED: &[&str] = &[
     "permissions --",
 ];
 
-/// Biorouter's own advice for each error code.
-fn advice(code: &str) -> &'static str {
+/// Biorouter's own advice for each error code, and for an ambiguous reference by the engine's
+/// `details.kind`: a reference that could not be told apart is refused again by every new
+/// observation, so telling the model to observe again would loop.
+fn advice(code: &str, kind: Option<&str>) -> &'static str {
+    match (code, kind) {
+        ("AMBIGUOUS_TARGET", Some("identity_not_unique")) => "This element could not be told apart from the rest of its window (another looks the same, or its text is too long to compare). Unless that observation said the window could not be read in full, observing again will not help: act on a unique element nearby, such as a scroll bar's buttons or a labelled parent, click at pixel coordinates of a screenshot, or tell the person.",
+        ("AMBIGUOUS_TARGET", Some("saved_ref_ambiguous")) => "An element identical to this one appeared, so neither can be acted on by reference, and observing again will not help. Act on a unique element nearby, click at pixel coordinates of a screenshot, or tell the person.",
+        _ => advice_for_code(code),
+    }
+}
+
+fn advice_for_code(code: &str) -> &'static str {
     match code {
         "STALE_REF" => "The element changed or is gone. Call get_app_state again and use a fresh reference.",
         "AMBIGUOUS_TARGET" => "Several windows or elements match. Pass window_id (screen_capture with list_only lists them), or observe again and pick one reference.",
@@ -316,7 +326,8 @@ pub fn error(error: &Value) -> String {
         text.push('.');
     }
     text.push(' ');
-    text.push_str(advice(code));
+    let kind = error.pointer("/details/kind").and_then(Value::as_str);
+    text.push_str(advice(code, kind));
     if let Some(suggestion) = error.get("suggestion").and_then(Value::as_str) {
         let lowered = suggestion.to_lowercase();
         if !UNEXPOSED.iter().any(|word| lowered.contains(word)) && !lowered.contains('`') {
@@ -471,6 +482,29 @@ mod tests {
             &json!({"code":"TIMEOUT","message":"slow","suggestion":"The window may still be loading."}),
         );
         assert!(kept.contains("Hint: The window may still be loading."));
+    }
+
+    /// agent-desktop 1.3.1's two ambiguous reference errors, as its envelope carries them
+    /// (`refs/resolve_errors.rs`). Neither is cured by observing again, so the advice must not
+    /// send the model back to observe, as it does for an app with several windows.
+    #[test]
+    fn an_ambiguous_reference_is_not_answered_with_observe_again() {
+        let not_unique = json!({"code":"AMBIGUOUS_TARGET","message":"Saved ref was not proven unique when it was captured, so it cannot be re-identified safely","suggestion":"Identical twins are refused again by every snapshot; an explicit --headed coordinate click can pick one.","details":{"kind":"identity_not_unique","retryable":false,"role":"textfield"},"disposition":{"delivery":"not_delivered","retry":"unsafe"}});
+        let text = error(&not_unique);
+        assert!(text.starts_with("AMBIGUOUS_TARGET: Saved ref was not proven unique"));
+        assert!(text.contains("observing again will not help"), "{text}");
+        assert!(text.contains("could not be read in full"), "{text}");
+        assert!(!text.contains("pick one reference"), "{text}");
+        assert!(!text.to_lowercase().contains("headed"), "{text}");
+
+        let twin = json!({"code":"AMBIGUOUS_TARGET","message":"Two or more live elements match the saved ref's recorded role and stable identity","details":{"kind":"saved_ref_ambiguous","retryable":false,"complete":true,"role":"button"}});
+        let text = error(&twin);
+        assert!(text.contains("observing again will not help"), "{text}");
+        assert!(!text.contains("pick one reference"), "{text}");
+
+        let windows = json!({"code":"AMBIGUOUS_TARGET","message":"Several windows match","details":{"kind":"ambiguous_window"}});
+        assert!(error(&windows).contains("Pass window_id"));
+        assert!(error(&json!({"code":"AMBIGUOUS_TARGET","message":"m"})).contains("Pass window_id"));
     }
 
     #[test]

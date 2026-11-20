@@ -1055,6 +1055,13 @@ Phases 3 and 5 and the first part of phase 6 landed on this branch on 2026-11-20
   physical command is stopped or times out, the wrapper lifts each mouse button the system still
   reports pressed. Checked with `cargo check` for windows-gnu; the Windows fixture's Stop case is
   what will show it working.
+- **On Windows a text field holding more than 2,048 characters cannot be acted on by reference.**
+  The Windows adapter reads a longer value as unknown (`bounded_text`), and a text field's name
+  counts as identity only once its value is known to differ from it, so the capture proof never
+  proves the field unique and every observation refuses it again (`identity_not_unique`). Read from
+  agent-desktop 1.3.1's source after the first Windows drive was refused on a 10,400 character text.
+  Copilot's advice for that refusal no longer says to observe again, and the WinForms fixture's
+  scrolling text is 1,500 characters.
 - **The retired engine's leftover is ended by path.** On macOS the daemon ends, once at start, a
   process whose executable is exactly `<this app>/Contents/Resources/computer-use/BioRouter
   Computer Use.app/Contents/MacOS/ocu` (`computer_use::retired`), so another installation's copy
