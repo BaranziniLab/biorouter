@@ -2678,35 +2678,88 @@ All skills are published as releases of **`BaranziniLab/biorouter-skills`** (ass
 
 ### Native Biorouter Copilot
 
-**Upstream is VENDORED, not cloned.** `vendor/computer-use/source/` is a
-complete copy of the MIT-licensed upstream at `pin.json`'s commit, committed here, and a
-build reads it with **no network** — an upstream repository that disappears or changes
-cannot affect a BioRouter build. The tree is *pristine*; `patches/` is applied to a
-throwaway copy at build time, which is what keeps an upstream update tractable.
-`source-manifest.json` hashes every file and the build verifies it (both directions)
-before the bytes become build input. `scripts/check-vendored-computer-use.sh` is the CI
-guard and also asserts every vendored file is **committable** — repo-wide `.gitignore`
-rules matched 15 of them on the first attempt. Ten upstream files are deliberately
-excluded as third-party extracted artwork that MIT does not cover; they are docs, not
-build inputs, and the build is byte-identical without them.
-⚠ The staged copy gets its own `git init`, and that line is load-bearing: `git apply`
-resolves against the repository containing the working directory, and the staging
-directory lives inside BioRouter's, where `target/` is ignored. Without it the edits to
-tracked files landed while every `new file mode` hunk was silently dropped, and the build
-happily produced a helper 28,672 bytes smaller from effectively unpatched upstream.
-`scripts/check-computer-use-upstream.py` reports what changed upstream and, more usefully,
-which of those files our patches also touch.
+**The engine is agent-desktop, VENDORED, not cloned** (since 1.94.6;
+[design](docs/design/copilot-agent-desktop.md), AD-01 to AD-06). `vendor/agent-desktop/source/`
+is the Apache-2.0 upstream at `pin.json`'s tag and commit, **unmodified** (no `patches/`),
+limited to what a build reads (`INCLUDED` in `scripts/vendor-computer-use-source.py`;
+`crates/ffi` is in it because the workspace lists it as a member). `source-manifest.json`
+hashes every file and the build verifies it both ways before and after cargo runs;
+`scripts/check-vendored-computer-use.sh` (the CI guard) also checks committability,
+`-text`, that `Cargo.lock` locks no network client (AD-20) and that `DEPENDENCIES.txt` lists
+exactly the locked crates. `scripts/computer-use-runtime.py build <target>` runs cargo with the
+repository's 1.92 (`RUSTUP_TOOLCHAIN`), `--locked` and path remapping; darwin builds on macOS
+(`Biorouter Copilot.app`, bundle id `org.biorouter.computer-use`, minimum macOS 13.0), and
+linux and win32 build in the pinned `rust:1.92-bullseye` container through
+`scripts/build-computer-use-helper-cross.sh` (`cross_copilot_helper` in `cross-env.sh`; no Go,
+no Swift). ⚠ At the 13.0 floor one upstream Objective-C deprecation fails the bridges'
+`-Werror`; the build keeps it a warning with clang's `CCC_OVERRIDE_OPTIONS` rather than
+patching the vendored tree. `verify` reads the binaries themselves (Mach-O minimum, ELF glibc
+floor and libraries, PE subsystem and MinGW imports), and `contract` runs `version` and a
+refused bare reference with no desktop access. **Open Computer Use, the engine before it, is
+retired** (1.94.6, AD-18): `vendor/computer-use/` and every OCU-only script are deleted, the
+naming guard (`scripts/check-computer-use-naming.sh`) accepts that name only as retired and
+refuses the engine's own name in the interface, prompts and built-in skills, and on macOS the
+daemon ends, once at start, a leftover OCU agent of THIS installation, matched by its exact path
+(`computer_use::retired`, AD-19).
 
+**The wrapper** (`crates/biorouter-mcp/src/computer_use/`, AD-07 to AD-15) runs ONE engine
+command per operation, never `agent-desktop mcp`: `plan.rs` is the only place a command line is
+built (model strings only as `--flag=value` or after `--`, `--headed` only where the AD-11 table
+says, never `--cdp`/`--force`/`--trace`), `runner.rs` spawns it (cleared environment, the task's
+own `AGENT_DESKTOP_HOME`, text on stdin, 16 MiB cap, deadline + 5 s, Stop = SIGTERM, 1 s for
+the release guard, then SIGKILL of the group). ⚠ Windows has no graceful signal for a windowless
+console process, so Stop ends the job at once and the release guard never runs; after a stopped
+or timed out physical command the wrapper lifts any mouse button the system still reports down
+(`release_held_buttons` in `runner.rs`), or a stopped drag would leave the button held. ⚠ On macOS the spawn is `posix_spawn` with
+`responsibility_spawnattrs_setdisclaim` (AD-04), so TCC grants belong to `Biorouter Copilot.app`
+and never to Biorouter itself; it fails closed rather than spawning normally. `guard.rs` holds
+the AD-12 refusals (Biorouter's own pids, ancestors, install folder and bundle ids; security
+prompts; terminals; privacy settings; lock screen; secure input), `render.rs` frames app text as
+untrusted, and `mod.rs` keeps each chat's references per task generation (a reference this task
+never observed is refused before the engine is even located). Tests: `cargo test -p
+biorouter-mcp --lib computer_use` (a fake engine script, no desktop) and, with
+`BIOROUTER_COMPUTER_USE_DIR` naming a built payload, `-- --ignored` checks every option the
+wrapper writes against the pinned engine's `--help` and runs it through the disclaimed spawn.
 
 `computercontroller` — the extension key Biorouter Copilot kept for config
-compatibility — exposes exactly ten native tools: `list_apps`, `get_app_state`, `click`,
-`perform_secondary_action`, `scroll`, `drag`, `type_text`, `press_key`, `set_value`,
-`screen_capture`. The native helper owns all desktop observation/control; Developer has no
-capture or control tool. `webdocuments` owns web/document/cache utilities. Old scripting,
-control and capture implementations and aliases are removed, not migrated or hidden.
+compatibility — exposes thirteen native tools: the ten earlier names (`list_apps`,
+`get_app_state`, `click`, `perform_secondary_action`, `scroll`, `drag`, `type_text`,
+`press_key`, `set_value`, `screen_capture`, now with reference arguments such as `@s1abc:e4`)
+plus `find_elements`, `wait_for` and `open_app`. A restricted `available_tools` list never
+gains the three new names. The native engine owns all desktop observation/control; Developer
+has no capture or control tool, and the secret guard refuses a shell that starts the Copilot
+engine. `webdocuments` owns web/document/cache utilities.
 
-The host obtains one Biorouter Copilot grant per task/chat/model/target before observation. Respect
-Stop/revoke, avoid retry loops and script fallbacks, refresh stale state, and verify outcomes.
-Private/public chats retain separate observations and consent. Pause before private-to-public
-handoff because the physical desktop is shared. See `docs/design/computer-use-integration-plan.md`
-and the implementation-status ledger for all acceptance gates, including real-app validation.
+The host obtains one Biorouter Copilot grant per request: **Allow** (look and control) or look
+only (`ComputerUseConsent::approve_with`, `permit_for`; the classifier `grant_for_call` is
+`contract::grant_for`, shared with the wrapper, which refuses an act call again unless the
+dispatch meta carries `computer_use_grant: act`). Under look only an act call fails at once
+with `LOOK_ONLY_REFUSAL` and no second card. Every surface asks the same way (AD-10): the
+desktop card (`components/copilot/CopilotControl.tsx`) offers Allow, Only let it look and Cancel,
+`ComputerUseStatus.grant` says what holds while active, `POST /agent/computer_use/consent` takes
+`grant` (⚠ absent means `act`, so an older client keeps its meaning), and the CLI and TUI ask
+Allow, Only let it look or Deny (the TUI also Cancel), starting on Deny. Setup's **Request access**
+(`POST /agent/computer_use/setup/request`, user-action proof only) runs the engine's
+`permissions --request` through the disclaimed spawn, so macOS's own prompts name Biorouter
+Copilot; ⚠ the engine also asks for Automation of System Events, which Copilot does not use, and
+setup says the person may refuse it. Respect Stop/revoke, avoid retry loops and script
+fallbacks, refresh stale state, and verify outcomes. Private/public chats retain separate
+observations and consent. Pause before private-to-public handoff because the physical desktop is
+shared. Routing between Copilot and the Biorouter Browser is one sentence,
+`contract::ROUTING_SENTENCE`, which `browser_extension::COPILOT_ROUTING_SENTENCE` re-exports.
+See [the design](docs/design/copilot-agent-desktop.md) for the acceptance gates, including live
+macOS permission attribution and real-app drag and drop.
+
+**Fixture acceptance** ([`docs/testing/copilot-fixture-acceptance.md`](docs/testing/copilot-fixture-acceptance.md)):
+`crates/biorouter-mcp/tests/computer_use_fixture.rs` (ignored by default) drives a fixture app
+through `ComputerControllerServer` with the dispatch meta the consent gate attaches, and reads
+every outcome from the app's own state file, never from a tool's report: typing, clicking,
+checking, look only and password refusals, a list reordered by drag, text dragged into a second
+window, scrolling, and Stop mid-drag with no button left pressed. One set of names and state keys
+across `scripts/copilot-fixture-gtk.py`, `copilot-fixture-winforms.cs` (compiled to its own
+executable: ⚠ a PowerShell host is a terminal to Copilot, which refuses to type into it) and
+`copilot-fixture-macos.swift`. `computer-use-native.yml` runs the Linux and Windows drives in its
+release gate; macOS hosted runners cannot grant Accessibility to the Copilot bundle, so there it
+only builds the fixture. Measured 2026-11-20: the GTK drive passes four runs in four on Ubuntu
+24.04 arm64 in Docker (Xvfb, openbox, at-spi2-core 2.52), so drag and drop within an app and
+between two windows works on X11; the Windows and macOS drives are not yet run.

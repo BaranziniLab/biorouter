@@ -38,6 +38,7 @@ import { parseChord, strokeForCharacter, type KeyStroke } from './keys';
 import { READ_AS_MARKDOWN_FUNCTION } from './readPage';
 import { RefStore, fallbackMatch, type RefTarget } from './refs';
 import { buildSnapshot, type AXNode, type DomFacts, type SnapshotFrame } from './snapshot';
+import { performDrag } from './drag';
 import {
   BROWSER_AGENT_OPS,
   type BrowserAgentRequest,
@@ -1517,6 +1518,82 @@ async function opDialog(ctx: Context): Promise<BrowserAgentResult> {
   };
 }
 
+/** The drop point of a reference without scrolling, so the source stays where it was picked up. */
+async function dropPoint(ctx: Context, node: Resolved): Promise<{ x: number; y: number } | null> {
+  const quads = await ctx.state.cdp
+    .send<{
+      quads: number[][];
+    }>('DOM.getContentQuads', { backendNodeId: node.target.backendNodeId }, node.sessionId)
+    .catch(() => ({ quads: [] as number[][] }));
+  const inner = clickPoint(quads.quads, await viewportOf(ctx, node.sessionId));
+  return inner ? { x: inner.x + node.offset.x, y: inner.y + node.offset.y } : null;
+}
+
+/**
+ * AD-17: drag a reference and drop it on another reference or a point, with page events only
+ * (the gesture is `performDrag` in `drag.ts`). The source passes BB-13's checks (visible,
+ * enabled, stable, not covered); the destination must be visible together with it.
+ */
+async function opDrag(ctx: Context): Promise<BrowserAgentResult> {
+  if (ctx.request.grant !== 'act') {
+    return {
+      ok: false,
+      detail: 'dragging on a web page needs the permission to act',
+      data: { needs_act_grant: true },
+    };
+  }
+  const source = await resolveRef(ctx, ctx.request.args.from);
+  const sourceFacts = await factsOf(ctx, source);
+  const from = await actionablePoint(ctx, source, sourceFacts, true);
+  let to: { x: number; y: number };
+  let targetLabel: string;
+  let hideTarget: () => Promise<void> = async () => undefined;
+  if (ctx.request.args.to) {
+    const target = await resolveRef(ctx, ctx.request.args.to);
+    const point = await dropPoint(ctx, target);
+    if (!point)
+      throw new OpFailure(
+        `${target.label} is not visible together with ${source.label}; scroll so both show, or drop at a point with to_x and to_y.`
+      );
+    to = point;
+    targetLabel = target.label;
+    hideTarget = await highlight(ctx, target);
+  } else {
+    const point = ctx.request.args.point as { x: number; y: number } | null;
+    if (!point) throw new OpFailure('Pass to, or to_x and to_y.');
+    const viewport = await viewportOf(ctx);
+    if (point.x >= viewport.width || point.y >= viewport.height)
+      throw new OpFailure(
+        `(${point.x}, ${point.y}) is outside the visible page (${viewport.width} by ${viewport.height} CSS pixels).`
+      );
+    to = { x: point.x, y: point.y };
+    targetLabel = `(${point.x}, ${point.y})`;
+  }
+  const hideSource = await highlight(ctx, source);
+  const before = ctx.state.mainNavigations;
+  let mechanism: string;
+  beginAgentInput(ctx.window, ctx.info.viewId);
+  try {
+    mechanism = await performDrag(
+      ctx.state.cdp,
+      from,
+      to,
+      Number(ctx.request.args.steps) || 10,
+      ctx.signal
+    );
+  } finally {
+    endAgentInput(ctx.window, ctx.info.viewId);
+    await hideSource();
+    await hideTarget();
+  }
+  const navigated = await afterAction(ctx, before);
+  return {
+    ok: true,
+    detail: `dragged ${source.label} to ${targetLabel} with ${mechanism}; take a new snapshot to see whether the page accepted the drop`,
+    data: { navigated, refs_invalidated: true },
+  };
+}
+
 const OPERATIONS: Record<string, (ctx: Context) => Promise<BrowserAgentResult>> = {
   open: opOpen,
   navigate: opNavigate,
@@ -1532,6 +1609,7 @@ const OPERATIONS: Record<string, (ctx: Context) => Promise<BrowserAgentResult>> 
   press: opPress,
   select: opSelect,
   dialog: opDialog,
+  drag: opDrag,
 };
 
 /** What the operation's tab looks like now, for every result (BB-09). */

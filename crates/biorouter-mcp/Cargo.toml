@@ -110,12 +110,15 @@ flate2 = "1.1.9"
 xz2 = "0.1.7"
 bzip2 = "0.6.1"
 similar = "2"
+# Biorouter Copilot's identity refusals (AD-12): which processes are Biorouter's own (the daemon,
+# its ancestors, the desktop app and everything inside its install folder). Already locked for
+# this crate's tests at this version.
+sysinfo = "0.32.1"
 
 [dev-dependencies]
 # Issue #56: `knowledge::tier_user`'s two source audits walk `crates/` to pin the
 # set of files that may name the proof-of-user or write the tier store.
 walkdir = "2.5.0"
-sysinfo = "0.32.1"
 temp-env = "0.3.6"
 colored = "2"
 serial_test = { workspace = true }
@@ -128,4 +131,4 @@ ctor = "0.2"
 utoipa = ["dep:utoipa"]
 
 [target."cfg(windows)".dependencies]
-windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_System_Diagnostics_ToolHelp", "Win32_System_JobObjects", "Win32_System_SystemInformation", "Win32_System_Threading", "Win32_UI_Shell"] }
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_System_Diagnostics_ToolHelp", "Win32_System_JobObjects", "Win32_System_StationsAndDesktops", "Win32_System_SystemInformation", "Win32_System_Threading", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_Shell"] }

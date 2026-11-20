@@ -58,6 +58,7 @@ use biorouter::permission::permission_confirmation::PrincipalType;
 use biorouter::permission::Permission;
 use biorouter::permission::PermissionConfirmation;
 use biorouter::providers::base::Provider;
+use biorouter::security::computer_use::ComputerUseGrant;
 use biorouter::utils::safe_truncate;
 pub use builder::{build_session, unconfigured_precondition, SessionBuilderConfig, StartDecisions};
 pub(crate) use builder::{model_for_run, owned_model};
@@ -2096,9 +2097,9 @@ impl CliSession {
                             computer_use_challenge = Some(status.challenge_id.clone());
                             if interactive && crate::commands::needs_terminal::prompt_can_run() {
                                 eprintln!("\n{}", status.disclosure);
-                                if cliclack::confirm("Allow Biorouter Copilot for this task?").initial_value(false).interact()? {
-                                    self.agent.extension_manager.approve_computer_use(&self.session_id, &status.challenge_id).await?;
-                                    eprintln!("Biorouter Copilot allowed for this task. Press Ctrl-C to stop desktop control.");
+                                if let Some(level) = computer_use_choice()? {
+                                    self.agent.extension_manager.approve_computer_use(&self.session_id, &status.challenge_id, level).await?;
+                                    eprintln!("{}", computer_use_allowed_note(level));
                                 } else {
                                     self.agent.extension_manager.computer_use.revoke();
                                 }
@@ -3243,6 +3244,43 @@ fn prompt_tool_confirmation(
     }
 }
 
+/// Biorouter Copilot's answers in a terminal (AD-10), in the order the line editor and the TUI
+/// both show them: look and control, look only, or keep it off. The last is the default.
+pub(crate) const COMPUTER_USE_CHOICES: [(Option<ComputerUseGrant>, &str, &str); 3] = [
+    (
+        Some(ComputerUseGrant::Act),
+        "Allow",
+        "look at and control your apps for this request",
+    ),
+    (
+        Some(ComputerUseGrant::Observe),
+        "Only let it look",
+        "look at your apps for this request, change nothing",
+    ),
+    (None, "Deny", "keep Biorouter Copilot off for this request"),
+];
+
+/// Ask the person how much Biorouter Copilot may do for this request. `None` declines.
+fn computer_use_choice() -> std::io::Result<Option<ComputerUseGrant>> {
+    let mut select = cliclack::select("Allow Biorouter Copilot for this request?");
+    for (value, label, hint) in COMPUTER_USE_CHOICES {
+        select = select.item(value, label, hint);
+    }
+    select.initial_value(None).interact()
+}
+
+/// What a terminal says once the person allowed Biorouter Copilot.
+pub(crate) fn computer_use_allowed_note(level: ComputerUseGrant) -> &'static str {
+    match level {
+        ComputerUseGrant::Act => {
+            "Biorouter Copilot can look and control for this request. Press Ctrl-C to stop it."
+        }
+        ComputerUseGrant::Observe => {
+            "Biorouter Copilot can look, and change nothing, for this request. Press Ctrl-C to stop it."
+        }
+    }
+}
+
 fn computer_use_needs_prompt(
     status: &biorouter::security::computer_use::ComputerUseStatus,
     last_challenge: Option<&str>,
@@ -3875,6 +3913,29 @@ mod tests {
         );
     }
 
+    /// The terminal offers the card's three answers, declines by default, and says what was
+    /// allowed in the person's words.
+    #[test]
+    fn computer_use_choices_offer_look_only_and_decline_by_default() {
+        use biorouter::security::computer_use::ComputerUseGrant;
+        let labels: Vec<_> = super::COMPUTER_USE_CHOICES
+            .iter()
+            .map(|(value, label, _)| (*value, *label))
+            .collect();
+        assert_eq!(
+            labels,
+            vec![
+                (Some(ComputerUseGrant::Act), "Allow"),
+                (Some(ComputerUseGrant::Observe), "Only let it look"),
+                (None, "Deny"),
+            ]
+        );
+        assert!(
+            super::computer_use_allowed_note(ComputerUseGrant::Observe).contains("change nothing")
+        );
+        assert!(super::computer_use_allowed_note(ComputerUseGrant::Act).contains("control"));
+    }
+
     #[test]
     fn computer_use_prompt_requires_host_request_and_new_challenge() {
         let mut status = biorouter::security::computer_use::ComputerUseStatus {
@@ -3892,6 +3953,7 @@ mod tests {
             public_model: true,
             handoff_required: true,
             requested: false,
+            grant: None,
         };
         assert!(!super::computer_use_needs_prompt(&status, None));
         status.requested = true;

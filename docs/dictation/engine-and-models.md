@@ -91,7 +91,7 @@ A pin moves only in a pull request that does all of this:
 
 ### Layout
 
-The engine source is vendored the way `vendor/computer-use/` is: a pristine copy, a patch folder, a pin and a manifest [C `vendor/computer-use/`]. A build reads it with no network.
+The engine source is vendored the way the retired Open Computer Use tree (`vendor/computer-use/`, removed in 1.94.6) was: a pristine copy, a patch folder, a pin and a manifest. A build reads it with no network.
 
 ```text
 vendor/whisper.cpp/
@@ -134,7 +134,7 @@ Patches, if one is ever needed, are applied to the copy in `OUT_DIR` at build ti
 
 | Guard | What it checks | Runs in |
 |---|---|---|
-| `scripts/check-vendored-whisper-cpp.sh` (new, PR-08) | The manifest both ways: every listed file present with its hash, no unlisted file. Every file is committable (`git check-ignore` matches none; the Copilot helper's vendored tree, `vendor/computer-use/`, hit 15 ignored files on its first attempt [C CLAUDE.md]). `pin.json` has `upstream`, a 40 digit `commit`, `contains: ["60c0be6"]`, `ggml` and `date` | `rust.yml` `guards`, `just check-everything` |
+| `scripts/check-vendored-whisper-cpp.sh` (new, PR-08) | The manifest both ways: every listed file present with its hash, no unlisted file. Every file is committable (`git check-ignore` matches none; the retired Open Computer Use tree, `vendor/computer-use/`, hit 15 ignored files on its first attempt). `pin.json` has `upstream`, a 40 digit `commit`, `contains: ["60c0be6"]`, `ggml` and `date` | `rust.yml` `guards`, `just check-everything` |
 | `scripts/check-dictation-fixtures.sh` (new, PR-08) | At most 2.75 MiB of fixtures in all, 1 MiB per file, 0.75 MiB of audio; the four vendored fixtures total 2,399,463 B, and PR-12b's five decode fixtures in `crates/biorouter-dictation/tests/fixtures/` bring it to 2,427,593 B (audio 376,452 B; the guard does not count `.aac` as audio) | `rust.yml` `guards` |
 | The retired name guard (R-31) | Scans the vendored text like every tracked file | `rust.yml` `guards` |
 | `build.rs` rule 9 | The vendored tree is unchanged after CMake ran | every build |

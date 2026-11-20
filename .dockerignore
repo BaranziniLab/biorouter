@@ -115,3 +115,9 @@ ehthumbs.db
 sessions/
 
 # The tracked OpenAPI schema and generated client are web build inputs.
+
+# Biorouter Copilot's engine is built from vendor/agent-desktop, whose files are
+# verified one by one against its manifest before the build reads them, so none
+# may be dropped from the build context. `*.jsonl` above matched two of its test
+# fixtures (measured 2026-11-20).
+!vendor/agent-desktop/source/**

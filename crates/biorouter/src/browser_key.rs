@@ -546,7 +546,7 @@ mod tests {
             "/bin/zsh",
             "/Applications/Biorouter.app/Contents/Resources/bin/biorouterd",
             "/Applications/Biorouter.app/Contents/Frameworks/Biorouter Helper.app/Contents/MacOS/Biorouter Helper",
-            "/Applications/Biorouter.app/Contents/Resources/computer-use/BioRouter Computer Use.app/Contents/MacOS/helper",
+            "/Applications/Biorouter.app/Contents/Resources/computer-use/Biorouter Copilot.app/Contents/MacOS/agent-desktop",
             "/tmp/x/MacOS/sh",
             "/tmp/x.app/MacOS/sh",
         ] {

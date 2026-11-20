@@ -47,7 +47,21 @@ const DISMISS_WHILE_ACTIVE = 'Hide details; control remains active and Stop stay
 
 /** The title's InfoTip while nothing is asked or running. */
 const IDLE_HELP =
-  'Ask Biorouter to use the computer. Approval appears before it starts and lasts through that request.';
+  'Ask Biorouter to use an app on this computer. Approval appears before it starts and lasts through that request.';
+
+/** The two answers' InfoTip on the card (AD-10): what each allows, and what neither reaches. */
+const ANSWERS_HELP =
+  'Allow lets it look at your apps and click, type, drag and change things in them. Only let it look lets it see them and change nothing. Either one lasts until the reply finishes or you stop it.';
+
+/**
+ * What is allowed while Copilot is active, as the status line's second part. The browser's card
+ * says its grant the same way ("reading, and acting for this request").
+ */
+function grantPhrase(grant: CopilotStatus['grant']): string | undefined {
+  if (grant === 'act') return 'looking and controlling, for this request';
+  if (grant === 'observe') return 'looking only, for this request';
+  return undefined;
+}
 
 /**
  * Under the consent, what Stop cannot do stays in view: one line of consequence for an action
@@ -103,7 +117,8 @@ function SessionCopilotControl({ sessionId }: { sessionId: string }) {
   const [loadError, setLoadError] = useState('');
   // A refusal this chat's mode produces, which re-asking cannot change.
   const [notApplicable, setNotApplicable] = useState(false);
-  const [sending, setSending] = useState(false);
+  // Which answer is being sent, so only that button says "Allowing…"; `true` for Stop and Cancel.
+  const [sending, setSending] = useState<boolean | 'act' | 'observe'>(false);
   const [checking, setChecking] = useState(false);
   // Only that a check completed. The SENTENCE is derived from the runtime
   // currently on screen, so a polled change can never contradict it.
@@ -166,14 +181,21 @@ function SessionCopilotControl({ sessionId }: { sessionId: string }) {
     };
   }, [refresh, notApplicable]);
 
-  const decide = async (action: 'consent' | 'revoke') => {
+  /**
+   * `grant` is the person's answer on the card (AD-10): `act` for Allow, `observe` for Only let it
+   * look. Absent for Stop and Cancel.
+   */
+  const decide = async (action: 'consent' | 'revoke', grant?: 'act' | 'observe') => {
     if (!status || mutation.current || (action === 'consent' && !status.requested)) return;
     generation.current += 1;
     mutation.current = true;
-    setSending(true);
+    setSending(grant ?? true);
     setError('');
     try {
-      const next = await copilotDecision(status, action, approvalKey);
+      const next =
+        action === 'consent'
+          ? await copilotDecision(status, action, approvalKey, grant ?? 'act')
+          : await copilotDecision(status, action, approvalKey);
       if (mounted.current) {
         setStatus(next);
         setExpanded(false);
@@ -247,6 +269,7 @@ function SessionCopilotControl({ sessionId }: { sessionId: string }) {
   const idle = !requested && !busy && !active;
   const detailsVisible = expanded || requested;
   const sharing = status.public_model !== false;
+  const allowed = active ? grantPhrase(status.grant) : undefined;
   const detailsId = `copilot-details-${sessionId}`;
   // A pending approval forces the panel open, because Allow and Cancel live
   // inside it. Offering a control that cannot close it would be a lie, so the
@@ -273,7 +296,7 @@ function SessionCopilotControl({ sessionId }: { sessionId: string }) {
           <Button
             size="sm"
             variant="destructive"
-            disabled={sending}
+            disabled={Boolean(sending)}
             onClick={() => void decide('revoke')}
           >
             {sending ? 'Stopping…' : 'Stop'}
@@ -303,7 +326,11 @@ function SessionCopilotControl({ sessionId }: { sessionId: string }) {
                 : status.state === 'stopped'
                   ? 'Biorouter Copilot stopped'
                   : 'Biorouter Copilot'}
-            {active && <span className="text-text-muted"> · {status.target}</span>}
+            {active && (
+              <span className="text-text-muted">
+                {allowed ? ` · ${allowed}` : ''} · {status.target}
+              </span>
+            )}
           </span>
           {idle && <InfoTip label="Biorouter Copilot" help={IDLE_HELP} />}
         </div>
@@ -339,7 +366,7 @@ function SessionCopilotControl({ sessionId }: { sessionId: string }) {
           <Button
             size="sm"
             variant="destructive"
-            disabled={sending}
+            disabled={Boolean(sending)}
             onClick={() => void decide('revoke')}
           >
             {sending ? 'Stopping…' : 'Stop'}
@@ -369,6 +396,13 @@ function SessionCopilotControl({ sessionId }: { sessionId: string }) {
           </TooltipContent>
         </Tooltip>
       </div>
+      {/* Under Allow, what Stop cannot undo stays in view for as long as control is held (AD-10,
+          design.md 9.16), whether or not the details are open. */}
+      {active && status.grant === 'act' && (
+        <p className="mt-1 text-text-muted">
+          {STOP_CONSEQUENCE} <InfoTip label="stopping Biorouter Copilot" help={STOP_LIMITS_HELP} />
+        </p>
+      )}
       <div id={detailsId} hidden={!detailsVisible} className="mt-2 space-y-2">
         <p className="break-words">
           Computer: <strong className="font-semibold">{status.target}</strong>
@@ -384,8 +418,8 @@ function SessionCopilotControl({ sessionId }: { sessionId: string }) {
             <p className="whitespace-pre-line">
               {status.disclosure ||
                 (sharing
-                  ? 'Allow Biorouter Copilot to view and control this computer for this request? Screenshots, app text, and open-window information may be sent to the provider above, including sensitive information. It can type, click, use the cursor and change focus, and make changes until its reply finishes or you stop it.'
-                  : 'Allow Biorouter to view and control this computer for this request? It can read app content, type, click, use the cursor and change focus, and make changes until its reply finishes or you stop it. Private classification does not mean processing happens on this computer.')}
+                  ? 'Let Biorouter Copilot use the apps on this computer for this request? It can see the apps you have open, read their text and take screenshots, and these go to the provider above, including sensitive information. With Allow it can also click, type, drag and change things in those apps. It cannot see or control Biorouter itself, password fields or system security prompts. This lasts until the reply finishes or you stop it.'
+                  : 'Let Biorouter Copilot use the apps on this computer for this request? It can see the apps you have open, read their text and take screenshots. With Allow it can also click, type, drag and change things in those apps. It cannot see or control Biorouter itself, password fields or system security prompts. This lasts until the reply finishes or you stop it. Private classification does not mean on-device processing.')}
             </p>
             <p className="text-text-muted">
               {STOP_CONSEQUENCE}{' '}
@@ -401,7 +435,12 @@ function SessionCopilotControl({ sessionId }: { sessionId: string }) {
         ) : busy ? (
           <p>Another task is using this desktop. Stop that task before starting here.</p>
         ) : null}
-        {status.runtime && <CopilotRuntimeDetails runtime={status.runtime} />}
+        {status.runtime && (
+          <CopilotRuntimeDetails
+            runtime={status.runtime}
+            onRuntime={(runtime) => setStatus((current) => current && { ...current, runtime })}
+          />
+        )}
         <PermissionCheckButton
           label="Check OS permissions"
           checking={checking}
@@ -438,26 +477,33 @@ function SessionCopilotControl({ sessionId }: { sessionId: string }) {
                 />
               </div>
             )}
-            <div className="flex flex-wrap gap-2">
+            {/* One card, two answers (AD-10): Allow is look and control, Only let it look is
+                look. Both last the request; neither offers "for this chat". */}
+            <div className="flex flex-wrap items-center gap-2">
               <Button
                 size="sm"
-                disabled={sending || (browser && !approvalKey.trim())}
-                onClick={() => void decide('consent')}
+                disabled={Boolean(sending) || (browser && !approvalKey.trim())}
+                onClick={() => void decide('consent', 'act')}
               >
-                {sending
-                  ? 'Allowing…'
-                  : sharing
-                    ? 'Allow control and sharing'
-                    : 'Allow for this task'}
+                {sending === 'act' ? 'Allowing…' : 'Allow'}
+              </Button>
+              <Button
+                size="sm"
+                variant="secondary"
+                disabled={Boolean(sending) || (browser && !approvalKey.trim())}
+                onClick={() => void decide('consent', 'observe')}
+              >
+                {sending === 'observe' ? 'Allowing…' : 'Only let it look'}
               </Button>
               <Button
                 size="sm"
                 variant="ghost"
-                disabled={sending}
+                disabled={Boolean(sending)}
                 onClick={() => void decide('revoke')}
               >
                 Cancel
               </Button>
+              <InfoTip label="what each answer allows" help={ANSWERS_HELP} />
             </div>
           </>
         )}

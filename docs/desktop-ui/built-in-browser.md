@@ -321,9 +321,9 @@ name and title split the workspace extension uses. It is a platform extension ra
 `workspace_read_panel` does.
 
 - Tool names all start with `browser_`, so the advertised names are `browser__browser_open` and so
-  on. No bare name equals one of Copilot's (`list_apps`, `get_app_state`, `click`,
+  on. No bare name equals one of Copilot's thirteen (`list_apps`, `get_app_state`, `click`,
   `perform_secondary_action`, `scroll`, `drag`, `type_text`, `press_key`, `set_value`,
-  `screen_capture`) or any other built in tool, which keeps routing unambiguous for the model and for
+  `screen_capture`, `find_elements`, `wait_for`, `open_app`) or any other built in tool, which keeps routing unambiguous for the model and for
   text tool call recovery, which matches bare names (`formats/text_tool_calls.rs`).
 - It is enabled by default, like Copilot. Being enabled offers the tools; using them still needs the
   grants of BB-17. Its Settings capability row (`settings/capabilities/capabilities.ts`) reads
@@ -339,7 +339,7 @@ name and title split the workspace extension uses. It is a platform extension ra
 
 ### Tool set
 
-Fifteen tools, a subset of agent-browser's command set chosen for reliability. Each row names the
+Sixteen tools, a subset of agent-browser's command set chosen for reliability. Each row names the
 grant it needs (BB-17).
 
 | Tool | What it does | Grant |
@@ -359,9 +359,10 @@ grant it needs (BB-17).
 | `browser_press` | Press a key or chord (`Enter`, `Meta+A`) | Act, except `Escape`, `Tab`, arrows, `PageUp`, `PageDown`, `Home`, `End` |
 | `browser_select` | Choose options in a `select` or listbox | Act |
 | `browser_dialog` | Accept or dismiss an open JavaScript dialog, with text for `prompt` | Act |
+| `browser_drag` | Drag a reference to another reference or a point in the page (AD-17 in [Copilot on agent-desktop](../design/copilot-agent-desktop.md)): mouse events through `webContents.debugger` with `Input.setInterceptDrags`, so a native HTML drag is finished with `Input.dispatchDragEvent`; the system pointer never moves and no file from disk is dropped | Act |
 
 Not in this version: arbitrary JavaScript evaluation, cookie and storage tools, network
-interception, device emulation, uploads (BB-26), and drag. agent-browser treats evaluation as a
+interception, device emulation and uploads (BB-26). agent-browser treats evaluation as a
 policy gated command; here it is absent, because a model that can run page script can read any value
 on the page, including the ones BB-13 keeps away from it.
 
@@ -613,11 +614,11 @@ Copilot's side changes in four places, each of which repeats the sentence "Bioro
 native apps, the operating system and file dialogs. For web pages use the Biorouter Browser; use
 Copilot on a browser only when the person asks for their own browser window or its logins.":
 
-- the server instructions in `crates/biorouter-mcp/src/computercontroller/mod.rs`;
-- the `get_app_state` description in `computer_use/contract.rs` (and the tool fixture
-  `crates/biorouter-mcp/tests/fixtures/computer-use-tools.json`);
-- the `## Biorouter Copilot` section of `crates/biorouter/src/prompts/system.md`, its copy in the
-  `about-biorouter` built in skill, and `vendor/computer-use/patches/0004-copilot-prompts.patch`;
+- the server instructions and the `get_app_state` description in `computer_use/contract.rs`
+  (one constant, `contract::ROUTING_SENTENCE`, since 1.94.6; the tool schema fixture and the
+  retired engine's prompt patch went with Open Computer Use);
+- the `## Biorouter Copilot` section of `crates/biorouter/src/prompts/system.md` and its copy in
+  the `about-biorouter` built in skill;
 - the three prompt snapshots under `crates/biorouter/src/agents/snapshots/`.
 
 Two sentences in that section conflict with a second capability and are changed with it. "Biorouter
@@ -1274,10 +1275,9 @@ Where the build differs from the text above, and why:
   control's Stop and the bar's Stop revoke.
 - **The coding agent bridge** carries every browser tool (`CODING_AGENT_BRIDGE_POLICIES`); each
   call still passes `admit_browser`.
-- **No vendor patch change.** Copilot's tool descriptions and instructions that the model reads
-  come from `computer_use/contract.rs` and `computercontroller/mod.rs`, so
-  `vendor/computer-use/patches/0004-copilot-prompts.patch` (the helper's own text, which no
-  model sees) is unchanged.
+- **No vendor text reaches the model.** Copilot's tool descriptions and instructions come from
+  `computer_use/contract.rs` alone; agent-desktop's own help text is never shown to a model, and
+  the retired Open Computer Use prompt patch left with its engine in 1.94.6.
 
 - **An agent tab outlives the panel's teardown.** Measured in the dev app: the panel's first mount
   ran its unmount cleanup once and destroyed the tab the agent had just opened, so the first
@@ -1445,7 +1445,7 @@ browser_key_tests`; Vitest `src/browser`, `components/browser`, `components/agen
 - [What shipped, and what was measured](preview-panel/implementation-record.md): the live browser as it ships before this work
 - [Which session the app's hooks are installed on](renderer-session-hooks.md): why every handler must sit on the browser's own partition
 - [Where a generated artifact is displayed](artifact-display-surfaces.md): the one panel rule the browser lives inside
-- [Biorouter Copilot integration plan](../design/computer-use-integration-plan.md): the consent model the browser's grants follow
+- [Biorouter Copilot on agent-desktop](../design/copilot-agent-desktop.md): the consent model the browser's grants follow, and Copilot's side of the routing (AD-16)
 - [Biorouter Copilot capability](../extensions/built-in/computer-controller.md): Copilot's tools, whose routing text changes here
 - [Workspace control](../agent-loop/workspace-control.md): the workspace socket the agent channel extends
 - [Privacy tiers](../security/privacy-tiers.md): the tier rules BB-20 applies

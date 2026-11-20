@@ -437,6 +437,18 @@ run_cross_release() { # <cross function> <target volume> <cargo command> <post c
 assert_mac_deployment_target() { # <binary>...
   "$ROOT/scripts/check-macos-deployment.sh" --require-imports "$@"
 }
+# Biorouter Copilot's engine (agent-desktop) declares its own minimum, 13.0,
+# upstream's tested floor (AD-03), read from vendor/agent-desktop/pin.json.
+assert_copilot_deployment_target() { # <helper binary>...
+  local floor
+  floor="$(python3 -I -c 'import json, sys; print(json.load(open(sys.argv[1]))["minimum_macos"])' "$ROOT/vendor/agent-desktop/pin.json")"
+  "$ROOT/scripts/check-macos-deployment.sh" --floor "$floor" --require-imports "$@"
+}
+copilot_macos_helper() { # <payload or resources computer-use dir> -> the agent-desktop binary
+  local bundle
+  bundle="$(python3 -I -c 'import json, sys; print(json.load(open(sys.argv[1]))["macos_bundle"])' "$ROOT/vendor/agent-desktop/pin.json")"
+  printf '%s/%s/Contents/MacOS/agent-desktop\n' "$1" "$bundle"
+}
 # ── end minimum macOS ──
 
 build_mac_backends() {
@@ -487,21 +499,30 @@ cmd_backends() {
 }
 
 # Build one Biorouter Copilot helper payload into target/computer-use/<target>.
-# The darwin helpers are Swift, built with the Xcode toolchain the mac phases
-# already need. The win32 and linux helpers are Go, and only the local windows,
-# linux and cli-linux phases consume them; the release path takes those
-# packages from CI (adopt-ci), which installs Go itself. So `backends` builds
-# the two darwin payloads and each of those phases builds its own. Measured
-# 2026-09-22: v1.91.1's `backends` died on `go` not found, after every Rust
-# backend had compiled, building payloads nothing on the release path reads.
+# The engine is agent-desktop, built with cargo from vendor/agent-desktop/source
+# (AD-03 in docs/design/copilot-agent-desktop.md). The darwin payloads are built
+# here with the Xcode toolchain the mac phases already need, and signed with the
+# release identity before their byte manifest is written; their minimum macOS
+# (13.0) and strong imports are checked straight after. The win32 and linux
+# payloads are built in the pinned rust:1.92-bullseye container
+# (cross_copilot_helper in scripts/cross-env.sh), and only the local windows,
+# linux and cli-linux phases consume them; the release path takes those packages
+# from CI (adopt-ci). So `backends` builds the two darwin payloads and each of
+# those phases builds its own. Go is no longer needed anywhere in a release.
 build_computer_use_helper() { # <target>
   local target="$1"
   case "$target" in
-    darwin-*) ;;
-    *) command -v go >/dev/null 2>&1 \
-         || die "the $target Biorouter Copilot helper is built with Go, which is not on PATH. Install Go (.github/workflows/computer-use-native.yml pins the version CI uses), or take this platform's packages from CI: scripts/release.sh adopt-ci <version>" ;;
+    darwin-*)
+      python3 "$ROOT/scripts/computer-use-runtime.py" build "$target" --signing-identity "$SIGN_IDENTITY"
+      assert_copilot_deployment_target "$(copilot_macos_helper "$ROOT/target/computer-use/$target")" \
+        || die "the $target Biorouter Copilot helper does not declare the pinned minimum macOS, or imports a newer symbol strongly (see above)"
+      ;;
+    *)
+      ensure_docker
+      bash "$ROOT/scripts/build-computer-use-helper-cross.sh" "$target" \
+        || die "could not build the $target Biorouter Copilot helper in its container (output above); or take this platform's packages from CI: scripts/release.sh adopt-ci <version>"
+      ;;
   esac
-  python3 "$ROOT/scripts/computer-use-runtime.py" build "$target" --signing-identity "$SIGN_IDENTITY"
 }
 
 stage_bin() { # <src-dir> <version>
@@ -1032,6 +1053,11 @@ cmd_verify() {
            "$app/Contents/Resources/bin/biorouter" "$app/Contents/Resources/bin/biorouterd" \
            "$app/Contents/Resources/bin/biorouter-fnkey"; then
         log "bundled backends declare macOS 12.0 and import nothing newer strongly ✓ (${app#"$DESK"/})"
+      else
+        ok=0
+      fi
+      if assert_copilot_deployment_target "$(copilot_macos_helper "$app/Contents/Resources/computer-use")"; then
+        log "bundled Biorouter Copilot helper declares its pinned minimum macOS ✓ (${app#"$DESK"/})"
       else
         ok=0
       fi

@@ -799,6 +799,11 @@ impl DeniedAccess {
                  person imports from Chrome in Settings. Do not run it in any other way; if the \
                  task needs the person's Chrome logins, ask them to import from Chrome themselves."
                 .to_string(),
+            resolve::Reason::CopilotEngine => "The command is blocked: it starts Biorouter \
+                 Copilot's engine, which holds the person's Accessibility and Screen Recording \
+                 permissions. Use Biorouter Copilot's own tools, which ask the person first; never \
+                 start its engine from a shell."
+                .to_string(),
         };
         // #546: a model that wrote the body as text looks for the word among
         // its commands and finds nothing, so say where it was.
@@ -1368,6 +1373,49 @@ mod tests {
             "biorouterd --version",
             "ps aux | grep biorouterd",
             "biorouter session list --source mine",
+        ] {
+            assert!(
+                scan_command(&g, &env, ordinary).is_none(),
+                "refused an ordinary command: {ordinary}"
+            );
+        }
+    }
+
+    /// AD-12: a shell never starts Biorouter Copilot's engine, which holds the person's
+    /// Accessibility and Screen Recording permissions. Talking about it stays possible, and an
+    /// engine the person installed themselves is theirs.
+    #[test]
+    fn ad_12_copilots_engine_is_never_started_from_a_shell() {
+        let fake = FakeHome::new();
+        let (g, env) = (fake.guard(), fake.env());
+        for command in [
+            "\"/Applications/Biorouter.app/Contents/Resources/computer-use/Biorouter Copilot.app/Contents/MacOS/agent-desktop\" snapshot --app Notes",
+            "cd '/Applications/Biorouter.app/Contents/Resources/computer-use/Biorouter Copilot.app/Contents/MacOS' && ./agent-desktop screenshot --screen 0 /tmp/s.png",
+            "open -a 'Biorouter Copilot' --args snapshot",
+            "open -b org.biorouter.computer-use",
+            "/usr/bin/open -na \"/Applications/Biorouter.app/Contents/Resources/computer-use/Biorouter Copilot.app\"",
+            "osascript -e 'tell application \"Biorouter Copilot\" to activate'",
+            "/usr/libexec/biorouter/computer-use/agent-desktop list-apps",
+            "C:\\Program Files\\Biorouter\\resources\\computer-use\\agent-desktop.exe list-apps",
+            "sh -c '/opt/Biorouter/resources/computer-use/agent-desktop click @s1:e1'",
+            "python3 -c \"import subprocess; subprocess.run(['/usr/libexec/biorouter/computer-use/agent-desktop','list-apps'])\"",
+        ] {
+            let denied = g
+                .find_denied_access_in(json!({ "command": command }).as_object().unwrap(), &env)
+                .unwrap_or_else(|| panic!("started Copilot's engine: {command}"));
+            assert!(
+                denied.message().contains("Biorouter Copilot's own tools"),
+                "{command}: {}",
+                denied.message()
+            );
+        }
+        for ordinary in [
+            "rg 'Biorouter Copilot' ui/desktop/src",
+            "grep -rn org.biorouter.computer-use vendor/agent-desktop/pin.json",
+            "agent-desktop list-apps",
+            "~/.cargo/bin/agent-desktop snapshot --app Notes",
+            "open https://agent-browser.dev/desktop",
+            "open -a TextEdit notes.txt",
         ] {
             assert!(
                 scan_command(&g, &env, ordinary).is_none(),

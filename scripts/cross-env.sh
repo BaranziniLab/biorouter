@@ -17,6 +17,7 @@
 # Functions:
 #   cross_linux   <cargo_cmd> [target-dir] [post_cmd]
 #   cross_windows <cargo_cmd> [target-dir] [post_cmd]
+#   cross_copilot_helper <linux-x64|linux-arm64|win32-x64>
 # Each runs the given cargo command inside the pinned cross image with the full
 # toolchain env exported, appends `--target <triple>` to the command, and then
 # runs the optional trailing shell snippet (used by the release to stage the
@@ -172,4 +173,71 @@ cross_windows() {
       ${tdir:+export CARGO_TARGET_DIR=$tdir;}
       $cargo_cmd --target x86_64-pc-windows-gnu
       $post_cmd"
+}
+
+# ── Biorouter Copilot's engine (agent-desktop): linux-x64, linux-arm64, win32-x64 ──
+# Runs `scripts/computer-use-runtime.py build <target>` (AD-03, AD-05, AD-06 in
+# docs/design/copilot-agent-desktop.md) in the SAME pinned bullseye image as the
+# Linux backend, natively for the target's architecture rather than through a
+# cross gcc: agent-desktop is pure Rust on Linux (zbus and x11rb, no C library),
+# so the Linux helpers hold the backend's glibc floor (measured 2.30 against the
+# 2.31 floor) and link only glibc. The Windows helper is built in the amd64 image
+# with bullseye's mingw. It deliberately does NOT use cross_windows's winpthread
+# linker wrap: agent-desktop.exe needs no winpthread, and the wrap would add a
+# libwinpthread-1.dll import the payload does not ship (the payload check refuses
+# any `lib*.dll` import it does not carry). Measured 2026-11-20: imports only
+# system DLLs.
+#
+# On an x86_64 host the linux-arm64 build runs under emulation; CI builds it on an
+# arm64 runner instead. Files the container writes are handed back to the caller's
+# user, so a later build or `rm -rf` on a Linux host is not refused.
+cross_copilot_helper() {
+  local target="$1" platform setup=""
+  case "$target" in
+    linux-x64) platform=linux/amd64 ;;
+    linux-arm64) platform=linux/arm64 ;;
+    win32-x64)
+      platform=linux/amd64
+      # Debian 11 has passed its LTS end; see cross_linux for why apt reads the
+      # image's own pinned snapshot.debian.org lines, retries, then falls back to
+      # archive.debian.org.
+      setup="
+        sed -i 's|^deb http://deb.debian.org|# deb http://deb.debian.org|; s|^# deb http://snapshot.debian.org|deb http://snapshot.debian.org|' /etc/apt/sources.list
+        printf 'Acquire::Check-Valid-Until \"false\";\nAcquire::Retries \"2\";\nAcquire::http::Timeout \"30\";\n' > /etc/apt/apt.conf.d/80-biorouter
+        if ! { apt-get update -q && apt-get install -y --no-install-recommends gcc-mingw-w64-x86-64; }; then
+          echo 'cross-env: WARNING: snapshot.debian.org unavailable; installing mingw from archive.debian.org, not the pinned snapshot' >&2
+          sed -E -i 's|^deb http://snapshot\.debian\.org/archive/([a-z-]+)/[0-9TZ]+ |deb http://archive.debian.org/\\1 |' /etc/apt/sources.list
+          apt-get update -q
+          apt-get install -y --no-install-recommends gcc-mingw-w64-x86-64
+        fi
+        rustup target add x86_64-pc-windows-gnu"
+      ;;
+    *)
+      echo "cross-env: no container recipe for the $target Biorouter Copilot helper (darwin targets build on macOS)" >&2
+      return 2
+      ;;
+  esac
+  _cross_need_docker || return 1
+  # shellcheck disable=SC2046  # reg_arg is deliberately word-split into two args
+  docker run --rm --platform "$platform" \
+    ${CARGO_BUILD_JOBS:+-e CARGO_BUILD_JOBS} \
+    -e BIOROUTER_BUILD_JOBS="${BIOROUTER_BUILD_JOBS:-2}" \
+    -e HOST_UID="$(id -u)" -e HOST_GID="$(id -g)" \
+    -v "$ROOT":/usr/src/myapp \
+    $(_cross_registry_arg "biorouter-copilot-helper-${platform#linux/}-cache") \
+    -w /usr/src/myapp "$LINUX_RUST_IMG" sh -c "
+      set -e
+      command -v python3 >/dev/null || { echo 'cross-env: python3 is missing from $LINUX_RUST_IMG' >&2; exit 1; }
+      # The image's toolchain is 1.92.0 under that exact name; rust-toolchain.toml
+      # names the 1.92 channel, which rustup installs explicitly (see cross_windows
+      # for why first-use install is not relied on).
+      rustup toolchain install --no-self-update
+      $setup
+      rustc --version
+      status=0
+      python3 scripts/computer-use-runtime.py build $target || status=\$?
+      for dir in target/computer-use target/agent-desktop; do
+        [ -d \"\$dir\" ] && chown -R \"\$HOST_UID:\$HOST_GID\" \"\$dir\"
+      done
+      exit \$status"
 }

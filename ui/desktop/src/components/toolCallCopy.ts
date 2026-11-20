@@ -43,6 +43,7 @@ const VERB_FORMS: Record<string, readonly [past: string, base: string]> = {
   Describing: ['Described', 'describe'],
   Detaching: ['Detached', 'detach'],
   Downloading: ['Downloaded', 'download'],
+  Dragging: ['Dragged', 'drag'],
   Editing: ['Edited', 'edit'],
   Executing: ['Executed', 'execute'],
   Exporting: ['Exported', 'export'],

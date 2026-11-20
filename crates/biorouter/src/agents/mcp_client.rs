@@ -343,6 +343,9 @@ pub struct McpMeta {
     pub file_access_action: Option<String>,
     pub post_edit_diagnostics: bool,
     pub computer_use_generation: Option<String>,
+    /// What the person allowed Biorouter Copilot for this call (`observe` or `act`, AD-10). The
+    /// wrapper treats a missing value as look only.
+    pub computer_use_grant: Option<String>,
     /// Per-dispatch MCP progress token. When set, it is sent as the call's
     /// `_meta.progressToken` so the server echoes it — on progress
     /// notifications, and in `data.progress_token` on the developer shell's
@@ -404,6 +407,7 @@ impl McpMeta {
             file_access_action: None,
             post_edit_diagnostics: false,
             computer_use_generation: None,
+            computer_use_grant: None,
             progress_token: None,
             capability,
             capability_private: None,
@@ -473,6 +477,12 @@ impl McpMeta {
                 "computer_use_generation".into(),
                 serde_json::Value::String(generation.clone()),
             );
+            if let Some(grant) = &self.computer_use_grant {
+                meta.0.insert(
+                    "computer_use_grant".into(),
+                    serde_json::Value::String(grant.clone()),
+                );
+            }
             extensions.insert(meta);
         }
         if let Some(private) = self.capability_private {

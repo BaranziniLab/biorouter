@@ -704,6 +704,29 @@
         }
       }
     },
+    "/agent/computer_use/setup/request": {
+      "post": {
+        "tags": [
+          "super::routes::computer_use"
+        ],
+        "summary": "Ask the operating system to let Biorouter Copilot in (AD-04): on macOS the system's own prompts",
+        "description": "appear on the backend computer, naming Biorouter Copilot. Only a person's press reaches it,\nbecause it puts dialogs in front of whoever sits at that computer; a model or an API credential\ncannot.",
+        "operationId": "computer_use_request_permissions",
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "403": {
+            "description": "Human proof required"
+          }
+        }
+      }
+    },
     "/agent/computer_use/status": {
       "get": {
         "tags": [
@@ -15354,10 +15377,26 @@
           "challenge_id": {
             "type": "string"
           },
+          "grant": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/ComputerUseGrantLevel"
+              }
+            ],
+            "nullable": true
+          },
           "session_id": {
             "type": "string"
           }
         }
+      },
+      "ComputerUseGrantLevel": {
+        "type": "string",
+        "description": "The person's answer on the card, as the status and the consent route carry it (AD-10).\n\nA typed twin of [`ComputerUseGrant`], which lives in `biorouter-mcp` and carries no schema, so\nthe generated client names the two answers instead of an open string.",
+        "enum": [
+          "observe",
+          "act"
+        ]
       },
       "ComputerUseSessionRequest": {
         "type": "object",
@@ -15404,6 +15443,14 @@
           },
           "enabled": {
             "type": "boolean"
+          },
+          "grant": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/ComputerUseGrantLevel"
+              }
+            ],
+            "nullable": true
           },
           "handoff_required": {
             "type": "boolean"

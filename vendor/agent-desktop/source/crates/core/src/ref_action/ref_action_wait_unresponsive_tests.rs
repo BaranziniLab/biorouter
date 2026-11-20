@@ -1,0 +1,120 @@
+use super::*;
+
+struct TransientUnresponsiveAdapter {
+    resolve_calls: AtomicU32,
+}
+
+impl ObservationOps for TransientUnresponsiveAdapter {
+    fn resolve_element_strict(
+        &self,
+        _entry: &RefEntry,
+        _deadline: crate::Deadline,
+    ) -> Result<NativeHandle, AdapterError> {
+        let call = self.resolve_calls.fetch_add(1, Ordering::SeqCst);
+        if call == 0 {
+            return Err(AdapterError::app_unresponsive("Original")
+                .with_details(serde_json::json!({ "retryable": true })));
+        }
+        Ok(NativeHandle::null())
+    }
+
+    crate::adapter::complete_live_observation!("button", "Run", [capability::CLICK]);
+    crate::adapter::saved_ref_scope!("button", Some("Run"));
+}
+
+impl ActionOps for TransientUnresponsiveAdapter {
+    fn execute_action(
+        &self,
+        _handle: &NativeHandle,
+        _request: ActionRequest,
+        _lease: &crate::InteractionLease,
+    ) -> Result<crate::actions::action_result::ActionResult, AdapterError> {
+        Ok(crate::actions::action_result::ActionResult::delivered_unverified("click"))
+    }
+}
+
+impl InputOps for TransientUnresponsiveAdapter {}
+impl SystemOps for TransientUnresponsiveAdapter {
+    crate::adapter::guarded_interaction_lease!();
+}
+
+#[test]
+fn auto_wait_retries_a_transiently_unresponsive_accessibility_service() {
+    let adapter = TransientUnresponsiveAdapter {
+        resolve_calls: AtomicU32::new(0),
+    };
+
+    let result = execute_with_auto_wait(
+        RefActionWaitCtx {
+            adapter: &adapter,
+            entry: &entry(),
+            ref_id: "@e1",
+            context: &CommandContext::default(),
+        },
+        ActionRequest::headless(Action::Click).with_timeout_ms(Some(5_000)),
+        crate::ref_action::ref_action_single::dispatch_resolved,
+    )
+    .unwrap();
+
+    assert_eq!(result.action, "click");
+    assert!(adapter.resolve_calls.load(Ordering::SeqCst) >= 2);
+}
+
+struct BusyAtDispatchPreflightAdapter(AtomicU32);
+
+impl ObservationOps for BusyAtDispatchPreflightAdapter {
+    fn resolve_element_strict(
+        &self,
+        _entry: &RefEntry,
+        _deadline: crate::Deadline,
+    ) -> Result<NativeHandle, AdapterError> {
+        Ok(NativeHandle::null())
+    }
+
+    crate::adapter::complete_live_observation!("button", "Run", [capability::CLICK], adapter => {
+        if adapter.0.fetch_add(1, Ordering::SeqCst) == 1 {
+            return Err(AdapterError::timeout("busy").with_details(serde_json::json!({ "retryable": true })));
+        }
+        crate::ElementState {
+            role: "button".into(),
+            states: Vec::new(),
+            value: None,
+            enabled: Some(true),
+            hidden: Some(false),
+            offscreen: Some(false),
+        }
+    });
+    crate::adapter::saved_ref_scope!("button", Some("Run"));
+}
+
+impl ActionOps for BusyAtDispatchPreflightAdapter {
+    fn execute_action(
+        &self,
+        _handle: &NativeHandle,
+        _request: ActionRequest,
+        _lease: &crate::InteractionLease,
+    ) -> Result<crate::actions::action_result::ActionResult, AdapterError> {
+        Ok(crate::actions::action_result::ActionResult::delivered_unverified("click"))
+    }
+}
+
+impl InputOps for BusyAtDispatchPreflightAdapter {}
+impl SystemOps for BusyAtDispatchPreflightAdapter {
+    crate::adapter::guarded_interaction_lease!();
+}
+
+#[test]
+fn auto_wait_retries_a_live_read_timeout_in_the_dispatch_preflight() {
+    let result = execute_with_auto_wait(
+        RefActionWaitCtx {
+            adapter: &BusyAtDispatchPreflightAdapter(AtomicU32::new(0)),
+            entry: &entry(),
+            ref_id: "@e1",
+            context: &CommandContext::default(),
+        },
+        ActionRequest::headless(Action::Click).with_timeout_ms(Some(2_000)),
+        crate::ref_action::ref_action_single::dispatch_resolved,
+    );
+
+    assert_eq!(result.unwrap().action, "click");
+}

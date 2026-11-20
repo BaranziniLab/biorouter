@@ -40,6 +40,7 @@ window there can hold a page or show the approval.
 | `browser_press` | Press a key or chord such as `Enter` or `Meta+A` | Acting, except Escape, Tab, arrows, Page Up and Down, Home and End |
 | `browser_select` | Choose options in a `select` | Acting |
 | `browser_dialog` | Accept or dismiss a JavaScript dialog Chromium reports | Acting |
+| `browser_drag` | Drag a reference and drop it on another reference or a point in the page: reorder a list, move a card, fill a drop zone. Page events only: the person's pointer never moves, and no file from disk is dropped | Acting |
 
 The advertised names carry the capability's prefix, `browser__browser_open` and so on. No name
 matches one of Copilot's tools.

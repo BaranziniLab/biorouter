@@ -107,6 +107,9 @@ const REAL_TOOLS: Record<ToolGlyphKind, string[]> = {
     'computercontroller__press_key',
     'computercontroller__set_value',
     'computercontroller__screen_capture',
+    'computercontroller__find_elements',
+    'computercontroller__wait_for',
+    'computercontroller__open_app',
   ],
   // BB-09: every Biorouter Browser tool draws the browser's own glyph, never Copilot's or the web.
   browser: [
@@ -125,6 +128,7 @@ const REAL_TOOLS: Record<ToolGlyphKind, string[]> = {
     'browser__browser_press',
     'browser__browser_select',
     'browser__browser_dialog',
+    'browser__browser_drag',
   ],
   database: ['datasql__data_query', 'datasql__data_sources', 'datasql__data_table'],
   memory: [

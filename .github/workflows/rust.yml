@@ -114,12 +114,20 @@ jobs:
       - name: Biorouter Copilot naming consistency
         run: ./scripts/check-computer-use-naming.sh
 
-      # The vendored upstream Open Computer Use source must match its manifest AND
-      # be fully committable. Repository-wide .gitignore rules matched 15 of its
-      # files when it was first vendored; a tree that verifies locally while
-      # those files never reach a fresh clone is worse than one that fails here.
-      - name: Vendored Open Computer Use source
+      # Biorouter Copilot's engine, agent-desktop, is vendored at
+      # vendor/agent-desktop (AD-02). Its source must match its manifest both
+      # ways, be fully committable and exempt from end-of-line conversion, lock
+      # no network client crate (AD-20), and list every locked crate with its
+      # licence. A tree that verifies locally while some files never reach a
+      # fresh clone is worse than one that fails here: repository-wide .gitignore
+      # rules matched 15 files of the tree it replaced.
+      - name: Vendored agent-desktop source (Biorouter Copilot's engine)
         run: ./scripts/check-vendored-computer-use.sh
+      # The payload, build and packaging guards' own mutation tests. They build
+      # nothing: synthetic Mach-O, ELF and PE files stand in for the helper, and
+      # a stub stands in for docker in the container recipe.
+      - name: Biorouter Copilot packaging tests
+        run: python3 scripts/test-computer-use-packaging.py
 
       # The vendored whisper.cpp subset (the local dictation engine, DD-3) must match
       # its manifest both ways, be committable and exempt from end-of-line conversion,

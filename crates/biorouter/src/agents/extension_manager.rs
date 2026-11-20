@@ -908,6 +908,7 @@ fn apply_dispatch_admissions(
 ) -> bool {
     if let Some(permit) = computer_permit {
         meta.computer_use_generation = Some(permit.generation.clone());
+        meta.computer_use_grant = Some(permit.grant.as_str().to_owned());
     }
     if let Some(admission) = file_admission {
         meta.file_access_token = Some(admission.authority.token().to_string());
@@ -1003,7 +1004,11 @@ async fn call_computer_use(
         _ = permit.cancel.cancelled() => {
             call_cancel.cancel();
             let _ = tokio::time::timeout(Duration::from_secs(10), &mut call).await;
-            Err(ErrorData::new(ErrorCode::INVALID_REQUEST, "Biorouter Copilot stopped. An action already delivered to the desktop may have completed; no result was shared.", None))
+            Err(ErrorData::new(ErrorCode::INVALID_REQUEST, if tool_name == "drag" {
+                "Biorouter Copilot stopped. An action already delivered to the desktop may have completed; no result was shared. If the pointer seems stuck, click once in an empty area."
+            } else {
+                "Biorouter Copilot stopped. An action already delivered to the desktop may have completed; no result was shared."
+            }, None))
         },
         _ = cancellation_token.cancelled() => {
             permit.cancel.cancel();
@@ -1915,28 +1920,33 @@ impl ExtensionManager {
         session_id: &str,
         config: &ExtensionConfig,
         tool: &str,
+        arguments: Option<&rmcp::model::JsonObject>,
         cap: crate::privacy::CallCapability,
         cancel: &CancellationToken,
     ) -> Result<Option<crate::security::computer_use::ComputerUsePermit>> {
+        use crate::security::computer_use;
         let builtin =
             matches!(config, ExtensionConfig::Builtin { name, .. } if name == "computercontroller");
         anyhow::ensure!(
-            builtin || !crate::security::computer_use::is_computer_use_tool(tool),
+            builtin || !computer_use::is_computer_use_tool(tool),
             "The Biorouter Copilot namespace is reserved for BioRouter's reviewed built-in capability"
         );
         if !builtin {
             return Ok(None);
         }
-        anyhow::ensure!(crate::security::computer_use::is_computer_use_tool(tool),
+        anyhow::ensure!(computer_use::is_computer_use_tool(tool),
             "This former tool is unavailable. Use Biorouter Copilot's current tools or the Web & Documents capability.");
+        // Refused before the person is asked: a secret is never typed whatever they allow.
+        computer_use::refuse_secret_text(tool, arguments)?;
         let status = self.computer_use_status(session_id).await?;
         anyhow::ensure!(
             status.public_model != cap.tier().is_private(),
             "Biorouter Copilot caller differs from the approved model destination"
         );
+        let needed = computer_use::grant_for_call(tool, arguments);
         Ok(Some(
             self.computer_use
-                .permit(session_id, &self.provider, cancel)
+                .permit_for(session_id, &self.provider, needed, cancel)
                 .await?,
         ))
     }
@@ -1957,7 +1967,7 @@ impl ExtensionManager {
         Option<crate::security::browser_use::BrowserPermit>,
     )> {
         let computer = self
-            .admit_computer_use(session_id, config, prefixed_name, cap, cancel)
+            .admit_computer_use(session_id, config, prefixed_name, arguments, cap, cancel)
             .await?;
         let browser = self
             .admit_browser(session_id, config, prefixed_name, arguments, cap, cancel)
@@ -2097,17 +2107,20 @@ impl ExtensionManager {
             .await
     }
 
+    /// The person's answer on Biorouter Copilot's card: `Act` (Allow) or `Observe` (Only let it
+    /// look) for this request (AD-10).
     pub async fn approve_computer_use(
         &self,
         session_id: &str,
         challenge_id: &str,
+        level: crate::security::computer_use::ComputerUseGrant,
     ) -> Result<crate::security::computer_use::ComputerUseStatus> {
         anyhow::ensure!(
             self.is_extension_enabled("computercontroller").await,
             "Enable Biorouter Copilot for this chat before allowing control"
         );
         self.computer_use
-            .approve(session_id, challenge_id, &self.provider)
+            .approve_with(session_id, challenge_id, level, &self.provider)
             .await
     }
 
@@ -10821,6 +10834,8 @@ mod tests {
         /// Whether the token the host handed `call_tool` was already cancelled
         /// when the call answered `Ok` regardless. `None` until it answers.
         token_cancelled_at_answer: std::sync::Mutex<Option<bool>>,
+        /// The Copilot grant the host sent with the call (AD-10).
+        seen_grant: std::sync::Mutex<Option<String>>,
     }
 
     #[async_trait::async_trait]
@@ -10861,9 +10876,10 @@ mod tests {
             &self,
             _name: &str,
             _arguments: Option<JsonObject>,
-            _meta: McpMeta,
+            meta: McpMeta,
             cancellation_token: CancellationToken,
         ) -> Result<CallToolResult, Error> {
+            *self.seen_grant.lock().unwrap() = meta.computer_use_grant.clone();
             self.entered.notify_one();
             // Deliberately NOT raced against `cancellation_token`: a native
             // helper that has already acted may finish and answer anyway, and
@@ -10899,6 +10915,117 @@ mod tests {
         async fn subscribe(&self) -> mpsc::Receiver<ServerNotification> {
             mpsc::channel(1).1
         }
+    }
+
+    fn copilot_call(tool: &str, arguments: serde_json::Value) -> CallToolRequestParams {
+        CallToolRequestParams {
+            name: format!("computercontroller__{tool}").into(),
+            arguments: arguments.as_object().cloned(),
+            meta: None,
+            task: None,
+        }
+    }
+
+    /// AD-10: the person can allow looking only. The admitted call carries that grant to the
+    /// wrapper, and an act call in the same request fails at once with no second card.
+    #[tokio::test]
+    async fn a_look_only_grant_reaches_the_wrapper_and_refuses_control_at_once() {
+        let _serial = crate::security::computer_use::tests::test_serial()
+            .lock()
+            .await;
+        let (_dir, manager, _provider) = manager_bound_to(crate::privacy::ProviderTier::Public);
+        let client = Arc::new(GatedMockClient::default());
+        manager
+            .add_mock_extension("computercontroller".into(), client.clone())
+            .await;
+        let _task = manager.computer_use.task_guard();
+        manager.bind_computer_use_task("look-chat").await.unwrap();
+        let admission = manager.dispatch_tool_call(
+            "look-chat",
+            copilot_call("get_app_state", serde_json::json!({"app":"TextEdit"})),
+            crate::privacy::CallCapability::for_test_restricted(),
+            CancellationToken::new(),
+        );
+        tokio::pin!(admission);
+        assert!(
+            tokio::time::timeout(Duration::from_millis(5), &mut admission)
+                .await
+                .is_err()
+        );
+        let status = manager.computer_use_status("look-chat").await.unwrap();
+        manager
+            .computer_use
+            .approve_with(
+                "look-chat",
+                &status.challenge_id,
+                crate::security::computer_use::ComputerUseGrant::Observe,
+                &manager.provider,
+            )
+            .await
+            .unwrap();
+        let admitted = admission.await.unwrap();
+        // The call runs only when its result is polled; the stored permit lets it answer.
+        client.release.notify_one();
+        admitted.result.await.unwrap();
+        assert_eq!(
+            client.seen_grant.lock().unwrap().as_deref(),
+            Some("observe")
+        );
+        let refused = tokio::time::timeout(
+            Duration::from_secs(2),
+            manager.dispatch_tool_call(
+                "look-chat",
+                copilot_call("click", serde_json::json!({"ref":"@s1:e1"})),
+                crate::privacy::CallCapability::for_test_restricted(),
+                CancellationToken::new(),
+            ),
+        )
+        .await
+        .expect("an act call under look only is refused without waiting")
+        .err()
+        .expect("refused");
+        assert!(
+            refused
+                .to_string()
+                .contains("allowed Biorouter Copilot to look only"),
+            "{refused}"
+        );
+        manager.computer_use.revoke();
+    }
+
+    /// AD-12: text that looks like a secret is refused before the person is even asked.
+    #[tokio::test]
+    async fn copilot_refuses_to_type_a_secret_before_asking_anyone() {
+        let _serial = crate::security::computer_use::tests::test_serial()
+            .lock()
+            .await;
+        let (_dir, manager, _provider) = manager_bound_to(crate::privacy::ProviderTier::Public);
+        let client = Arc::new(GatedMockClient::default());
+        manager
+            .add_mock_extension("computercontroller".into(), client.clone())
+            .await;
+        let _task = manager.computer_use.task_guard();
+        manager.bind_computer_use_task("secret-chat").await.unwrap();
+        let key = "-----BEGIN OPENSSH PRIVATE KEY-----\nb3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAAAAAABAAAAMwAAAAtzc2gtZW\n-----END OPENSSH PRIVATE KEY-----";
+        let refused = tokio::time::timeout(
+            Duration::from_secs(2),
+            manager.dispatch_tool_call(
+                "secret-chat",
+                copilot_call("type_text", serde_json::json!({"ref":"@s1:e1","text":key})),
+                crate::privacy::CallCapability::for_test_restricted(),
+                CancellationToken::new(),
+            ),
+        )
+        .await
+        .expect("refused without waiting for approval")
+        .err()
+        .expect("refused");
+        assert!(
+            refused.to_string().contains("looks like a secret"),
+            "{refused}"
+        );
+        let status = manager.computer_use_status("secret-chat").await.unwrap();
+        assert!(!status.requested, "no approval card was raised");
     }
 
     /// Stop while a native call is in flight, then let the client answer `Ok`
@@ -10940,7 +11067,11 @@ mod tests {
         );
         let status = manager.computer_use_status("isolated-chat").await.unwrap();
         manager
-            .approve_computer_use("isolated-chat", &status.challenge_id)
+            .approve_computer_use(
+                "isolated-chat",
+                &status.challenge_id,
+                crate::security::computer_use::ComputerUseGrant::Act,
+            )
             .await
             .unwrap();
         let mut admitted = admission.await.unwrap();

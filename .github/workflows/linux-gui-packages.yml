@@ -10,9 +10,10 @@
 # instead of the bind mount made no difference.
 #
 # Note what that would have done had the modes been merely wrong rather than
-# unreadable: `ocu` at mode 0200 ships non-executable and Biorouter Copilot does
-# not work on Linux, with nothing in the test suite catching it. Building where
-# the packages are meant to run removes the whole class.
+# unreadable: the Biorouter Copilot helper at mode 0200 ships non-executable and
+# Biorouter Copilot does not work on Linux, with nothing in the test suite
+# catching it. Building where the packages are meant to run removes the whole
+# class.
 #
 # ⚠ THE BACKEND IS NOT BUILT ON THE RUNNER. It is cross-compiled in the pinned
 # `rust:1.92-bullseye` image by `scripts/build-computer-use-package-cross.sh`,
@@ -125,10 +126,6 @@ jobs:
           node-version: '24'
           cache: npm
           cache-dependency-path: ui/desktop/package-lock.json
-      - uses: actions/setup-go@v5
-        with:
-          go-version: '1.26.8'
-          cache: false
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
@@ -148,8 +145,15 @@ jobs:
           [ "$want" = "$cargo" ] && [ "$want" = "$pkg" ] || {
             echo "::error::version $want does not match the tree ($cargo / $pkg)"; exit 1; }
 
+      # agent-desktop, built in the same pinned rust:1.92-bullseye image as the
+      # backend (cross_copilot_helper in scripts/cross-env.sh), so it holds the
+      # 2.31 glibc floor; the script verifies the payload on the runner after.
       - name: Build the Biorouter Copilot helper payload
-        run: python3 scripts/computer-use-runtime.py build linux-x64
+        env:
+          CROSS_REGISTRY_MOUNT: ${{ github.workspace }}/.cross-cache/copilot-registry
+        run: |
+          bash scripts/build-computer-use-helper-cross.sh linux-x64
+          sudo chown -R "$(id -u):$(id -g)" .cross-cache
 
       # `src/bin` is not tracked in git, and `build-linux-deb.sh` copies the
       # Rust binaries into it rather than creating it.
@@ -297,13 +301,15 @@ jobs:
             echo "the deb carries the Crew broker and its manifest"
           fi
 
-          # `ocu` at mode 0200 ships non-executable and Biorouter Copilot does
-          # not work on Linux, with nothing in the test suite catching it. That
-          # is the mode-mangling this whole workflow exists to avoid, so read it
-          # back off the packaged copy.
-          ocu="$res/computer-use/ocu"
-          [ -x "$ocu" ] || { echo "::error::the Biorouter Copilot helper is not executable in the deb: $(ls -l "$ocu" 2>&1)"; exit 1; }
-          echo "ocu in the deb: $(ls -l "$ocu" | awk '{print $1}')"
+          # The helper at mode 0200 ships non-executable and Biorouter Copilot
+          # does not work on Linux, with nothing in the test suite catching it.
+          # That is the mode-mangling this whole workflow exists to avoid, so
+          # read it back off the packaged copy, and run it: `version` prints one
+          # JSON envelope and touches no desktop.
+          helper="$res/computer-use/agent-desktop"
+          [ -x "$helper" ] || { echo "::error::the Biorouter Copilot helper is not executable in the deb: $(ls -l "$helper" 2>&1)"; exit 1; }
+          echo "agent-desktop in the deb: $(ls -l "$helper" | awk '{print $1}')"
+          python3 scripts/computer-use-runtime.py contract linux-x64 --directory "$res/computer-use"
 
           # No other platform's executables may ride along. The recursive sweep
           # in build-linux-deb.sh exists because a top-level *.exe glob could not

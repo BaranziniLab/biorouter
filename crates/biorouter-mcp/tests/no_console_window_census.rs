@@ -127,6 +127,11 @@ const COVERING_CALLS: &[&str] = &[
 ///    children a brand-new, VISIBLE console. Both sites now set the flag.
 const EXEMPT: &[(&str, &str)] = &[
     (
+        "crates/biorouter-mcp/src/computer_use/linux.rs",
+        "Biorouter Copilot's Linux desktop probes (loginctl, the package manager); the module is \
+         declared `#[cfg(all(unix, not(target_os = \"macos\")))]` and never compiled for Windows",
+    ),
+    (
         "crates/biorouter-sandbox/src/shell_sandbox/linux.rs",
         "whole file is Linux-only (seccomp/landlock); never compiled for Windows",
     ),
@@ -974,10 +979,11 @@ fn the_known_hot_paths_are_covered() {
         // 128-line shim over `computer_use::SessionRuntime` and spawns nothing
         // at all, so the old row asserted a call in a file with no children to
         // prepare — a hot-path guard that could only ever pass vacuously.
-        // The spawning moved here, and this runtime reaches the flag directly
-        // through `creation_flags` rather than through the helper.
+        // The spawning moved here, and this runner reaches the flag directly
+        // through `creation_flags` rather than through the helper. Since 1.94.6
+        // it starts one engine command per operation (AD-07).
         (
-            "crates/biorouter-mcp/src/computer_use/runtime.rs",
+            "crates/biorouter-mcp/src/computer_use/runner.rs",
             "CREATE_NO_WINDOW",
         ),
         // The helper is started suspended and assigned to a job object before

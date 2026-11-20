@@ -41,7 +41,7 @@ organisation's plan runs 20 jobs at once, 5 of them on macOS.
 
 | Check | What it runs | Run time (min) |
 |---|---|---|
-| `guards` | cross-drift, retired-name, version, Copilot naming, vendored source guards (Open Computer Use and whisper.cpp), the dictation fixture budget and build prerequisites | 0.5 |
+| `guards` | cross-drift, retired-name, version, Copilot naming, vendored source guards (agent-desktop and whisper.cpp), the dictation fixture budget and build prerequisites | 0.5 |
 | `cross-check (x86_64-pc-windows-gnu)` | `cargo check --workspace --all-targets` (8.9) and the hostname-call clippy gate (4.1), in the release's docker image | 13.2 |
 | `No inheritable sockets (x86_64-pc-windows-gnu)` | the socket gate on the target where the bug lives | 8.1 |
 | `lib tests (ubuntu)` | `cargo test --workspace --lib` (9.1) | 10.5 |
@@ -61,7 +61,10 @@ The slowest job sets the floor: about 13.5 minutes for Rust and 13 for Frontend 
 starts at once, against 77 minutes median before. The run that measured these took 29 minutes
 wall for Rust anyway, because its jobs waited 9 to 17 minutes for a runner (see "Runner slots"
 below). Path-filtered workflows (`Apps smoke`, `Rebuilt session storage acceptance`, `Biorouter
-Copilot native payloads`) still run when their paths change and finish inside that.
+Copilot native payloads`) still run when their paths change and finish inside that. The last
+builds the Copilot engine for every target and, since 1.94.6, drives the GTK and WinForms fixture
+apps through Copilot's own tools, drag and drop included, in its release gate
+([Biorouter Copilot fixture acceptance](copilot-fixture-acceptance.md)).
 
 **Why the ubuntu work splits this way.** Each job pays its own setup (about 2 minutes) and its
 own compile of the workspace crates, so splitting buys less than it looks. The library tests are

@@ -9,13 +9,22 @@ use windows_sys::Win32::System::JobObjects::{
     JobObjectExtendedLimitInformation, QueryInformationJobObject, SetInformationJobObject,
     TerminateJobObject, JOBOBJECT_BASIC_ACCOUNTING_INFORMATION,
     JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+    JOB_OBJECT_LIMIT_SILENT_BREAKAWAY_OK,
 };
 use windows_sys::Win32::System::Threading::{OpenThread, ResumeThread, THREAD_SUSPEND_RESUME};
 
 pub(super) struct ProcessJob(OwnedHandle);
 
 impl ProcessJob {
+    #[cfg(test)]
     pub fn attach(child: &tokio::process::Child) -> Result<Self> {
+        Self::attach_with(child, false)
+    }
+
+    /// `release_launched_apps` is for `open_app` only: the engine starts the app with
+    /// `CreateProcessW`, so without silent breakaway the person's app would join this job and
+    /// die with it when the command ends. Every other command keeps every descendant contained.
+    pub fn attach_with(child: &tokio::process::Child, release_launched_apps: bool) -> Result<Self> {
         // The owned job handle is never inherited. Closing it terminates every helper descendant, including on future drop.
         let raw = unsafe { CreateJobObjectW(std::ptr::null(), std::ptr::null()) };
         if raw.is_null() {
@@ -24,7 +33,12 @@ impl ProcessJob {
         }
         let job = Self(unsafe { OwnedHandle::from_raw_handle(raw) });
         let mut limits: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = unsafe { std::mem::zeroed() };
-        limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+        limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+            | if release_launched_apps {
+                JOB_OBJECT_LIMIT_SILENT_BREAKAWAY_OK
+            } else {
+                0
+            };
         let configured = unsafe {
             SetInformationJobObject(
                 job.0.as_raw_handle(),

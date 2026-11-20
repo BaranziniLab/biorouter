@@ -4,7 +4,7 @@ const { AutoUnpackNativesPlugin } = require('@electron-forge/plugin-auto-unpack-
 const { resolve } = require('path');
 const { mkdirSync, writeFileSync } = require('fs');
 const { verifyPackagedDependencies } = require('./scripts/verify-packaged-dependencies');
-const { verifyComputerUse } = require('./scripts/computer-use-resources');
+const { verifyComputerUse, COPILOT_BUNDLE } = require('./scripts/computer-use-resources');
 const { crewBrokerRequired, inspectCrewBroker } = require('./scripts/crew-broker-resources');
 const { prepareNativeDependencies } = require('./scripts/prepare-native-dependencies');
 
@@ -169,7 +169,10 @@ let cfg = {
           identity:
             'Developer ID Application: University of California at San Francisco (F3YYBXAFJ8)',
           hardenedRuntime: true,
-          // The helper is signed before its byte manifest is generated.
+          // The Biorouter Copilot bundle (agent-desktop inside `Biorouter Copilot.app`,
+          // its name read from vendor/agent-desktop/pin.json) is signed with its own
+          // identifier before its byte manifest is generated (AD-04), so osx-sign
+          // must leave it alone.
           //
           // The Crew broker under bin/crew-broker/ is a Linux ELF the setup
           // service copies to a server (OW-9). @electron/osx-sign would otherwise
@@ -179,8 +182,7 @@ let cfg = {
           // which is the trust root its manifest relies on. Notarization reads
           // Mach-O only, so the ELF does not reach it.
           ignore: (file) =>
-            file.includes('/computer-use/BioRouter Computer Use.app') ||
-            file.includes('/crew-broker/'),
+            file.includes(`/computer-use/${COPILOT_BUNDLE}`) || file.includes('/crew-broker/'),
           // The microphone entitlement for the four files that record. See
           // MAC_MICROPHONE_ENTITLEMENTS above.
           optionsForFile: macSignOptionsForFile,
@@ -261,10 +263,11 @@ let cfg = {
  * `%__os_install_post` runs over the buildroot. On Debian/Ubuntu rpm 4.18 that
  * includes `brp-strip-comment-note`, whose selector is the COMPLEMENT of
  * brp-strip's: it matches ELF files that are already `stripped`, which is
- * exactly what the helper is (built with `-ldflags=-s -w`). It then runs
- * `strip -R .comment -R .note` on it. The helper has neither section, but GNU
- * strip still REPACKS the file -- `.shstrtab` slides into the alignment gap
- * after `.data` and `e_shoff` is rewritten -- taking `ocu` from 2,609,314 to
+ * exactly what the helper is (agent-desktop's release profile sets
+ * `strip = true`). It then runs `strip -R .comment -R .note` on it. Even with
+ * nothing to remove, GNU strip REPACKS the file -- `.shstrtab` slides into the
+ * alignment gap after `.data` and `e_shoff` is rewritten -- which took the
+ * previous engine's helper from 2,609,314 to
  * 2,606,840 bytes. The binary still runs, so the only thing that notices is the
  * provenance check, which rejected the rpm with "Helper payload was modified,
  * incomplete, or contains unrecorded files" while the deb passed (dpkg does not
@@ -452,10 +455,9 @@ module.exports = {
             'libgomp1',
             'libxcb1',
             'zlib1g',
-            'python3',
-            'python3-gi',
-            'gir1.2-atspi-2.0',
-            'gir1.2-gtk-3.0',
+            // Biorouter Copilot's engine (agent-desktop) reads apps over the AT-SPI
+            // accessibility bus. vendor/agent-desktop/pin.json lists it, and
+            // scripts/test-computer-use-packaging.py holds the two in step.
             'at-spi2-core',
           ],
         },
@@ -489,10 +491,8 @@ module.exports = {
             'libgomp',
             'libxcb',
             'zlib',
-            'python3',
-            'python3-gobject',
+            // Biorouter Copilot's engine; see the maker-deb list above.
             'at-spi2-core',
-            'gtk3',
           ],
         },
       },

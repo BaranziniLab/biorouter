@@ -208,7 +208,7 @@ fn panel_trust_notice(untrusted_external: bool) -> &'static str {
 /// deleting keeps the text readable, and a look-alike cannot be mis-decoded
 /// back into markup the way an entity reference can.
 pub(crate) fn neutralize_panel_markup(value: &str) -> String {
-    value.replace('<', "‹").replace('>', "›")
+    biorouter_mcp::untrusted_text::neutralize_markup(value)
 }
 
 /// One page-chosen label, safe to place on its own line inside the frame.

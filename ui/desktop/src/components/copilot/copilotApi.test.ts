@@ -1,15 +1,23 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { CopilotNotApplicable, copilotDecision, copilotSetup, copilotStatus } from './copilotApi';
+import {
+  CopilotNotApplicable,
+  copilotDecision,
+  copilotRequestPermissions,
+  copilotSetup,
+  copilotStatus,
+} from './copilotApi';
 
 const mocks = vi.hoisted(() => ({
   status: vi.fn(),
   setup: vi.fn(),
+  request: vi.fn(),
   consent: vi.fn(),
   revoke: vi.fn(),
 }));
 vi.mock('../../api/sdk.gen', () => ({
   computerUseStatus: mocks.status,
   computerUseSetup: mocks.setup,
+  computerUseRequestPermissions: mocks.request,
   computerUseConsent: mocks.consent,
   computerUseRevoke: mocks.revoke,
 }));
@@ -63,13 +71,54 @@ describe('generated Biorouter Copilot API adapter', () => {
     await copilotDecision(current, 'consent', 'secret-passphrase');
     expect(mocks.consent).toHaveBeenCalledWith(
       expect.objectContaining({
-        body: { session_id: 'task-a', challenge_id: 'nonce' },
+        body: { session_id: 'task-a', challenge_id: 'nonce', grant: 'act' },
         headers: {
           'X-Caller-Provider': 'private-provider',
           'X-Computer-Use-Key': 'secret-passphrase',
         },
       })
     );
+  });
+
+  // AD-10: the card's second answer reaches the daemon as typed, never widened to control.
+  it('sends Only let it look as an observe grant', async () => {
+    const current = await copilotStatus('task-a');
+    await copilotDecision(current, 'consent', '', 'observe');
+    expect(mocks.consent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        body: { session_id: 'task-a', challenge_id: 'nonce', grant: 'observe' },
+        headers: { 'X-Caller-Provider': 'private-provider' },
+      })
+    );
+  });
+
+  // The system's permission prompts appear on the backend computer, so the request carries the
+  // person's proof, and what comes back is the readiness read again.
+  it('asks the system for permissions with the user-action proof and reads readiness back', async () => {
+    mocks.request.mockResolvedValue({
+      data: {
+        status: 'ready',
+        permissions: { accessibility: true, screen_recording: true },
+        request_error: null,
+      },
+    });
+    expect(await copilotRequestPermissions()).toMatchObject({
+      status: 'ready',
+      permissions: { accessibility: true, screen_recording: true },
+    });
+    expect(mocks.request).toHaveBeenCalledWith(
+      expect.objectContaining({ headers: { 'X-Caller-Provider': 'private-provider' } })
+    );
+    mocks.request.mockResolvedValue({
+      data: {
+        status: 'os_permission_required',
+        permissions: { accessibility: false, screen_recording: false },
+        request_error: 'The system prompts did not finish in time.',
+      },
+    });
+    expect(await copilotRequestPermissions()).toMatchObject({
+      request_error: 'The system prompts did not finish in time.',
+    });
   });
 
   it('accepts native permission objects, including unreported checks, without inventing readiness', async () => {

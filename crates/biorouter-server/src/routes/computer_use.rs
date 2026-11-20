@@ -6,7 +6,7 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
-use biorouter::security::computer_use::ComputerUseStatus;
+use biorouter::security::computer_use::{ComputerUseGrantLevel, ComputerUseStatus};
 use biorouter_server::auth::{computer_use_action_proof, UserActionProof};
 use serde::Deserialize;
 use utoipa::{IntoParams, ToSchema};
@@ -22,6 +22,16 @@ pub struct ComputerUseSessionRequest {
 pub struct ComputerUseConsentRequest {
     pub session_id: String,
     pub challenge_id: String,
+    /// The person's answer (AD-10): `act` (Allow) or `observe` (Only let it look). Absent means
+    /// `act`, so a client that predates the choice keeps the meaning its Allow button had.
+    #[serde(default)]
+    pub grant: Option<ComputerUseGrantLevel>,
+}
+
+impl ComputerUseConsentRequest {
+    fn level(&self) -> biorouter::security::computer_use::ComputerUseGrant {
+        self.grant.unwrap_or(ComputerUseGrantLevel::Act).into()
+    }
 }
 
 fn conflict(error: anyhow::Error) -> ErrorResponse {
@@ -56,6 +66,32 @@ fn status_refusal(error: anyhow::Error) -> ErrorResponse {
 #[utoipa::path(get, path = "/agent/computer_use/setup", operation_id = "computer_use_setup", responses((status = 200, body = serde_json::Value)))]
 pub async fn setup() -> Json<serde_json::Value> {
     Json(biorouter_mcp::computer_use::probe_readiness(true).await)
+}
+
+/// Ask the operating system to let Biorouter Copilot in (AD-04): on macOS the system's own prompts
+/// appear on the backend computer, naming Biorouter Copilot. Only a person's press reaches it,
+/// because it puts dialogs in front of whoever sits at that computer; a model or an API credential
+/// cannot.
+#[utoipa::path(post, path = "/agent/computer_use/setup/request", operation_id = "computer_use_request_permissions", responses((status = 200, body = serde_json::Value), (status = 403, description = "Human proof required")))]
+pub async fn request_permissions(
+    headers: HeaderMap,
+) -> Result<Json<serde_json::Value>, ErrorResponse> {
+    require_person(biorouter_server::auth::user_action_proof(&headers))?;
+    Ok(Json(
+        biorouter_mcp::computer_use::request_permissions().await,
+    ))
+}
+
+fn require_person(proof: UserActionProof) -> Result<(), ErrorResponse> {
+    match proof {
+        UserActionProof::Proven => Ok(()),
+        _ => Err(ErrorResponse {
+            status: StatusCode::FORBIDDEN,
+            message: "Only the person using Biorouter can ask the system for Biorouter Copilot's \
+                      permissions. Use the Allow access button in Biorouter Copilot's setup."
+                .into(),
+        }),
+    }
 }
 
 async fn agent(
@@ -108,7 +144,7 @@ pub async fn consent(
     let agent = agent(&state, &request.session_id, &headers).await?;
     agent
         .extension_manager
-        .approve_computer_use(&request.session_id, &request.challenge_id)
+        .approve_computer_use(&request.session_id, &request.challenge_id, request.level())
         .await
         .map(Json)
         .map_err(conflict)
@@ -143,6 +179,10 @@ pub fn routes(state: Arc<AppState>) -> Router {
     Router::new()
         .route("/agent/computer_use/status", get(status))
         .route("/agent/computer_use/setup", get(setup))
+        .route(
+            "/agent/computer_use/setup/request",
+            post(request_permissions),
+        )
         .route("/agent/computer_use/consent", post(consent))
         .route("/agent/computer_use/revoke", post(revoke))
         .with_state(state)
@@ -156,6 +196,17 @@ mod tests {
         assert!(require_human(UserActionProof::Unproven).is_err());
         assert!(require_human(UserActionProof::NoKeyInstalled).is_err());
         assert!(require_human(UserActionProof::Proven).is_ok());
+    }
+
+    /// Asking the system for permissions puts dialogs on the backend computer, so only a person's
+    /// press reaches it.
+    #[test]
+    fn only_a_person_asks_the_system_for_copilot_permissions() {
+        for refused in [UserActionProof::Unproven, UserActionProof::NoKeyInstalled] {
+            let answer = require_person(refused).unwrap_err();
+            assert_eq!(answer.status, StatusCode::FORBIDDEN);
+        }
+        assert!(require_person(UserActionProof::Proven).is_ok());
     }
 
     /// ⚠ The interface acts on the STATUS CODE, not on the sentence: a 409 from
@@ -190,6 +241,30 @@ mod tests {
             );
             assert_eq!(answer.message, transient, "the reason must survive");
         }
+    }
+
+    /// The card's two answers reach the consent as typed, and a client that sends no `grant`
+    /// keeps the meaning its Allow button always had: look and control.
+    #[test]
+    fn the_consent_takes_the_persons_answer_and_an_old_client_means_allow() {
+        use biorouter::security::computer_use::ComputerUseGrant;
+
+        let request = |body: serde_json::Value| -> ComputerUseConsentRequest {
+            serde_json::from_value(body).unwrap()
+        };
+        let old = request(serde_json::json!({"session_id": "s", "challenge_id": "c"}));
+        assert_eq!(old.level(), ComputerUseGrant::Act);
+        let look = request(
+            serde_json::json!({"session_id": "s", "challenge_id": "c", "grant": "observe"}),
+        );
+        assert_eq!(look.level(), ComputerUseGrant::Observe);
+        let allow =
+            request(serde_json::json!({"session_id": "s", "challenge_id": "c", "grant": "act"}));
+        assert_eq!(allow.level(), ComputerUseGrant::Act);
+        assert!(serde_json::from_value::<ComputerUseConsentRequest>(
+            serde_json::json!({"session_id": "s", "challenge_id": "c", "grant": "everything"})
+        )
+        .is_err());
     }
 
     /// A sentence that merely READS like the mode refusal is not one. This is
