@@ -82,6 +82,19 @@ describe('isPlainLinkClick (BB-17: the observe grant follows plain links only)',
     expect(isPlainLinkClick(facts({ tag: 'a', href: 'https://site-a.test/article' }))).toBe(true);
   });
 
+  it('refuses a link that leaves the page origin: following it is acting', () => {
+    // A page that injected instructions could point the agent at a link to its own server
+    // carrying page content; crossing to another origin needs the act grant.
+    for (const href of [
+      'https://site-b.test/exfiltrate?data=secret',
+      'http://site-a.test/article',
+      'https://site-a.test:8443/article',
+      'https://sub.site-a.test/article',
+    ]) {
+      expect(isPlainLinkClick(facts({ tag: 'a', href })), href).toBe(false);
+    }
+  });
+
   it('refuses buttons, downloads, fragment links and other schemes', () => {
     expect(isPlainLinkClick(facts())).toBe(false);
     expect(

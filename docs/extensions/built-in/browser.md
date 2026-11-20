@@ -24,8 +24,8 @@ subagent, the tools are not offered, because no Electron window is there to hold
 
 | Tool | What it does | Permission |
 | --- | --- | --- |
-| `browser_open` | Open an http or https address in the chat's agent tab, or a new tab with `new_tab` | Reading |
-| `browser_navigate` | Back, forward, reload or stop | Reading |
+| `browser_open` | Open an http or https address in the chat's agent tab, or a new tab with `new_tab` | Acting |
+| `browser_navigate` | Back, forward, reload or stop | Acting, except stop |
 | `browser_tabs` | List the agent's tabs, switch to one, or close one it opened | Reading |
 | `browser_snapshot` | The page as a compact accessibility tree with `@e` references | Reading |
 | `browser_read` | The page, or one element, as Markdown | Reading |
@@ -33,7 +33,7 @@ subagent, the tools are not offered, because no Electron window is there to hold
 | `browser_scroll` | Scroll the page or an element, or bring a reference into view | Reading |
 | `browser_hover` | Hover a reference | Reading |
 | `browser_wait` | Wait for text, an element's state, an address or a load state, up to 60 seconds | Reading |
-| `browser_click` | Click a reference. A plain link to another page needs only reading | Reading for plain links, acting otherwise |
+| `browser_click` | Click a reference. A plain link to another page of the same site needs only reading | Reading for links within the same origin, acting otherwise |
 | `browser_fill` | Clear a field and set its value | Acting |
 | `browser_type` | Type text key by key | Acting |
 | `browser_press` | Press a key or chord such as `Enter` or `Meta+A` | Acting, except Escape, Tab, arrows, Page Up and Down, Home and End |
@@ -91,8 +91,12 @@ are two grants:
 
 | Grant | Covers | Lasts |
 | --- | --- | --- |
-| Reading | Opening and navigating pages, reading them, snapshots, screenshots, scrolling, hovering, waiting, following plain links | The chat, until Stop |
-| Acting | Everything else: clicks that are not plain links, filling, typing, keys, choices, dialogs, downloads | The request, or the chat with **Allow for this chat** |
+| Reading | The pages the agent has open: reading them, snapshots, screenshots, scrolling, hovering, waiting, stopping a load, following a link within the same origin | The chat, until Stop |
+| Acting | Opening an address, back, forward and reload, following a link to another origin, every other click, filling, typing, keys, choices, dialogs, downloads | The request, or the chat with **Allow for this chat** |
+
+Every navigation the agent chooses is acting, because an address the agent opens is text it
+wrote: a page that slipped it instructions could otherwise have it carry page content to another
+site in a query string under the reading grant alone. Approving acting also allows reading.
 
 The card names the model and where page content goes, in full. Only the person can answer it: the
 route that records the answer requires the user-action proof, so neither the model nor a plain

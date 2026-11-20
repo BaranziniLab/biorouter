@@ -696,8 +696,25 @@ async function afterAction(ctx: Context, navigationsBefore: number): Promise<boo
 
 // --- Operations ---------------------------------------------------------------------------
 
+/**
+ * BB-17: every navigation the agent chooses needs the act grant, because the address is text the
+ * agent wrote and a page that injected instructions could have it carry page content off. The
+ * daemon admits these under act already; this answers the same if one ever arrives without it,
+ * and nothing happens.
+ */
+function withoutActGrant(ctx: Context, what: string): BrowserAgentResult | null {
+  if (ctx.request.grant === 'act') return null;
+  return {
+    ok: false,
+    detail: `${what} needs the permission to act on websites`,
+    data: { needs_act_grant: true },
+  };
+}
+
 async function opOpen(ctx: Context): Promise<BrowserAgentResult> {
   const url = String(ctx.request.args.url ?? '');
+  const refused = withoutActGrant(ctx, `opening ${hostOf(url)}`);
+  if (refused) return refused;
   const before = ctx.state.mainNavigations;
   const navigation = await navigateAgentBrowserTab(
     ctx.window,
@@ -720,6 +737,10 @@ async function opOpen(ctx: Context): Promise<BrowserAgentResult> {
 
 async function opNavigate(ctx: Context): Promise<BrowserAgentResult> {
   const action = String(ctx.request.args.action) as 'back' | 'forward' | 'reload' | 'stop';
+  if (action !== 'stop') {
+    const refused = withoutActGrant(ctx, action === 'reload' ? 'reloading' : `going ${action}`);
+    if (refused) return refused;
+  }
   const before = ctx.state.mainNavigations;
   if (!controlAgentBrowserTab(ctx.window, ctx.info.viewId, action)) {
     throw new OpFailure(

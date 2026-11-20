@@ -22,16 +22,17 @@ import {
  * browser operation in flight.
  *
  * Two grants (BB-17): reading (once per chat) and acting (once per request, or for the chat
- * from the card's secondary button).
+ * from the card's secondary button). Opening an address is acting, so the first card in a chat is
+ * usually the acting card, and allowing it allows reading too.
  */
 
 const PANEL_SHELL =
   'br-fill-surface mx-3 mb-2 rounded-container border border-transparent bg-background-fill px-3 py-2.5 text-supporting';
 
 const ACT_HELP =
-  'Acting covers clicking anything other than a plain link, filling and submitting forms, pressing keys, choosing options, answering dialogs and downloading.';
+  'Acting covers opening an address, going back, forward or reloading, following a link to another site, clicking anything other than a link, filling and submitting forms, pressing keys, choosing options, answering dialogs and downloading.';
 const READ_HELP =
-  'Reading covers opening and navigating pages, reading them, screenshots, scrolling and following plain links. It lasts for this chat until you stop it.';
+  'Reading covers the pages Biorouter has open: reading them, screenshots, scrolling and following links within the same site. It lasts for this chat until you stop it.';
 
 function errorText(error: unknown): string {
   if (error instanceof Error) return error.message;
@@ -134,11 +135,11 @@ export function BrowserControl({ sessionId }: { sessionId: string }) {
         <Compass className="size-4 shrink-0" aria-hidden="true" />
         <span className="min-w-0 flex-1 break-words" role="status">
           {acting
-            ? 'Biorouter Browser wants to act on a website'
-            : 'Biorouter Browser wants to browse'}
+            ? 'Biorouter Browser wants to open or act on websites'
+            : 'Biorouter Browser wants to read web pages'}
         </span>
         <InfoTip
-          label={acting ? 'acting on websites' : 'browsing'}
+          label={acting ? 'opening and acting on websites' : 'reading web pages'}
           help={acting ? ACT_HELP : READ_HELP}
         />
       </div>
@@ -157,7 +158,7 @@ export function BrowserControl({ sessionId }: { sessionId: string }) {
               void decide(() => allowBrowser(status, acting ? 'act' : 'observe', 'request'))
             }
           >
-            {sending ? 'Allowing…' : acting ? 'Allow for this request' : 'Allow browsing'}
+            {sending ? 'Allowing…' : acting ? 'Allow for this request' : 'Allow reading'}
           </Button>
           {acting && (
             <Button

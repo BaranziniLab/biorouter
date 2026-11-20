@@ -9,11 +9,15 @@
 //! It differs in one way, because reading a page and acting on a site carry different risk:
 //! there are two grants.
 //!
-//! * **Observe** (the chat's lifetime): opening and navigating pages, reading, snapshots,
-//!   screenshots, scrolling, hovering, waiting, following plain links.
-//! * **Act** (the request, or the chat when the person chooses "Allow for this chat"): clicking
-//!   anything other than a plain link, filling, typing, pressing keys, choosing options,
-//!   answering dialogs, downloading.
+//! * **Observe** (the chat's lifetime): reading the pages the agent has open, snapshots,
+//!   screenshots, scrolling, hovering, waiting, stopping a load, and following a plain link to
+//!   the page's own origin.
+//! * **Act** (the request, or the chat when the person chooses "Allow for this chat"): opening
+//!   an address, going back, forward or reloading, following a link to another origin,
+//!   clicking anything other than a link, filling, typing, pressing keys, choosing options,
+//!   answering dialogs, downloading. An address the agent opens is text it chose, so a page that
+//!   slipped it instructions could have it carry page content off in a query string; the act
+//!   grant is the person's say in that (BB-17).
 //!
 //! A Copilot grant does not admit browser tools and a browser grant does not admit Copilot tools
 //! (BB-18, "No conflicts when both are on"); one Stop revokes both (the revoke routes call both).
@@ -132,14 +136,33 @@ pub fn press_is_observation(key: &str) -> bool {
     modifiers.iter().all(|modifier| modifier == "shift") && OBSERVE_KEYS.contains(&last.as_str())
 }
 
-/// The grant a call is ADMITTED with. `browser_click` starts at observe: main finds out when it
-/// resolves the reference whether the target is a plain http(s) link, and answers
-/// `needs_act_grant` without acting when it is not, so the extension asks for the act grant and
-/// sends the same operation again.
+/// The grant a call is ADMITTED with.
+///
+/// Every navigation the agent chooses needs the act grant: opening an address (the address is
+/// the agent's own text, so a page that injected instructions could have it carry page content
+/// to a site of its choosing) and going back, forward or reloading. Stopping a load does not.
+///
+/// `browser_click` starts at observe: main finds out when it resolves the reference whether the
+/// target is a plain http(s) link to the page's own origin, and answers `needs_act_grant`
+/// without acting when it is not (a link to another origin, a button, a form control), so the
+/// extension asks for the act grant and sends the same operation again.
 pub fn grant_for_call(tool: &str, arguments: Option<&JsonObject>) -> BrowserGrant {
     let bare = tool.strip_prefix("browser__").unwrap_or(tool);
     match bare {
-        "browser_fill" | "browser_type" | "browser_select" | "browser_dialog" => BrowserGrant::Act,
+        "browser_open" | "browser_fill" | "browser_type" | "browser_select" | "browser_dialog" => {
+            BrowserGrant::Act
+        }
+        "browser_navigate" => {
+            let action = arguments
+                .and_then(|args| args.get("action"))
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default();
+            if action.eq_ignore_ascii_case("stop") {
+                BrowserGrant::Observe
+            } else {
+                BrowserGrant::Act
+            }
+        }
         "browser_press" => {
             let key = arguments
                 .and_then(|args| args.get("key"))
@@ -280,15 +303,18 @@ pub fn disclosure(
     };
     match grant {
         BrowserGrant::Observe => format!(
-            "Let Biorouter browse with {provider}/{model}? Pages it opens in the Biorouter Browser, \
-             including sites where you are logged in, and screenshots of them go to {destination}. \
-             It can open and read websites for this chat until you stop it.{private_note}"
+            "Let Biorouter read web pages with {provider}/{model}? The pages it has open in the \
+             Biorouter Browser, including sites where you are logged in, and screenshots of them \
+             go to {destination}. It can read, scroll and follow links within the same site for \
+             this chat until you stop it. Opening another address needs your permission to \
+             act.{private_note}"
         ),
         BrowserGrant::Act => format!(
-            "Let Biorouter click, type and submit forms in the Biorouter Browser using \
-             {provider}/{model}? It acts on websites as you, including where you are logged in. \
-             Allow for this request, until the reply finishes or you stop it?{private_note} \
-             Stop cannot undo changes already made."
+            "Let Biorouter open websites, click, type and submit forms in the Biorouter Browser \
+             using {provider}/{model}? It acts on websites as you, including where you are logged \
+             in, and the pages it opens and screenshots of them go to {destination}. Allow for \
+             this request, until the reply finishes or you stop it?{private_note} Stop cannot \
+             undo changes already made."
         ),
     }
 }
@@ -692,8 +718,6 @@ mod tests {
     #[test]
     fn grants_follow_the_tool_table() {
         for tool in [
-            "browser_open",
-            "browser_navigate",
             "browser_tabs",
             "browser_snapshot",
             "browser_read",
@@ -713,6 +737,39 @@ mod tests {
         ] {
             assert_eq!(grant_for_call(tool, None), BrowserGrant::Act, "{tool}");
         }
+    }
+
+    /// An address the agent opens is text it chose, so every navigation it chooses needs the
+    /// act grant: a page that injected instructions must not be able to have the agent carry
+    /// page content to another site under the reading grant alone. Stopping a load moves
+    /// nothing anywhere and stays a reading operation.
+    #[test]
+    fn every_navigation_the_agent_chooses_needs_the_act_grant() {
+        let call = |tool: &str, args: serde_json::Value| grant_for_call(tool, args.as_object());
+        for args in [
+            serde_json::json!({ "url": "https://attacker.example/?q=page+text" }),
+            serde_json::json!({ "url": "example.org", "new_tab": true }),
+        ] {
+            assert_eq!(call("browser__browser_open", args), BrowserGrant::Act);
+        }
+        assert_eq!(grant_for_call("browser_open", None), BrowserGrant::Act);
+        for action in ["back", "forward", "reload", "Reload", ""] {
+            assert_eq!(
+                call(
+                    "browser__browser_navigate",
+                    serde_json::json!({ "action": action })
+                ),
+                BrowserGrant::Act,
+                "{action}"
+            );
+        }
+        assert_eq!(
+            call(
+                "browser__browser_navigate",
+                serde_json::json!({ "action": "stop" })
+            ),
+            BrowserGrant::Observe
+        );
         let press = |key: &str| {
             let args = serde_json::json!({ "key": key });
             grant_for_call("browser__browser_press", args.as_object())
@@ -972,8 +1029,12 @@ mod tests {
         assert!(public.contains("p/m") && public.contains("https://api.example"));
         assert!(public.contains("logged in"));
         assert!(!public.contains("Private classification"));
+        assert!(public.contains("Opening another address needs your permission to act."));
         let private = disclosure(BrowserGrant::Act, "p", "m", "d", false);
         assert!(private.contains("Private classification does not mean on-device processing."));
         assert!(private.contains("Stop cannot undo changes already made."));
+        // An approved act grant also allows reading, so its text names where pages go.
+        let act = disclosure(BrowserGrant::Act, "p", "m", "https://api.example", true);
+        assert!(act.contains("open websites") && act.contains("https://api.example"));
     }
 }

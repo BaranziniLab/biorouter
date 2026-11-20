@@ -45,12 +45,14 @@ afterEach(() => vi.useRealTimers());
 describe('BrowserControl (BB-17, BB-18)', () => {
   it('asks to browse with the full consent, the model and the destination', async () => {
     render(<BrowserControl sessionId="chat-a" />);
-    expect(await screen.findByText('Biorouter Browser wants to browse')).toBeInTheDocument();
+    expect(
+      await screen.findByText('Biorouter Browser wants to read web pages')
+    ).toBeInTheDocument();
     expect(
       screen.getByText(/Let Biorouter browse with public-provider\/model-a/)
     ).toBeInTheDocument();
     expect(screen.getByText('Data destination: https://provider.example/api')).toBeInTheDocument();
-    fireEvent.click(screen.getByRole('button', { name: 'Allow browsing' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Allow reading' }));
     await waitFor(() => expect(mocks.allow).toHaveBeenCalledWith(base, 'observe', 'request'));
     expect(await screen.findByText(/Biorouter Browser active/)).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Stop' })).toBeInTheDocument();
@@ -67,7 +69,7 @@ describe('BrowserControl (BB-17, BB-18)', () => {
     mocks.status.mockResolvedValue(acting);
     render(<BrowserControl sessionId="chat-a" />);
     expect(
-      await screen.findByText('Biorouter Browser wants to act on a website')
+      await screen.findByText('Biorouter Browser wants to open or act on websites')
     ).toBeInTheDocument();
     // The consequence is part of the consent text, shown once and in full.
     expect(screen.getAllByText(/Stop cannot undo changes already made\./)).toHaveLength(1);

@@ -168,33 +168,28 @@ export function boxOfQuads(quads: number[][]): Box | null {
 }
 
 /**
- * A click the observe grant covers (BB-17): following a plain link to an http(s) address that
- * is another page. A link that downloads, a fragment link to the same page (usually a script's
- * button in disguise), and everything that is not a link need the act grant.
+ * A click the observe grant covers (BB-17): following a plain link to another http(s) page of
+ * the page's own origin. A link that leaves the origin (a page that injected instructions could
+ * aim the agent at its own server), a link that downloads, a fragment link to the same page
+ * (usually a script's button in disguise), and everything that is not a link need the act grant.
  */
 export function isPlainLinkClick(
   facts: Pick<ElementFacts, 'href' | 'download' | 'pageUrl'>
 ): boolean {
   if (!facts.href || facts.download) return false;
   let target: URL;
+  let page: URL;
   try {
     target = new URL(facts.href);
+    page = new URL(facts.pageUrl);
   } catch {
     return false;
   }
   if (target.protocol !== 'http:' && target.protocol !== 'https:') return false;
   if (target.username || target.password) return false;
-  try {
-    const page = new URL(facts.pageUrl);
-    const sameDocument =
-      target.origin === page.origin &&
-      target.pathname === page.pathname &&
-      target.search === page.search;
-    if (sameDocument) return false;
-  } catch {
-    // An unparseable page address: judge the link alone.
-  }
-  return true;
+  if (target.origin !== page.origin) return false;
+  const sameDocument = target.pathname === page.pathname && target.search === page.search;
+  return !sameDocument;
 }
 
 const PROTECTED_AUTOCOMPLETE =

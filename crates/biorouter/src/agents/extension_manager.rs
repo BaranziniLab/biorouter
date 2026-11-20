@@ -1874,7 +1874,8 @@ impl ExtensionManager {
     }
 
     /// The act grant for a call admitted under observe whose target turned out to need it
-    /// (`browser_click` on something other than a plain link). Called by the browser extension
+    /// (`browser_click` on something other than a plain link to the page's own origin). Called
+    /// by the browser extension
     /// with the same session and the call's own cancel token.
     pub async fn browser_act_permit(
         &self,
