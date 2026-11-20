@@ -75,17 +75,20 @@ pub const MSG_CLIPBOARD_WAIT: &str = "Copied. Waiting up to 60 s for you to past
 pub const MSG_NO_HISTORY_WSL: &str = "Windows cannot be told to keep a copy made from WSL out of its clipboard history, so `--no-history` was refused. Run the command without `--copy` to print the text instead, or without `--no-history` to copy it anyway.";
 
 /// MSG-SSH-ROUTES, with `<host>` filled in.
+///
+/// `serve` prints its access token only in some cases (#524), so the full address comes from
+/// `biorouter serve url`, never from the banner.
 pub fn msg_ssh_routes(host: &str) -> String {
     format!(
-        "This computer has no microphone you can reach over SSH. To dictate with this computer's model and dictionary, run `biorouter serve` here and keep it running, then on your laptop run `ssh -N -L 8765:127.0.0.1:8765 {host}` and open the address `serve` prints, including its ?t= part. Or dictate on your own computer with `biorouter dictate --copy` and paste, or copy a recording here and run `biorouter transcribe <file>`."
+        "This computer has no microphone you can reach over SSH. To dictate with this computer's model and dictionary, run `biorouter serve` here and keep it running, then on your laptop run `ssh -N -L 8765:127.0.0.1:8765 {host}` and open the full address, access token included, that `biorouter serve url` shows on this computer. Or dictate on your own computer with `biorouter dictate --copy` and paste, or copy a recording here and run `biorouter transcribe <file>`."
     )
 }
 
-/// MSG-SSH-SERVICE: a `biorouter serve` already runs here on `port`; `<token>` is left as
-/// written, because only whoever runs the service has it.
+/// MSG-SSH-SERVICE: a `biorouter serve` already runs here on `port`. Its full address comes
+/// from `biorouter serve url`, which only the account that runs the service can read.
 pub fn msg_ssh_service(port: &str, host: &str) -> String {
     format!(
-        "A Biorouter service already runs on this computer, on port {port}. To dictate with it, on your laptop run `ssh -N -L {port}:127.0.0.1:{port} {host}` and open http://127.0.0.1:{port}/?t=<token>, with the token from whoever runs the service. Or dictate on your own computer with `biorouter dictate --copy` and paste, or copy a recording here and run `biorouter transcribe <file>`."
+        "A Biorouter service already runs on this computer, on port {port}. To dictate with it, on your laptop run `ssh -N -L {port}:127.0.0.1:{port} {host}` and open the full address, access token included. `biorouter serve url --port {port}` shows it when run here as the account that runs the service; if that is not you, ask whoever runs it. Or dictate on your own computer with `biorouter dictate --copy` and paste, or copy a recording here and run `biorouter transcribe <file>`."
     )
 }
 
@@ -280,6 +283,28 @@ mod tests {
         ];
         for (sentence, catalog) in cases {
             assert_eq!(sentence, catalog);
+        }
+    }
+
+    /// `serve` no longer prints its access token by default (#524), so the SSH routes name the
+    /// command that shows the full address instead of an address the person never saw.
+    #[test]
+    fn the_ssh_routes_name_serve_url_not_a_printed_token() {
+        let routes = msg_ssh_routes("leo");
+        assert!(routes.contains("`biorouter serve url`"), "{routes}");
+        let service = msg_ssh_service("9123", "leo");
+        assert!(
+            service.contains("`biorouter serve url --port 9123`"),
+            "{service}"
+        );
+        assert!(
+            service.contains("`ssh -N -L 9123:127.0.0.1:9123 leo`"),
+            "{service}"
+        );
+        for message in [routes, service] {
+            assert!(!message.contains("?t="), "{message}");
+            assert!(!message.contains("prints"), "{message}");
+            assert!(message.contains("access token included"), "{message}");
         }
     }
 
