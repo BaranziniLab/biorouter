@@ -178,6 +178,14 @@ describe('the import dialog (BB-21)', () => {
     expect(within(dialog).queryByRole('alert')).toBeNull();
   });
 
+  it('counts the sites in the singular when there is one', () => {
+    expect(COPY.sitesSummary(1, 1)).toBe('1 site');
+    expect(COPY.sitesSummary(0, 1)).toBe('0 of 1 site');
+    expect(COPY.sitesSummary(3, 3)).toBe('All 3 sites');
+    expect(COPY.sitesSummary(2, 3)).toBe('2 of 3 sites');
+    expect(COPY.sitesSummary(1200, 1200)).toBe('All 1,200 sites');
+  });
+
   it('will not import with logins on and no site chosen', async () => {
     const bridge = installImport(status());
     installElectron(bridge);

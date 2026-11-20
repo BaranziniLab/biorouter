@@ -1,5 +1,7 @@
 import type { ChromeImportLogins, ChromeImportSummary } from '../../../browser/types';
 
+const number = (value: number) => value.toLocaleString('en-US');
+
 /** The words of the Chrome import (BB-21 to BB-25). */
 export const CHROME_IMPORT_COPY = {
   title: 'Import from Chrome',
@@ -23,8 +25,10 @@ export const CHROME_IMPORT_COPY = {
     'Chrome on Windows locks its logins to Chrome, so other apps cannot import them. Log in on each site in the Biorouter Browser instead.',
   macPrompt: 'macOS will ask to allow access to Chrome Safe Storage. Choose Allow.',
   sites: 'Choose sites',
-  sitesSummary: (chosen: number, total: number) =>
-    chosen === total ? `All ${total} sites` : `${chosen} of ${total} sites`,
+  sitesSummary: (chosen: number, total: number) => {
+    if (chosen === total) return total === 1 ? '1 site' : `All ${number(total)} sites`;
+    return `${number(chosen)} of ${number(total)} ${total === 1 ? 'site' : 'sites'}`;
+  },
   sitesFilter: 'Filter sites',
   sitesUnreadable: 'Chrome’s cookie file could not be read.',
   selectAll: 'Select all',
@@ -64,7 +68,6 @@ const LOGINS_SENTENCE: Record<Exclude<ChromeImportLogins, 'imported' | 'not-chos
   failed: 'Logins were not imported because Chrome’s key could not be read.',
 };
 
-const number = (value: number) => value.toLocaleString('en-US');
 const plural = (value: number, one: string, many: string) =>
   `${number(value)} ${value === 1 ? one : many}`;
 
