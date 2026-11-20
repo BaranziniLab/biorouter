@@ -109,10 +109,15 @@ The vendored subset is what the build reads and nothing else: `Cargo.toml`, `Car
 `crates/windows`, `src`, `skills/` and `providers/macos/`. The last two are needed although
 Copilot never uses them: `crates/core/src/commands/skills.rs` and
 `crates/core/src/sandbox/provider_table.rs` embed them with `include_str!`, so the crate does not
-compile without them (measured 2026-11-20). Left out: `crates/ffi`, `assets/` (36 MB), `apps/`,
-`docs/`, `tests/`, `probes/`, `benchmarks/`, `npm/` and upstream's `rust-toolchain.toml`. The subset
-is about 17 MB of source, of which about 8 MB is upstream's in crate unit tests, kept so the pinned
-crates can be tested as they are.
+compile without them (measured 2026-11-20). `crates/ffi` is vendored too, although Biorouter never
+builds the C library: the workspace lists it as a member, and cargo refuses to load a workspace with a
+member missing (measured while vendoring). So are three fixture files under `tests/fixtures/` that
+the core crate's unit tests read with `include_str!`. Left out: `assets/` (36 MB), `apps/`, `docs/`,
+the rest of `tests/`, `probes/`, `benchmarks/`, `npm/` and upstream's `rust-toolchain.toml`. The
+subset is 2,845 files and about 12.5 MB, much of it upstream's in crate unit tests, kept so the pinned
+crates can be tested as they are (all 1,719 of the core crate's pass under 1.92). The vendoring
+script's `INCLUDED` list is the authority, and `vendor/agent-desktop/DEPENDENCIES.txt` lists every
+locked crate with its licence and the targets that compile it.
 
 There are **no Biorouter patches**. Every Biorouter rule (consent, refusals, argument checks,
 output framing) lives in the wrapper. That keeps a pin move to a diff of upstream, and it respects
@@ -153,7 +158,13 @@ instead of `swift build` and `go build`):
 - `RUSTFLAGS` adds `--remap-path-prefix` for the source and cargo home, because two builds from
   different folders differed byte for byte through embedded paths.
 - macOS sets `MACOSX_DEPLOYMENT_TARGET=13.0`, upstream's tested floor. The build needs the Xcode
-  command line tools for the Objective-C bridges and nothing else.
+  command line tools for the Objective-C bridges and nothing else. Upstream never sets the variable,
+  so its bridges compile at the build script's 10.15 default; at 13.0 one call
+  (`fullPathForApplication:`, deprecated since macOS 11 and still present) fails the bridges'
+  `-Werror` (measured with the 26 and 27 SDKs). The build script takes no extra flags, so the build
+  sets clang's `CCC_OVERRIDE_OPTIONS` to keep that one diagnostic a warning, instead of patching the
+  vendored source. `scripts/check-macos-deployment.sh --floor 13.0 --require-imports` then confirms
+  the binary declares 13.0 and imports nothing newer strongly.
 - Dependencies (160 crates, MIT, Apache-2.0, MPL-2.0, Unicode-3.0 and Unlicense under upstream's
   `deny.toml`) are fetched from crates.io and checked against `Cargo.lock`'s checksums, the same
   trust Biorouter places in its own crates.
@@ -175,10 +186,10 @@ the engine, version, commit, target, minimum OS and the SHA-256 of every shipped
 
 | Platform | Shipped files |
 |---|---|
-| macOS arm64 and x64 | `computer-use/Biorouter Copilot.app/Contents/MacOS/agent-desktop`, `Contents/Info.plist`, `Contents/_CodeSignature/`, `computer-use/LICENSE.agent-desktop`, `computer-use/manifest.json` |
-| Windows x64 | `computer-use/agent-desktop.exe`, the license, the manifest |
-| Linux x64, desktop packages | `resources/computer-use/agent-desktop`, the license, the manifest |
-| Linux x64, CLI packages | `/usr/libexec/biorouter/computer-use/agent-desktop`, the license, the manifest |
+| macOS arm64 and x64 | `computer-use/Biorouter Copilot.app/Contents/MacOS/agent-desktop`, `Contents/Info.plist`, `Contents/Resources/Biorouter.icns` (so System Settings shows Biorouter's icon beside the name), `Contents/_CodeSignature/`, `computer-use/LICENSE.agent-desktop`, `computer-use/DEPENDENCIES.agent-desktop.txt`, `computer-use/manifest.json` |
+| Windows x64 | `computer-use/agent-desktop.exe`, the license, the dependency list, the manifest |
+| Linux x64, desktop packages | `resources/computer-use/agent-desktop`, the license, the dependency list, the manifest |
+| Linux x64, CLI packages | `/usr/libexec/biorouter/computer-use/agent-desktop`, the license, the dependency list, the manifest |
 
 Upstream's two extra binaries are not shipped. `agent-desktop-macos-helper` exists only for the
 clipboard commands (the macOS input adapter calls the clipboard module from `clipboard-get`,
@@ -855,8 +866,11 @@ next action requires an observation. The existing real process tests stay:
 ### Contract tests (real binary, no desktop)
 
 Run on each target's own OS in CI: `version` reports 1.3.1; every command the wrapper maps exists
-with the flags it uses (parsed from `--help`); a bare `@e1` reference returns `INVALID_ARGS` with exit
-code 2; the JSON envelope is version 2.6. These catch a pin move that changes the command line.
+with the flags it uses (parsed from `--help`); a bare `@e1` reference returns `INVALID_ARGS` with
+delivery `not_delivered` (exit code 1, measured on v1.3.1: the reference is rejected after argument
+parsing, so it is not clap's exit code 2); the JSON envelope is version 2.6. These catch a pin move
+that changes the command line. The first two and the last are what
+`scripts/computer-use-runtime.py contract` checks in the payload workflows today.
 
 ### Packaging tests
 
