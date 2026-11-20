@@ -5,8 +5,7 @@ import ProgressiveMessageList from './ProgressiveMessageList';
 import { PendingToolCallList } from './PendingToolCallCard';
 import { MainPanelLayout } from './Layout/MainPanelLayout';
 import ChatInput from './ChatInput';
-import { CopilotControl } from './copilot/CopilotControl';
-import { BrowserControl } from './browser/BrowserControl';
+import { AgentCapabilityControls } from './agentControls/AgentCapabilityControls';
 import { deriveWorkingDirLocked } from './bottom_menu/DirSwitcher';
 import { ScrollArea, ScrollAreaHandle } from './ui/scroll-area';
 import { useFileDrop } from '../hooks/useFileDrop';
@@ -3083,8 +3082,9 @@ function BaseChatContent({
       */}
         <PinnedModelNote session={session} reportedByTurn={pinnedModel} className="mx-3 mb-1" />
         <ChatCrewAccessBar access={crewAccess} chatTitle={session?.name} className="mx-3 mb-1" />
-        {sessionId && agentReady && <CopilotControl key={sessionId} sessionId={sessionId} />}
-        {sessionId && agentReady && <BrowserControl key={sessionId} sessionId={sessionId} />}
+        {sessionId && agentReady && (
+          <AgentCapabilityControls key={sessionId} sessionId={sessionId} />
+        )}
         <PendingChatModelContext.Provider value={pendingChatModelScope}>
           <ChatInput
             sessionId={sessionId}
