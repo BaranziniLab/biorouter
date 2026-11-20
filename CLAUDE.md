@@ -2693,8 +2693,12 @@ no Swift). ⚠ At the 13.0 floor one upstream Objective-C deprecation fails the 
 `-Werror`; the build keeps it a warning with clang's `CCC_OVERRIDE_OPTIONS` rather than
 patching the vendored tree. `verify` reads the binaries themselves (Mach-O minimum, ELF glibc
 floor and libraries, PE subsystem and MinGW imports), and `contract` runs `version` and a
-refused bare reference with no desktop access. The old `vendor/computer-use/` tree and its
-OCU-only test scripts are unused and go in the retirement phase (AD-18).
+refused bare reference with no desktop access. **Open Computer Use, the engine before it, is
+retired** (1.94.6, AD-18): `vendor/computer-use/` and every OCU-only script are deleted, the
+naming guard (`scripts/check-computer-use-naming.sh`) accepts that name only as retired and
+refuses the engine's own name in the interface, prompts and built-in skills, and on macOS the
+daemon ends, once at start, a leftover OCU agent of THIS installation, matched by its exact path
+(`computer_use::retired`, AD-19).
 
 **The wrapper** (`crates/biorouter-mcp/src/computer_use/`, AD-07 to AD-15) runs ONE engine
 command per operation, never `agent-desktop mcp`: `plan.rs` is the only place a command line is
@@ -2725,10 +2729,32 @@ The host obtains one Biorouter Copilot grant per request: **Allow** (look and co
 only (`ComputerUseConsent::approve_with`, `permit_for`; the classifier `grant_for_call` is
 `contract::grant_for`, shared with the wrapper, which refuses an act call again unless the
 dispatch meta carries `computer_use_grant: act`). Under look only an act call fails at once
-with `LOOK_ONLY_REFUSAL` and no second card. Respect Stop/revoke, avoid retry loops and script
+with `LOOK_ONLY_REFUSAL` and no second card. Every surface asks the same way (AD-10): the
+desktop card (`components/copilot/CopilotControl.tsx`) offers Allow, Only let it look and Cancel,
+`ComputerUseStatus.grant` says what holds while active, `POST /agent/computer_use/consent` takes
+`grant` (⚠ absent means `act`, so an older client keeps its meaning), and the CLI and TUI ask
+Allow, Only let it look or Deny, starting on Deny. Setup's **Request access**
+(`POST /agent/computer_use/setup/request`, user-action proof only) runs the engine's
+`permissions --request` through the disclaimed spawn, so macOS's own prompts name Biorouter
+Copilot; ⚠ the engine also asks for Automation of System Events, which Copilot does not use, and
+setup says the person may refuse it. Respect Stop/revoke, avoid retry loops and script
 fallbacks, refresh stale state, and verify outcomes. Private/public chats retain separate
 observations and consent. Pause before private-to-public handoff because the physical desktop is
 shared. Routing between Copilot and the Biorouter Browser is one sentence,
 `contract::ROUTING_SENTENCE`, which `browser_extension::COPILOT_ROUTING_SENTENCE` re-exports.
 See [the design](docs/design/copilot-agent-desktop.md) for the acceptance gates, including live
 macOS permission attribution and real-app drag and drop.
+
+**Fixture acceptance** ([`docs/testing/copilot-fixture-acceptance.md`](docs/testing/copilot-fixture-acceptance.md)):
+`crates/biorouter-mcp/tests/computer_use_fixture.rs` (ignored by default) drives a fixture app
+through `ComputerControllerServer` with the dispatch meta the consent gate attaches, and reads
+every outcome from the app's own state file, never from a tool's report: typing, clicking,
+checking, look only and password refusals, a list reordered by drag, text dragged into a second
+window, scrolling, and Stop mid-drag with no button left pressed. One set of names and state keys
+across `scripts/copilot-fixture-gtk.py`, `copilot-fixture-winforms.cs` (compiled to its own
+executable: ⚠ a PowerShell host is a terminal to Copilot, which refuses to type into it) and
+`copilot-fixture-macos.swift`. `computer-use-native.yml` runs the Linux and Windows drives in its
+release gate; macOS hosted runners cannot grant Accessibility to the Copilot bundle, so there it
+only builds the fixture. Measured 2026-11-20: the GTK drive passes four runs in four on Ubuntu
+24.04 arm64 in Docker (Xvfb, openbox, at-spi2-core 2.52), so drag and drop within an app and
+between two windows works on X11; the Windows and macOS drives are not yet run.

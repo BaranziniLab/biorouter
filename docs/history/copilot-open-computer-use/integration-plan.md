@@ -1,9 +1,15 @@
 # Built-in Biorouter Copilot integration plan
 
-Status: implementation in progress. Revised 2026-09-17 for the user-approved clean replacement: one native Biorouter Copilot capability, no legacy desktop tools or compatibility aliases. See [implementation status](computer-use-implementation-status.md) for evidence and remaining gates.
+> **What this is.** The plan of record that made Open Computer Use Biorouter Copilot's engine and
+> set Copilot's consent, isolation and distribution rules, as revised on 2026-09-17.
+> **Status:** Historical record. It shipped from 1.91 through 1.94.5. In 1.94.6 the engine was replaced by
+> agent-desktop and Open Computer Use was retired; [Biorouter Copilot on
+> agent-desktop](../../design/copilot-agent-desktop.md) is the current design and names each rule
+> here it keeps or revises (AD-01 to AD-22).
+> **Audience:** anyone tracing why Copilot's consent and isolation are shaped the way they are.
 
-Superseded in part on 2026-11-20: for 1.94.6 the engine is agent-desktop, not Open Computer Use. [Biorouter Copilot on agent-desktop](copilot-agent-desktop.md) records that decision and the ones it revises (AD-01, AD-07, AD-08, AD-10). The consent, isolation and distribution rules below still apply where it does not revise them.
-
+See [the implementation status ledger](implementation-status.md) for the evidence this plan was
+built against.
 ## Recommendation
 
 Make Open Computer Use (OCU) the default desktop-automation engine of one unified **Biorouter Copilot** capability. Keep `computercontroller` as its internal capability ID, with an entirely native tool contract. Ship a pinned native helper with every release package. Users should not need npm, Node, Go, Swift, git, or an extension-install step to use the shipped feature.
@@ -216,3 +222,9 @@ Local file paths in the tables are relative to the BioRouter root and were inspe
 - [macOS build, identity, and artwork](https://github.com/iFurySt/open-codex-computer-use/blob/547b4ffb8ed731a8f16486e6d8a3b215484267d3/scripts/build-open-computer-use-app.sh)
 - [Platform package targets](https://github.com/iFurySt/open-codex-computer-use/blob/547b4ffb8ed731a8f16486e6d8a3b215484267d3/scripts/npm/build-packages.mjs)
 - [Swift minimum OS/toolchain](https://github.com/iFurySt/open-codex-computer-use/blob/547b4ffb8ed731a8f16486e6d8a3b215484267d3/Package.swift)
+
+## Related documentation
+
+- [Biorouter Copilot on Open Computer Use](README.md): this folder's index
+- [Biorouter Copilot on agent-desktop](../../design/copilot-agent-desktop.md): the current design, which replaced this engine
+- [Biorouter Copilot fixture acceptance](../../testing/copilot-fixture-acceptance.md): how the current engine is driven against real fixture apps

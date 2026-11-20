@@ -1,11 +1,11 @@
-> **What this is.** The procedure for verifying Biorouter Copilot on Windows on a real machine, and the record of why continuous integration cannot do it.
-> **Status:** Current — the verification is OUTSTANDING and blocks the 1.91.0 release.
-> **Audience:** Whoever runs the Windows verification, and anyone deciding whether a red Windows acceptance job is a defect or a missing capability.
+> **What this is.** The procedure that verified Biorouter Copilot on Windows on a real machine while it ran on Open Computer Use, and the record of why continuous integration could not.
+> **Status:** Historical record. Open Computer Use was retired in 1.94.6; Windows is now checked by the WinForms fixture drive in [Biorouter Copilot fixture acceptance](../../testing/copilot-fixture-acceptance.md).
+> **Audience:** anyone tracing the Windows findings of the retired engine.
 
 # Verifying Biorouter Copilot on Windows
 
 The `Install packages (win32-x64)` job in
-[`computer-use-package-acceptance.yml`](../../.github/workflows/computer-use-package-acceptance.yml)
+[`computer-use-package-acceptance.yml`](../../../.github/workflows/computer-use-package-acceptance.yml)
 is red, and **no code change can turn it green.** It asserts `--expect-status ready`, and
 a GitHub-hosted Windows runner cannot reach that state. This document says why, what to run
 on a machine that can, and what a pass looks like.
@@ -13,10 +13,10 @@ on a machine that can, and what a pass looks like.
 ## Why CI cannot do this
 
 The Windows runtime needs a signed-in interactive desktop session.
-[`vendor/computer-use/README.md`](../../vendor/computer-use/README.md)
+`vendor/computer-use/README.md` (removed in 1.94.6)
 states it outright — *"Windows requires the signed-in user's interactive session and Windows
 PowerShell with UI Automation support"* — and
-[`scripts/test-computer-use-windows-fixture.py`](../../scripts/test-computer-use-windows-fixture.py)
+`scripts/test-computer-use-windows-fixture.py` (removed in 1.94.6)
 opens with *"Exercise UI Automation on an isolated WinForms fixture in an interactive
 session."* A GitHub-hosted runner has no such session.
 
@@ -131,6 +131,6 @@ never run; none of them crashed anything.
 
 ## Related documentation
 
-- [Biorouter Copilot implementation status](../design/computer-use-implementation-status.md) — the acceptance ledger and every gate's evidence
-- [Biorouter Copilot integration plan](../design/computer-use-integration-plan.md) — the design this verifies
+- [Biorouter Copilot implementation status](implementation-status.md) — the acceptance ledger and every gate's evidence
+- [Biorouter Copilot integration plan](integration-plan.md) — the design this verifies
 - [Testing](README.md) — what tests in this repository may safely touch

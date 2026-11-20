@@ -316,10 +316,12 @@ uses its bundled native helper on the backend host. A headless service must repo
 `desktop_unavailable` without breaking chat or Web & Documents. Opening the browser client does
 not expose the browser user's desktop.
 
-Linux desktop operation requires a real user session, the declared AT-SPI/Python GI dependencies,
-and supported capture/input methods. Xvfb alone does not establish accessibility or Wayland
-support. Do not install the retired shell-automation stack as a fallback. See the
-[implementation status](../design/computer-use-implementation-status.md) for platform evidence.
+Linux desktop operation requires a real user session with the accessibility bridge
+(`at-spi2-core` 2.52 or newer, Ubuntu 24.04's) and, for pointer actions such as drag, an X11
+session: Wayland has no pointer input. Xvfb alone does not establish accessibility; the fixture
+acceptance runs one with a session bus and a window manager. Do not install the retired
+shell-automation stack as a fallback. See [Biorouter Copilot fixture
+acceptance](../testing/copilot-fixture-acceptance.md) for what was measured on Linux.
 Task approval and OS permissions are required before observing or controlling the desktop.
 
 ## Upgrading

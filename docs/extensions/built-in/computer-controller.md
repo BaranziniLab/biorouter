@@ -33,7 +33,7 @@ Some actions use physical input: a double or triple click, a click at coordinate
 
 ### Drag and drop
 
-`drag` presses at the source, moves and releases over the destination with real pointer events. Within one app it works on macOS, Windows and Linux X11. Between two apps some targets ignore it, and dropping a file from Finder or Explorer works only as the same gesture on the file. With `verify` (a `role:text` such as `listitem:Report.txt`), the result says whether that element appeared at the destination; without it, observe the destination before relying on the drop. Linux Wayland has no pointer input, so `drag` is unavailable there. Drag and drop on a web page is the Biorouter Browser's `browser_drag`.
+`drag` presses at the source, moves and releases over the destination with real pointer events. Within one app it works on macOS, Windows and Linux X11. On Linux X11 it is measured: dragging a list item onto another reorders the list, and text dragged from one window lands in a text field of another ([fixture acceptance](../../testing/copilot-fixture-acceptance.md)); the Windows and macOS drives have not run yet. Between two apps some targets ignore it, and dropping a file from Finder or Explorer works only as the same gesture on the file. With `verify` (a `role:text` such as `listitem:Report.txt`), the result says whether that element appeared at the destination; without it, observe the destination before relying on the drop. Linux Wayland has no pointer input, so `drag` is unavailable there. Drag and drop on a web page is the Biorouter Browser's `browser_drag`.
 
 ## What Copilot refuses
 
@@ -50,7 +50,7 @@ These are checked before anything runs, whatever the person allowed:
 
 ## Approval and privacy
 
-Enable Biorouter Copilot in Settings, Chat, Capabilities, or with `biorouter configure`. Enabling it does not approve desktop access. On the first Copilot call of a request, Biorouter asks the person, naming the model, provider, destination and computer. The person allows looking and control, or only looking. Under look only, a call that would change anything fails with a sentence telling the model to describe the change instead, and no second card appears. The grant lasts until the reply finishes or the person stops it; a new request asks again. Stop or revoke ends the running command, gives an interrupted gesture a moment to release the pointer, and deletes the request's stored observations. Operating system Accessibility and Screen Recording permissions are separate prerequisites, granted to Biorouter Copilot and never to Biorouter itself.
+Enable Biorouter Copilot in Settings, Chat, Capabilities, or with `biorouter configure`. Enabling it does not approve desktop access. On the first Copilot call of a request, Biorouter asks the person, naming the model, provider, destination and computer. The card above the composer offers **Allow** (look and control), **Only let it look** and **Cancel**; the terminal asks the same and starts on Deny. While Copilot is active the card says which was allowed. Under look only, a call that would change anything fails with a sentence telling the model to describe the change instead, and no second card appears. The grant lasts until the reply finishes or the person stops it; a new request asks again. Stop or revoke ends the running command, gives an interrupted gesture a moment to release the pointer, and deletes the request's stored observations. Operating system Accessibility and Screen Recording permissions are separate prerequisites, granted to Biorouter Copilot and never to Biorouter itself.
 
 Public model approval says that screenshots and app text go to the provider. Private model approval names the actual provider and deployment; private does not always mean on the device. Each chat and request has its own stored observations and references, deleted when the request ends. Private and public chats never share observations or grants, but they operate the same physical desktop, so material left visible can appear in a new capture, and a private to public handoff pauses for acknowledgement before capture.
 
@@ -60,7 +60,7 @@ The target is the backend host. A browser connected to `biorouter serve` does no
 
 | Platform | Prerequisites | Current limits |
 | --- | --- | --- |
-| macOS | macOS 13 or later; Accessibility for Biorouter Copilot, and Screen Recording for screenshots. | Permission continuity after upgrades and signed package installation require release validation. |
+| macOS | macOS 13 or later; Accessibility for Biorouter Copilot, and Screen Recording for screenshots. **Request access** in Copilot's setup has macOS ask for both by name; it may also ask about System Events, which Copilot does not use, so that one can be refused. | Permission continuity after upgrades and signed package installation require release validation. |
 | Windows | An interactive signed-in desktop. | No UAC, secure desktop or sign-in screen control and no automatic elevation; an app running as administrator can be read but not driven. |
 | Linux X11 | An active desktop session with its session bus and `at-spi2-core` 2.52 or newer (Ubuntu 24.04 or later). | Older accessibility bridges can crash the controlled app, so Copilot reports itself unavailable there. Application accessibility support varies. |
 | Linux Wayland | As for X11. | No pointer input: coordinate clicks and `drag` are unavailable. Keys need the compositor's remote desktop support, which asks the person. |
@@ -70,7 +70,7 @@ Use the readiness check in Settings or `biorouter doctor` to see what is availab
 
 ## Native runtime
 
-Biorouter Copilot works independently of Developer and Web & Documents. Its engine is built from a pinned, vendored copy of an open source desktop automation tool (see `NOTICE`) and runs once per operation with a cleared environment and a private working folder for the request. The previous script-driven controller and Developer capture tools have been removed, with no compatibility aliases or script fallback. Stored workflows that used element indexes must use references from `get_app_state` instead.
+Biorouter Copilot works independently of Developer and Web & Documents. Its engine is built from a pinned, vendored copy of an open source desktop automation tool (see `NOTICE`) and runs once per operation with a cleared environment and a private working folder for the request. Biorouter 1.91 to 1.94.5 used a different engine, Open Computer Use, retired in 1.94.6; after an update on macOS, Biorouter ends that engine's background process if it is still running from the same installation. The previous script-driven controller and Developer capture tools have been removed, with no compatibility aliases or script fallback. Stored workflows that used element indexes must use references from `get_app_state` instead.
 
 ## Related documentation
 
@@ -79,3 +79,4 @@ Biorouter Copilot works independently of Developer and Web & Documents. Its engi
 - [Biorouter Browser](browser.md): web pages in the chat's side panel, the capability Copilot hands web work to.
 - [Permission modes](../../security/permission-modes.md): ordinary tool approval behavior.
 - [Copilot on agent-desktop](../../design/copilot-agent-desktop.md): the design of the engine, the safety layer and the tests.
+- [Biorouter Copilot fixture acceptance](../../testing/copilot-fixture-acceptance.md): how Copilot is driven against real fixture apps, drag and drop included, and what has been measured.

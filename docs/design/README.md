@@ -22,14 +22,11 @@ shipped or were overtaken by later work are filed under
 Most specifications sit in the six topic subfolders below, alongside two top-level rendered
 pages. Four documents sit directly in this folder:
 
-- **[Biorouter Copilot on agent-desktop](copilot-agent-desktop.md)**: the proposed 1.94.6 design
-  that replaces Copilot's engine, Open Computer Use, with agent-desktop, and the consent, refusals,
-  routing beside the Biorouter Browser, drag and drop, packaging and tests around it (`AD-NN`).
-- **[Biorouter Copilot integration plan](computer-use-integration-plan.md)**: the design of record
-  for the native Biorouter Copilot capability and the split that moved the web, document and cache
-  tools out to Web & Documents. Its engine choice is superseded by the agent-desktop design.
-- **[Biorouter Copilot implementation status](computer-use-implementation-status.md)**: the
-  evidence ledger for that plan: what has been proven, and which acceptance gates remain.
+- **[Biorouter Copilot on agent-desktop](copilot-agent-desktop.md)**: the 1.94.6 design that
+  replaced Copilot's engine, the retired Open Computer Use, with agent-desktop, and the consent,
+  refusals, routing beside the Biorouter Browser, drag and drop, packaging and tests around it
+  (`AD-NN`). The plan and evidence ledger of the retired engine are in
+  [`history/copilot-open-computer-use/`](../history/copilot-open-computer-use/README.md).
 - **[Office context compatibility](office-context-compatibility.md)**: the Word, PowerPoint,
   Excel and PDF contexts seeded from `crates/biorouter/src/agents/builtin_skills/office-*`.
 

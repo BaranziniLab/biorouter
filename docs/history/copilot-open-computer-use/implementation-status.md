@@ -1,6 +1,12 @@
 # Biorouter Copilot implementation status
 
-Superseded in part on 2026-11-20: this ledger records the Open Computer Use engine. For 1.94.6 that engine is replaced by agent-desktop; see [Biorouter Copilot on agent-desktop](copilot-agent-desktop.md) for the new design and its gates.
+> **What this is.** The evidence ledger of Biorouter Copilot on the Open Computer Use engine: every
+> gate of the [integration plan](integration-plan.md), with its receipts.
+> **Status:** Historical record. Open Computer Use was retired in 1.94.6 and replaced by agent-desktop; the
+> current gates are in [Biorouter Copilot on agent-desktop](../../design/copilot-agent-desktop.md)
+> and [Biorouter Copilot fixture acceptance](../../testing/copilot-fixture-acceptance.md). Its macOS
+> permission findings are still cited by AD-04.
+> **Audience:** anyone tracing what was measured on the retired engine.
 
 Updated 2026-09-19. This branch integrates main through `5e74e39f` (the seven Windows fixes). Implementation source is `65b26bd2`; `db848ed0` is the source the package failures below were diagnosed against, and `46081f98` names the two-commits-older source that earlier receipts below were taken against. The helper integration patch on disk hashes to `cbaccb29fe7f4544cbe8aef2fb0a5141856aaf7b00837f36c0a80ab33a01fc52` -- measured, superseding the `519c8528` and `12214baf` identities earlier entries call final. Native CI run `35397893244` passed all five targets and its aggregate gate at `db848ed0`. Package-acceptance run `35395366002` at `46081f98` **FAILED**: the Windows and Linux install jobs and the package gate. Both defects are diagnosed and fixed here, and the rerun is what re-opens that gate. This ledger tracks the full user-requested result. Source, unit tests, packaging, real GUI behavior and the pushed PR are separate gates; unavailable evidence is not a pass.
 
@@ -279,3 +285,9 @@ occluded windows and secure-desktop behavior remain unvalidated; Linux mixed DPI
 multiple displays and drag remain unvalidated, and Wayland pixel capture remains
 unsupported. These gaps do not negate the observed fixture passes or imply full
 platform coverage.
+
+## Related documentation
+
+- [Biorouter Copilot on Open Computer Use](README.md): this folder's index
+- [Biorouter Copilot on agent-desktop](../../design/copilot-agent-desktop.md): the current design, which replaced this engine
+- [Biorouter Copilot fixture acceptance](../../testing/copilot-fixture-acceptance.md): how the current engine is driven against real fixture apps

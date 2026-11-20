@@ -6,9 +6,12 @@
 > Browser, drag and drop, packaging, retirement of the old engine and the tests that gate the
 > release.
 > **Status:** Current. Design of 2026-11-20 for Biorouter 1.94.6, on branch `br1946/agent-desktop`,
-> following the owner's decision of the same day to replace the engine. Nothing in it is built yet,
-> and the gates under "Test plan" decide what ships. It supersedes the engine choice of the
-> [Biorouter Copilot integration plan](computer-use-integration-plan.md); that plan's consent,
+> following the owner's decision of the same day to replace the engine. Phases 1 to 5 are built and
+> Open Computer Use is retired; of phase 6, the Linux fixture drive passes and the Windows, live
+> macOS and routing gates have not run. The sections "What building the wrapper measured" and
+> "What the interface, the retirement and the fixtures measured" say what building changed. It
+> supersedes the engine choice of the
+> [Biorouter Copilot integration plan](../history/copilot-open-computer-use/integration-plan.md); that plan's consent,
 > isolation and distribution rules still hold except where a decision below revises them.
 > **Audience:** developers working on Biorouter Copilot, the agent loop, privacy and security,
 > packaging and release, and anyone reviewing or testing the change.
@@ -781,12 +784,13 @@ name guard (`scripts/check-no-goose-block.sh`) is unrelated and unchanged.
 Documents updated with the code: `CLAUDE.md`'s "Native Biorouter Copilot" section and its release
 bullets, `SECURITY.md` (the thirteen tools under the consent gate), AGENTS.md's check list
 description, [the Copilot capability page](../extensions/built-in/computer-controller.md), the
-[Windows verification guide](../testing/windows-computer-use-verification.md),
+[Windows verification guide](../history/copilot-open-computer-use/windows-verification.md),
 [continuous integration](../testing/continuous-integration.md), the
 [built-in browser design](../desktop-ui/built-in-browser.md) (BB-09, BB-18, the tool table) and the
-1.94.6 release notes. The [integration plan](computer-use-integration-plan.md) and the
-[implementation status ledger](computer-use-implementation-status.md) move to `docs/history/` when
-this work concludes, as [the organization rules](../organization.md) require.
+1.94.6 release notes. The [integration plan](../history/copilot-open-computer-use/integration-plan.md), the
+[implementation status ledger](../history/copilot-open-computer-use/implementation-status.md) and the Windows
+verification guide moved to [`docs/history/copilot-open-computer-use/`](../history/copilot-open-computer-use/README.md)
+with the retirement, as [the organization rules](../organization.md) require.
 
 ## Migration for existing users (AD-19)
 
@@ -997,10 +1001,52 @@ Phase 2 (the wrapper, the consent levels, the refusals and `browser_drag`) lande
   each through the mechanism the design names. Copilot's desktop `drag` has not been run against a
   real app: that needs Accessibility for the Copilot bundle and moves the person's pointer, so it
   stays with the live macOS and fixture gates.
-- **Not yet built**: the status and route `grant` field, the card's second button and the CLI
-  prompt (Phase 3), content protection, `BIOROUTER_DESKTOP_MAIN_PID` from the launcher (the
+- **Not yet built**: content protection, `BIOROUTER_DESKTOP_MAIN_PID` from the launcher (the
   daemon's ancestors and the install folder already cover the desktop app's processes), and the
-  check that a coordinate click lands on the app's own window rather than one above it.
+  check that a coordinate click lands on the app's own window rather than one above it. The status
+  and route `grant`, the card's second answer and the terminal prompt landed with phase 3 (below).
+
+## What the interface, the retirement and the fixtures measured
+
+Phases 3 and 5 and the first part of phase 6 landed on this branch on 2026-11-20:
+
+- **The answer travels as typed.** `ComputerUseStatus.grant` is `observe` or `act` while active and
+  absent otherwise; `POST /agent/computer_use/consent` takes `grant` and reads an absent one as
+  `act`, so a client that predates the choice keeps its meaning. The card offers Allow, Only let it
+  look and Cancel with what each allows in an InfoTip, and while active says what holds, as the
+  browser's card does. Under Allow, what Stop cannot undo stays in view even when the card is
+  folded. The CLI and the TUI ask Allow, Only let it look or Deny, starting on Deny.
+- **Asking macOS for access needs the engine's own request, and it asks one thing too many.**
+  macOS lists the Copilot bundle in Accessibility only after it has asked, and with responsibility
+  disclaimed only the bundle can ask. Setup's **Request access**
+  (`POST /agent/computer_use/setup/request`, the user-action proof only) runs `permissions
+  --request` through the disclaimed spawn. In v1.3.1 that requests Accessibility, Screen Recording
+  and Automation of System Events in turn (`request_report_with` in the macOS adapter); Copilot
+  needs no Automation, so setup says the person may refuse that prompt. `permissions --guide` was
+  not usable: its guide names the outermost app among the engine's ancestors, which is Biorouter,
+  the one app AD-04 keeps the grants away from.
+- **On Linux an app is named by its process.** agent-desktop lists the GTK fixture as
+  `python3.12` (its executable), not by its `prgname`, so the fixture writes the name its own
+  process reports and the driver uses that. GTK tree view rows are `cell` references, so a list
+  reorder is a drag between two references.
+- **Drag and drop works on X11.** Driven through Copilot's own tools in a throwaway session (Xvfb,
+  openbox, at-spi2-core 2.52.0, Ubuntu 24.04 arm64 in Docker, the linux-arm64 payload): a list item
+  dropped on another reorders the list, a second reorder lands exactly, and text dragged from a
+  button lands in a text field of a second window. The engine reports a drag as
+  `physical_synthetic` with 22 pointer events, and the fixture's own GTK drop handlers ran. Stop in
+  the middle of a drag leaves no button pressed, and a reference observed before Stop is refused
+  afterwards. Four runs passed in four, about 9 s each. See
+  [Biorouter Copilot fixture acceptance](../testing/copilot-fixture-acceptance.md).
+- **A fixture hosted in PowerShell cannot be driven.** Copilot treats PowerShell as a terminal and
+  refuses to type into it (AD-12), so the WinForms fixture is compiled to its own executable by
+  Windows PowerShell 5.1's compiler. It compiles as C# 5 (measured with mono); it has not run on
+  Windows.
+- **The retired engine's leftover is ended by path.** On macOS the daemon ends, once at start, a
+  process whose executable is exactly `<this app>/Contents/Resources/computer-use/BioRouter
+  Computer Use.app/Contents/MacOS/ocu` (`computer_use::retired`), so another installation's copy
+  is never touched.
+- **Not yet run**: the Windows drive, the live macOS steps of AD-22 and the routing table with a
+  real model.
 
 ## Open questions and things to measure first
 
@@ -1023,8 +1069,8 @@ Phase 2 (the wrapper, the consent levels, the refusals and `browser_drag`) lande
 
 ## Related documentation
 
-- [Biorouter Copilot integration plan](computer-use-integration-plan.md): the consent, isolation and distribution rules this design keeps, and the engine choice it replaces
-- [Biorouter Copilot implementation status](computer-use-implementation-status.md): the evidence ledger of the OCU engine, including the macOS permission findings cited here
+- [Biorouter Copilot integration plan](../history/copilot-open-computer-use/integration-plan.md): the consent, isolation and distribution rules this design keeps, and the engine choice it replaces
+- [Biorouter Copilot implementation status](../history/copilot-open-computer-use/implementation-status.md): the evidence ledger of the OCU engine, including the macOS permission findings cited here
 - [The built-in browser](../desktop-ui/built-in-browser.md): the Biorouter Browser's grants, Stop and routing (BB-NN) that this design works beside
 - [Biorouter Copilot capability](../extensions/built-in/computer-controller.md): the user facing page whose tool table changes with AD-08
 - [Biorouter Browser capability](../extensions/built-in/browser.md): the browser's tool reference, which gains `browser_drag`
@@ -1032,5 +1078,5 @@ Phase 2 (the wrapper, the consent levels, the refusals and `browser_drag`) lande
 - [Privacy tiers](../security/privacy-tiers.md): the tier gates AD-14 keeps
 - [Permission modes](../security/permission-modes.md): why Copilot's consent applies in every mode
 - [Decisions behind biorouter serve](../deployment/serve-decisions.md): how approval works where no desktop app hosts the chat
-- [Windows Copilot verification](../testing/windows-computer-use-verification.md): the Windows procedure the new fixture replaces
+- [Windows Copilot verification](../history/copilot-open-computer-use/windows-verification.md): the Windows procedure the new fixture replaces
 - [Continuous integration](../testing/continuous-integration.md): the workflows AD-21 rewrites
