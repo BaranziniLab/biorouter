@@ -194,7 +194,8 @@ fi
 #    the exemption list, and each entry is a literal that cannot move:
 #      * "Open Computer Use" and "Codex Computer Use": rules 2 and 3 own them.
 #      * "BioRouter Computer Use.app" (and the bare bundle name it is built
-#        from): macOS grants are keyed on it.
+#        from): the retired engine's bundle, which the AD-19 migration names
+#        by its exact path to end a copy still running after an update.
 #      * the name marked as former, by a marker word ADJACENT to it.
 #        ⚠ The marker must sit next to the phrase, not merely somewhere on the
 #        line. Matching it anywhere is the same hole rule 1 narrows itself to
