@@ -4676,7 +4676,10 @@ function startFnKeyShortcut(): void {
     platform: process.platform,
     helperPath: fnKeyHelperPath(app),
     // No environment: the helper needs none, so none of the app's reaches it.
-    spawn: (file) => spawn(file, [], { stdio: ['pipe', 'pipe', 'ignore'], env: {} }),
+    // windowsHide is stated although this helper runs only on macOS: the
+    // console-window census reads every spawn site, platform-blind.
+    spawn: (file) =>
+      spawn(file, [], { stdio: ['pipe', 'pipe', 'ignore'], env: {}, windowsHide: true }),
     onIntent: handleFnIntent,
     onStatus: () => broadcastFnKey(),
   });

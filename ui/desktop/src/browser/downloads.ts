@@ -57,6 +57,8 @@ function quarantine(file: string): void {
   execFile(
     '/usr/bin/xattr',
     ['-w', 'com.apple.quarantine', quarantineValue(Date.now()), file],
+    // macOS only, but the console-window census reads every spawn site platform-blind.
+    { windowsHide: true },
     (error) => {
       if (error) log.warn('[BiorouterBrowser] could not quarantine a download');
     }
