@@ -77,6 +77,26 @@ The syntax rules are:
 ]
 ```
 
+The graph is the model's own description, written before the script runs, and its labels can understate what a script does. What ran is recorded separately: each call the script made, with its tool and the arguments it was really given, is attached to the result for the interface and never sent to the model. The desktop shows it as Executed calls on the tool card.
+
+### What the terminal shows
+
+The line-oriented terminal (`biorouter run`, `biorouter session`) and the full-screen view list the same record when the script has finished, above its output:
+
+```text
+── 1 tool call execute_code ─────────────────────────
+  1. developer/shell: list files
+
+  executed calls (2)
+    developer/shell  command: echo hello > /tmp/x.txt && uname -a
+    developer/shell  failed  command: cat /nonexistent
+```
+
+- Each call is one line, its arguments cut at 200 characters. With `--debug` every argument is printed in full on its own lines and a failed call's error is added. With `--debug` the line-oriented terminal also prints the script's source under the graph before it runs, and there `/r` (full tool output) does what `--debug` does.
+- A command built while the script runs (from a variable, a loop or another call's result) appears as it was run, not as the script spells it.
+- Credential values are withheld with the same detector that screens tool output (`[REDACTED:api-token]`), even with `--debug`. Control characters are dropped, so an argument cannot recolour the terminal or hide part of a command.
+- The extension records at most 64 calls per script and cuts each call's arguments at 2 KB. Calls past that are counted (`5 additional calls not recorded`), and cut arguments are shown as recorded.
+
 ## Waiting on a job
 
 Every model request re-reads the whole conversation, so a model that checks a job by asking again every few seconds pays for the whole conversation each time. Code Execution gives it three ways to wait that cost nothing per check:

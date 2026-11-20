@@ -1,3 +1,4 @@
+use super::executed_calls::{self, is_execute_code_tool_name, DisplayLine, Part};
 use anstream::println;
 use bat::WrappingMode;
 use biorouter::config::Config;
@@ -443,11 +444,18 @@ pub fn biorouter_mode_message(text: &str) {
 }
 
 fn render_tool_request(req: &ToolRequest, theme: Theme, debug: bool) {
+    if let Ok(call) = &req.tool_call {
+        if is_execute_code_tool_name(&call.name) {
+            note_execute_code_call(&req.id);
+        }
+    }
     match &req.tool_call {
         Ok(call) => match call.name.to_string().as_str() {
             "developer__text_editor" => render_text_editor_request(call, debug),
             "developer__shell" => render_shell_request(call, debug),
-            "code_execution__execute_code" => render_execute_code_request(call, debug),
+            "code_execution__execute_code" | "execute_code" => {
+                render_execute_code_request(call, debug)
+            }
             // BR-71: the spawn tool is advertised by the workspace extension
             // now, so the name that reaches the transcript is normally the
             // PREFIXED one. The bare form still arrives from prefix-stripping
@@ -502,9 +510,18 @@ fn content_clears_priority_gate(priority: Option<f32>, min_priority: f32, debug:
 fn render_tool_response(resp: &ToolResponse, theme: Theme, debug: bool) {
     let config = Config::global();
     let was_spawn_call = take_spawn_call(&resp.id);
+    let was_execute_code_call = take_execute_code_call(&resp.id);
 
     match &resp.tool_result {
         Ok(result) => {
+            // What an `execute_code` script really ran (issue #525), ahead of
+            // its output: the request showed only the model's own labels.
+            if was_execute_code_call {
+                if let Some(calls) = executed_calls::executed_calls(result) {
+                    let full = debug || get_show_full_tool_output();
+                    print_display_lines(&executed_calls::display_lines(&calls, full));
+                }
+            }
             for content in &result.content {
                 // A terminal can't render inline artifact HTML, so surface a
                 // browser-safe target before the normal text priority filter.
@@ -744,10 +761,11 @@ fn failed_call_text(error: &rmcp::model::ErrorData) -> String {
 /// from any runtime thread. Bounded, because a call whose result never arrives
 /// (a cancelled turn) would otherwise stay for the life of the process.
 static PENDING_SPAWN_CALLS: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
-const MAX_PENDING_SPAWN_CALLS: usize = 64;
+/// How many shown calls of one kind a list holds whose result has not been shown.
+const MAX_PENDING_CALLS: usize = 64;
 
 fn note_spawn_call(request_id: &str) {
-    remember_spawn_call(
+    remember_pending_call(
         &mut PENDING_SPAWN_CALLS
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner),
@@ -757,8 +775,36 @@ fn note_spawn_call(request_id: &str) {
 
 /// Whether `request_id` was a spawn call this terminal showed, forgetting it.
 fn take_spawn_call(request_id: &str) -> bool {
-    forget_spawn_call(
+    forget_pending_call(
         &mut PENDING_SPAWN_CALLS
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner),
+        request_id,
+    )
+}
+
+/// The `execute_code` calls this terminal has shown and whose result it has
+/// not shown yet, by request id, kept as [`PENDING_SPAWN_CALLS`] is. Only the
+/// result of one of these is read for the calls its script ran (issue #525):
+/// any tool can put a `biorouter/tool-calls` key in its own result meta, and
+/// only code execution's records say what ran.
+static PENDING_EXECUTE_CODE_CALLS: std::sync::Mutex<Vec<String>> =
+    std::sync::Mutex::new(Vec::new());
+
+fn note_execute_code_call(request_id: &str) {
+    remember_pending_call(
+        &mut PENDING_EXECUTE_CODE_CALLS
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner),
+        request_id,
+    );
+}
+
+/// Whether `request_id` was an `execute_code` call this terminal showed,
+/// forgetting it, so a result drawn twice lists its calls once.
+fn take_execute_code_call(request_id: &str) -> bool {
+    forget_pending_call(
+        &mut PENDING_EXECUTE_CODE_CALLS
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner),
         request_id,
@@ -772,20 +818,21 @@ pub(crate) fn is_spawn_tool_name(name: &str) -> bool {
     name == SUBAGENT_TOOL_PREFIXED || name == SUBAGENT_TOOL_NAME
 }
 
-/// Remember a spawn request, oldest dropped past [`MAX_PENDING_SPAWN_CALLS`].
-/// The full-screen view keeps a list of its own and calls this too.
-pub(crate) fn remember_spawn_call(pending: &mut Vec<String>, request_id: &str) {
+/// Remember a shown request (a spawn, an `execute_code`), oldest dropped past
+/// [`MAX_PENDING_CALLS`]. The full-screen view keeps lists of its own and calls
+/// this too.
+pub(crate) fn remember_pending_call(pending: &mut Vec<String>, request_id: &str) {
     if pending.iter().any(|id| id == request_id) {
         return;
     }
-    if pending.len() >= MAX_PENDING_SPAWN_CALLS {
+    if pending.len() >= MAX_PENDING_CALLS {
         pending.remove(0);
     }
     pending.push(request_id.to_string());
 }
 
 /// Whether `request_id` is in `pending`, removing it.
-pub(crate) fn forget_spawn_call(pending: &mut Vec<String>, request_id: &str) -> bool {
+pub(crate) fn forget_pending_call(pending: &mut Vec<String>, request_id: &str) -> bool {
     match pending.iter().position(|id| id == request_id) {
         Some(at) => {
             pending.remove(at);
@@ -1533,7 +1580,37 @@ fn render_execute_code_request(call: &CallToolRequestParams, debug: bool) {
             style(deps_str).dim()
         );
     }
+    // The labels above are the model's own words. What the script really runs
+    // is listed under its result; with `--debug` (or the full tool output
+    // toggle) the script itself is shown here too, before it runs.
+    if debug || get_show_full_tool_output() {
+        if let Some(code) = call
+            .arguments
+            .as_ref()
+            .and_then(|args| args.get("code"))
+            .and_then(Value::as_str)
+        {
+            print_display_lines(&executed_calls::script_source_lines(code));
+        }
+    }
     println!();
+}
+
+/// Print the lines of an `execute_code` block (`executed_calls`), styled as
+/// the rest of a tool call is: names and counts dim, tools as the graph's.
+fn print_display_lines(lines: &[DisplayLine]) {
+    for line in lines {
+        let mut text = " ".repeat(line.indent);
+        for (part, span) in &line.spans {
+            let styled = match part {
+                Part::Heading | Part::Note | Part::Name => style(span).dim(),
+                Part::Tool => style(span).cyan(),
+                Part::Value => style(span),
+            };
+            text.push_str(&styled.to_string());
+        }
+        println!("{text}");
+    }
 }
 
 fn render_subagent_request(call: &CallToolRequestParams, debug: bool) {
@@ -2160,14 +2237,20 @@ mod tests {
 
     // must skip lane_b_renderer_capture_child; each child invokes that exact helper.
     fn lane_b_capture_renderer(case: &str) -> String {
+        capture_renderer_child(
+            "session::output::tests::lane_b_renderer_capture_child",
+            "BIOROUTER_LANE_B_RENDER_CASE",
+            case,
+        )
+    }
+
+    /// What the child test `child` prints for `case` (passed in `case_var`), its
+    /// colours stripped. The renderers print to the real stdout, so a child
+    /// process is the seam that captures them.
+    fn capture_renderer_child(child: &str, case_var: &str, case: &str) -> String {
         let output = std::process::Command::new(std::env::current_exe().unwrap())
-            .args([
-                "--exact",
-                "session::output::tests::lane_b_renderer_capture_child",
-                "--nocapture",
-                "--test-threads=1",
-            ])
-            .env("BIOROUTER_LANE_B_RENDER_CASE", case)
+            .args(["--exact", child, "--nocapture", "--test-threads=1"])
+            .env(case_var, case)
             .env("BIOROUTER_DISABLE_KEYRING", "true")
             .env("NO_COLOR", "1")
             .env("TERM", "dumb")
@@ -2203,6 +2286,44 @@ mod tests {
         assert!(shown.contains("EVALUATED_ONLY_525"), "{shown}");
         assert!(shown.contains("5 additional calls not recorded"), "{shown}");
         assert!(!shown.contains("SHOULD_NOT_RENDER_525"), "{shown}");
+    }
+
+    /// Issue #525 through the real producer: an `execute_code` call the
+    /// extension really ran, drawn as `biorouter run` draws it.
+    #[tokio::test]
+    async fn issue525_producer_capture_child() {
+        let Ok(case) = std::env::var("BIOROUTER_ISSUE525_PRODUCER_CASE") else {
+            return;
+        };
+        let (request, response) =
+            super::executed_calls::producer::run_execute_code("producer-525").await;
+        let debug = case == "debug";
+        render_tool_request(&request, Theme::Ansi, debug);
+        render_tool_response(&response, Theme::Ansi, debug);
+    }
+
+    #[test]
+    fn issue525_the_transcript_lists_what_the_real_producer_ran() {
+        use super::executed_calls::producer::{evaluated_token, EVALUATED_WORD, LABEL};
+        for case in ["default", "debug"] {
+            let shown = capture_renderer_child(
+                "session::output::tests::issue525_producer_capture_child",
+                "BIOROUTER_ISSUE525_PRODUCER_CASE",
+                case,
+            );
+            assert!(shown.contains(LABEL), "{case}: the graph heading: {shown}");
+            assert!(shown.contains("executed calls (2)"), "{case}: {shown}");
+            assert!(shown.contains("developer/shell"), "{case}: {shown}");
+            assert!(
+                shown.contains(&format!("command: test -n {EVALUATED_WORD}")),
+                "{case}: the evaluated command: {shown}"
+            );
+            assert!(
+                !shown.contains(&evaluated_token()),
+                "{case}: a credential the script assembled reached the terminal: {shown}"
+            );
+            assert!(shown.contains("[REDACTED:api-token]"), "{case}: {shown}");
+        }
     }
 
     #[test]
@@ -3210,20 +3331,20 @@ mod tests {
     #[test]
     fn pending_spawn_calls_are_bounded() {
         let mut pending = Vec::new();
-        for n in 0..=MAX_PENDING_SPAWN_CALLS {
-            remember_spawn_call(&mut pending, &format!("call-{n}"));
+        for n in 0..=MAX_PENDING_CALLS {
+            remember_pending_call(&mut pending, &format!("call-{n}"));
         }
-        remember_spawn_call(&mut pending, "call-1");
-        assert_eq!(pending.len(), MAX_PENDING_SPAWN_CALLS);
+        remember_pending_call(&mut pending, "call-1");
+        assert_eq!(pending.len(), MAX_PENDING_CALLS);
         assert!(
-            !forget_spawn_call(&mut pending, "call-0"),
+            !forget_pending_call(&mut pending, "call-0"),
             "the oldest goes first"
         );
-        assert!(forget_spawn_call(&mut pending, "call-1"));
-        assert!(!forget_spawn_call(&mut pending, "call-1"));
-        assert!(forget_spawn_call(
+        assert!(forget_pending_call(&mut pending, "call-1"));
+        assert!(!forget_pending_call(&mut pending, "call-1"));
+        assert!(forget_pending_call(
             &mut pending,
-            &format!("call-{MAX_PENDING_SPAWN_CALLS}")
+            &format!("call-{MAX_PENDING_CALLS}")
         ));
     }
     /// A `pub const NAME: &str = "…";` from `agents/tool_execution.rs`, as the

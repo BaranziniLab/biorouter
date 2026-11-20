@@ -1,6 +1,7 @@
 mod builder;
 mod completion;
 mod elicitation;
+mod executed_calls;
 mod export;
 mod input;
 #[cfg(feature = "dictation")]
