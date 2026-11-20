@@ -8880,6 +8880,265 @@ mod tests {
         assert!(!serialized.contains(&key_id), "{serialized}");
     }
 
+    /// A `developer` stand-in whose `text_editor` reads `path` under a FAKE
+    /// home: a leading `~/` resolves to a temp dir, never the process's own
+    /// HOME, so the test can neither read nor depend on the operator's
+    /// `~/.aws`. If the secret guard ever let a script's sub-call through, this
+    /// client would return the fake file's text, and the counter would move.
+    struct FakeHomeEditor {
+        home: PathBuf,
+        reads: Arc<std::sync::atomic::AtomicUsize>,
+    }
+
+    #[async_trait::async_trait]
+    impl McpClientTrait for FakeHomeEditor {
+        fn get_info(&self) -> Option<&InitializeResult> {
+            None
+        }
+        async fn list_resources(
+            &self,
+            _next_cursor: Option<String>,
+            _cancellation_token: CancellationToken,
+        ) -> Result<ListResourcesResult, Error> {
+            Err(Error::TransportClosed)
+        }
+        async fn read_resource(
+            &self,
+            _uri: &str,
+            _cancellation_token: CancellationToken,
+        ) -> Result<ReadResourceResult, Error> {
+            Err(Error::TransportClosed)
+        }
+        async fn list_tools(
+            &self,
+            _next_cursor: Option<String>,
+            _cancellation_token: CancellationToken,
+        ) -> Result<ListToolsResult, Error> {
+            Ok(ListToolsResult {
+                tools: vec![Tool::new(
+                    "text_editor".to_string(),
+                    "View a file".to_string(),
+                    Arc::new(
+                        serde_json::json!({
+                            "type": "object",
+                            "properties": {
+                                "command": {"type": "string"},
+                                "path": {"type": "string"}
+                            }
+                        })
+                        .as_object()
+                        .unwrap()
+                        .clone(),
+                    ),
+                )],
+                next_cursor: None,
+                meta: None,
+            })
+        }
+        async fn call_tool(
+            &self,
+            _name: &str,
+            arguments: Option<JsonObject>,
+            _meta: McpMeta,
+            _cancellation_token: CancellationToken,
+        ) -> Result<CallToolResult, Error> {
+            self.reads.fetch_add(1, Ordering::SeqCst);
+            let path = arguments
+                .as_ref()
+                .and_then(|a| a.get("path"))
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            let resolved = match path.strip_prefix("~/") {
+                Some(rest) => self.home.join(rest),
+                None => PathBuf::from(path),
+            };
+            let text = std::fs::read_to_string(&resolved).unwrap_or_else(|e| e.to_string());
+            Ok(CallToolResult::success(vec![rmcp::model::Content::text(
+                text,
+            )]))
+        }
+        async fn list_prompts(
+            &self,
+            _next_cursor: Option<String>,
+            _cancellation_token: CancellationToken,
+        ) -> Result<ListPromptsResult, Error> {
+            Err(Error::TransportClosed)
+        }
+        async fn get_prompt(
+            &self,
+            _name: &str,
+            _arguments: Value,
+            _cancellation_token: CancellationToken,
+        ) -> Result<GetPromptResult, Error> {
+            Err(Error::TransportClosed)
+        }
+        async fn subscribe(&self) -> mpsc::Receiver<ServerNotification> {
+            mpsc::channel(1).1
+        }
+    }
+
+    /// H1 through Code Execution (1.94.6 security review). Issue #522 leaves
+    /// `execute_code`'s source out of the dispatch-time scan, on the promise
+    /// that every call the script makes comes back through
+    /// `dispatch_tool_call` and is judged there on its EVALUATED arguments.
+    /// This holds that promise end to end with the real boa sandbox: a script
+    /// that assembles `~/.aws/credentials` at run time is admitted (its source
+    /// names no path), its `text_editor` sub-call is refused by the secret
+    /// guard before the client is contacted, and no byte of the (fake) file
+    /// reaches the result. And the exemption is exactly `code` (plus
+    /// `tool_graph[].description`): the same path in any other string argument
+    /// still refuses the outer call.
+    #[tokio::test]
+    async fn h1_a_script_assembled_credential_path_is_refused_at_its_inner_dispatch() {
+        let (dir, em, _sm, id) = manager_with_a_session().await;
+        let em = Arc::new(em);
+        em.set_working_dir(dir.path().to_path_buf()).await;
+
+        // The fake HOME, with a credentials file carrying a sentinel line no
+        // output redaction would remove, so a leak cannot hide behind
+        // `secret_output`'s key masking.
+        let home = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(home.path().join(".aws")).unwrap();
+        let sentinel = "region = h1-execute-code-sentinel";
+        std::fs::write(
+            home.path().join(".aws").join("credentials"),
+            format!("{}{sentinel}\n", fake_credentials_text()),
+        )
+        .unwrap();
+        let reads = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        em.add_client(
+            "developer".into(),
+            ExtensionConfig::Platform {
+                name: "developer".into(),
+                description: "fake-home text_editor fixture".into(),
+                bundled: Some(true),
+                available_tools: Vec::new(),
+            },
+            Arc::new(FakeHomeEditor {
+                home: home.path().to_path_buf(),
+                reads: Arc::clone(&reads),
+            }),
+            None,
+            None,
+        )
+        .await;
+        // The shipped Code Execution, built by the Platform registry: only its
+        // `code` is left out of the outer scan.
+        em.add_extension(ExtensionConfig::Platform {
+            name: "code_execution".into(),
+            description: "Code execution".into(),
+            bundled: Some(true),
+            available_tools: Vec::new(),
+        })
+        .await
+        .unwrap();
+        let cap = crate::privacy::CallCapability::for_test_restricted();
+        let key_id = format!("{}{}", "AKIA", "FAKEFAKEFAKE0000");
+        let secret = format!("{}{}", "fakeSecretKeyForTestsOnly", "0".repeat(15));
+
+        // The fixture itself works: a benign sub-call reaches it, so a zero
+        // count below means "refused", not "never routable".
+        let benign = em
+            .dispatch_tool_call(
+                &id,
+                CallToolRequestParams {
+                    task: None,
+                    name: "code_execution__execute_code".into(),
+                    arguments: Some(object!({
+                        "code": "import { text_editor } from \"developer\"; \
+                                 record_result(text_editor({command: \"view\", path: \"~/notes.txt\"}));"
+                    })),
+                    meta: None,
+                },
+                cap,
+                CancellationToken::default(),
+            )
+            .await
+            .unwrap_or_else(|e| panic!("a benign script was refused: {e:#}"))
+            .result
+            .await;
+        assert!(benign.is_ok(), "{benign:?}");
+        assert_eq!(reads.load(Ordering::SeqCst), 1, "the fixture is routable");
+
+        for code in [
+            r#"import { text_editor } from "developer"; const p = "~/.aws/" + "credentials"; record_result(text_editor({command: "view", path: p}));"#,
+            r#"import { text_editor } from "developer"; const p = ["~", ".aws", "credentials"].join("/"); text_editor({command: "view", path: p});"#,
+        ] {
+            // Admitted: the source names no protected path.
+            let dispatched = em
+                .dispatch_tool_call(
+                    &id,
+                    CallToolRequestParams {
+                        task: None,
+                        name: "code_execution__execute_code".into(),
+                        arguments: Some(object!({ "code": code })),
+                        meta: None,
+                    },
+                    cap,
+                    CancellationToken::default(),
+                )
+                .await
+                .unwrap_or_else(|e| panic!("the outer call was refused for its source: {e:#}"));
+            // The script's failure may come back as an error result or as an
+            // error; either way, everything the caller can see is serialized.
+            let serialized = match dispatched.result.await {
+                Ok(result) => serde_json::to_string(&result).unwrap(),
+                Err(error) => serde_json::to_string(&error).unwrap(),
+            };
+            assert_eq!(
+                reads.load(Ordering::SeqCst),
+                1,
+                "the inner sub-call reached the client: {code}"
+            );
+            assert!(
+                serialized.contains("secret/credential deny pattern"),
+                "the inner refusal is the secret guard's: {serialized}"
+            );
+            assert!(
+                serialized.contains(".aws/credentials"),
+                "the refusal names the evaluated path: {serialized}"
+            );
+            for leaked in [sentinel, key_id.as_str(), secret.as_str()] {
+                assert!(!serialized.contains(leaked), "{leaked} in {serialized}");
+            }
+        }
+
+        // Only `code` (and `tool_graph[].description`) is free text: the same
+        // path in any other string argument still refuses the OUTER call,
+        // before a script runs.
+        for arguments in [
+            object!({"code": "1 + 1", "path": "~/.aws/credentials"}),
+            object!({"code": "1 + 1", "note": "~/.aws/credentials"}),
+            object!({"code": "1 + 1", "description": "~/.aws/credentials"}),
+            object!({"code": "1 + 1", "tool_graph": [
+                {"tool": "~/.aws/credentials", "description": "safe"}
+            ]}),
+        ] {
+            let refused = match em
+                .dispatch_tool_call(
+                    &id,
+                    CallToolRequestParams {
+                        task: None,
+                        name: "code_execution__execute_code".into(),
+                        arguments: Some(arguments.clone()),
+                        meta: None,
+                    },
+                    cap,
+                    CancellationToken::default(),
+                )
+                .await
+            {
+                Ok(_) => panic!("{arguments:?} was admitted"),
+                Err(e) => e.to_string(),
+            };
+            assert!(
+                refused.contains("secret/credential deny pattern"),
+                "{arguments:?}: {refused}"
+            );
+        }
+        assert_eq!(reads.load(Ordering::SeqCst), 1);
+    }
+
     /// The capability `POST /agent/call_tool` hands the manager —
     /// `Public` + enforced, the most restrictive pair, spelled here with the
     /// test constructor so Task 51's census of the two production spellings

@@ -3,14 +3,16 @@
 //! helper links nothing but them.
 
 use std::ffi::{c_char, c_void, CString};
-use std::io::{BufRead, Write};
+use std::io::BufRead;
 use std::ptr::null_mut;
 use std::sync::atomic::{AtomicPtr, Ordering};
 use std::sync::Mutex;
+use std::time::Duration;
 
+use crate::outbox::{LineKind, SharedOutbox, CAPACITY};
 use crate::protocol::{
     classify_event, parse_command, permission_line, ready_line, signal_line, Command, EventClass,
-    FnTracker, Permission, EVENT_MASK, LISTENER_LOST_LINE,
+    FnTracker, Permission, Signal, EVENT_MASK, LISTENER_LOST_LINE,
 };
 
 type CFTypeRef = *const c_void;
@@ -87,13 +89,33 @@ extern "C" {
 
 static TRACKER: Mutex<FnTracker> = Mutex::new(FnTracker::new());
 static TAP: AtomicPtr<c_void> = AtomicPtr::new(null_mut());
+/// Every line to the app goes through here, so they reach it in the order they were made.
+static OUTBOX: SharedOutbox = SharedOutbox::new(CAPACITY);
 
-/// One line to the app. A closed pipe means the app is gone, so this process goes too.
-fn emit(line: &str) {
-    let mut out = std::io::stdout().lock();
-    if writeln!(out, "{line}").and_then(|_| out.flush()).is_err() {
-        std::process::exit(0);
-    }
+/// How long a leaving process waits for its queued lines to reach the app.
+const EXIT_FLUSH: Duration = Duration::from_millis(250);
+
+/// One line to the app, queued for the writer thread. It never waits on the pipe, so the
+/// tap's callback, which emits too, stays fast enough that macOS keeps the tap on.
+fn emit(kind: LineKind, line: String) {
+    OUTBOX.push(kind, line);
+}
+
+fn emit_signal(signal: Signal, at_ms: u64) {
+    emit(LineKind::of(signal), signal_line(signal, at_ms));
+}
+
+/// The only thread that writes to standard output. A closed pipe means the app is gone, so
+/// this process goes too.
+fn write_to_app() {
+    OUTBOX.write_lines(&mut std::io::stdout());
+    std::process::exit(0);
+}
+
+/// Leave, after giving the queued lines a moment to reach the app.
+fn exit_after_flush() -> ! {
+    OUTBOX.flush_for(EXIT_FLUSH);
+    std::process::exit(0);
 }
 
 fn permission() -> Permission {
@@ -165,11 +187,11 @@ extern "C" fn on_event(
                     .ok()
                     .and_then(|mut tracker| tracker.reset_after_blind_gap());
                 if let Some(signal) = signal {
-                    emit(&signal_line(signal, now_ms()));
+                    emit_signal(signal, now_ms());
                 }
                 // SAFETY: as above.
                 if !unsafe { CGEventTapIsEnabled(tap) } {
-                    emit(LISTENER_LOST_LINE);
+                    emit(LineKind::ListenerLost, LISTENER_LOST_LINE.to_string());
                 }
             }
         }
@@ -187,7 +209,7 @@ extern "C" fn on_event(
                 Err(_) => Vec::new(),
             };
             for signal in signals {
-                emit(&signal_line(signal, at_ms));
+                emit_signal(signal, at_ms);
             }
         }
         EventClass::KeyDown => {
@@ -198,7 +220,7 @@ extern "C" fn on_event(
                 .ok()
                 .and_then(|mut tracker| tracker.key_down(at_ms));
             if let Some(signal) = signal {
-                emit(&signal_line(signal, at_ms));
+                emit_signal(signal, at_ms);
             }
         }
         EventClass::Ignore => {}
@@ -213,17 +235,17 @@ fn serve_commands() {
     for line in stdin.lock().lines() {
         let Ok(line) = line else { break };
         match parse_command(&line) {
-            Some(Command::Check) => emit(&permission_line(permission())),
+            Some(Command::Check) => emit(LineKind::Permission, permission_line(permission())),
             Some(Command::Request) => {
                 // SAFETY: shows the system prompt the first time; later calls return at once.
                 unsafe { CGRequestListenEventAccess() };
-                emit(&permission_line(permission()));
+                emit(LineKind::Permission, permission_line(permission()));
             }
             Some(Command::Quit) => break,
             None => {}
         }
     }
-    std::process::exit(0);
+    exit_after_flush();
 }
 
 fn wait_for_commands() -> ! {
@@ -233,11 +255,15 @@ fn wait_for_commands() -> ! {
 }
 
 pub fn run() {
+    std::thread::spawn(write_to_app);
     let usage = fn_usage();
     std::thread::spawn(serve_commands);
 
     if permission() == Permission::Denied {
-        emit(&ready_line(Permission::Denied, false, usage, now_ms()));
+        emit(
+            LineKind::Ready,
+            ready_line(Permission::Denied, false, usage, now_ms()),
+        );
         wait_for_commands();
     }
 
@@ -254,7 +280,10 @@ pub fn run() {
         )
     };
     if tap.is_null() {
-        emit(&ready_line(Permission::Granted, false, usage, now_ms()));
+        emit(
+            LineKind::Ready,
+            ready_line(Permission::Granted, false, usage, now_ms()),
+        );
         wait_for_commands();
     }
     // SAFETY: `tap` is the non-NULL port created above.
@@ -268,7 +297,10 @@ pub fn run() {
             CGEventTapEnable(tap, false);
             CFRelease(tap.cast_const());
         }
-        emit(&ready_line(Permission::Granted, false, usage, now_ms()));
+        emit(
+            LineKind::Ready,
+            ready_line(Permission::Granted, false, usage, now_ms()),
+        );
         wait_for_commands();
     }
     TAP.store(tap, Ordering::Release);
@@ -278,7 +310,10 @@ pub fn run() {
         CFRunLoopAddSource(CFRunLoopGetCurrent(), source, kCFRunLoopCommonModes);
         CGEventTapEnable(tap, true);
     }
-    emit(&ready_line(Permission::Granted, true, usage, now_ms()));
+    emit(
+        LineKind::Ready,
+        ready_line(Permission::Granted, true, usage, now_ms()),
+    );
     // SAFETY: runs this thread's run loop, which delivers the tap's events.
     unsafe { CFRunLoopRun() };
 }

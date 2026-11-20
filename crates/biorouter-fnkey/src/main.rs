@@ -15,7 +15,9 @@
 //!
 //! It exits when its standard input closes, so it never outlives the app.
 
-// Built everywhere so its tests run on every CI leg; only macOS calls it.
+// Built everywhere so their tests run on every CI leg; only macOS calls them.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+mod outbox;
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 mod protocol;
 
