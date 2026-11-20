@@ -4,12 +4,13 @@
 > panel that a person can browse with, that the agent can drive with its own tools, that works
 > beside Biorouter Copilot without overlapping it, and that can take a person's logins, bookmarks
 > and history from Google Chrome when they ask.
-> **Status:** Current. Accepted design of 2026-11-19; implementation is in progress on branch
-> `br1946/browser`, where phases 1, 2 and 4 are built (see "Phase 1 as built", "Phase 2 as
-> built" and "Phase 4 as built") and the findings of their test matrix are fixed (see "Fix round
-> of 2026-11-20"). Until that branch merges, the shipping behaviour is the one
-> recorded in the [preview panel implementation record](preview-panel/implementation-record.md),
-> and the open work is listed under "Phases" below.
+> **Status:** Current. Accepted design of 2026-11-19, built on branch `br1946/browser` (phases 1,
+> 2 and 4, with phase 3's routing text and shared Stop; see "Phase 1 as built", "Phase 2 as
+> built" and "Phase 4 as built") with the findings of its test matrix fixed (see "Fix round of
+> 2026-11-20"), and merged into the 1.94.6 release branch on 2026-11-20. Releases before 1.94.6
+> ship the behaviour recorded in the
+> [preview panel implementation record](preview-panel/implementation-record.md). The open work is
+> listed under "Phases" and "Open questions" below.
 > **Audience:** developers working on the desktop app, the agent loop, privacy and security, and
 > anyone reviewing or testing the browser.
 
@@ -1421,6 +1422,14 @@ browser_key_tests`; Vitest `src/browser`, `components/browser`, `components/agen
   a visible indication and Stop outside the chat) before BB-15 could be relaxed.
 - Agent uploads (BB-26): a per file approval card naming the file and the destination site would be
   needed first; until then the person picks files in the page's own file dialog.
+- Page dialogs in the running app. The release test run of 2026-11-20 saw an agent's click on a
+  button that opens `alert`, `confirm` or `prompt` wait for the operation's 30 s deadline instead
+  of reporting the dialog, while the Electron spec (`a page dialog never hangs the agent`) sees the
+  embedder answer it at once and CDP report nothing. What differs between the two (the view's
+  owner window, Electron's message box with or without a parent, whether the
+  `Page.javascriptDialogOpening` event fires) has to be measured in the dev app before the driver
+  is changed; `untilDialog` in `browser/agent/driver.ts` already returns as soon as CDP reports a
+  dialog.
 
 ## Related documentation
 
