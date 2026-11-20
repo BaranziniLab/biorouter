@@ -1627,6 +1627,95 @@ fn thinking_flush_due(pending: &str, last_flush: std::time::Instant) -> bool {
             || last_flush.elapsed() >= THINKING_FLUSH_INTERVAL)
 }
 
+/// Append one streamed `reasoning_details` delta to the reply's array (#548).
+///
+/// OpenRouter streams a reasoning block as many deltas, and storing each one
+/// as its own entry made a single reply's array tens of thousands of entries
+/// long; replay then sent every earlier array again on each request. Its docs
+/// say the complete sequence is the deltas concatenated in order, which is
+/// what a non-streamed reply returns, so adjacent fragments of one block are
+/// joined here.
+///
+/// The rule is deliberately narrow, because a wrong merge breaks replay for
+/// that model:
+/// - only `reasoning.text` (its `text`) and `reasoning.summary` (its
+///   `summary`) merge, and only into the entry just before with the same
+///   `type`, `id`, `index` and `format` (an absent field matches only an
+///   absent one, so `null` is never read as missing);
+/// - an entry with a `signature` is closed: a signed block's signature arrives
+///   on its last fragment, alone or with text, and is kept on that entry;
+/// - `reasoning.encrypted` never merges: its `data` is passed on byte for byte
+///   and in order, even beside an entry with the same keys;
+/// - a field this rule does not know, or content that is not a string, keeps
+///   the delta as its own entry rather than dropping what it carries.
+fn push_reasoning_detail(accumulated: &mut Vec<Value>, detail: &Value) {
+    if !merge_reasoning_detail(accumulated.last_mut(), detail) {
+        accumulated.push(detail.clone());
+    }
+}
+
+fn merge_reasoning_detail(previous: Option<&mut Value>, incoming: &Value) -> bool {
+    const KNOWN_KEYS: &[&str] = &[
+        "type",
+        "id",
+        "index",
+        "format",
+        "signature",
+        "text",
+        "summary",
+    ];
+    let (Some(previous), Some(incoming)) = (
+        previous.and_then(Value::as_object_mut),
+        incoming.as_object(),
+    ) else {
+        return false;
+    };
+    let (content_key, other_key) = match incoming.get("type").and_then(Value::as_str) {
+        Some("reasoning.text") => ("text", "summary"),
+        Some("reasoning.summary") => ("summary", "text"),
+        _ => return false,
+    };
+    if previous.get("type") != incoming.get("type")
+        || previous.contains_key("signature")
+        || previous.contains_key(other_key)
+        || incoming.contains_key(other_key)
+        || previous
+            .keys()
+            .any(|key| !KNOWN_KEYS.contains(&key.as_str()))
+        || incoming
+            .keys()
+            .any(|key| !KNOWN_KEYS.contains(&key.as_str()))
+        || ["id", "index", "format"]
+            .iter()
+            .any(|key| previous.get(*key) != incoming.get(*key))
+    {
+        return false;
+    }
+    let Some(previous_text) = previous.get(content_key).and_then(Value::as_str) else {
+        return false;
+    };
+    let signature = match incoming.get("signature") {
+        None => None,
+        Some(Value::String(signature)) => Some(signature.clone()),
+        Some(_) => return false,
+    };
+    match (incoming.get(content_key), signature) {
+        (Some(Value::String(fragment)), signature) => {
+            let merged = format!("{previous_text}{fragment}");
+            previous.insert(content_key.to_string(), Value::String(merged));
+            if let Some(signature) = signature {
+                previous.insert("signature".to_string(), Value::String(signature));
+            }
+            true
+        }
+        (None, Some(signature)) => {
+            previous.insert("signature".to_string(), Value::String(signature));
+            true
+        }
+        _ => false,
+    }
+}
+
 /// The readable text of a reply's `reasoning_details`: each `reasoning.text`
 /// entry's `text` and `reasoning.summary` entry's `summary`, in order, joined
 /// by a blank line. `None` when there is none (an encrypted-only array).
@@ -1775,7 +1864,9 @@ where
             if !chunk.choices.is_empty() {
                 chunk.choices[0].delta.append_mistral_content(&mut accumulated_mistral_content);
                 if let Some(details) = &chunk.choices[0].delta.reasoning_details {
-                    accumulated_reasoning.extend(details.iter().cloned());
+                    for detail in details {
+                        push_reasoning_detail(&mut accumulated_reasoning, detail);
+                    }
                 }
                 if let Some(reasoning) = chunk.choices[0].delta.reasoning_text() {
                     accumulated_reasoning_content.push_str(reasoning);
@@ -1875,7 +1966,9 @@ where
                                 if !tool_chunk.choices.is_empty() {
                                     tool_chunk.choices[0].delta.append_mistral_content(&mut accumulated_mistral_content);
                                     if let Some(details) = &tool_chunk.choices[0].delta.reasoning_details {
-                                        accumulated_reasoning.extend(details.iter().cloned());
+                                        for detail in details {
+                                            push_reasoning_detail(&mut accumulated_reasoning, detail);
+                                        }
                                     }
                                     if let Some(reasoning) = tool_chunk.choices[0].delta.reasoning_text() {
                                         accumulated_reasoning_content.push_str(reasoning);
