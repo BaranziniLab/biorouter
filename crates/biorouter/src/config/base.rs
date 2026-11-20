@@ -2531,6 +2531,299 @@ pub fn load_init_config_from_workspace() -> Result<Mapping, ConfigError> {
 
 #[cfg(test)]
 mod tests {
+    struct FailOnceDeleteStore {
+        inner: std::sync::Arc<MapStore>,
+        armed: std::sync::Mutex<bool>,
+        fired: std::sync::Mutex<bool>,
+        main_writes: std::sync::atomic::AtomicUsize,
+        main_writes_at_failure: std::sync::atomic::AtomicUsize,
+    }
+
+    impl FailOnceDeleteStore {
+        fn new(inner: std::sync::Arc<MapStore>) -> Self {
+            Self {
+                inner,
+                armed: std::sync::Mutex::new(false),
+                fired: std::sync::Mutex::new(false),
+                main_writes: std::sync::atomic::AtomicUsize::new(0),
+                main_writes_at_failure: std::sync::atomic::AtomicUsize::new(0),
+            }
+        }
+
+        fn arm(&self) {
+            *self.armed.lock().unwrap() = true;
+        }
+
+        fn fired(&self) -> bool {
+            *self.fired.lock().unwrap()
+        }
+    }
+
+    impl KeyringBlobStore for FailOnceDeleteStore {
+        fn get(&self, username: &str) -> Result<String, keyring::Error> {
+            self.inner.get(username)
+        }
+
+        fn set(&self, username: &str, value: &str) -> Result<(), keyring::Error> {
+            if username == KEYRING_USERNAME {
+                self.main_writes
+                    .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            }
+            self.inner.set(username, value)
+        }
+
+        fn delete(&self, username: &str) -> Result<(), keyring::Error> {
+            if username == Config::chunk_username(1) && *self.armed.lock().unwrap() {
+                *self.armed.lock().unwrap() = false;
+                *self.fired.lock().unwrap() = true;
+                self.main_writes_at_failure.store(
+                    self.main_writes.load(std::sync::atomic::Ordering::SeqCst),
+                    std::sync::atomic::Ordering::SeqCst,
+                );
+                return Err(keyring::Error::Invalid(
+                    "synthetic delete failure".to_string(),
+                    "one shot".to_string(),
+                ));
+            }
+            self.inner.delete(username)
+        }
+    }
+
+    #[test]
+    fn saved_secret_failure_restores_raw_keyring_entries_and_old_value() {
+        if !crate::test_sandbox::in_a_process_of_its_own() {
+            return;
+        }
+        assert!(crate::config::test_binary_credentials::os_store_is_kept_off());
+
+        let directory = tempfile::tempdir().unwrap();
+        let store = std::sync::Arc::new(MapStore::new());
+        let old_blob = "{\"synthetic-old-key\":\"old-value\"}".to_string();
+        store.set(KEYRING_USERNAME, &old_blob).unwrap();
+        store
+            .set(&Config::chunk_username(1), "synthetic-stale-continuation")
+            .unwrap();
+        let before = store.0.lock().unwrap().clone();
+        let failing = std::sync::Arc::new(FailOnceDeleteStore::new(store.clone()));
+        failing.arm();
+
+        let mut config =
+            Config::new(directory.path().join("config.yaml"), "synthetic-rollback").unwrap();
+        config.test_keyring_store = Some(failing.clone());
+
+        let result = config.set_secret("synthetic-old-key", &"new-value");
+        assert!(result.is_err());
+        assert!(
+            failing.fired(),
+            "the one-shot delete fault was not exercised"
+        );
+        assert_eq!(
+            failing
+                .main_writes_at_failure
+                .load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "the replacement main entry must have been written before stale deletion failed"
+        );
+        assert_eq!(*store.0.lock().unwrap(), before);
+
+        config.invalidate_secrets_cache();
+        let saved = config.all_secrets().unwrap();
+        assert_eq!(
+            saved.get("synthetic-old-key"),
+            Some(&serde_json::Value::String("old-value".to_string()))
+        );
+    }
+
+    #[test]
+    fn saved_secret_replacement_preserves_fresh_unrelated_backing_values() {
+        if !crate::test_sandbox::in_a_process_of_its_own() {
+            return;
+        }
+        assert!(crate::config::test_binary_credentials::os_store_is_kept_off());
+
+        let directory = tempfile::tempdir().unwrap();
+        let store = std::sync::Arc::new(MapStore::new());
+        store
+            .set(
+                KEYRING_USERNAME,
+                "{\"synthetic-primary\":\"old\",\"synthetic-unrelated\":\"before\"}",
+            )
+            .unwrap();
+
+        let mut config =
+            Config::new(directory.path().join("config.yaml"), "synthetic-fresh-read").unwrap();
+        config.test_keyring_store = Some(store.clone());
+        config.all_secrets().unwrap();
+
+        store
+            .set(
+                KEYRING_USERNAME,
+                "{\"synthetic-primary\":\"old\",\"synthetic-unrelated\":\"fresh\"}",
+            )
+            .unwrap();
+
+        config.set_secret("synthetic-primary", &"new").unwrap();
+
+        let raw = store.get(KEYRING_USERNAME).unwrap();
+        let saved: serde_json::Value = serde_json::from_str(&raw).unwrap();
+        assert_eq!(saved["synthetic-primary"], "new");
+        assert_eq!(saved["synthetic-unrelated"], "fresh");
+
+        let cached = config.all_secrets().unwrap();
+        assert_eq!(cached["synthetic-primary"], serde_json::json!("new"));
+        assert_eq!(cached["synthetic-unrelated"], serde_json::json!("fresh"));
+    }
+
+    #[test]
+    fn saved_secret_replacement_refuses_malformed_saved_root_without_overwrite() {
+        if !crate::test_sandbox::in_a_process_of_its_own() {
+            return;
+        }
+        assert!(crate::config::test_binary_credentials::os_store_is_kept_off());
+
+        let directory = tempfile::tempdir().unwrap();
+        let config_path = directory.path().join("config.yaml");
+        let secrets_path = directory.path().join("secrets.yaml");
+        let before = b"- synthetic-unrelated-value\n".to_vec();
+        std::fs::write(&secrets_path, &before).unwrap();
+
+        let config = Config::new_with_file_secrets(&config_path, &secrets_path).unwrap();
+        let result = config.set_secret("synthetic-primary", &"new-value");
+
+        assert!(result.is_err());
+        assert_eq!(std::fs::read(&secrets_path).unwrap(), before);
+    }
+
+    #[test]
+    fn successful_secret_fallback_selects_file_storage_for_future_defaults(
+    ) -> Result<(), ConfigError> {
+        if !crate::test_sandbox::in_a_process_of_its_own() {
+            return Ok(());
+        }
+
+        assert!(crate::config::test_binary_credentials::os_store_is_kept_off());
+        let _env = env_lock::lock_env([("BIOROUTER_DISABLE_KEYRING", None::<&str>)]);
+        assert!(crate::config::test_binary_credentials::os_store_is_kept_off());
+
+        let initial = Config::default();
+        assert!(matches!(initial.secrets, SecretStorage::Keyring { .. }));
+
+        struct FailingStore {
+            inner: Arc<MapStore>,
+            writes: Arc<std::sync::atomic::AtomicUsize>,
+        }
+
+        impl KeyringBlobStore for FailingStore {
+            fn get(&self, username: &str) -> Result<String, keyring::Error> {
+                self.inner.get(username)
+            }
+
+            fn set(&self, _: &str, _: &str) -> Result<(), keyring::Error> {
+                self.writes
+                    .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                Err(keyring::Error::PlatformFailure(
+                    "no Secret Service on this host".into(),
+                ))
+            }
+
+            fn delete(&self, username: &str) -> Result<(), keyring::Error> {
+                self.inner.delete(username)
+            }
+        }
+
+        let inner = Arc::new(MapStore::new());
+        let old_key = "LUNA_FALLBACK_PARITY_OLD";
+        let replacement_key = "LUNA_FALLBACK_PARITY_KEY";
+        let mut old_values = HashMap::new();
+        old_values.insert(old_key.to_string(), Value::String("old".to_string()));
+        inner.0.lock().unwrap().insert(
+            KEYRING_USERNAME.to_string(),
+            serde_json::to_string(&old_values)?,
+        );
+
+        let writes = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let config_dir = tempfile::tempdir().unwrap();
+        let mut config = Config::new(config_dir.path().join("config.yaml"), "biorouter-test")?;
+        config.test_keyring_store = Some(Arc::new(FailingStore {
+            inner: Arc::clone(&inner),
+            writes: Arc::clone(&writes),
+        }));
+
+        config.set_secret(replacement_key, &"replacement")?;
+        assert!(
+            writes.load(std::sync::atomic::Ordering::SeqCst) > 0,
+            "the unavailable-keyring fallback was not exercised"
+        );
+
+        let expected = HashMap::from([
+            (old_key.to_string(), Value::String("old".to_string())),
+            (
+                replacement_key.to_string(),
+                Value::String("replacement".to_string()),
+            ),
+        ]);
+        assert_eq!(config.all_secrets()?, expected);
+
+        let fallback_path = Config::secrets_file_path();
+        let on_disk: HashMap<String, Value> =
+            serde_yaml::from_str(&std::fs::read_to_string(&fallback_path)?)?;
+        assert_eq!(on_disk, expected);
+
+        let future = Config::default();
+        assert!(matches!(&future.secrets, SecretStorage::File { .. }));
+        match &future.secrets {
+            SecretStorage::File { path } => assert_eq!(path, &fallback_path),
+            SecretStorage::Keyring { .. } => unreachable!(),
+        }
+        assert_eq!(future.all_secrets()?, expected);
+        assert!(crate::config::test_binary_credentials::os_store_is_kept_off());
+        Ok(())
+    }
+
+    #[test]
+    fn successful_keyring_replacement_does_not_force_file_defaults() -> Result<(), ConfigError> {
+        if !crate::test_sandbox::in_a_process_of_its_own() {
+            return Ok(());
+        }
+
+        assert!(crate::config::test_binary_credentials::os_store_is_kept_off());
+        let _env = env_lock::lock_env([("BIOROUTER_DISABLE_KEYRING", None::<&str>)]);
+        assert!(crate::config::test_binary_credentials::os_store_is_kept_off());
+
+        let initial = Config::default();
+        assert!(matches!(initial.secrets, SecretStorage::Keyring { .. }));
+
+        let store = Arc::new(MapStore::new());
+        let config_dir = tempfile::tempdir().unwrap();
+        let mut config = Config::new(config_dir.path().join("config.yaml"), "biorouter-test")?;
+        config.test_keyring_store = Some(store.clone());
+
+        let key = "LUNA_KEYRING_PARITY_KEY";
+        config.set_secret(key, &"replacement")?;
+
+        let saved = store
+            .0
+            .lock()
+            .unwrap()
+            .get(KEYRING_USERNAME)
+            .cloned()
+            .expect("the successful keyring write should save the main blob");
+        let saved: HashMap<String, Value> = serde_json::from_str(&saved)?;
+        assert_eq!(
+            saved.get(key),
+            Some(&Value::String("replacement".to_string()))
+        );
+        assert_eq!(
+            config.all_secrets()?.get(key),
+            Some(&Value::String("replacement".to_string()))
+        );
+        assert!(std::env::var("BIOROUTER_DISABLE_KEYRING").is_err());
+
+        let future = Config::default();
+        assert!(matches!(&future.secrets, SecretStorage::Keyring { .. }));
+        assert!(crate::config::test_binary_credentials::os_store_is_kept_off());
+        Ok(())
+    }
     use super::*;
     use serial_test::serial;
     use tempfile::NamedTempFile;
