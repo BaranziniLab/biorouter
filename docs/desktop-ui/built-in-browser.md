@@ -6,7 +6,8 @@
 > and history from Google Chrome when they ask.
 > **Status:** Current. Accepted design of 2026-11-19; implementation is in progress on branch
 > `br1946/browser`, where phases 1, 2 and 4 are built (see "Phase 1 as built", "Phase 2 as
-> built" and "Phase 4 as built"). Until that branch merges, the shipping behaviour is the one
+> built" and "Phase 4 as built") and the findings of their test matrix are fixed (see "Fix round
+> of 2026-11-20"). Until that branch merges, the shipping behaviour is the one
 > recorded in the [preview panel implementation record](preview-panel/implementation-record.md),
 > and the open work is listed under "Phases" below.
 > **Audience:** developers working on the desktop app, the agent loop, privacy and security, and
@@ -286,6 +287,13 @@ The rules from PP-02 still hold because the view is native and paints above the 
   first use card of BB-21), never over the slot.
 - At slot widths under 768 px the person can zoom out from the `⋯` menu; Chromium remembers zoom per
   host in the profile. The default zoom can come from Chrome (BB-22).
+- **No automatic desktop width** (L7 of the fix round, considered and declined). At the default
+  panel width (about 510 CSS px) responsive sites such as Wikipedia lay out for a phone. Fitting a
+  desktop layout of 1,024 CSS px into that slot would need a zoom near 50%, which puts 15 px body
+  text at about 7 px, under any reading size and against the person's own text size setting. So
+  the page keeps the person's zoom: widening the panel, zooming out once from the `⋯` menu (kept
+  per site), or **Open in default browser** gives the desktop layout. An agent tab is unaffected,
+  because snapshots and page text do not depend on the layout.
 
 ### Session, partition and CSP hooks
 
@@ -1358,6 +1366,41 @@ the languages, removes the import and checks it signs out, and reads the log and
 any fixture value. Mutation checks: each guard (the digest check, host only cookies, expired and
 partitioned cookies, a value in the log, wiping the keys, the test hook gate, the profile id
 check, the IPC sender check, asking for a key only when needed) was reverted and its test failed.
+
+### Fix round of 2026-11-20
+
+The final test matrix of phases 1, 2 and 4 failed on one medium finding and raised four security
+findings for review. This round fixed each with a test that failed first.
+
+| Item | What was wrong | What changed | Where |
+|---|---|---|---|
+| S1 | An agent's shell could run `biorouterd browser-key`; after **Always Allow** it read Chrome's cookie key silently | The secret guard refuses any command that names the helper; the helper runs only for the desktop app's main process and answers masked with main's one-time request (BB-23) | `secret_guard/resolve.rs` (`HelperSighting`), `browser_key.rs` (`caller`), `privacy/system_auth_peer.rs` (`pid_is_ours`), `chromeImport/keyProvider.ts` |
+| S2 | The reading grant let the agent open any public address, so an injected page could have it carry page content off in a query string | Opening an address, back, forward, reload and a link to another origin need the act grant; reading, scrolling, waiting, stop and links within the origin stay on the reading grant; the consent text says so (BB-17) | `security/browser_use.rs` (`grant_for_call`, `disclosure`), `browser/agent/actionability.ts` (`isPlainLinkClick`), `browser/agent/driver.ts` (`withoutActGrant`), `BrowserControl.tsx` |
+| S3 | Import consent lived only in the renderer's dialog | Electron main shows its own native confirmation naming the profile and what will be imported before the import reads anything (BB-21) | `chromeImport/confirm.ts`, `service.ts` (`run(request, confirm)`), `main.ts` (`confirmChromeImport`) |
+| S4 | `admit_browser` skipped the subagent refusal when the chat could not be read | It refuses: a chat whose kind is unknown is never assumed to be a person's own | `extension_manager.rs` (`admit_browser`), `browser_extension.rs` (`UNKNOWN_CHAT_REFUSAL`) |
+| M1 | `browser_screenshot` (and `workspace_read_panel` captures) failed under any profile that moves Electron's temporary folder | Both sides use one folder, `captures/` in Biorouter's state folder, resolved the same way (`Paths::in_state_dir`, and `agentCaptureDir` in `biorouterPaths.ts`) | `workspace_extension.rs` (`panel_capture_root`), `utils/biorouterPaths.ts`, `main.ts` (`ensureAgentCaptureDir`) |
+| M2 | Identical Copilot approval cards stacked above the composer, and Cancel did not take them away | Root cause: BaseChat rendered Copilot's control and the browser's as siblings with the same React key, so each re-render that reconciled the slot by key orphaned the previous Copilot control with its card frozen on screen. One `AgentCapabilityControls` element now holds both under their own keys | `components/agentControls/AgentCapabilityControls.tsx`, `BaseChat.tsx` |
+| L1 | `browser_open` reported success for an address the network policy then refused | The result says how the load ended: `loaded`, `blocked` (the policy refused it) or `failed` (Chromium's error), with the reason | `embeddedBrowser.ts` (`agentBrowserTabLoad`), `driver.ts` (`opOpen`) |
+| L2 | `file:`, `javascript:`, `chrome:`, `about:`, `data:` and `view-source:` typed in the address field went to Google as a search | They are refused with one line under the bar; `data: science jobs` (a space after the colon) still searches | `browser/addressBar.ts`, `WebPagePreview.tsx` |
+| L3 | After a refused or download-only navigation the bar kept the refused address over a blank page | A refusal commits Chromium's blank error page, so the tab goes back to the page the person was on, keeps the note and drops the refused entry; a tab with nothing to go back to shows an empty bar | `embeddedBrowser.ts` (`leaveRefusedPage`), `WebPagePreview.tsx` |
+| L4 | **Remove imported data** in Settings acted at once | It asks first, in the app's confirmation dialog, not red (BB-25) | `BrowserSettingsSection.tsx` |
+| L5 | The summary never showed cookies left out or refused, and a Linux `v11` key that failed was silent | The summary and the Settings InfoTip say how many cookies were left out or could not be set, and that some logins were not imported and why | `chromeImport/copy.ts` (`loginsNote`), `keyProvider.ts` (`missing`), `importer.ts`, `manifest.ts` |
+| L6 | Chats saved before the browser existed never got its tools | A roster now records the capabilities it was written knowing (`offered`); a roster that predates the browser is offered it when the chat opens, unless the person has it off for every chat. A chat whose roster this build wrote keeps the person's choice | `session/extension_data.rs` (`EnabledExtensionsState::backfill`), `agents/agent.rs` (`load_extensions_from_session`) |
+| L7 | At the default panel width sites render their phone layout | Considered and declined; see "Geometry in the artifact panel" | |
+
+L6 deliberately covers only capabilities listed in `BACKFILLED_CAPABILITIES` (the browser): an
+older roster cannot tell a capability someone turned off from one that did not exist, so the
+capabilities that arrived before the marker (Decisions, Crew) are not added to old chats. The
+backfill is not written when a chat opens, because opening a chat changes nothing in it; it is
+recorded with the roster the next time the roster is written.
+
+Tests: `cargo test -p biorouter-mcp --lib -- secret_guard bb_23_`, `cargo test -p biorouter --lib
+-- browser_key browser_use extension_manager::tests::a_browser_call extension_data
+workspace_extension::tests::panel_captures`, `cargo test -p biorouter-server --bin biorouterd
+browser_key_tests`; Vitest `src/browser`, `components/browser`, `components/agentControls`,
+`utils/agentCaptureDir.test.ts`, `WebPagePreview.navigation.test.tsx`; and the Electron specs
+`biorouter-browser.spec.ts` (L3), `biorouter-browser-agent.spec.ts` (S2, L1) and
+`biorouter-browser-import.spec.ts` (S3).
 
 ## Open questions and things to measure first
 
