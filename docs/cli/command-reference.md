@@ -1357,7 +1357,7 @@ Execute commands from an instruction file or stdin.
 
 - **`-i, --instructions <FILE>`**: Path to instruction file containing commands. Use `-` for stdin
 - **`-t, --text <TEXT>`**: Input text to provide to biorouter directly
-- **`--system <TEXT>`**: Provide additional system instructions to customize the agent's behavior
+- **`--system <TEXT>`**: Provide additional system instructions to customize the agent's behavior. The text is added after the system prompt, with `--text`, `--instructions FILE` and `--instructions -` alike. To stand in for the system prompt instead, see [Custom system prompts](../agent-loop/custom-system-prompts.md)
 - **`--workflow <WORKFLOW_NAME_OR_PATH> <OPTIONS>`**: Load a custom workflow in current session
 - **`--params <KEY=VALUE>`**: Key-value parameters to pass to the workflow file. Can be specified multiple times
 - **`--sub-workflow <WORKFLOW>`**: Specify sub-workflows to include alongside the main workflow. Can be specified multiple times
@@ -1384,7 +1384,7 @@ Execute commands from an instruction file or stdin.
 - **`--explain`**: Show a workflow's title, description, and parameters, and a "Supervision:" section when it declares monitors or a phase plan. It first runs the same checks `run` and an import run, so a workflow `run` would refuse is refused here too, with the same sentence after "This workflow would not start: ". `run` prints that sentence as it is, without a "Template rendering failed:" prefix. See [What `--explain` prints](#what---explain-prints)
 - **`--render-workflow`**: Print the rendered workflow instead of running it
 - **`-q, --quiet`**: Quiet mode. Suppress non-response output, printing only the model response to stdout
-- **`--output-format <FORMAT>`**: Output format (`text`, `json`, or `stream-json`). Default is `text`. Use JSON structured output for automation and scripting: `json` for results after completion, `stream-json` for events as they occur
+- **`--output-format <FORMAT>`**: Output format (`text`, `json`, or `stream-json`). Default is `text`. Use JSON structured output for automation and scripting: `json` for results after completion, `stream-json` for events as they occur. A run without `--interactive` tells the model that nobody can answer or approve and that its turn ends at a reply without a tool call; only `text` output also tells it to keep replies short for a terminal. See [What a non-interactive run is told](../agent-loop/custom-system-prompts.md#what-a-non-interactive-run-is-told)
 - **`--provider`**: Specify the provider to use for this session (overrides environment variable)
 - **`--model`**: Specify the model to use for this session (overrides environment variable)
 
