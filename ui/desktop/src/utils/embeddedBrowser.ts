@@ -152,6 +152,13 @@ type Entry = {
   personInputAt: number;
   /** BB-05: how a download this tab starts during an agent operation is handled. */
   agentDownload: AgentDownloadRoute | null;
+  /**
+   * L3: the tab is going back from the blank error page a refused navigation committed, so the
+   * person keeps the page they were on; the refused entry is dropped once that page is back.
+   */
+  leavingRefusal: boolean;
+  /** L3: the tab shows only the error page of a refused navigation, so the bar shows nothing. */
+  blankRefusal: boolean;
 };
 
 /**
@@ -570,7 +577,7 @@ function readState(entry: Entry): EmbeddedBrowserState {
   const contents = entry.view.webContents;
   const url = contents.getURL();
   return {
-    url: shownUrl(entry, url).slice(0, MAX_PAGE_URL_CHARS),
+    url: entry.blankRefusal ? '' : shownUrl(entry, url).slice(0, MAX_PAGE_URL_CHARS),
     title: contents.getTitle().slice(0, MAX_PAGE_TITLE_CHARS),
     managedApp: Boolean(entry.managed),
     sourceRevision: sourceRevision(entry),
@@ -595,6 +602,38 @@ function pushState(entry: Entry): void {
 function setNotice(entry: Entry, notice: EmbeddedBrowserNotice | null): void {
   entry.notice = notice;
   pushState(entry);
+}
+
+/**
+ * L3: a refused navigation commits Chromium's blank error page at the refused address. Go back
+ * to the page the person was on, which keeps the refusal's note, and drop the refused entry once
+ * it is behind; with no page to go back to, the bar shows nothing rather than an address that did
+ * not load.
+ */
+function leaveRefusedPage(entry: Entry): void {
+  const contents = entry.view.webContents;
+  if (contents.isDestroyed()) return;
+  if (contents.navigationHistory.canGoBack()) {
+    entry.leavingRefusal = true;
+    contents.navigationHistory.goBack();
+    return;
+  }
+  entry.blankRefusal = true;
+  pushState(entry);
+}
+
+/** {@link leaveRefusedPage}, not from inside the event that reports the failure. */
+function leaveRefusedPageSoon(entry: Entry): void {
+  setTimeout(() => {
+    if (!entry.view.webContents.isDestroyed()) leaveRefusedPage(entry);
+  }, 0);
+}
+
+function dropRefusedEntry(entry: Entry): void {
+  entry.leavingRefusal = false;
+  const history = entry.view.webContents.navigationHistory;
+  const forward = history.getActiveIndex() + 1;
+  if (forward < history.length()) history.removeEntryAtIndex(forward);
 }
 
 function noticeLocalRefusal(entry: Entry, url: URL, reason: 'reserved' | 'local'): void {
@@ -943,6 +982,8 @@ function registerEntry(
     agentInputDepth: 0,
     personInputAt: 0,
     agentDownload: null,
+    leavingRefusal: false,
+    blankRefusal: false,
   };
   entry.record.entry = entry;
   const { managed } = options;
@@ -988,9 +1029,11 @@ function registerEntry(
     if (details.isMainFrame && !details.isSameDocument) {
       entry.error = null;
       entry.errorOffersExternal = false;
+      entry.blankRefusal = false;
       // A note about the page being left goes with it; one about this navigation is set
-      // after this event, by the request filter or the failure handler.
-      entry.notice = null;
+      // after this event, by the request filter or the failure handler. Going back from a
+      // refused address keeps the note that says why (L3).
+      if (!entry.leavingRefusal) entry.notice = null;
       entry.noticedPermissions.clear();
       entry.find = null;
     }
@@ -1007,6 +1050,7 @@ function registerEntry(
     pushState(entry);
   });
   contents.on('did-navigate', (_event, url) => {
+    if (entry.leavingRefusal) dropRefusedEntry(entry);
     entry.revision += 1;
     commitRecord(entry.record, url);
     // The person's own history only: pages the agent opened are not suggestions for the person.
@@ -1033,6 +1077,7 @@ function registerEntry(
     entry.record.personNavigation = false;
     if (entry.notice?.kind === 'local-blocked' || entry.notice?.kind === 'local-reserved') {
       pushState(entry);
+      leaveRefusedPageSoon(entry);
       return;
     }
     let failed: URL | null = null;
@@ -1046,6 +1091,7 @@ function registerEntry(
         isReservedLocalPort(defaultPort(failed)) &&
         literalHostClass(canonicalHost(failed.hostname)) === 'loopback';
       noticeLocalRefusal(entry, failed, reserved ? 'reserved' : 'local');
+      leaveRefusedPageSoon(entry);
       return;
     }
     // Chromium's certificate errors are -200 to -299 (net/base/net_error_list.h).

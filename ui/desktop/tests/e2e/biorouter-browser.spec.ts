@@ -283,6 +283,35 @@ test('never opens a reserved loopback port, not even for the person (BB-06)', as
   expect(site.log.filter((entry) => entry.host === 'reserved').length).toBe(before);
 });
 
+test('after a refused or download-only navigation the bar names the page still shown (L3)', async () => {
+  // A page the browser refuses to leave for: the tab still shows Links.
+  await call('open', 'l3', site.url('publicA', '/links'));
+  await expect.poll(title('l3')).toBe('Links');
+  await call('click', 'l3', '#to-intranet');
+  await expect.poll(async () => (await call('state', 'l3'))?.notice?.kind).toBe('local-blocked');
+  await expect
+    .poll(async () => (await call('state', 'l3'))?.url)
+    .toBe(site.url('publicA', '/links'));
+  // The page is Links again, the note that says why stays, and Forward does not lead back to
+  // the refused address.
+  await expect.poll(title('l3')).toBe('Links');
+  expect((await call('state', 'l3')).notice?.kind).toBe('local-blocked');
+  expect((await call('state', 'l3')).canGoForward).toBe(false);
+  // A link that only downloads: the page stays, and so does its address.
+  await call('navigate', 'l3', site.url('publicA', '/'));
+  await expect.poll(title('l3')).not.toBe('Links');
+  const home = (await call('state', 'l3')).url;
+  await call('navigate', 'l3', site.url('publicA', '/download'));
+  await expect.poll(async () => (await call('state', 'l3'))?.download?.state).toBe('completed');
+  await expect.poll(async () => (await call('state', 'l3'))?.url).toBe(home);
+  // A new tab whose first address is refused shows a blank page, and an empty bar.
+  await call('open', 'refused-first', `http://127.0.0.1:${site.reservedPort}/`);
+  await expect
+    .poll(async () => (await call('state', 'refused-first'))?.notice?.kind)
+    .toBe('local-reserved');
+  await expect.poll(async () => (await call('state', 'refused-first'))?.url).toBe('');
+});
+
 test('maps the browser keys pressed in the page to the bar', async () => {
   await call('navigate', 'links', site.url('publicA', '/links'));
   await expect.poll(title('links')).toBe('Links');

@@ -196,6 +196,24 @@ describe('the address field', () => {
     expect(browser.navigate).toHaveBeenLastCalledWith('tab-1', 'https://example.org/');
   });
 
+  it('names the page the tab shows after a refused navigation, or nothing in a blank tab (L3)', async () => {
+    const { report } = installBrowser(stateAt('https://example.com/'));
+    await mount();
+    const address = screen.getByRole('combobox', {
+      name: BROWSER_COPY.address,
+    }) as HTMLInputElement;
+    await userEvent.clear(address);
+    await userEvent.type(address, '127.0.0.1:9{Enter}');
+    // Main went back to the page the person was on and kept its address.
+    report(stateAt('https://example.com/', { notice: { kind: 'local-reserved', text: 'no' } }));
+    await waitFor(() => expect(address.value).toBe('https://example.com/'));
+    // A tab with nothing behind the refusal reports no address, and the bar shows none.
+    await userEvent.clear(address);
+    await userEvent.type(address, '127.0.0.1:9{Enter}');
+    report(stateAt('', { canGoBack: false, notice: { kind: 'local-reserved', text: 'no' } }));
+    await waitFor(() => expect(address.value).toBe(''));
+  });
+
   it('takes focus when the person presses Cmd L in the page', async () => {
     const { key } = installBrowser(stateAt('https://example.com/'));
     await mount();

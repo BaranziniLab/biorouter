@@ -368,9 +368,15 @@ export default function WebPagePreview({
     };
   }, [browser, coveredBySelf, isSuspended, unavailable, viewId]);
 
+  // The bar names the page the tab shows (L3): after a refused navigation main goes back, or
+  // reports no address for a blank tab, and a download leaves the page where it was.
+  const hasState = state !== null;
+  const pageUrl = state?.url ?? '';
+  const pageLoading = state?.isLoading ?? false;
   useEffect(() => {
-    if (!isEditingAddress && state?.url) setAddressDraft(state.url);
-  }, [isEditingAddress, state?.url]);
+    if (isEditingAddress || !hasState) return;
+    if (pageUrl || !pageLoading) setAddressDraft(pageUrl);
+  }, [isEditingAddress, hasState, pageUrl, pageLoading]);
 
   // Keys pressed while the page had focus (main maps them, BB toolbar and keyboard).
   useEffect(() => {
