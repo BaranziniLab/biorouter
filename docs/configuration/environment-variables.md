@@ -229,6 +229,10 @@ These variables control security-related features.
 >
 > * macOS/Linux: `~/.config/biorouter/secrets.yaml`
 > * Windows: `%APPDATA%\UCSF\biorouter\config\secrets.yaml`
+>
+> The system keychain is then not read at all, so a key saved in the desktop app's Settings reads
+> as missing; the error names the file it read and how to reach the key. See
+> [A missing key while the keychain is turned off](../security/secret-storage.md#a-missing-key-while-the-keychain-is-turned-off).
 
 ## Browser access
 

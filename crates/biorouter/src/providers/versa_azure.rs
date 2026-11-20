@@ -674,11 +674,10 @@ impl VersaAzureProvider {
         let config = crate::config::Config::global();
         let api_key = match credential_source {
             VersaAzureCredentialSource::ApiKey => {
-                let key = config
-                    .get_secret::<String>("VERSA_AZURE_API_KEY")
-                    .map_err(|_| {
-                        anyhow::anyhow!("VERSA_AZURE_API_KEY {}", super::CREDENTIAL_NEVER_SET)
-                    })?;
+                // Not a blanket "not configured": a key the store refused to
+                // hand over is there, and must not be re-entered (see
+                // `read_provider_credential`, and #521 for the file store).
+                let key = super::read_provider_credential(config, "VERSA_AZURE_API_KEY", None)?;
                 anyhow::ensure!(!key.trim().is_empty(), "VERSA_AZURE_API_KEY is empty");
                 Some(key)
             }

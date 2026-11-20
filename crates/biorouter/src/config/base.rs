@@ -355,9 +355,18 @@ impl Default for Config {
         let config_path = config_dir.join(CONFIG_YAML_NAME);
 
         let secrets = match env::var("BIOROUTER_DISABLE_KEYRING") {
-            Ok(_) => SecretStorage::File {
-                path: config_dir.join("secrets.yaml"),
-            },
+            Ok(_) => {
+                let path = config_dir.join("secrets.yaml");
+                // Once per process in practice (`Config::global`). The variable is
+                // often inherited without the person knowing (#521), and a key they
+                // saved in the keychain then reads as missing.
+                tracing::info!(
+                    secrets_file = %path.display(),
+                    "BIOROUTER_DISABLE_KEYRING is set: secrets are read from the file store, \
+                     not the system keychain"
+                );
+                SecretStorage::File { path }
+            }
             Err(_) => SecretStorage::Keyring {
                 service: KEYRING_SERVICE.to_string(),
             },
@@ -953,6 +962,20 @@ impl Config {
     /// config-read classifier).
     pub fn path_ref(&self) -> &Path {
         &self.config_path
+    }
+
+    /// The plaintext secrets file this configuration reads because
+    /// `BIOROUTER_DISABLE_KEYRING` is set, or `None` while the system keychain
+    /// is its store. With the variable set the keychain is never read, so a key
+    /// saved there (the desktop app's Settings saves there) is not found
+    /// (#521). Asking reads nothing.
+    pub fn secrets_file_selected_by_environment(&self) -> Option<&Path> {
+        match &self.secrets {
+            SecretStorage::File { path } if env::var_os("BIOROUTER_DISABLE_KEYRING").is_some() => {
+                Some(path)
+            }
+            _ => None,
+        }
     }
 
     /// The config file's contents, parsed once and reused until the file moves.
@@ -2761,8 +2784,14 @@ impl Config {
     }
 
     /// Select file storage for Config instances created later in this process.
+    ///
+    /// Any value the variable already has selects the file store too (the test
+    /// `Config::default` makes), so a value already there, perhaps the person's
+    /// own, is left as it is rather than overwritten.
     fn select_file_storage_for_future_defaults() {
-        std::env::set_var("BIOROUTER_DISABLE_KEYRING", "1");
+        if env::var("BIOROUTER_DISABLE_KEYRING").is_err() {
+            std::env::set_var("BIOROUTER_DISABLE_KEYRING", "1");
+        }
     }
 
     /// Check if an error string indicates a keyring availability issue that should trigger fallback

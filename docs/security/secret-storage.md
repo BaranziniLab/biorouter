@@ -95,13 +95,15 @@ gives the two ways to reach a key (issue #521):
 ```text
 VERSA_BEDROCK_ACCESS_KEY_ID is not configured in the file store /Users/you/.config/biorouter/secrets.yaml.
 BIOROUTER_DISABLE_KEYRING is set, so the system keychain was not checked. Unset BIOROUTER_DISABLE_KEYRING
-to use keys saved in the system keychain, or run `biorouter configure` to add it to the file.
+to use keys saved in the system keychain, or run `biorouter configure` to add the key to the file.
 ```
 
 The CLI gives the same two remedies after any provider that fails to start while the variable is
 set, in place of its usual advice to check the system keychain. Biorouter does not look in the
 keychain to confirm the key is there, because a keychain read can raise a password prompt. Without
-the variable, the messages are unchanged.
+the variable, the messages are unchanged. Each Biorouter process also logs one line when the
+variable selects the file store, and a file store that cannot be read is reported as that, never
+as a missing key.
 
 ## How Settings shows a saved key
 

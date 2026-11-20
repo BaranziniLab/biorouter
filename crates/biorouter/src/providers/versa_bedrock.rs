@@ -323,34 +323,17 @@ impl VersaBedrockProvider {
         binding.validate()?;
 
         let config = crate::config::Config::global();
-        // ⚠ `map_err(|_| "... is not configured")` DISCARDS the reason, and the
-        // two reasons need opposite responses from the user:
-        //
-        //   NotFound        -> "add it in Settings" is right
-        //   anything else   -> the key IS there and the store refused the read,
-        //                      so "add it in Settings" sends the user to retype
-        //                      a credential that is already correct
-        //
-        // On macOS the second happens whenever the Keychain grant no longer
-        // covers the running binary -- the grant is bound to the signature, so a
-        // newly installed or re-signed build asks again, and an unanswered
-        // prompt fails the read.
+        // A missing key and a store that refused the read need opposite answers
+        // from the user; see `read_provider_credential`. With
+        // BIOROUTER_DISABLE_KEYRING set, Settings cannot help (it saves to the
+        // keychain this process does not read), so the missing-key message names
+        // the file store instead (#521).
         let read_key = |name: &str| -> anyhow::Result<String> {
-            match config.get_secret::<String>(name) {
-                Ok(value) => Ok(value),
-                Err(crate::config::ConfigError::NotFound(_)) => Err(anyhow::anyhow!(
-                    "{name} {}. Add it under Versa API Bedrock in Settings.",
-                    super::CREDENTIAL_NEVER_SET
-                )),
-                Err(error) => Err(anyhow::anyhow!(
-                    "Could not read {name} from the credential store: {error}\n\n\
-                     The credential appears to be configured, so this is the store \
-                     refusing the read rather than a missing key -- do NOT re-enter it. \
-                     On macOS a Keychain grant is tied to the application's signature, \
-                     so a newly installed or re-signed build asks for permission again; \
-                     answer that prompt with \u{201c}Always Allow\u{201d}."
-                )),
-            }
+            super::read_provider_credential(
+                config,
+                name,
+                Some("Add it under Versa API Bedrock in Settings."),
+            )
         };
         let access_key_id: String = read_key("VERSA_BEDROCK_ACCESS_KEY_ID")?;
         let secret_access_key: String = read_key("VERSA_BEDROCK_SECRET_ACCESS_KEY")?;
