@@ -20,6 +20,7 @@ on:
 
 permissions:
   contents: write
+  attestations: write
   id-token: write
 
 jobs:
@@ -77,8 +78,8 @@ jobs:
           echo "OPEN_COMPUTER_USE_CODESIGN_MODE=adhoc" >> "${GITHUB_ENV}"
 
           if [ -z "${OPEN_COMPUTER_USE_CODESIGN_P12_BASE64}" ] || [ -z "${OPEN_COMPUTER_USE_CODESIGN_P12_PASSWORD}" ]; then
-            echo "No Open Computer Use signing certificate configured; release artifacts will fall back to ad-hoc signing and may create install-specific macOS permission identities."
-            exit 0
+            echo "Developer ID signing credentials are required for release artifacts." >&2
+            exit 1
           fi
 
           keychain_password="${OPEN_COMPUTER_USE_CODESIGN_KEYCHAIN_PASSWORD:-${RUNNER_TEMP}-open-computer-use-keychain}"
@@ -111,7 +112,39 @@ jobs:
           } >> "${GITHUB_ENV}"
 
       - name: Build npm release artifacts
+        env:
+          OPEN_COMPUTER_USE_INCLUDE_LOCKED_USE: "1"
         run: npm run npm:pack
+
+      - name: Notarize installable payload and Open Computer Use app
+        if: ${{ github.event_name == 'push' || inputs.publish_to_npm }}
+        env:
+          APPLE_NOTARY_API_KEY_P8_BASE64: ${{ secrets.APPLE_NOTARY_API_KEY_P8_BASE64 }}
+          APPLE_NOTARY_KEY_ID: ${{ secrets.APPLE_NOTARY_KEY_ID }}
+          APPLE_NOTARY_ISSUER_ID: ${{ secrets.APPLE_NOTARY_ISSUER_ID }}
+          APPLE_DEVELOPER_TEAM_ID: ${{ secrets.APPLE_DEVELOPER_TEAM_ID }}
+        run: |
+          if [ "${OPEN_COMPUTER_USE_CODESIGN_MODE}" != "identity" ]; then
+            echo "Developer ID signing is required before Open Computer Use notarization." >&2
+            exit 1
+          fi
+          if [ -z "${APPLE_NOTARY_API_KEY_P8_BASE64}" ] || [ -z "${APPLE_NOTARY_KEY_ID}" ] || [ -z "${APPLE_NOTARY_ISSUER_ID}" ] || [ -z "${APPLE_DEVELOPER_TEAM_ID}" ]; then
+            echo "All Apple notary credentials are required to publish Open Computer Use." >&2
+            exit 1
+          fi
+
+          api_key_path="${RUNNER_TEMP}/AuthKey_${APPLE_NOTARY_KEY_ID}.p8"
+
+          CERT_PATH="${api_key_path}" python3 -c 'import base64, os, pathlib; pathlib.Path(os.environ["CERT_PATH"]).write_bytes(base64.b64decode(os.environ["APPLE_NOTARY_API_KEY_P8_BASE64"]))'
+
+          bash ./scripts/notarize-open-computer-use.sh "dist/Open Computer Use.app" \
+            --key "${api_key_path}" \
+            --key-id "${APPLE_NOTARY_KEY_ID}" \
+            --issuer "${APPLE_NOTARY_ISSUER_ID}" \
+            --team-id "${APPLE_DEVELOPER_TEAM_ID}"
+
+          # Restage and repack npm too: its previous copy predates notarization.
+          ./scripts/release-package.sh --skip-build
 
       - name: Upload npm release artifacts
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
@@ -121,6 +154,22 @@ jobs:
             dist/release/npm/*.tgz
             dist/release/release-manifest.json
           if-no-files-found: error
+
+      - name: Upload direct-download release artifacts
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: open-computer-use-release-artifacts
+          path: dist/release/github/*
+          if-no-files-found: error
+
+      - name: Generate build provenance for direct-download artifacts
+        if: ${{ !github.event.repository.private }}
+        uses: actions/attest-build-provenance@a2bbfa25375fe432b6a289bc6b6cd05ecd0c4c32
+        with:
+          subject-path: |
+            dist/release/github/*.zip
+            dist/release/github/*.tar.gz
+            dist/release/github/*.skill
 
       - name: Configure npm token fallback
         env:
@@ -167,8 +216,8 @@ jobs:
           echo "CURSOR_MOTION_CODESIGN_MODE=adhoc" >> "${GITHUB_ENV}"
 
           if [ -z "${OPEN_COMPUTER_USE_CODESIGN_P12_BASE64}" ] || [ -z "${OPEN_COMPUTER_USE_CODESIGN_P12_PASSWORD}" ]; then
-            echo "No Developer ID signing certificate configured; Cursor Motion DMG will be ad-hoc signed and notarization will be skipped."
-            exit 0
+            echo "Developer ID signing credentials are required for Cursor Motion releases." >&2
+            exit 1
           fi
 
           keychain_password="${OPEN_COMPUTER_USE_CODESIGN_KEYCHAIN_PASSWORD:-${RUNNER_TEMP}-cursor-motion-keychain}"
@@ -217,8 +266,13 @@ jobs:
           APPLE_DEVELOPER_TEAM_ID: ${{ secrets.APPLE_DEVELOPER_TEAM_ID }}
         run: |
           if [ -z "${APPLE_NOTARY_API_KEY_P8_BASE64}" ] || [ -z "${APPLE_NOTARY_KEY_ID}" ] || [ -z "${APPLE_NOTARY_ISSUER_ID}" ] || [ -z "${APPLE_DEVELOPER_TEAM_ID}" ]; then
-            echo "No notary credentials configured; skipping Cursor Motion notarization."
-            exit 0
+            echo "All Apple notary credentials are required to publish Cursor Motion." >&2
+            exit 1
+          fi
+
+          if [ "${CURSOR_MOTION_CODESIGN_MODE}" != "identity" ]; then
+            echo "Developer ID signing is required before Cursor Motion notarization." >&2
+            exit 1
           fi
 
           version="${RELEASE_TAG#v}"
@@ -232,9 +286,19 @@ jobs:
             --key-id "${APPLE_NOTARY_KEY_ID}" \
             --issuer "${APPLE_NOTARY_ISSUER_ID}" \
             --team-id "${APPLE_DEVELOPER_TEAM_ID}" \
-            --wait
+            --wait --output-format json > "${RUNNER_TEMP}/cursor-motion-notary-result.json"
+
+          python3 - "${RUNNER_TEMP}/cursor-motion-notary-result.json" <<'PYTHON'
+          import json, sys
+          with open(sys.argv[1], encoding="utf-8") as source:
+              result = json.load(source)
+          print("Cursor Motion notarization status:", result.get("status", "unknown"))
+          if result.get("status") != "Accepted":
+              sys.exit("Cursor Motion notarization was not accepted; publishing stopped.")
+          PYTHON
 
           xcrun stapler staple "${dmg_path}"
+          xcrun stapler validate "${dmg_path}"
 
       - name: Upload Cursor Motion release artifact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
@@ -243,22 +307,49 @@ jobs:
           path: dist/release/cursor-motion/*.dmg
           if-no-files-found: error
 
-      - name: Publish Cursor Motion DMG to GitHub Releases
+  publish-github-release:
+    needs:
+      - package-npm
+      - release-cursor-motion-dmg
+    if: ${{ github.event_name == 'push' }}
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
+
+      - name: Download Open Computer Use release artifacts
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: open-computer-use-release-artifacts
+          path: dist/release/github
+
+      - name: Download Cursor Motion release artifact
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: cursor-motion-release-artifact
+          path: dist/release/cursor-motion
+
+      - name: Publish all assets to GitHub Releases
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ github.ref_name }}
         run: |
-          version="${RELEASE_TAG#v}"
-          dmg_path="dist/release/cursor-motion/CursorMotion-${version}.dmg"
           notes_path="docs/releases/github/${RELEASE_TAG}.md"
+          assets=(
+            dist/release/github/*
+            dist/release/cursor-motion/*.dmg
+          )
 
           if gh release view "${RELEASE_TAG}" >/dev/null 2>&1; then
-            gh release upload "${RELEASE_TAG}" "${dmg_path}" --clobber
+            gh release upload "${RELEASE_TAG}" "${assets[@]}" --clobber
             gh release edit "${RELEASE_TAG}" \
               --title "${RELEASE_TAG}" \
               --notes-file "${notes_path}"
           else
-            gh release create "${RELEASE_TAG}" "${dmg_path}" \
+            gh release create "${RELEASE_TAG}" "${assets[@]}" \
               --title "${RELEASE_TAG}" \
               --notes-file "${notes_path}"
           fi

@@ -222,8 +222,13 @@ def accessible_id(node):
     return str(safe(node.get_accessible_id, "") or "")
 
 
+def is_password(node):
+    # GTK 4's password entries answer GetText with the plaintext, so their text is never read.
+    return node_role(node).lower() == "password text"
+
+
 def text_value(node, text_limit=DEFAULT_TEXT_LIMIT):
-    if not supports_interface(node, "Text"):
+    if is_password(node) or not supports_interface(node, "Text"):
         return ""
     text_iface = safe(node.get_text_iface)
     if text_iface is None:
@@ -247,6 +252,8 @@ def numeric_value(node):
 
 
 def element_value(node, text_limit=DEFAULT_TEXT_LIMIT):
+    if is_password(node):
+        return ""
     return text_value(node, text_limit=text_limit) or numeric_value(node)
 
 
@@ -268,37 +275,101 @@ def parse_text_limit(value, fallback=DEFAULT_TEXT_LIMIT):
     return positive_int(value, fallback)
 
 
-def record_for(node, index, path, window_bounds, text_limit=DEFAULT_TEXT_LIMIT):
-    bounds = relative_frame(node, window_bounds)
+def record_for(node, index, path, window_bounds, text_limit=DEFAULT_TEXT_LIMIT, lightweight_hidden=False):
+    # Only an explicit non-SHOWING state qualifies. Errors/unknown state keep
+    # full details; geometry alone cannot prove that a menu/control is hidden.
+    showing = safe(lambda: node.get_state_set().contains(Atspi.StateType.SHOWING)) if lightweight_hidden else None
+    omit_details = showing is not None and not bool(showing)
+    bounds = None if omit_details else relative_frame(node, window_bounds)
     role = node_role(node)
     return {
         "index": index,
         "runtimeId": path[:],
-        "automationId": accessible_id(node),
+        "automationId": "" if omit_details else accessible_id(node),
         "name": limit_text(node_name(node), text_limit=text_limit),
         "controlType": role,
         "localizedControlType": role,
-        "className": str(safe(node.get_toolkit_name, "") or ""),
-        "value": element_value(node, text_limit=text_limit),
+        "className": "" if omit_details else str(safe(node.get_toolkit_name, "") or ""),
+        "value": "" if omit_details else element_value(node, text_limit=text_limit),
         "nativeWindowHandle": 0,
         "frame": bounds,
-        "actions": action_names(node),
+        "actions": [] if omit_details else action_names(node),
+        **({"detailsOmitted": True} if omit_details else {}),
     }
+
+
+def prioritized_tree_nodes(root, root_path, max_nodes, max_depth, window_bounds=None):
+    """Bound discovery separately; retain ancestors and original AT-SPI paths."""
+    import heapq
+    pending, selected, seen = [], [], set()
+    scanned, sequence, truncated = 0, 0, False
+    scan_limit = max(64, min(max_nodes, 2500) * 4)
+    collections = {"table", "tree", "tree table", "list", "list box", "scroll pane"}
+    controls = {"push button", "check box", "radio button", "toggle button", "entry",
+                "password text", "combo box", "slider", "spin button"}
+
+    def enqueue(node, depth, path, in_collection, viewport):
+        nonlocal scanned, sequence, truncated
+        if depth > max_depth or scanned >= scan_limit:
+            truncated = True
+            return
+        scanned += 1
+        if node is None or node in seen:
+            return
+        seen.add(node)
+        role = node_role(node).lower()
+        collection = in_collection or role in collections
+        showing = safe(lambda: node.get_state_set().contains(Atspi.StateType.SHOWING))
+        geometry = safe(lambda: extents(node)) if collection else None
+        hidden = showing is not None and not showing
+        if geometry is not None and viewport is not None:
+            hidden = hidden or (geometry["x"] + geometry["width"] <= viewport["x"] or
+                geometry["y"] + geometry["height"] <= viewport["y"] or
+                geometry["x"] >= viewport["x"] + viewport["width"] or
+                geometry["y"] >= viewport["y"] + viewport["height"])
+        if role == "scroll pane" and geometry is not None:
+            if viewport is None:
+                viewport = geometry
+            else:
+                x, y = max(viewport["x"], geometry["x"]), max(viewport["y"], geometry["y"])
+                viewport = frame(x, y, max(0, min(viewport["x"]+viewport["width"], geometry["x"]+geometry["width"])-x),
+                                 max(0, min(viewport["y"]+viewport["height"], geometry["y"]+geometry["height"])-y))
+        control = role in controls or (role == "text" and supports_interface(node, "EditableText"))
+        rank = 4 if hidden else (2 if control else 3) if collection else 0 if control else 1
+        sequence += 1
+        heapq.heappush(pending, (rank, sequence, node, depth, path, collection, viewport))
+
+    enqueue(root, 0, tuple(root_path), False, window_bounds)
+    while pending and len(selected) < max_nodes:
+        _, _, node, depth, path, collection, viewport = heapq.heappop(pending)
+        selected.append((path, node, depth))
+        count = child_count(node)
+        if depth >= max_depth:
+            truncated = truncated or count > 0
+            continue
+        for index in range(count):
+            if scanned >= scan_limit:
+                truncated = True
+                break
+            enqueue(child_at(node, index), depth + 1, path + (index,), collection, viewport)
+    return sorted(selected, key=lambda item: item[0]), truncated or bool(pending)
 
 
 def render_tree(root, window_bounds, root_path, text_limit=DEFAULT_TEXT_LIMIT, max_tree_nodes=MAX_ELEMENTS, max_tree_depth=MAX_DEPTH):
     records = []
     lines = []
+    lightweight_hidden = os.environ.get("OPEN_COMPUTER_USE_LINUX_LIGHTWEIGHT_HIDDEN", "").strip().lower() in {"1", "true", "yes", "on"}
 
-    def visit(node, depth, path):
-        if len(records) >= max_tree_nodes or depth > max_tree_depth or node is None:
-            return
+    selected, truncated = prioritized_tree_nodes(root, root_path, max_tree_nodes, max_tree_depth, window_bounds)
+    for path, node, depth in selected:
         index = len(records)
-        record = record_for(node, index, path, window_bounds, text_limit=text_limit)
+        record = record_for(node, index, list(path), window_bounds, text_limit=text_limit, lightweight_hidden=lightweight_hidden)
         records.append(record)
 
         role = record["localizedControlType"] or record["controlType"] or "element"
         title = record["name"] or record["automationId"] or ""
+        if record.get("detailsOmitted"):
+            title += " [hidden details omitted]"
         value_segment = ""
         if record["value"] and record["value"] != title:
             safe_value = record["value"].replace("\r", "\\r").replace("\n", "\\n")
@@ -322,11 +393,8 @@ def render_tree(root, window_bounds, root_path, text_limit=DEFAULT_TEXT_LIMIT, m
             ).rstrip()
         )
 
-        for child_index in range(child_count(node)):
-            child = child_at(node, child_index)
-            visit(child, depth + 1, path + [child_index])
-
-    visit(root, 0, root_path)
+    if truncated:
+        lines.append("[Accessibility tree truncated: prioritized visible controls; some nodes were omitted.]")
     return records, lines
 
 
@@ -385,64 +453,73 @@ def pixbuf_looks_black(pixbuf):
         return False
 
 
-def focused_summary(app_pid, text_limit=DEFAULT_TEXT_LIMIT):
-    try:
-        root = desktop()
-        for app in iter_apps():
-            if node_pid(app) != app_pid:
-                continue
-            _, win = main_window(app)
-            focused = find_first(
-                win, lambda node: state_contains(node, Atspi.StateType.FOCUSED)
-            )
-            if focused is None:
-                return None
-            role = node_role(focused)
-            name = limit_text(node_name(focused), text_limit=text_limit)
-            return (role + " " + name).strip()
-    except Exception:
+def focus_details(window, text_limit=DEFAULT_TEXT_LIMIT, max_nodes=MAX_ELEMENTS, max_depth=MAX_DEPTH):
+    """Find focus once, within the same node/depth budget as the snapshot."""
+    visited = 0
+    truncated = False
+
+    def visit(node, depth):
+        nonlocal visited, truncated
+        if visited >= max_nodes or depth > max_depth:
+            truncated = True
+            return None
+        visited += 1
+        if node is None:
+            return None
+        if state_contains(node, Atspi.StateType.FOCUSED):
+            return node
+        children = child_count(node)
+        if depth >= max_depth:
+            # Do not fetch children that cannot be visited. Otherwise a wide
+            # node at the depth boundary can bypass the node budget entirely.
+            truncated = truncated or children > 0
+            return None
+        for index in range(children):
+            if visited >= max_nodes:
+                truncated = True
+                break
+            found = visit(child_at(node, index), depth + 1)
+            if found is not None:
+                return found
         return None
 
-
-def selected_text(app_pid, text_limit=DEFAULT_TEXT_LIMIT):
-    try:
-        for app in iter_apps():
-            if node_pid(app) != app_pid:
-                continue
-            _, win = main_window(app)
-            focused = find_first(
-                win, lambda node: state_contains(node, Atspi.StateType.FOCUSED)
-            )
-            if focused is None or not supports_interface(focused, "Text"):
-                return None
-            text_iface = safe(focused.get_text_iface)
-            selections = safe(lambda: Atspi.Text.get_text_selections(text_iface), [])
-            if selections:
-                selection = selections[0]
-                end_offset = selection.end_offset
-                if text_limit is not None:
-                    end_offset = min(end_offset, selection.start_offset + text_limit + 1)
-                value = Atspi.Text.get_text(
-                    text_iface, selection.start_offset, end_offset
-                )
-                return limit_text(value, text_limit=text_limit)
-    except Exception:
-        return None
-    return None
+    focused = visit(window, 0)
+    if focused is None:
+        return None, None, truncated
+    summary = (node_role(focused) + " " + limit_text(node_name(focused), text_limit)).strip()
+    selection = None
+    if supports_interface(focused, "Text") and not is_password(focused):
+        text_iface = safe(focused.get_text_iface)
+        count = safe(lambda: Atspi.Text.get_n_selections(text_iface), 0)
+        selected = safe(lambda: Atspi.Text.get_selection(text_iface, 0)) if count > 0 else None
+        if selected is not None:
+            end = selected.end_offset
+            if text_limit is not None:
+                end = min(end, selected.start_offset + text_limit + 1)
+            selection = safe(lambda: Atspi.Text.get_text(text_iface, selected.start_offset, end))
+            if selection is not None:
+                selection = limit_text(selection, text_limit)
+    return summary, selection, False
 
 
-def build_snapshot(query, text_limit=DEFAULT_TEXT_LIMIT, max_tree_nodes=MAX_ELEMENTS, max_tree_depth=MAX_DEPTH):
+def build_snapshot(query, text_limit=DEFAULT_TEXT_LIMIT, max_tree_nodes=MAX_ELEMENTS, max_tree_depth=MAX_DEPTH, include_ax=True, include_screenshot=True):
     app = resolve_app(query)
     window_index, window = main_window(app)
     bounds = extents(window)
-    records, lines = render_tree(
-        window,
-        bounds,
-        [window_index],
-        text_limit=text_limit,
-        max_tree_nodes=max_tree_nodes,
-        max_tree_depth=max_tree_depth,
-    )
+    records, lines = [], []
+    focus, selection = None, None
+    if include_ax:
+        records, lines = render_tree(
+            window,
+            bounds,
+            [window_index],
+            text_limit=text_limit,
+            max_tree_nodes=max_tree_nodes,
+            max_tree_depth=max_tree_depth,
+        )
+        focus, selection, focus_truncated = focus_details(window, text_limit, max_tree_nodes, max_tree_depth)
+        if focus_truncated:
+            lines.append("[Focus search incomplete: node/depth budget reached.]")
     pid = node_pid(app)
     return {
         "app": {
@@ -452,10 +529,10 @@ def build_snapshot(query, text_limit=DEFAULT_TEXT_LIMIT, max_tree_nodes=MAX_ELEM
         },
         "windowTitle": limit_text(node_name(window), text_limit=text_limit),
         "windowBounds": bounds,
-        "screenshotPngBase64": capture_window_png(bounds),
+        "screenshotPngBase64": capture_window_png(bounds) if include_screenshot else None,
         "treeLines": lines,
-        "focusedSummary": focused_summary(pid, text_limit=text_limit),
-        "selectedText": selected_text(pid, text_limit=text_limit),
+        "focusedSummary": focus,
+        "selectedText": selection,
         "elements": records,
     }
 
@@ -545,6 +622,18 @@ def find_element(app, record):
     return None
 
 
+def gtk3_text_field(node):
+    # GTK 3 names a text field's Enter key "activate" ("Activates the entry"): running it submits
+    # the field instead of focusing it. GTK 4 uses the same name, but its pointer fallback has no
+    # usable extents on X11; Gecko and Chromium focus the field on "activate".
+    if node_role(node).lower() not in {"text", "entry", "password text", "spin button"}:
+        return False
+    return (
+        str(safe(node.get_toolkit_name, "") or "").lower() == "gtk"
+        and str(safe(node.get_toolkit_version, "") or "").startswith("3.")
+    )
+
+
 def preferred_action_index(node):
     preferred_exact = {
         "click",
@@ -557,11 +646,14 @@ def preferred_action_index(node):
         "open",
     }
     count = int(safe(node.get_n_actions, 0) or 0)
+    enter_key = count > 0 and gtk3_text_field(node)
     fallback = None
     for index in range(count):
         name = str(safe(lambda i=index: node.get_action_name(i), "") or "")
         description = str(safe(lambda i=index: node.get_action_description(i), "") or "")
         lower = (name or description).lower()
+        if enter_key and "activate" in lower:
+            continue
         if lower in preferred_exact:
             return index
         if fallback is None and (
@@ -644,24 +736,33 @@ KEY_ALIASES = {
     "next": "Page_Down",
 }
 
-MODIFIER_KEYS = {
-    "ctrl": "Control_L",
-    "control": "Control_L",
-    "shift": "Shift_L",
-    "alt": "Alt_L",
-    "super": "Super_L",
-    "win": "Super_L",
-    "cmd": "Super_L",
+# X11 modifier bits for LOCKMODIFIERS/UNLOCKMODIFIERS. Super is usually Mod4.
+MODIFIER_BITS = {
+    "ctrl": "CONTROL",
+    "control": "CONTROL",
+    "shift": "SHIFT",
+    "alt": "ALT",
+    "super": "META3",
+    "win": "META3",
+    "cmd": "META3",
 }
 
 
+# GDK returns VoidSymbol for names it doesn't know.
+VOID_SYMBOL = 0xFFFFFF
+
+
 def keyval(name):
-    if Gdk is not None:
-        value = Gdk.keyval_from_name(name)
-        if value:
-            return int(value)
+    # Characters have no name lookup in GDK ("/" is "slash"), so map them
+    # from Unicode instead.
     if len(name) == 1:
+        if Gdk is not None:
+            return int(Gdk.unicode_to_keyval(ord(name)))
         return ord(name)
+    if Gdk is not None:
+        value = int(Gdk.keyval_from_name(name))
+        if value and value != VOID_SYMBOL:
+            return value
     raise RuntimeError("Unsupported key: " + name)
 
 
@@ -670,24 +771,29 @@ def send_key(key):
     if not parts:
         raise RuntimeError("Unsupported key: " + str(key))
     main = parts[-1]
-    modifiers = parts[:-1]
-    pressed = []
-    for modifier in modifiers:
-        name = MODIFIER_KEYS.get(modifier.lower())
+    mask = 0
+    for modifier in parts[:-1]:
+        name = MODIFIER_BITS.get(modifier.lower())
         if name is None:
-            continue
-        value = keyval(name)
-        Atspi.generate_keyboard_event(value, None, Atspi.KeySynthType.PRESS)
-        pressed.append(value)
+            raise RuntimeError("Unsupported modifier: " + modifier)
+        mask |= 1 << int(getattr(Atspi.ModifierType, name))
     normalized = KEY_ALIASES.get(main.lower(), main)
-    if len(normalized) == 1:
-        Atspi.generate_keyboard_event(0, normalized, Atspi.KeySynthType.STRING)
-    else:
-        Atspi.generate_keyboard_event(
-            keyval(normalized), None, Atspi.KeySynthType.PRESSRELEASE
-        )
-    for value in reversed(pressed):
-        Atspi.generate_keyboard_event(value, None, Atspi.KeySynthType.RELEASE)
+    if mask:
+        Atspi.generate_keyboard_event(mask, None, Atspi.KeySynthType.LOCKMODIFIERS)
+    try:
+        if len(normalized) == 1 and not mask:
+            Atspi.generate_keyboard_event(0, normalized, Atspi.KeySynthType.STRING)
+        else:
+            # SYM takes a keysym. PRESS, RELEASE, and PRESSRELEASE take a
+            # hardware keycode, so passing a keysym there sends another key.
+            Atspi.generate_keyboard_event(
+                keyval(normalized), None, Atspi.KeySynthType.SYM
+            )
+    finally:
+        if mask:
+            Atspi.generate_keyboard_event(
+                mask, None, Atspi.KeySynthType.UNLOCKMODIFIERS
+            )
 
 
 def send_text(text):
@@ -722,22 +828,67 @@ def insert_text(root, text):
     )
 
 
+def verify_set_value(requested, read, numeric=False):
+    from decimal import Decimal, InvalidOperation
+    import re
+    def matches(actual):
+        if not numeric:
+            return isinstance(actual, str) and actual == requested
+        try:
+            if re.fullmatch(r"[+-]?(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)(?:[eE][+-]?[0-9]+)?", requested) is None:
+                return False
+            expected, observed = Decimal(requested), Decimal(str(actual))
+            return expected.is_finite() and observed.is_finite() and expected == observed
+        except (InvalidOperation, ValueError):
+            return False
+    deadline = time.monotonic() + 0.6
+    while True:
+        if matches(safe(read)):
+            return
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise RuntimeError("set_value could not verify the requested value. Read the current value before retrying; the write may have changed the control.")
+        time.sleep(min(0.05, remaining))
+
+
+def refuse_read_only(node):
+    # Qt 6 applies SetTextContents to a read-only line edit (it reports READ_ONLY and EDITABLE);
+    # GTK 3 marks a non-editable entry only by leaving EDITABLE out.
+    if state_contains(node, Atspi.StateType.READ_ONLY) or (
+        node_role(node).lower() in {"text", "entry", "password text"}
+        and not state_contains(node, Atspi.StateType.EDITABLE)
+    ):
+        raise RuntimeError("Cannot set a value for an element that is read-only; nothing was written")
+
+
 def set_element_value(node, value):
+    value = str(value)
+    if node is not None:
+        refuse_read_only(node)
     if node is not None and supports_interface(node, "EditableText"):
         editable = safe(node.get_editable_text_iface)
         if editable is not None:
-            return bool(
-                safe(
-                    lambda: Atspi.EditableText.set_text_contents(editable, str(value)),
-                    False,
-                )
-            )
+            # A failed text write must not be retried through the numeric interface.
+            if not Atspi.EditableText.set_text_contents(editable, value):
+                raise RuntimeError("set_value was rejected; read the current value before retrying")
+            text = safe(node.get_text_iface) if supports_interface(node, "Text") else None
+            def read():
+                if text is None:
+                    return None
+                count = Atspi.Text.get_character_count(text)
+                return Atspi.Text.get_text(text, 0, count)
+            verify_set_value(value, read)
+            return True
     value_iface = safe(node.get_value_iface) if node is not None else None
     if value_iface is not None:
-        try:
-            return bool(Atspi.Value.set_current_value(value_iface, float(value)))
-        except Exception:
-            pass
+        import math
+        number = float(value)
+        if not math.isfinite(number):
+            raise RuntimeError("set_value requires a finite numeric value")
+        if not Atspi.Value.set_current_value(value_iface, number):
+            raise RuntimeError("set_value was rejected; read the current value before retrying")
+        verify_set_value(value, lambda: Atspi.Value.get_current_value(value_iface), numeric=True)
+        return True
     return False
 
 
@@ -775,6 +926,11 @@ def perform_operation(operation):
     if tool == "list_apps":
         return {"ok": True, "text": list_apps_text()}
     if tool == "get_app_state":
+        for key in ("include_ax", "include_screenshot"):
+            if key in operation and not isinstance(operation[key], bool):
+                raise RuntimeError(key + " must be a boolean")
+        if not operation.get("include_ax", True) and not operation.get("include_screenshot", True):
+            raise RuntimeError("At least one of include_ax or include_screenshot must be true")
         return {
             "ok": True,
             "snapshot": build_snapshot(
@@ -782,6 +938,8 @@ def perform_operation(operation):
                 text_limit=parse_text_limit(operation.get("text_limit"), DEFAULT_TEXT_LIMIT),
                 max_tree_nodes=positive_int(operation.get("max_tree_nodes"), MAX_ELEMENTS),
                 max_tree_depth=positive_int(operation.get("max_tree_depth"), MAX_DEPTH),
+                include_ax=operation.get("include_ax", True),
+                include_screenshot=operation.get("include_screenshot", True),
             ),
         }
 
@@ -859,6 +1017,9 @@ def perform_operation(operation):
             raise RuntimeError("Cannot set a value for an element that is not settable")
     else:
         raise RuntimeError('unsupportedTool("{}")'.format(tool))
+
+    if operation.get("skip_read_back", False):
+        return {"ok": True}
 
     time.sleep(0.12)
     return {"ok": True, "snapshot": build_snapshot(operation.get("app", ""))}

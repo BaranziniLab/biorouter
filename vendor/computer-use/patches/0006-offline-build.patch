@@ -1,0 +1,114 @@
+diff --git a/Package.resolved b/Package.resolved
+deleted file mode 100644
+index 2c66bfe..0000000
+--- a/Package.resolved
++++ /dev/null
+@@ -1,15 +0,0 @@
+-{
+-  "originHash" : "ddf5857bfef42315d0aa9bdd7ff832a14fc1f7dff5df23672cd6202a96da51a8",
+-  "pins" : [
+-    {
+-      "identity" : "libwebp-xcode",
+-      "kind" : "remoteSourceControl",
+-      "location" : "https://github.com/SDWebImage/libwebp-Xcode.git",
+-      "state" : {
+-        "revision" : "2b5256c29ff4e20f2a0d5ee863b62b1a22144434",
+-        "version" : "1.6.0"
+-      }
+-    }
+-  ],
+-  "version" : 3
+-}
+diff --git a/Package.swift b/Package.swift
+index 12c55dd..5f3876b 100644
+--- a/Package.swift
++++ b/Package.swift
+@@ -36,9 +36,6 @@ let package = Package(
+             targets: ["StandaloneCursor"]
+         ),
+     ],
+-    dependencies: [
+-        .package(url: "https://github.com/SDWebImage/libwebp-Xcode.git", exact: "1.6.0"),
+-    ],
+     targets: [
+         .target(
+             name: "OpenComputerUseVirtualDisplayShim",
+@@ -71,7 +68,7 @@ let package = Package(
+         ),
+         .target(
+             name: "OpenComputerUseKit",
+-            dependencies: ["OpenComputerUseVirtualDisplayShim", "LockedUseNative", .product(name: "libwebp", package: "libwebp-Xcode")],
++            dependencies: ["OpenComputerUseVirtualDisplayShim", "LockedUseNative"],
+             path: "packages/OpenComputerUseKit/Sources/OpenComputerUseKit"
+         ),
+         .executableTarget(
+diff --git a/packages/OpenComputerUseKit/Sources/OpenComputerUseKit/ImageCaptureConfig.swift b/packages/OpenComputerUseKit/Sources/OpenComputerUseKit/ImageCaptureConfig.swift
+index cdcca81..43a8094 100644
+--- a/packages/OpenComputerUseKit/Sources/OpenComputerUseKit/ImageCaptureConfig.swift
++++ b/packages/OpenComputerUseKit/Sources/OpenComputerUseKit/ImageCaptureConfig.swift
+@@ -82,11 +82,11 @@ struct ImageCaptureConfig: Equatable {
+             return value
+         }
+         if let value = image["format"] {
+-            if let value = value as? String, ["png", "jpg", "jpeg", "webp"].contains(value) { result.format = value == "jpeg" ? "jpg" : value }
++            if let value = value as? String, ["png", "jpg", "jpeg"].contains(value) { result.format = value == "jpeg" ? "jpg" : value }
+             else { warning("Invalid image.format; using png") }
+         }
+         if let value = environment["OPEN_COMPUTER_USE_IMAGE_FORMAT"] {
+-            if ["png", "jpg", "jpeg", "webp"].contains(value) { result.format = value == "jpeg" ? "jpg" : value }
++            if ["png", "jpg", "jpeg"].contains(value) { result.format = value == "jpeg" ? "jpg" : value }
+             else { warning("Invalid OPEN_COMPUTER_USE_IMAGE_FORMAT; using file/default") }
+         }
+         result.jpegQuality = number("jpegQuality", "OPEN_COMPUTER_USE_IMAGE_JPEG_QUALITY", 0.8, min: 0, max: 1)
+diff --git a/packages/OpenComputerUseKit/Sources/OpenComputerUseKit/WebPEncoding.swift b/packages/OpenComputerUseKit/Sources/OpenComputerUseKit/WebPEncoding.swift
+index 3fb2a7f..1516532 100644
+--- a/packages/OpenComputerUseKit/Sources/OpenComputerUseKit/WebPEncoding.swift
++++ b/packages/OpenComputerUseKit/Sources/OpenComputerUseKit/WebPEncoding.swift
+@@ -1,29 +1,9 @@
+ import CoreGraphics
+ import Foundation
+-import libwebp
+ 
+-/// Encode screenshots losslessly so text and small controls keep their original pixels.
++/// BioRouter builds the helper from vendored source with no network, so the
++/// remote libwebp package is not a dependency and WebP output is unavailable.
++/// The image settings accept only PNG and JPEG; this stays for the call site.
+ func losslessWebPData(for image: CGImage) -> Data? {
+-    let stride = image.width * 4
+-    guard image.width <= 16383, image.height <= 16383 else { return nil }
+-    var pixels = [UInt8](repeating: 0, count: stride * image.height)
+-    return pixels.withUnsafeMutableBytes { buffer in
+-        guard let context = CGContext(data: buffer.baseAddress, width: image.width, height: image.height,
+-                                      bitsPerComponent: 8, bytesPerRow: stride, space: CGColorSpaceCreateDeviceRGB(),
+-                                      bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue | CGBitmapInfo.byteOrder32Big.rawValue) else { return nil }
+-        context.draw(image, in: CGRect(x: 0, y: 0, width: image.width, height: image.height))
+-        let bytes = buffer.bindMemory(to: UInt8.self)
+-        // CoreGraphics renders premultiplied RGBA; libwebp expects straight RGBA.
+-        for offset in Swift.stride(from: 0, to: bytes.count, by: 4) {
+-            let alpha = Int(bytes[offset + 3])
+-            if alpha > 0 && alpha < 255 {
+-                for channel in 0..<3 { bytes[offset + channel] = UInt8(min(255, (Int(bytes[offset + channel]) * 255 + alpha / 2) / alpha)) }
+-            }
+-        }
+-        var output: UnsafeMutablePointer<UInt8>?
+-        let size = WebPEncodeLosslessRGBA(bytes.baseAddress, Int32(image.width), Int32(image.height), Int32(stride), &output)
+-        guard size > 0, let output else { return nil }
+-        defer { WebPFree(output) }
+-        return Data(bytes: output, count: size)
+-    }
++    nil
+ }
+diff --git a/packages/OpenComputerUseKit/Tests/OpenComputerUseKitTests/ImageCaptureConfigTests.swift b/packages/OpenComputerUseKit/Tests/OpenComputerUseKitTests/ImageCaptureConfigTests.swift
+index c78973d..841ac4e 100644
+--- a/packages/OpenComputerUseKit/Tests/OpenComputerUseKitTests/ImageCaptureConfigTests.swift
++++ b/packages/OpenComputerUseKit/Tests/OpenComputerUseKitTests/ImageCaptureConfigTests.swift
+@@ -79,7 +79,8 @@ final class ImageCaptureConfigTests: XCTestCase {
+         context.setFillColor(NSColor.blue.cgColor)
+         context.fill(CGRect(x: 0, y: 0, width: 800, height: 600))
+         let image = try XCTUnwrap(context.makeImage())
+-        for format in ["png", "jpg", "webp"] {
++        XCTAssertEqual(ImageCaptureConfig.resolve(image: ["format": "webp"], environment: [:]).format, "png")
++        for format in ["png", "jpg"] {
+             let config = ImageCaptureConfig.resolve(image: ["format": format, "maxLongEdgePixels": 80, "maxBytes": 1, "byteBudgetMinScale": 0.01, "minScale": 0.01], environment: ["OPEN_COMPUTER_USE_IMAGE_MAX_BYTES": "1", "OPEN_COMPUTER_USE_IMAGE_MIN_SCALE": "0.01"])
+             let data = try XCTUnwrap(boundedScreenshotData(for: image, config: config))
+             let source = try XCTUnwrap(CGImageSourceCreateWithData(data as CFData, nil))

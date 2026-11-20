@@ -13,7 +13,10 @@ import traceback
 
 
 ROOT = Path(__file__).resolve().parents[1]
-PATCH = ROOT / "vendor/computer-use/patches/0003-windows-console.patch"
+# Upstream 1.1.5 hides the PowerShell child itself (hideConsoleWindow, upstream
+# #160), which replaced BioRouter's own console patch. The pre-fix baseline is
+# the same helper with that one call removed.
+CONSOLE_FIX = "\thideConsoleWindow(cmd)\n"
 CREATE_NO_WINDOW = 0x08000000
 
 # A GUI observer cannot reliably attach to another process's console on CI.
@@ -104,9 +107,11 @@ def build_baseline(source, destination):
         root = Path(temp)
         app = root / "apps/OpenComputerUseWindows"
         shutil.copytree(source / "apps/OpenComputerUseWindows", app)
-        subprocess.run(["git", "init", "--quiet"], cwd=root, check=True)
-        subprocess.run(["git", "apply", "--reverse", "--check", str(PATCH)], cwd=root, check=True)
-        subprocess.run(["git", "apply", "--reverse", str(PATCH)], cwd=root, check=True)
+        main = app / "main.go"
+        text = main.read_text(encoding="utf-8")
+        if text.count(CONSOLE_FIX) != 1:
+            raise AssertionError("expected exactly one hideConsoleWindow(cmd) call in the Windows helper")
+        main.write_text(text.replace(CONSOLE_FIX, ""), encoding="utf-8")
         subprocess.run(
             ["go", "build", "-trimpath", "-buildvcs=false", "-o", str(destination), "."],
             cwd=app,

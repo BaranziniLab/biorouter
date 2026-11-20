@@ -49,6 +49,9 @@ public struct FixtureAppState: Codable, Sendable {
     public let isKeyWindow: Bool?
     public let activationLossCount: Int?
     public let keyWindowLossCount: Int?
+    public let selectedText: String?
+    public let selectedRangeLocation: Int?
+    public let selectedRangeLength: Int?
 
     public init(
         processIdentifier: pid_t? = nil,
@@ -59,7 +62,10 @@ public struct FixtureAppState: Codable, Sendable {
         isActive: Bool? = nil,
         isKeyWindow: Bool? = nil,
         activationLossCount: Int? = nil,
-        keyWindowLossCount: Int? = nil
+        keyWindowLossCount: Int? = nil,
+        selectedText: String? = nil,
+        selectedRangeLocation: Int? = nil,
+        selectedRangeLength: Int? = nil
     ) {
         self.processIdentifier = processIdentifier
         self.windowTitle = windowTitle
@@ -70,6 +76,9 @@ public struct FixtureAppState: Codable, Sendable {
         self.isKeyWindow = isKeyWindow
         self.activationLossCount = activationLossCount
         self.keyWindowLossCount = keyWindowLossCount
+        self.selectedText = selectedText
+        self.selectedRangeLocation = selectedRangeLocation
+        self.selectedRangeLength = selectedRangeLength
     }
 }
 
@@ -83,6 +92,9 @@ public struct FixtureCommand: Codable, Sendable {
     public let toY: Double?
     public let direction: String?
     public let pages: Double?
+    public let selection: String?
+    public let prefix: String?
+    public let suffix: String?
 
     public init(
         kind: String,
@@ -93,7 +105,10 @@ public struct FixtureCommand: Codable, Sendable {
         toX: Double? = nil,
         toY: Double? = nil,
         direction: String? = nil,
-        pages: Double? = nil
+        pages: Double? = nil,
+        selection: String? = nil,
+        prefix: String? = nil,
+        suffix: String? = nil
     ) {
         self.kind = kind
         self.identifier = identifier
@@ -104,16 +119,27 @@ public struct FixtureCommand: Codable, Sendable {
         self.toY = toY
         self.direction = direction
         self.pages = pages
+        self.selection = selection
+        self.prefix = prefix
+        self.suffix = suffix
     }
 }
 
 public enum FixtureBridge {
     public static let appName = "OpenComputerUseFixture"
-    public static let distributedNotificationName = Notification.Name("dev.opencodex.opencomputeruse.fixture.command")
+    // Optional UUID isolates concurrent smoke sessions; ordinary fixture behavior is unchanged.
+    private static var testNamespace: String? {
+        ProcessInfo.processInfo.environment["OPEN_COMPUTER_USE_FIXTURE_NAMESPACE"]
+            .flatMap(UUID.init(uuidString:))?.uuidString
+    }
+
+    public static var distributedNotificationName: Notification.Name {
+        Notification.Name("dev.opencodex.opencomputeruse.fixture.command" + (testNamespace.map { "." + $0 } ?? ""))
+    }
 
     public static var stateFileURL: URL {
         URL(fileURLWithPath: NSTemporaryDirectory())
-            .appendingPathComponent("open-computer-use-fixture", isDirectory: true)
+            .appendingPathComponent("open-computer-use-fixture" + (testNamespace.map { "-" + $0 } ?? ""), isDirectory: true)
             .appendingPathComponent("state.json")
     }
 

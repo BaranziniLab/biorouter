@@ -2,7 +2,10 @@ package main
 
 import (
 	"bytes"
+	"encoding/base64"
 	"encoding/json"
+	"image"
+	"image/png"
 	"strings"
 	"testing"
 )
@@ -46,11 +49,47 @@ func TestClickMethodSchemaAndParser(t *testing.T) {
 	}
 }
 
-func TestWindowsRejectsUnsupportedGlobalClickBeforeSnapshotLookup(t *testing.T) {
+func TestWindowsGlobalClickRequiresGlobalPointerFallbackOptIn(t *testing.T) {
 	x, y := 10.0, 20.0
+	t.Setenv("OPEN_COMPUTER_USE_ALLOW_GLOBAL_POINTER_FALLBACKS", "")
 	result := newService().click("Notepad", "", &x, &y, 1, "left", "global")
-	if !result.IsError || result.Content[0].Text != "click_method 'global' is not supported on Windows" {
-		t.Fatalf("global click result = %#v", result)
+	if !result.IsError || !strings.Contains(result.Content[0].Text, "requires OPEN_COMPUTER_USE_ALLOW_GLOBAL_POINTER_FALLBACKS=1") {
+		t.Fatalf("unauthorized global click result = %#v", result)
+	}
+
+	t.Setenv("OPEN_COMPUTER_USE_ALLOW_GLOBAL_POINTER_FALLBACKS", "yes")
+	if !globalPointerFallbacksEnabled() {
+		t.Fatal("global pointer authorization should accept yes")
+	}
+	result = newService().click("Notepad", "", &x, &y, 1, "left", "global")
+	if !result.IsError || !strings.Contains(result.Content[0].Text, "No app state is available") {
+		t.Fatalf("authorized global click result = %#v", result)
+	}
+}
+
+func TestScrollRequestIncludesWindowBounds(t *testing.T) {
+	svc := newService()
+	svc.snapshots["fixture"] = &appSnapshot{
+		App:          appDescriptor{Name: "fixture", PID: 42},
+		WindowBounds: &frame{X: 100, Y: 200, Width: 800, Height: 600},
+		Elements:     []elementRecord{{Index: 0, Name: "document"}},
+	}
+
+	var captured psRequest
+	svc.runBridge = func(request psRequest) (*psResponse, error) {
+		captured = request
+		return &psResponse{OK: true, Snapshot: &appSnapshot{App: appDescriptor{Name: "fixture", PID: 42}}}, nil
+	}
+
+	result := svc.scroll("fixture", "down", "0", 1)
+	if result.IsError {
+		t.Fatalf("scroll result = %#v", result)
+	}
+	if captured.Tool != "scroll" || captured.Element == nil || captured.Direction != "down" {
+		t.Fatalf("scroll request = %#v", captured)
+	}
+	if captured.WindowBounds == nil || captured.WindowBounds.X != 100 || captured.WindowBounds.Y != 200 || captured.WindowBounds.Width != 800 || captured.WindowBounds.Height != 600 {
+		t.Fatalf("scroll request must carry the snapshot window bounds, got %#v", captured.WindowBounds)
 	}
 }
 
@@ -292,9 +331,101 @@ func TestWindowsRuntimeTreeBudgetDefaultsMatchMacOS(t *testing.T) {
 	if !strings.Contains(windowsRuntimeScript, "$AccessibilityTreeMaxDepth = 64") {
 		t.Fatal("Windows runtime should default to the shared 64 level tree depth")
 	}
-	if !strings.Contains(windowsRuntimeScript, "$script:nextIndex -ge $script:MaxTreeNodes -or $depth -gt $script:MaxTreeDepth") {
-		t.Fatal("Windows runtime should use shared tree budget constants while rendering")
+	// Traversal bounds are exercised by windows-tree-budget.test.ps1 against production functions.
+}
+
+func TestWindowsScreenshotValidationRejectsDegenerateImages(t *testing.T) {
+	for name, encoded := range map[string]string{
+		"one pixel":        pngBase64(t, 1, 1),
+		"narrow":           pngBase64(t, minimumScreenshotDimension-1, 400),
+		"small area":       pngBase64(t, 100, 100),
+		"invalid base64":   "not base64",
+		"invalid PNG data": base64.StdEncoding.EncodeToString([]byte("not a png")),
+	} {
+		t.Run(name, func(t *testing.T) {
+			if got := validateScreenshotPNGBase64(encoded); got != "" {
+				t.Fatalf("validateScreenshotPNGBase64() = %q, want empty", got)
+			}
+		})
 	}
+
+	valid := pngBase64(t, 100, 200)
+	if got := validateScreenshotPNGBase64(valid); got != valid {
+		t.Fatal("a screenshot at the minimum area should remain available")
+	}
+}
+
+func TestWindowsSnapshotOmitsUnusableScreenshot(t *testing.T) {
+	snapshot := &appSnapshot{
+		App:                 appDescriptor{Name: "fixture", BundleIdentifier: "fixture", PID: 42},
+		WindowBounds:        &frame{Width: 1, Height: 1},
+		ScreenshotPNGBase64: pngBase64(t, 1, 1),
+	}
+	result := snapshot.result()
+	if result.IsError || len(result.Content) != 1 || result.Content[0].Type != "text" {
+		t.Fatalf("degenerate screenshot result = %#v", result)
+	}
+	if snapshot.ScreenshotPNGBase64 != "" {
+		t.Fatal("degenerate screenshot should be removed from the remembered snapshot")
+	}
+	if !strings.Contains(result.Content[0].Text, "Screenshot unavailable") {
+		t.Fatalf("missing screenshot guidance: %q", result.Content[0].Text)
+	}
+
+	snapshot.WindowBounds = &frame{Width: 100, Height: 200}
+	snapshot.ScreenshotPNGBase64 = pngBase64(t, 100, 200)
+	result = snapshot.result()
+	if result.IsError || len(result.Content) != 2 || result.Content[1].Type != "image" {
+		t.Fatalf("valid screenshot result = %#v", result)
+	}
+}
+
+func TestWindowsCoordinateActionsRequireUsableScreenshot(t *testing.T) {
+	svc := newService()
+	svc.snapshots["fixture"] = &appSnapshot{
+		App:          appDescriptor{Name: "fixture", PID: 42},
+		WindowBounds: &frame{Width: 1, Height: 1},
+		Elements:     []elementRecord{{Index: 0}},
+	}
+	x, y := 1.0, 1.0
+	clickResult := svc.click("fixture", "", &x, &y, 1, "left", "auto")
+	if !clickResult.IsError || !strings.Contains(clickResult.Content[0].Text, "No usable screenshot is available") {
+		t.Fatalf("coordinate click result = %#v", clickResult)
+	}
+	appPostResult := svc.click("fixture", "0", nil, nil, 1, "left", "app_post")
+	if !appPostResult.IsError || !strings.Contains(appPostResult.Content[0].Text, "No usable screenshot is available") {
+		t.Fatalf("app_post click result = %#v", appPostResult)
+	}
+	dragResult := svc.drag("fixture", &x, &y, &x, &y)
+	if !dragResult.IsError || !strings.Contains(dragResult.Content[0].Text, "No usable screenshot is available") {
+		t.Fatalf("coordinate drag result = %#v", dragResult)
+	}
+}
+
+func TestWindowsRuntimeFiltersUncapturableWindows(t *testing.T) {
+	for _, snippet := range []string{
+		"$MinimumScreenshotDimension = 64",
+		"$MinimumScreenshotArea = 20000",
+		"[OCUWin32]::IsWindowVisible($hwnd)",
+		"[OCUWin32]::IsIconic($hwnd)",
+		"[OCUWin32]::DwmGetWindowAttribute($hwnd, 14",
+		"Test-FrameIntersectsVirtualScreen $frame",
+		"if (-not (Test-CapturableFrame $bounds))",
+		"Get-CapturableWindowFrame ([IntPtr]$process.MainWindowHandle)",
+	} {
+		if !strings.Contains(windowsRuntimeScript, snippet) {
+			t.Fatalf("Windows runtime missing screenshot guard %q", snippet)
+		}
+	}
+}
+
+func pngBase64(t *testing.T, width, height int) string {
+	t.Helper()
+	var buffer bytes.Buffer
+	if err := png.Encode(&buffer, image.NewRGBA(image.Rect(0, 0, width, height))); err != nil {
+		t.Fatal(err)
+	}
+	return base64.StdEncoding.EncodeToString(buffer.Bytes())
 }
 
 func findToolDefinition(t *testing.T, name string) toolDefinition {
@@ -306,4 +437,91 @@ func findToolDefinition(t *testing.T, name string) toolDefinition {
 	}
 	t.Fatalf("missing tool definition %q", name)
 	return toolDefinition{}
+}
+
+func TestWindowsKeyMethodSchemaAndUnsupportedSkyKey(t *testing.T) {
+	for _, name := range []string{"type_text", "press_key"} {
+		tool := findToolDefinition(t, name)
+		properties := tool.InputSchema["properties"].(map[string]any)
+		method := properties["key_method"].(map[string]any)
+		values := method["enum"].([]string)
+		expected := "auto,sky_key"
+		if name == "press_key" {
+			expected += ",global"
+		}
+		if strings.Join(values, ",") != expected {
+			t.Fatalf("%s key_method enum = %#v", name, values)
+		}
+	}
+
+	for input, want := range map[string]string{"": "auto", " SKY_KEY ": "sky_key"} {
+		got, err := parseKeyMethod(input)
+		if err != nil || got != want {
+			t.Fatalf("parseKeyMethod(%q) = %q, %v", input, got, err)
+		}
+	}
+	if _, err := parseKeyMethod("global"); err == nil || !strings.Contains(err.Error(), "Expected one of: auto, sky_key") {
+		t.Fatalf("parseKeyMethod(global) error = %v", err)
+	}
+
+	service := newService()
+	result := service.typeText("Notepad", "hello", "sky_key")
+	if !result.IsError || result.Content[0].Text != "key_method 'sky_key' is not supported on Windows" {
+		t.Fatalf("type_text sky_key result = %#v", result)
+	}
+	result = service.pressKey("Notepad", "Return", "sky_key")
+	if !result.IsError || result.Content[0].Text != "key_method 'sky_key' is not supported on Windows" {
+		t.Fatalf("press_key sky_key result = %#v", result)
+	}
+}
+
+func TestWindowsWindowPlacementSchemaAndUnsupportedAgentDisplay(t *testing.T) {
+	tool := findToolDefinition(t, "get_app_state")
+	properties := tool.InputSchema["properties"].(map[string]any)
+	if _, exposed := properties["window_placement"]; exposed {
+		t.Fatal("unsupported window_placement must not be advertised")
+	}
+
+	if got, err := parseWindowPlacement(" AGENT_DISPLAY "); err != nil || got != "agent_display" {
+		t.Fatalf("parseWindowPlacement = %q, %v", got, err)
+	}
+	if _, err := parseWindowPlacement("park"); err == nil {
+		t.Fatal("parseWindowPlacement(park) should fail")
+	}
+	result := newService().callTool("get_app_state", map[string]any{"app": "Notepad", "window_placement": "agent_display"})
+	if !result.IsError || result.Content[0].Text != "window_placement 'agent_display' is not supported on Windows" {
+		t.Fatalf("agent_display result = %#v", result)
+	}
+}
+
+func TestDoctorJSONRejectsUnsupportedPermissionDiagnostics(t *testing.T) {
+	var out bytes.Buffer
+	if err := runCLI([]string{"doctor", "--json"}, &out); err == nil {
+		t.Fatal("expected unsupported permission diagnostics error")
+	}
+	if out.Len() != 0 {
+		t.Fatal("unsupported JSON mode must not emit text on stdout")
+	}
+}
+
+func TestSetValuePreservesLiteralPayloadAndRejectsNonStrings(t *testing.T) {
+	for _, value := range []string{"", " \t中文🙂\n", "0015"} {
+		svc := newService()
+		svc.snapshots["fixture"] = &appSnapshot{App: appDescriptor{Name: "fixture", PID: 42}, Elements: []elementRecord{{Index: 0}}}
+		var captured psRequest
+		svc.runBridge = func(request psRequest) (*psResponse, error) {
+			captured = request
+			return &psResponse{OK: true, Snapshot: &appSnapshot{App: appDescriptor{Name: "fixture", PID: 42}}}, nil
+		}
+		result := svc.callTool("set_value", map[string]any{"app": "fixture", "element_index": "0", "value": value})
+		if result.IsError || captured.Value != value {
+			t.Fatalf("literal payload lost: %#v / %#v", result, captured)
+		}
+	}
+	for _, value := range []any{nil, 1, true} {
+		result := newService().callTool("set_value", map[string]any{"app": "fixture", "element_index": "0", "value": value})
+		if !result.IsError || !strings.Contains(result.Content[0].Text, "must be a string") {
+			t.Fatalf("invalid value accepted: %#v", result)
+		}
+	}
 }

@@ -8,3 +8,4 @@ artifacts/codex-dumps/
 research/
 __pycache__/
 *.pyc
+docs/references/codex-computer-use-reverse-engineering/assets/official-bundles/computer-use/*.zip

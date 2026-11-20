@@ -7,7 +7,7 @@ Some apps might have a separate dedicated plugin or skill. You may want to use t
 
 Begin by calling `get_app_state` every turn you want to use Computer Use to get the latest state before acting. Codex will automatically stop the session after each assistant turn, so this step is required before interacting with apps in a new assistant turn.
 
-The available tools are list_apps, get_app_state, click, perform_secondary_action, scroll, drag, type_text, press_key, and set_value. If any of these are not available in your environment, use tool_search to surface one before calling any Computer Use action tools.
+The available tools are list_apps, get_app_state, click, perform_secondary_action, scroll, drag, type_text, press_key, set_value, select_text, and query. If any of these are not available in your environment, use tool_search to surface one before calling any Computer Use action tools.
 
 Computer Use tools allow you to use the user's apps in the background, so while you're using an app, the user can continue to use other apps on their computer. Avoid doing anything that would disrupt the user's active session, such as overwriting the contents of their clipboard, unless they asked you to!
 
@@ -18,20 +18,30 @@ Ask the user before taking destructive or externally visible actions such as sen
 """
 
 public final class StdioMCPServer {
+    private let service: ComputerUseService
     private let dispatcher: ComputerUseToolDispatcher
+    private let backgroundStateReset: () -> Void
 
-    public init(service: ComputerUseService = ComputerUseService()) {
+    public init(
+        service: ComputerUseService = ComputerUseService(),
+        backgroundStateReset: @escaping () -> Void = resetOpenComputerUseBackgroundWindowState
+    ) {
+        self.service = service
         self.dispatcher = ComputerUseToolDispatcher(service: service)
+        self.backgroundStateReset = backgroundStateReset
     }
 
     public func run() throws {
-        while let line = readLine(strippingNewline: true) {
-            guard !line.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-                continue
-            }
-
-            if let response = handle(line: line) {
-                FileHandle.standardOutput.write((response + "\n").data(using: .utf8)!)
+        defer { endSession() }
+        let requests = MCPStdinRequests()
+        while let request = requests.next() {
+            // This thread's autorelease pool never drains on its own: each response's encoded
+            // bytes (a screenshot's base64 among them) stayed alive for the whole session.
+            autoreleasepool {
+                let response = handle(line: request.line)
+                if requests.finish(), let response {
+                    FileHandle.standardOutput.write((response + "\n").data(using: .utf8)!)
+                }
             }
         }
     }
@@ -43,7 +53,13 @@ public final class StdioMCPServer {
             }
 
             let method = payload["method"] as? String
-            let id = payload["id"]
+            // A message without an id is a notification, which JSON-RPC never answers.
+            guard let id = payload["id"] else {
+                if method == "notifications/turn-ended" {
+                    endSession()
+                }
+                return nil
+            }
             let params = payload["params"] as? [String: Any] ?? [:]
 
             switch method {
@@ -64,13 +80,6 @@ public final class StdioMCPServer {
                         "instructions": computerUseServerInstructions,
                     ]
                 )
-            case "notifications/initialized":
-                return nil
-            case "notifications/turn-ended":
-                VisualCursorSupport.performOnMain {
-                    SoftwareCursorOverlay.reset()
-                }
-                return nil
             case "ping":
                 return try encodeJSONRPCResult(id: id, result: [:])
             case "tools/list":
@@ -119,6 +128,15 @@ public final class StdioMCPServer {
         }
     }
 
+    /// Release state that is scoped to one MCP client session. App-hosted MCP
+    /// connections call this explicitly because they use `handle(line:)`
+    /// instead of the stdio `run()` loop.
+    public func endSession() {
+        service.clearQueryIndexes()
+        VisualCursorSupport.resetOnMain()
+        backgroundStateReset()
+    }
+
     private func encodeJSONRPCResult(id: Any?, result: [String: Any]) throws -> String {
         try encode([
             "jsonrpc": "2.0",
@@ -145,5 +163,83 @@ public final class StdioMCPServer {
         }
 
         return text
+    }
+}
+
+/// The requests of a stdio MCP session. Lines are read on their own thread, so a `notifications/cancelled` is seen while
+/// a request runs; the caller still handles requests one at a time, in order. A cancelled request that hasn't started
+/// never runs. One that is running finishes (an action can't be stopped halfway), but its answer is dropped, as MCP
+/// asks of a server.
+public final class MCPStdinRequests: @unchecked Sendable {
+    public struct Request {
+        public let line: String
+        let key: String?
+    }
+
+    private let condition = NSCondition()
+    private var waiting: [Request] = []
+    private var running: String?
+    private var runningCancelled = false
+    private var ended = false
+
+    public init(readLine: @escaping @Sendable () -> String? = { Swift.readLine(strippingNewline: true) }) {
+        Thread { [self] in
+            while let line = readLine() {
+                // No run loop drains this thread's autorelease pool either.
+                if !line.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { autoreleasepool { add(line) } }
+            }
+            condition.lock()
+            ended = true
+            condition.broadcast()
+            condition.unlock()
+        }.start()
+    }
+
+    /// The next request in order, waiting for one; nil once the input has ended and every request was handled.
+    public func next() -> Request? {
+        condition.lock()
+        defer { condition.unlock() }
+        while waiting.isEmpty && !ended { condition.wait() }
+        guard !waiting.isEmpty else { return nil }
+        let request = waiting.removeFirst()
+        running = request.key
+        runningCancelled = false
+        return request
+    }
+
+    /// Ends the request from `next`; false when it was cancelled while it ran, so its answer is dropped.
+    public func finish() -> Bool {
+        condition.lock()
+        defer { condition.unlock() }
+        running = nil
+        return !runningCancelled
+    }
+
+    private func add(_ line: String) {
+        let payload = (try? JSONSerialization.jsonObject(with: Data(line.utf8))) as? [String: Any]
+        condition.lock()
+        defer { condition.unlock() }
+        if payload?["method"] as? String == "notifications/cancelled", payload?["id"] == nil {
+            guard payload?["jsonrpc"] as? String == "2.0" else { return }
+            let key = Self.key((payload?["params"] as? [String: Any])?["requestId"])
+            if let key, let index = waiting.firstIndex(where: { $0.key == key }) {
+                waiting.remove(at: index)
+            } else if let key, key == running {
+                runningCancelled = true
+            }
+            return
+        }
+        let key = payload?["method"] as? String == "initialize" ? nil : Self.key(payload?["id"])
+        waiting.append(Request(line: line, key: key))
+        condition.signal()
+    }
+
+    /// A JSON-RPC id as a key: 7 and "7" are different ids.
+    private static func key(_ id: Any?) -> String? {
+        switch id {
+        case let text as String: "s:" + text
+        case let number as NSNumber where CFGetTypeID(number) != CFBooleanGetTypeID(): "n:" + number.stringValue
+        default: nil
+        }
     }
 }

@@ -1,6 +1,8 @@
+diff --git a/packages/OpenComputerUseKit/Sources/OpenComputerUseKit/Permissions.swift b/packages/OpenComputerUseKit/Sources/OpenComputerUseKit/Permissions.swift
+index 298bb9d..3b917f6 100644
 --- a/packages/OpenComputerUseKit/Sources/OpenComputerUseKit/Permissions.swift
 +++ b/packages/OpenComputerUseKit/Sources/OpenComputerUseKit/Permissions.swift
-@@ -108,10 +108,10 @@
+@@ -121,10 +121,10 @@ public struct PermissionDiagnostics: Sendable {
  }
  
  public enum PermissionSupport {
@@ -15,9 +17,11 @@
      private static let releaseAppBundleName = "\(bundleDisplayName).app"
      private static let developmentAppBundleName = "\(developmentBundleDisplayName).app"
      private static let appVariantInfoKey = "OpenComputerUseAppVariant"
+diff --git a/packages/OpenComputerUseKit/Sources/OpenComputerUseKit/SoftwareCursorGlyphRenderer.swift b/packages/OpenComputerUseKit/Sources/OpenComputerUseKit/SoftwareCursorGlyphRenderer.swift
+index 5df11d1..4f7623a 100644
 --- a/packages/OpenComputerUseKit/Sources/OpenComputerUseKit/SoftwareCursorGlyphRenderer.swift
 +++ b/packages/OpenComputerUseKit/Sources/OpenComputerUseKit/SoftwareCursorGlyphRenderer.swift
-@@ -40,8 +40,8 @@
+@@ -40,8 +40,8 @@ struct SoftwareCursorGlyphRenderState {
  
  enum SoftwareCursorGlyphMetrics {
      static let windowSize = CGSize(width: 126, height: 126)

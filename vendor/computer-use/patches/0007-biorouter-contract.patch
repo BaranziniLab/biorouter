@@ -1,0 +1,643 @@
+diff --git a/apps/OpenComputerUse/Sources/OpenComputerUse/MacOSAppAgentProxy.swift b/apps/OpenComputerUse/Sources/OpenComputerUse/MacOSAppAgentProxy.swift
+index 337b847..68d9fd0 100644
+--- a/apps/OpenComputerUse/Sources/OpenComputerUse/MacOSAppAgentProxy.swift
++++ b/apps/OpenComputerUse/Sources/OpenComputerUse/MacOSAppAgentProxy.swift
+@@ -312,12 +312,9 @@ private final class AppAgentSocketListener: @unchecked Sendable {
+ private final class AppAgentConnection: @unchecked Sendable {
+     private let fileDescriptor: Int32
+     private let server = StdioMCPServer()
+-    private let lockedUse: LockedUseConnection
+-    private var keychainProbe: LockedUseKeychainProbe?
+ 
+     init(fileDescriptor: Int32) {
+         self.fileDescriptor = fileDescriptor
+-        lockedUse = LockedUseConnection(clientSocket: fileDescriptor)
+     }
+ 
+     func run() {
+@@ -325,24 +322,7 @@ private final class AppAgentConnection: @unchecked Sendable {
+             close(fileDescriptor)
+             return
+         }
+-        let monitorQueue = DispatchQueue(label: "ocu.client-disconnect")
+-        let monitor = DispatchSource.makeTimerSource(queue: monitorQueue)
+-        // Polls only while a request runs (rescheduled below): between requests the blocking
+-        // read sees the hang-up itself, and an idle client cost 10 wakeups a second.
+-        monitor.schedule(deadline: .distantFuture)
+-        monitor.setEventHandler { [self] in
+-            var byte: UInt8 = 0
+-            let count = recv(fileDescriptor, &byte, 1, MSG_PEEK | MSG_DONTWAIT)
+-            if count == 0 || count < 0 && ![EAGAIN, EWOULDBLOCK, EINTR].contains(errno) {
+-                lockedUse.end(disconnecting: true)
+-                monitor.cancel()
+-            }
+-        }
+-        monitor.resume()
+         defer {
+-            monitor.cancel(); monitorQueue.sync {}
+-            lockedUse.end(disconnecting: true)
+-            if let probe = keychainProbe { keychainProbe = nil; LockedUseDeferredCleanup.shared.retainIfNeeded(probe) }
+             server.endSession()
+             fclose(file)
+         }
+@@ -350,12 +330,8 @@ private final class AppAgentConnection: @unchecked Sendable {
+         while let line = readAgentLine(file) {
+             // A pool per request: this thread's own drains only when the client disconnects.
+             autoreleasepool {
+-                monitor.schedule(deadline: .now(), repeating: .milliseconds(100))
+                 let response = handle(requestLine: line)
+                 writeAgentLine(response, to: file)
+-                // A slow reader can also block the response write. Keep disconnect
+-                // monitoring active until the whole exchange has finished.
+-                monitor.schedule(deadline: .distantFuture)
+             }
+         }
+     }
+@@ -386,77 +362,11 @@ private final class AppAgentConnection: @unchecked Sendable {
+             case "mcp":
+                 let line = request["line"] as? String ?? ""
+                 let environment = request["environment"] as? [String: String] ?? [:]
+-                let response: String? = try AppAgentEnvironment.withOverrides(environment) {
+-                    try ComputerUseCancellation.withProbe({ self.ownerDisconnected }) {
++                let response: String? = AppAgentEnvironment.withOverrides(environment) {
++                    ComputerUseCancellation.withProbe({ self.ownerDisconnected }) {
+                         // Invalidate this owner's cursor work before the next owner runs;
+                         // the reset itself is ordered ahead of that owner's animations.
+                         defer { resetOpenComputerUseVisualCursor() }
+-                        let payload = try JSONSerialization.jsonObject(with: Data(line.utf8)) as? [String: Any]
+-                        if payload?["method"] as? String == "notifications/turn-ended" { lockedUse.end() }
+-                        if let method = payload?["method"] as? String, method.hasPrefix("ocu/locked-use/keychain/") || ["ocu/locked-use/validate", "ocu/locked-use/validate-unlocked", "ocu/locked-use/validate-recovery", "ocu/locked-use/validate-unlock", "ocu/locked-use/ready", "ocu/locked-use/protection-released"].contains(method) {
+-                            var passed = false
+-                            switch method {
+-                            case "ocu/locked-use/ready":
+-                                passed = try lockedUse.observeManualUnlock()
+-                            case "ocu/locked-use/protection-released":
+-                                passed = try lockedUse.protectionReleased()
+-                            case "ocu/locked-use/validate-recovery":
+-                                passed = try lockedUse.validateRecovery()
+-                            case "ocu/locked-use/validate-unlock":
+-                                guard LockedUseSession.current().state == .locked else {
+-                                    throw ComputerUseError.stateUnavailable("Begin unlock validation in a locked session")
+-                                }
+-                                // acquire() returns only after Root has observed
+-                                // the original session unlocked with fresh guards.
+-                                // No application, input, capture or Keychain access.
+-                                try lockedUse.perform {
+-                                    guard LockedUseSession.current().state == .unlocked else {
+-                                        throw ComputerUseError.stateUnavailable("Protected session did not remain unlocked")
+-                                    }
+-                                }
+-                                passed = true
+-                            case "ocu/locked-use/keychain/prepare", "ocu/locked-use/keychain/prepare-legacy":
+-                                guard LockedUseSession.current().state == .unlocked, keychainProbe == nil else { throw ComputerUseError.stateUnavailable("Prepare validation items in a normally unlocked session.") }
+-                                keychainProbe = try LockedUseKeychainProbe(includeDataProtection: method != "ocu/locked-use/keychain/prepare-legacy"); passed = true
+-                            case "ocu/locked-use/keychain/verify":
+-                                guard let probe = keychainProbe else { throw ComputerUseError.stateUnavailable("Prepare validation items first.") }
+-                                try lockedUse.perform { try probe.verify() }; passed = true
+-                            case "ocu/locked-use/validate-unlocked":
+-                                guard LockedUseSession.current().state == .unlocked, let probe = keychainProbe else {
+-                                    throw ComputerUseError.stateUnavailable("Unshielded native fixture preflight requires a normally unlocked session.")
+-                                }
+-                                try lockedUse.perform { try LockedUseNativeValidation.run(probe: probe) }
+-                                passed = true
+-                            case "ocu/locked-use/validate":
+-                                guard LockedUseSession.current().state == .locked, let probe = keychainProbe else {
+-                                    throw ComputerUseError.stateUnavailable("Begin fixed native validation from a locked session with prepared isolated Keychain items.")
+-                                }
+-                                try lockedUse.perform {
+-                                    try LockedUseNativeValidation.run(probe: probe)
+-                                    if probe.includesDataProtection { try lockedUse.recordValidation() }
+-                                }
+-                                passed = true
+-                            case "ocu/locked-use/keychain/verify-manual":
+-                                guard LockedUseSession.current().state == .unlocked, let probe = keychainProbe else {
+-                                    throw ComputerUseError.stateUnavailable("Unlock normally before the final isolated Keychain check.")
+-                                }
+-                                try probe.verify()
+-                                if probe.includesDataProtection { try lockedUse.recordValidation(manual: true) }
+-                                passed = true
+-                            case "ocu/locked-use/keychain/cleanup":
+-                                passed = keychainProbe?.cleanup() ?? true
+-                                if passed { keychainProbe = nil }
+-                            default: throw ComputerUseError.message("Unknown Keychain validation operation.")
+-                            }
+-                            let result: [String: Any] = ["jsonrpc": "2.0", "id": payload?["id"] ?? NSNull(), "result": ["passed": passed, "existingItemsRead": false, "dataProtectionIncluded": keychainProbe?.includesDataProtection ?? false]]
+-                            return String(decoding: try JSONSerialization.data(withJSONObject: result), as: UTF8.self)
+-                        }
+-                        let parameters = payload?["params"] as? [String: Any]
+-                        if payload?["method"] as? String == "tools/call",
+-                           let name = parameters?["name"] as? String,
+-                           name != "list_apps", ToolDefinitions.all.contains(where: { $0.name == name }) {
+-                            return try lockedUse.perform { server.handle(line: line) }
+-                        }
+                         return server.handle(line: line)
+                     }
+                 }
+@@ -467,15 +377,10 @@ private final class AppAgentConnection: @unchecked Sendable {
+             case "cli":
+                 let arguments = request["arguments"] as? [String] ?? []
+                 let environment = request["environment"] as? [String: String] ?? [:]
+-                let response = try AppAgentEnvironment.withOverrides(environment) {
+-                    try ComputerUseCancellation.withProbe({ self.ownerDisconnected }) {
++                let response = AppAgentEnvironment.withOverrides(environment) {
++                    ComputerUseCancellation.withProbe({ self.ownerDisconnected }) {
+                         defer { resetOpenComputerUseVisualCursor() }
+-                        let command = try parseOpenComputerUseCLI(arguments: arguments)
+-                        switch command {
+-                        case .snapshot, .call:
+-                            return try lockedUse.perform { runCLI(arguments: arguments) }
+-                        default: return runCLI(arguments: arguments)
+-                        }
++                        return runCLI(arguments: arguments)
+                     }
+                 }
+                 return [
+diff --git a/apps/OpenComputerUse/Sources/OpenComputerUse/OpenComputerUseMain.swift b/apps/OpenComputerUse/Sources/OpenComputerUse/OpenComputerUseMain.swift
+index 13954e8..de9d4d1 100644
+--- a/apps/OpenComputerUse/Sources/OpenComputerUse/OpenComputerUseMain.swift
++++ b/apps/OpenComputerUse/Sources/OpenComputerUse/OpenComputerUseMain.swift
+@@ -39,7 +39,7 @@ enum OpenComputerUseMain {
+ 
+         switch command {
+         case .lockedUseManagement:
+-            _ = try LockedUseSettings.handle(arguments: arguments)
++            throw OpenComputerUseCLIError(message: "Locked Use is not available in BioRouter Computer Use.")
+         case .mcp:
+             let service = ComputerUseService()
+             let server = StdioMCPServer(service: service)
+diff --git a/apps/OpenComputerUseLinux/main.go b/apps/OpenComputerUseLinux/main.go
+index c7e8a16..c086497 100644
+--- a/apps/OpenComputerUseLinux/main.go
++++ b/apps/OpenComputerUseLinux/main.go
+@@ -1382,6 +1382,61 @@ func globalPointerFallbacksEnabled() bool {
+ 	}
+ }
+ 
++// Biorouter Copilot's reviewed contract is what MCP advertises and accepts: these
++// tools without the observation toggles and keyboard delivery methods upstream
++// added. toolDefinitions keeps upstream's full schemas for its own tests and CLI.
++var biorouterOmittedArguments = map[string][]string{
++	"get_app_state": {"include_ax", "include_screenshot", "window_placement"},
++	"type_text":     {"key_method"},
++	"press_key":     {"key_method"},
++}
++
++func advertisedToolDefinitions() []toolDefinition {
++	tools := toolDefinitions()
++	for i, tool := range tools {
++		omitted := biorouterOmittedArguments[tool.Name]
++		if len(omitted) == 0 {
++			continue
++		}
++		schema := map[string]any{}
++		for key, value := range tool.InputSchema {
++			schema[key] = value
++		}
++		properties := map[string]any{}
++		for key, value := range tool.InputSchema["properties"].(map[string]any) {
++			properties[key] = value
++		}
++		for _, key := range omitted {
++			delete(properties, key)
++		}
++		schema["properties"] = properties
++		tools[i].InputSchema = schema
++	}
++	return tools
++}
++
++// unadvertisedCall names what a tools/call uses outside the advertised contract, before anything runs.
++func unadvertisedCall(name string, args map[string]any) string {
++	for _, tool := range advertisedToolDefinitions() {
++		if tool.Name != name {
++			continue
++		}
++		properties, _ := tool.InputSchema["properties"].(map[string]any)
++		keys := make([]string, 0, len(args))
++		for key := range args {
++			keys = append(keys, key)
++		}
++		sort.Strings(keys)
++		for _, key := range keys {
++			if _, ok := properties[key]; !ok {
++				return name + " does not accept " + key
++			}
++		}
++		return ""
++	}
++	return "Unknown tool: " + name
++}
++
+ func toolDefinitions() []toolDefinition {
+ 	return []toolDefinition{
+ 		{
+@@ -1932,13 +1987,16 @@ func handleMCPRequest(request map[string]any, svc *service) map[string]any {
+ 	case "ping":
+ 		return jsonRPCResult(id, map[string]any{})
+ 	case "tools/list":
+-		return jsonRPCResult(id, map[string]any{"tools": toolDefinitions()})
++		return jsonRPCResult(id, map[string]any{"tools": advertisedToolDefinitions()})
+ 	case "tools/call":
+ 		name, _ := params["name"].(string)
+ 		arguments, _ := params["arguments"].(map[string]any)
+ 		if arguments == nil {
+ 			arguments = map[string]any{}
+ 		}
++		if refusal := unadvertisedCall(name, arguments); refusal != "" {
++			return jsonRPCResult(id, textResult(refusal, true))
++		}
+ 		return jsonRPCResult(id, svc.callTool(name, arguments))
+ 	default:
+ 		if method == "" {
+diff --git a/apps/OpenComputerUseLinux/main_test.go b/apps/OpenComputerUseLinux/main_test.go
+index c42e9b8..8392606 100644
+--- a/apps/OpenComputerUseLinux/main_test.go
++++ b/apps/OpenComputerUseLinux/main_test.go
+@@ -9,6 +9,7 @@ import (
+ 	"os"
+ 	"path/filepath"
+ 	"runtime"
++	"sort"
+ 	"strconv"
+ 	"strings"
+ 	"testing"
+@@ -810,3 +811,48 @@ func TestClickCountRejectsInvalidProvidedValues(t *testing.T) {
+ 		t.Fatal("omitted click_count must default to one")
+ 	}
+ }
++
++func TestMCPAdvertisesOnlyTheBiorouterContract(t *testing.T) {
++	want := []string{"click", "drag", "get_app_state", "list_apps", "perform_secondary_action", "press_key", "scroll", "screen_capture", "set_value", "type_text"}
++	tools := advertisedToolDefinitions()
++	names := make([]string, 0, len(tools))
++	for _, tool := range tools {
++		names = append(names, tool.Name)
++	}
++	sort.Strings(names)
++	if strings.Join(names, ",") != strings.Join(want, ",") {
++		t.Fatalf("advertised tools = %v", names)
++	}
++	for name, omitted := range biorouterOmittedArguments {
++		for _, tool := range tools {
++			if tool.Name != name {
++				continue
++			}
++			properties := tool.InputSchema["properties"].(map[string]any)
++			for _, key := range omitted {
++				if _, exposed := properties[key]; exposed {
++					t.Fatalf("%s advertises %s", name, key)
++				}
++			}
++		}
++	}
++	if _, kept := findToolDefinition(t, "press_key").InputSchema["properties"].(map[string]any)["key_method"]; !kept {
++		t.Fatal("advertising must not change upstream's own definitions")
++	}
++}
++
++func TestMCPRefusesArgumentsOutsideTheContractBeforeRunning(t *testing.T) {
++	svc := newService()
++	for _, call := range []map[string]any{
++		{"name": "get_app_state", "arguments": map[string]any{"app": "fixture", "include_screenshot": false}},
++		{"name": "press_key", "arguments": map[string]any{"app": "fixture", "key": "a", "key_method": "global"}},
++		{"name": "type_text", "arguments": map[string]any{"app": "fixture", "text": "a", "key_method": "sky_key"}},
++		{"name": "query", "arguments": map[string]any{"app": "fixture"}},
++	} {
++		response := handleMCPRequest(map[string]any{"jsonrpc": "2.0", "id": 1.0, "method": "tools/call", "params": call}, svc)
++		result, ok := response["result"].(toolCallResult)
++		if !ok || !result.IsError {
++			t.Fatalf("outside-contract call was not refused: %#v -> %#v", call, response)
++		}
++	}
++}
+diff --git a/apps/OpenComputerUseWindows/main.go b/apps/OpenComputerUseWindows/main.go
+index 99680ea..ae5068d 100644
+--- a/apps/OpenComputerUseWindows/main.go
++++ b/apps/OpenComputerUseWindows/main.go
+@@ -15,6 +15,7 @@ import (
+ 	"os/exec"
+ 	"path/filepath"
+ 	"runtime"
++	"sort"
+ 	"strconv"
+ 	"strings"
+ 	"time"
+@@ -364,7 +365,13 @@ func (s *service) callTool(name string, args map[string]any) toolCallResult {
+ 		if err != nil {
+ 			return textResult(err.Error(), true)
+ 		}
+-		return s.pressKey(requiredString(args, "app"), requiredString(args, "key"), keyMethod)
++		key := requiredString(args, "key")
++		// Biorouter Copilot sends no key_method. Window messages cannot carry modifiers,
++		// so a chord under the host's global-input consent goes through real keys.
++		if _, explicit := args["key_method"]; !explicit && keyMethod == "auto" && len(key) > 1 && strings.Contains(key, "+") && globalPointerFallbacksEnabled() {
++			keyMethod = "global"
++		}
++		return s.pressKey(requiredString(args, "app"), key, keyMethod)
+ 	case "set_value":
+ 		value, ok := args["value"].(string)
+ 		if !ok {
+@@ -1048,6 +1055,61 @@ func globalPointerFallbacksEnabled() bool {
+ 	}
+ }
+ 
++// Biorouter Copilot's reviewed contract is what MCP advertises and accepts: these
++// tools without the observation toggles and keyboard delivery methods upstream
++// added. toolDefinitions keeps upstream's full schemas for its own tests and CLI.
++var biorouterOmittedArguments = map[string][]string{
++	"get_app_state": {"include_ax", "include_screenshot", "window_placement"},
++	"type_text":     {"key_method"},
++	"press_key":     {"key_method"},
++}
++
++func advertisedToolDefinitions() []toolDefinition {
++	tools := toolDefinitions()
++	for i, tool := range tools {
++		omitted := biorouterOmittedArguments[tool.Name]
++		if len(omitted) == 0 {
++			continue
++		}
++		schema := map[string]any{}
++		for key, value := range tool.InputSchema {
++			schema[key] = value
++		}
++		properties := map[string]any{}
++		for key, value := range tool.InputSchema["properties"].(map[string]any) {
++			properties[key] = value
++		}
++		for _, key := range omitted {
++			delete(properties, key)
++		}
++		schema["properties"] = properties
++		tools[i].InputSchema = schema
++	}
++	return tools
++}
++
++// unadvertisedCall names what a tools/call uses outside the advertised contract, before anything runs.
++func unadvertisedCall(name string, args map[string]any) string {
++	for _, tool := range advertisedToolDefinitions() {
++		if tool.Name != name {
++			continue
++		}
++		properties, _ := tool.InputSchema["properties"].(map[string]any)
++		keys := make([]string, 0, len(args))
++		for key := range args {
++			keys = append(keys, key)
++		}
++		sort.Strings(keys)
++		for _, key := range keys {
++			if _, ok := properties[key]; !ok {
++				return name + " does not accept " + key
++			}
++		}
++		return ""
++	}
++	return "Unknown tool: " + name
++}
++
+ func toolDefinitions() []toolDefinition {
+ 	return []toolDefinition{
+ 		{
+@@ -1597,13 +1659,16 @@ func handleMCPRequest(request map[string]any, svc *service) map[string]any {
+ 	case "ping":
+ 		return jsonRPCResult(id, map[string]any{})
+ 	case "tools/list":
+-		return jsonRPCResult(id, map[string]any{"tools": toolDefinitions()})
++		return jsonRPCResult(id, map[string]any{"tools": advertisedToolDefinitions()})
+ 	case "tools/call":
+ 		name, _ := params["name"].(string)
+ 		arguments, _ := params["arguments"].(map[string]any)
+ 		if arguments == nil {
+ 			arguments = map[string]any{}
+ 		}
++		if refusal := unadvertisedCall(name, arguments); refusal != "" {
++			return jsonRPCResult(id, textResult(refusal, true))
++		}
+ 		return jsonRPCResult(id, svc.callTool(name, arguments))
+ 	default:
+ 		if method == "" {
+diff --git a/apps/OpenComputerUseWindows/main_test.go b/apps/OpenComputerUseWindows/main_test.go
+index bf6e1bd..59fc244 100644
+--- a/apps/OpenComputerUseWindows/main_test.go
++++ b/apps/OpenComputerUseWindows/main_test.go
+@@ -11,6 +11,7 @@ import (
+ 	"os/exec"
+ 	"path/filepath"
+ 	"runtime"
++	"sort"
+ 	"strings"
+ 	"testing"
+ )
+@@ -1042,3 +1043,65 @@ Write-Output 'capture scope contract passed'
+ 		t.Fatalf("capture scope contract: %v\n%s", err, output)
+ 	}
+ }
++
++func TestMCPAdvertisesOnlyTheBiorouterContract(t *testing.T) {
++	want := []string{"click", "drag", "get_app_state", "list_apps", "perform_secondary_action", "press_key", "scroll", "screen_capture", "set_value", "type_text"}
++	tools := advertisedToolDefinitions()
++	names := make([]string, 0, len(tools))
++	for _, tool := range tools {
++		names = append(names, tool.Name)
++	}
++	sort.Strings(names)
++	if strings.Join(names, ",") != strings.Join(want, ",") {
++		t.Fatalf("advertised tools = %v", names)
++	}
++	for name, omitted := range biorouterOmittedArguments {
++		for _, tool := range tools {
++			if tool.Name != name {
++				continue
++			}
++			properties := tool.InputSchema["properties"].(map[string]any)
++			for _, key := range omitted {
++				if _, exposed := properties[key]; exposed {
++					t.Fatalf("%s advertises %s", name, key)
++				}
++			}
++		}
++	}
++	if _, kept := findToolDefinition(t, "press_key").InputSchema["properties"].(map[string]any)["key_method"]; !kept {
++		t.Fatal("advertising must not change upstream's own definitions")
++	}
++}
++
++func TestMCPRefusesArgumentsOutsideTheContractBeforeRunning(t *testing.T) {
++	svc := newService()
++	for _, call := range []map[string]any{
++		{"name": "get_app_state", "arguments": map[string]any{"app": "fixture", "include_screenshot": false}},
++		{"name": "press_key", "arguments": map[string]any{"app": "fixture", "key": "a", "key_method": "global"}},
++		{"name": "type_text", "arguments": map[string]any{"app": "fixture", "text": "a", "key_method": "sky_key"}},
++		{"name": "query", "arguments": map[string]any{"app": "fixture"}},
++	} {
++		response := handleMCPRequest(map[string]any{"jsonrpc": "2.0", "id": 1.0, "method": "tools/call", "params": call}, svc)
++		result, ok := response["result"].(toolCallResult)
++		if !ok || !result.IsError {
++			t.Fatalf("outside-contract call was not refused: %#v -> %#v", call, response)
++		}
++	}
++}
++
++func TestBiorouterKeyChordUsesRealKeysOnlyUnderConsent(t *testing.T) {
++	for _, tc := range []struct{ flag, key, want string }{{"1", "ctrl+s", "global"}, {"1", "F6", "auto"}, {"1", "+", "auto"}, {"", "ctrl+s", "auto"}} {
++		t.Setenv("OPEN_COMPUTER_USE_ALLOW_GLOBAL_POINTER_FALLBACKS", tc.flag)
++		svc := newService()
++		svc.rememberSnapshot("fixture", &appSnapshot{App: appDescriptor{Name: "fixture", PID: 42}, WindowHandle: 1234})
++		var request psRequest
++		svc.runBridge = func(r psRequest) (*psResponse, error) {
++			request = r
++			return &psResponse{OK: true, Snapshot: &appSnapshot{App: appDescriptor{Name: "fixture", PID: 42}, WindowHandle: 1234}}, nil
++		}
++		svc.callTool("press_key", map[string]any{"app": "fixture", "key": tc.key})
++		if request.KeyMethod != tc.want {
++			t.Fatalf("flag=%q key=%q: key method %q, want %q", tc.flag, tc.key, request.KeyMethod, tc.want)
++		}
++	}
++}
+diff --git a/packages/OpenComputerUseKit/Sources/OpenComputerUseKit/LockedUseDiagnostics.swift b/packages/OpenComputerUseKit/Sources/OpenComputerUseKit/LockedUseDiagnostics.swift
+index 6c43039..36948a1 100644
+--- a/packages/OpenComputerUseKit/Sources/OpenComputerUseKit/LockedUseDiagnostics.swift
++++ b/packages/OpenComputerUseKit/Sources/OpenComputerUseKit/LockedUseDiagnostics.swift
+@@ -189,7 +189,7 @@ func requireUsableComputerUseSession(_ session: LockedUseSession = .current()) t
+         try LockedUseActionScope.validate()
+         return
+     case .locked:
+-        throw ComputerUseError.stateUnavailable("The Mac is locked and this GUI request has no active Locked Use lease. Enable and validate Locked Use in the signed app, or unlock normally; run `ocu locked-use status --json` for diagnostics.")
++        throw ComputerUseError.stateUnavailable("The Mac is locked. Biorouter Copilot does not operate a locked Mac; unlock it and run get_app_state again.")
+     case .unavailable:
+         throw ComputerUseError.stateUnavailable("No completed GUI session for the current console user is available. Computer Use cannot operate a login, switched-user, or unknown session.")
+     }
+diff --git a/packages/OpenComputerUseKit/Sources/OpenComputerUseKit/MCPServer.swift b/packages/OpenComputerUseKit/Sources/OpenComputerUseKit/MCPServer.swift
+index d636dd6..556361b 100644
+--- a/packages/OpenComputerUseKit/Sources/OpenComputerUseKit/MCPServer.swift
++++ b/packages/OpenComputerUseKit/Sources/OpenComputerUseKit/MCPServer.swift
+@@ -7,7 +7,7 @@ Some apps might have a separate dedicated plugin or skill. You may want to use t
+ 
+ Begin by calling `get_app_state` every turn you want to use Biorouter Copilot to get the latest state before acting. Call it again in a new assistant turn before interacting with apps.
+ 
+-The available tools are list_apps, get_app_state, click, perform_secondary_action, scroll, drag, type_text, press_key, set_value, select_text, query, and screen_capture. If any of these are not available in your environment, use tool_search to surface one before calling any Biorouter Copilot action tools.
++The available tools are list_apps, get_app_state, click, perform_secondary_action, scroll, drag, type_text, press_key, set_value, and screen_capture. If any of these are not available in your environment, use tool_search to surface one before calling any Biorouter Copilot action tools.
+ 
+ Biorouter Copilot tools allow you to use the user's apps in the background, so while you're using an app, the user can continue to use other apps on their computer. Avoid doing anything that would disrupt the user's active session, such as overwriting the contents of their clipboard, unless they asked you to!
+ 
+@@ -86,12 +86,13 @@ public final class StdioMCPServer {
+                 return try encodeJSONRPCResult(
+                     id: id,
+                     result: [
+-                        "tools": ToolDefinitions.all.map(\.asDictionary),
++                        "tools": ToolDefinitions.advertised.map(\.asDictionary),
+                     ]
+                 )
+             case "tools/call":
+                 let name = params["name"] as? String ?? ""
+                 let arguments = params["arguments"] as? [String: Any] ?? [:]
++                try ToolDefinitions.requireAdvertised(name: name, arguments: arguments)
+                 let result = try dispatcher.callTool(name: name, arguments: arguments)
+                 return try encodeJSONRPCResult(
+                     id: id,
+diff --git a/packages/OpenComputerUseKit/Sources/OpenComputerUseKit/ToolDefinitions.swift b/packages/OpenComputerUseKit/Sources/OpenComputerUseKit/ToolDefinitions.swift
+index 613e27c..88dc47a 100644
+--- a/packages/OpenComputerUseKit/Sources/OpenComputerUseKit/ToolDefinitions.swift
++++ b/packages/OpenComputerUseKit/Sources/OpenComputerUseKit/ToolDefinitions.swift
+@@ -33,6 +33,47 @@ public enum ToolDefinitions {
+         configured(virtualDisplayEnabled: VirtualDisplayConfig.current.enabled)
+     }
+ 
++    /// What the MCP server advertises and accepts: Biorouter Copilot's reviewed
++    /// ten-tool contract. Upstream's query and select_text tools, its observation
++    /// toggles, agent-display window placement and keyboard delivery methods are
++    /// not part of it; they stay in `all` for upstream's own CLI and tests.
++    public static var advertised: [ToolDefinition] {
++        biorouterContract(all)
++    }
++
++    static let biorouterToolNames: Set<String> = [
++        "list_apps", "get_app_state", "click", "perform_secondary_action", "scroll",
++        "drag", "type_text", "press_key", "set_value", "screen_capture",
++    ]
++
++    static let biorouterOmittedArguments: [String: Set<String>] = [
++        "get_app_state": ["include_ax", "include_screenshot", "window_placement"],
++        "type_text": ["key_method"],
++        "press_key": ["key_method"],
++    ]
++
++    static func biorouterContract(_ tools: [ToolDefinition]) -> [ToolDefinition] {
++        tools.filter { biorouterToolNames.contains($0.name) }.map { tool in
++            guard let omitted = biorouterOmittedArguments[tool.name] else { return tool }
++            var schema = tool.inputSchema
++            var properties = schema["properties"] as? [String: Any] ?? [:]
++            for key in omitted { properties.removeValue(forKey: key) }
++            schema["properties"] = properties
++            return ToolDefinition(name: tool.name, description: tool.description, annotations: tool.annotations, inputSchema: schema)
++        }
++    }
++
++    /// Refuses a call outside the advertised contract before anything runs.
++    static func requireAdvertised(name: String, arguments: [String: Any]) throws {
++        guard let tool = advertised.first(where: { $0.name == name }) else {
++            throw ComputerUseError.invalidArguments("Unknown tool: \(name)")
++        }
++        let accepted = (tool.inputSchema["properties"] as? [String: Any]) ?? [:]
++        if let unexpected = arguments.keys.sorted().first(where: { accepted[$0] == nil }) {
++            throw ComputerUseError.invalidArguments("\(name) does not accept \(unexpected)")
++        }
++    }
++
+     static func configured(virtualDisplayEnabled: Bool) -> [ToolDefinition] {
+         guard !virtualDisplayEnabled else { return definitions }
+         return definitions.map { tool in
+diff --git a/packages/OpenComputerUseKit/Tests/OpenComputerUseKitTests/BiorouterContractTests.swift b/packages/OpenComputerUseKit/Tests/OpenComputerUseKitTests/BiorouterContractTests.swift
+new file mode 100644
+index 0000000..66e1a3a
+--- /dev/null
++++ b/packages/OpenComputerUseKit/Tests/OpenComputerUseKitTests/BiorouterContractTests.swift
+@@ -0,0 +1,47 @@
++import Foundation
++import XCTest
++@testable import OpenComputerUseKit
++
++final class BiorouterContractTests: XCTestCase {
++    func testMCPAdvertisesOnlyTheTenToolContract() throws {
++        XCTAssertEqual(
++            ToolDefinitions.advertised.map(\.name).sorted(),
++            ["click", "drag", "get_app_state", "list_apps", "perform_secondary_action",
++             "press_key", "screen_capture", "scroll", "set_value", "type_text"]
++        )
++        for (name, omitted) in ToolDefinitions.biorouterOmittedArguments {
++            let tool = try XCTUnwrap(ToolDefinitions.advertised.first { $0.name == name })
++            let properties = try XCTUnwrap(tool.inputSchema["properties"] as? [String: Any])
++            for key in omitted { XCTAssertNil(properties[key], "\(name) advertises \(key)") }
++        }
++        let server = StdioMCPServer()
++        let line = #"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#
++        let response = try XCTUnwrap(server.handle(line: line))
++        let payload = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(response.utf8)) as? [String: Any])
++        let tools = try XCTUnwrap((payload["result"] as? [String: Any])?["tools"] as? [[String: Any]])
++        XCTAssertEqual(tools.count, 10)
++    }
++
++    func testMCPRefusesCallsOutsideTheContractBeforeRunning() throws {
++        let server = StdioMCPServer()
++        for call in [
++            #"{"name":"query","arguments":{"app":"missing-fixture","text":"x"}}"#,
++            #"{"name":"select_text","arguments":{"app":"missing-fixture","element_index":"1","text":"x"}}"#,
++            #"{"name":"get_app_state","arguments":{"app":"missing-fixture","include_screenshot":false}}"#,
++            #"{"name":"press_key","arguments":{"app":"missing-fixture","key":"a","key_method":"sky_key"}}"#,
++        ] {
++            let response = try XCTUnwrap(server.handle(line: #"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":"# + call + "}"))
++            let payload = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(response.utf8)) as? [String: Any])
++            let result = try XCTUnwrap(payload["result"] as? [String: Any])
++            XCTAssertEqual(result["isError"] as? Bool, true, call)
++            let text = ((result["content"] as? [[String: Any]])?.first?["text"] as? String) ?? ""
++            XCTAssertTrue(text.contains("Unknown tool") || text.contains("does not accept"), text)
++        }
++    }
++
++    func testLockedMacIsRefusedWithoutLockedUse() {
++        XCTAssertThrowsError(try requireUsableComputerUseSession(LockedUseSession(state: .locked, userID: 501, auditSessionID: 1))) { error in
++            XCTAssertTrue(String(describing: error).contains("does not operate a locked Mac"))
++        }
++    }
++}

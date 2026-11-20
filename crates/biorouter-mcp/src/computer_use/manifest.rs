@@ -4,8 +4,8 @@ use sha2::{Digest, Sha256};
 use std::path::{Component, Path, PathBuf};
 use std::sync::LazyLock;
 
-pub const UPSTREAM_VERSION: &str = "0.3.5";
-pub const UPSTREAM_COMMIT: &str = "547b4ffb8ed731a8f16486e6d8a3b215484267d3";
+pub const UPSTREAM_VERSION: &str = "1.1.5";
+pub const UPSTREAM_COMMIT: &str = "8ec5cdbce8e76d20dd59bc867343079098ef6613";
 
 #[derive(Deserialize)]
 struct RuntimePin {

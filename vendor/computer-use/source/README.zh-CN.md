@@ -2,9 +2,9 @@
 
 [![English](https://img.shields.io/badge/English-Click-yellow)](./README.md)
 [![简体中文](https://img.shields.io/badge/简体中文-点击查看-orange)](./README.zh-CN.md)
-[![Release](https://img.shields.io/github/v/release/iFurySt/open-codex-computer-use)](https://github.com/iFurySt/open-codex-computer-use/releases)
-[![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/iFurySt/open-codex-computer-use)
-<a href="https://llmapis.com?source=https%3A%2F%2Fgithub.com%2FiFurySt%2Fopen-codex-computer-use" target="_blank"><img src="https://llmapis.com/api/badge/iFurySt/open-codex-computer-use" alt="LLMAPIS" width="20" /></a>
+[![Release](https://img.shields.io/github/v/release/iFurySt/open-computer-use)](https://github.com/iFurySt/open-computer-use/releases)
+[![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/iFurySt/open-computer-use)
+<a href="https://llmapis.com?source=https%3A%2F%2Fgithub.com%2FiFurySt%2Fopen-computer-use" target="_blank"><img src="https://llmapis.com/api/badge/iFurySt/open-computer-use" alt="LLMAPIS" width="20" /></a>
 
 > [!TIP]
 > 对 Browser Use 感兴趣的话，可以看看 [open-browser-use](https://github.com/iFurySt/open-codex-browser-use)。
@@ -36,6 +36,11 @@ https://github.com/user-attachments/assets/eacb3b15-f939-46c7-b3b3-6f876977a58d
 https://github.com/user-attachments/assets/e036b1c8-2200-4896-abd4-19225915cf66
 
 <sub><em>`open-computer-use` 在 Linux 里使用</em></sub>
+
+### Locked Use
+目前支持Locked Use，`OCU`会在锁屏之后临时解锁使用电脑（仅支持macOS），期间会有一系列的安全配套服务比如遮罩层来保证安全性
+![Open Computer Use Locked Use screen](./docs/assets/ocu-locked-use.webp)
+Locked Use 的开启方式、安装组件和权限见[文档](docs/locked-use.zh-CN.md)
 
 ## Quick Start
 
@@ -82,13 +87,13 @@ ocu install-codex-mcp
 
 ```bash
 # 安装到 Codex
-npx skills add iFurySt/open-codex-computer-use -g -a codex --skill open-computer-use -y
+npx skills add iFurySt/open-computer-use -g -a codex --skill open-computer-use -y
 npx skills ls -g -a codex | rg 'open-computer-use'
 ```
 
 安装到 Claude Code
 ```
-npx skills add iFurySt/open-codex-computer-use -g -a claude-code --skill open-computer-use -y
+npx skills add iFurySt/open-computer-use -g -a claude-code --skill open-computer-use -y
 ```
 
 更新已有的全局安装，包括上面安装到 Codex 的那份：
@@ -135,27 +140,28 @@ open-computer-use call --calls-file examples/textedit-overlay-seq.json --sleep 0
 # 检查权限；只有缺失时才会拉起引导，已全部授权则只打印状态并退出
 open-computer-use doctor
 
+# macOS：只查询权限 JSON，不弹引导界面
+ocu doctor --json
+
 # 查看帮助
 open-computer-use -h
 ocu -h
 ```
 
-## Cursor Motion
+## 全局配置
 
-Cursor Motion 是一个面向 macOS 的开源光标运动系统，基于 Software.Inc 几位大佬的公开信息实现的开源版本，也可以到 [Releases 页面](https://github.com/iFurySt/open-codex-computer-use/releases) 下载 app 运行。
-
-[![Cursor Motion 自定义演示封面](./docs/generated/readme-assets/cursor-motion-demo-cover.png)](https://youtu.be/KRUq5GUHv1Q)
+ocu 1.0.0后支持全局配置，以适应不同的使用方式和业务场景，默认配置存在 `~/.config/ocu/config.json`，期间可以直接到文件里编辑配置，也可以通过`ocu config`子命令去配置，更具体的可以看： [配置说明](docs/configuration.zh-CN.md)
 
 ## Star History
 
-<a href="https://www.star-history.com/?repos=iFurySt%2Fopen-codex-computer-use&type=date&legend=top-left">
+<a href="https://www.star-history.com/?repos=iFurySt%2Fopen-computer-use&type=date&legend=top-left">
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=ifuryst/open-codex-computer-use&type=date&theme=dark&legend=top-left" />
-    <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=ifuryst/open-codex-computer-use&type=date&legend=top-left" />
-    <img alt="open-computer-use Star History 趋势图" src="https://api.star-history.com/chart?repos=ifuryst/open-codex-computer-use&type=date&legend=top-left" />
+    <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=ifuryst/open-computer-use&type=date&theme=dark&legend=top-left" />
+    <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=ifuryst/open-computer-use&type=date&legend=top-left" />
+    <img alt="open-computer-use Star History 趋势图" src="https://api.star-history.com/chart?repos=ifuryst/open-computer-use&type=date&legend=top-left" />
   </picture>
 </a>
 
 ## License
 
-[MIT](./LICENSE)。
+[MIT](./LICENSE)

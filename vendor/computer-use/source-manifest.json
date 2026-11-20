@@ -1,10 +1,10 @@
 {
   "schema_version": 1,
   "upstream_repository": "https://github.com/iFurySt/open-codex-computer-use.git",
-  "upstream_commit": "547b4ffb8ed731a8f16486e6d8a3b215484267d3",
-  "upstream_version": "0.3.5",
-  "file_count": 391,
-  "tree_sha256": "43343196d44587cef6f5530cdb2ae594bb59e55fec25c5abf189910386c80b81",
+  "upstream_commit": "8ec5cdbce8e76d20dd59bc867343079098ef6613",
+  "upstream_version": "1.1.5",
+  "file_count": 850,
+  "tree_sha256": "6f829b3bc9cae14ff355a6b6ad7d346ba124c94cacf28544d7b2cbe3b7bc8080",
   "excluded": [
     {
       "path_prefix": "docs/references/codex-computer-use-reverse-engineering/assets/extracted-",
@@ -12,11 +12,15 @@
     },
     {
       "path_prefix": ".gitattributes",
-      "reason": "only configures Git LFS for the omitted official bundle archives; not a build input"
+      "reason": "a nested .gitattributes would apply its rules to BioRouter's own checkout of the vendored tree; upstream's only configured Git LFS for the reference archives and is not a build input"
     },
     {
       "path_prefix": "docs/references/codex-computer-use-reverse-engineering/assets/official-bundles/",
-      "reason": "official plugin archives are unavailable in this repository's Git LFS storage and are documentation references rather than build inputs"
+      "reason": "describes a third party's plugin archives, which upstream now distributes outside the repository; documentation references rather than build inputs"
+    },
+    {
+      "path_prefix": "docs/assets/ocu-locked-use.webp",
+      "reason": "README screenshot whose background photograph and avatar are not shown to be upstream's own work; documentation only, and not a build input"
     }
   ],
   "files": [
@@ -25,16 +29,28 @@
       "sha256": "1d8e600c09f73e535229c6be1ddf7d137e33fcebab0223b1d72a6309b4a32562"
     },
     {
+      "path": ".github/workflows/ci.yml",
+      "sha256": "f4348dd62840c0304d7af5307241169d2b79d401db255545b42585dc75b0e7ea"
+    },
+    {
+      "path": ".github/workflows/locked-use-distribution.yml",
+      "sha256": "e95ed5c4436587eb0d5ecdd32e208a428e9339e3507988c3943c4857eaba1b73"
+    },
+    {
       "path": ".github/workflows/release.yml",
-      "sha256": "b2f31674ed0a3082afeeac623d16f948dc855053f873d65c089babe54e838e38"
+      "sha256": "6e75aaa6e88eb4b910db4959456fa62b272a9264285eed66d41309cc60c31971"
+    },
+    {
+      "path": ".github/workflows/windows-observation.yml",
+      "sha256": "4f7a12f21dc9151724fb3f3f9c87c390d44312d02f1dc0d2fadf8004f52cdc3f"
     },
     {
       "path": ".gitignore",
-      "sha256": "5ab276be5ea6102554e5f6de869dc750e428eff8aec7e0586a0329562bb5664b"
+      "sha256": "6f848b96be1f91468b425d08662e63654a2e6c944536a1554b53b40edac7b261"
     },
     {
       "path": "AGENTS.md",
-      "sha256": "ca92741378cb38f90330cb81ec323b2a9710d5d4e439129e88e7800ce84f124a"
+      "sha256": "2e6f4766af334e179d15b9763375a93f5e8bcea559e9846c8e2e8d3296455a16"
     },
     {
       "path": "CLAUDE.md",
@@ -54,83 +70,215 @@
     },
     {
       "path": "Makefile",
-      "sha256": "fbe5734454714faf6bb30d2dda3877c298249997902b5925d244ef71f76f1a98"
+      "sha256": "88972fbef1d1e1ec0663a61f4086e8717949a058a289b4dec5fee02c3c285fae"
+    },
+    {
+      "path": "Package.resolved",
+      "sha256": "5f16db58b5f39be3278a992ad27792b9c79e20ae5a082859026be63a277db0f1"
     },
     {
       "path": "Package.swift",
-      "sha256": "c97dfa714a9d3790d4342fd09b3b82c96ed5794e0f3105f132d7915d50794676"
+      "sha256": "6e62d386e113b85162956f0a0229f5bb9af5f64d38c355112ed752591c6bc0bb"
     },
     {
       "path": "README.md",
-      "sha256": "64ee1d9b0c847a926a69966af49c1e1408ecdd5a30a62760f9cd066217462646"
+      "sha256": "990539ede07dcdc05346c5f973980d39bc6955b6f6915e2132227a8c30811ef6"
     },
     {
       "path": "README.zh-CN.md",
-      "sha256": "1403364ccb5ac957523a48959555fa8ce911c5c637475eb42b00db4c6a2035c0"
+      "sha256": "d2b43b2ccf8e7529b8dfed4a36ef85b0b7eb1149b37f5c7701100659b4efab93"
     },
     {
       "path": "SECURITY.md",
       "sha256": "2a68e9f6fcf1267e009f6743b59d0effc5182f0cf778a758a79a809b29d83f21"
     },
     {
+      "path": "THIRD_PARTY_NOTICES.md",
+      "sha256": "305b20c2922dd2781bb98d2b75cb317fdf6d21f8519ed476eb8e3df3000f8e79"
+    },
+    {
+      "path": "apps/OpenComputerUse/Sources/OpenComputerUse/LockedUseConnection.swift",
+      "sha256": "40f498e25a3eb8f69813bb7feb05464e0f92ce517b32bb22d9619317eefb5dec"
+    },
+    {
+      "path": "apps/OpenComputerUse/Sources/OpenComputerUse/LockedUseDeferredCleanup.swift",
+      "sha256": "30a998dcf3d02b660b281b53e0d4ec4cc29ecb45a6c02ebd931a97ba08e0b05b"
+    },
+    {
+      "path": "apps/OpenComputerUse/Sources/OpenComputerUse/LockedUseDisplayPreflight.swift",
+      "sha256": "9e8e598c5464b463a1afb985eac6e61e19960815217a171e135b8505ec005908"
+    },
+    {
+      "path": "apps/OpenComputerUse/Sources/OpenComputerUse/LockedUseNativeValidation.swift",
+      "sha256": "ce1b81f0e3dd01bb52416878733d6a28de08ab92d41e87b1117138031fe4c978"
+    },
+    {
+      "path": "apps/OpenComputerUse/Sources/OpenComputerUse/LockedUseSettings.swift",
+      "sha256": "22c2e6f29cbccdbb661c6543fbc523c72236755843a5ec5193c898b48efeb4e1"
+    },
+    {
       "path": "apps/OpenComputerUse/Sources/OpenComputerUse/MCPAppRuntime.swift",
-      "sha256": "211a3da7b69de28d2362abc97c02f6aa9a61dbfb7699d4ffb53ded226cf190b7"
+      "sha256": "c53d55f88bb39515dd622bab1227aabf7f0b3c4fff2df4b54b1f2b09fe247f5f"
     },
     {
       "path": "apps/OpenComputerUse/Sources/OpenComputerUse/MacOSAppAgentProxy.swift",
-      "sha256": "b6673b97ff0141a955ae436299f644bede003a1d01f7b19563d24f681d905cad"
+      "sha256": "010145a0a29300b7e6d06591f1f3e3b47982797c0eb3811f30a0a2b0ad191987"
     },
     {
       "path": "apps/OpenComputerUse/Sources/OpenComputerUse/OpenComputerUseMain.swift",
-      "sha256": "8679537d5619b59090c8df41c2da23cd9c8172c8e75f3a9a78f98f74774d04ba"
+      "sha256": "b0a3beb90c713fb9978b480ae6d95a3ff38cee5d596c602c56faeb5a05b585b6"
     },
     {
       "path": "apps/OpenComputerUse/Sources/OpenComputerUse/PermissionOnboardingApp.swift",
-      "sha256": "5b09bdbe752cd518b74139e2d91b78afc1d09f2b3ee054505cba117b391a9f6b"
+      "sha256": "72d58a4e356466d3743d69bd2d80175f6979752f9bee7501a392ab5b88cb2ab3"
+    },
+    {
+      "path": "apps/OpenComputerUse/Sources/OpenComputerUse/PermissionSettingsAnchor.swift",
+      "sha256": "c0cea5229b500d9fc4d95fd4b14364ecd12cf567c9fe3850aa4587d98eab64ac"
+    },
+    {
+      "path": "apps/OpenComputerUse/Tests/PermissionOnboardingTests/LockedUseDisplayPreflightTests.swift",
+      "sha256": "a40707105e3c3656e9d906fe7e4210f02d28d14915f46e7ffb396b5c278ae467"
+    },
+    {
+      "path": "apps/OpenComputerUse/Tests/PermissionOnboardingTests/PermissionAccessoryPanelTests.swift",
+      "sha256": "a285ce7fc102624028f71d29f41c4100f712ed78163081ba6aa354a29c9580f6"
+    },
+    {
+      "path": "apps/OpenComputerUse/Tests/PermissionOnboardingTests/PermissionListAnchorTests.swift",
+      "sha256": "07ad66d8c5c0f5e884a35f5c71a0b1b21233ba4bacc27c7e11d345ffe2a0916e"
     },
     {
       "path": "apps/OpenComputerUseFixture/Sources/OpenComputerUseFixture/main.swift",
-      "sha256": "ee5887572dff8c8e4b3eb2aff67f814b138e2b1d36420e7534e4149ecc58e766"
+      "sha256": "3b0f3bfea5b927bf58d0611df00a4c026642464ee4669f1b2d3c1f83a483936e"
     },
     {
       "path": "apps/OpenComputerUseLinux/go.mod",
-      "sha256": "cd50a0702133136eb8b786e7e473fd454eecbbd344cd4c06ccaee6bf70569771"
+      "sha256": "fdad68a4d921891a4cb1330c95dde729fc2be146e632598f258d851ed5d4b102"
     },
     {
       "path": "apps/OpenComputerUseLinux/main.go",
-      "sha256": "ce87670e52ea11a9bb2274ff3e7e11d7108925ffdd7e6d6b213973218aab82eb"
+      "sha256": "75902b010e0aa1f469def73537c0d27a58a55d67ee18a4711e46e0e6b31a359d"
     },
     {
       "path": "apps/OpenComputerUseLinux/main_test.go",
-      "sha256": "8b6d5e50d3a5fb1cf8dadb6bb88192f26e52aecf3dca81e362e67e11fc7f3a52"
+      "sha256": "d515a69ddc08915e05f2b459fcbef86fe58a749f542ecc5808b481af44a09bf8"
+    },
+    {
+      "path": "apps/OpenComputerUseLinux/mcp_transport.go",
+      "sha256": "29aabb67a10f5b748fe67d87db9d9ecc711c0221840b94c8305bdad9fd13acff"
+    },
+    {
+      "path": "apps/OpenComputerUseLinux/mcp_transport_test.go",
+      "sha256": "306ff024835013aa450d842161cc4cb9cb69354a69e3539a68bea2ad641e4708"
+    },
+    {
+      "path": "apps/OpenComputerUseLinux/observation_cli_test.go",
+      "sha256": "93ebb990e38180caae9184caef83713a084ebf775e518e60ec5e2d88983159d9"
     },
     {
       "path": "apps/OpenComputerUseLinux/runtime.py",
-      "sha256": "7d2ffb91986c9e7881a935b6bfaa23f3042642f8c133c930b76f66357d7e4178"
+      "sha256": "a0463baf537802c0f8e7ecece4fba456c9128a38a38c4167410c17299586a4cb"
     },
     {
       "path": "apps/OpenComputerUseLinux/runtime_test.py",
-      "sha256": "5911bbb706efa69114ee3f625325cfe677075d5798cc7d202cab04ef72fea9ce"
+      "sha256": "5d18d6a6581ceb373e28c8e3b2958e1704f86ad37b20440929a8233de1671a69"
     },
     {
       "path": "apps/OpenComputerUseSmokeSuite/Sources/OpenComputerUseSmokeSuite/main.swift",
-      "sha256": "103129083d06c177e0988cdaf898b320dedc0d6e8cd714d59b768236fb8904cd"
+      "sha256": "796594cb8dc6c3cc229b10c9e866955fc9683a6b4a52e516a7e423a90ccd5b58"
     },
     {
       "path": "apps/OpenComputerUseWindows/go.mod",
-      "sha256": "f2cdb5d0212017b2c949ad03c7dfad217b5d4d5e9a95ffe16a745581b81ed038"
+      "sha256": "e04d522a20366438836fbeb8b8f1e65e4916fe9c558da36e4ed862dcfd1d70aa"
+    },
+    {
+      "path": "apps/OpenComputerUseWindows/hide_window_integration_windows_test.go",
+      "sha256": "09cf75e4f8fb03c4b99a80b55b699e7909b969670c0b6870088bea08912b1c4d"
+    },
+    {
+      "path": "apps/OpenComputerUseWindows/hide_window_other.go",
+      "sha256": "92e86f3ba2ee465d1125cfe210529263e94ef08a41c4eac84d579ce75f7a74e2"
+    },
+    {
+      "path": "apps/OpenComputerUseWindows/hide_window_windows.go",
+      "sha256": "8453b24d8a78361c995de986caab8504a3f9c935a4230efc821af88240a2e0d9"
+    },
+    {
+      "path": "apps/OpenComputerUseWindows/hide_window_windows_test.go",
+      "sha256": "62f8fb2a461d6bfb7743434b72a0a6329a2bc682cfda769c3aa17abcb43c7ef6"
+    },
+    {
+      "path": "apps/OpenComputerUseWindows/hung_window_integration_windows_test.go",
+      "sha256": "87725b85c78468f251f9da6d1d56864505f81559127c25fc0bc8e40b3c79d96b"
+    },
+    {
+      "path": "apps/OpenComputerUseWindows/input_review_test.go",
+      "sha256": "8ec7acc425388dc3e09868f42744cd68aab2506dbd3c54c523694911809e33fd"
+    },
+    {
+      "path": "apps/OpenComputerUseWindows/integrity_integration_windows_test.go",
+      "sha256": "0e09e51fc6cdc4d765a97497d75063dab3d81b314efbc9b432c4881c8b424a31"
     },
     {
       "path": "apps/OpenComputerUseWindows/main.go",
-      "sha256": "58061257f7a7f570f209ce8d7713aec9d77d538d289670cf57463c27e92ef67c"
+      "sha256": "806c0b31521f0738e7cfc850c0cc38a92bb040a5681f4f06608ffc844339a449"
     },
     {
       "path": "apps/OpenComputerUseWindows/main_test.go",
-      "sha256": "8333087b29253a08a83bcf78ae784e2de8b37c7e721a84d6312c5bb38f864293"
+      "sha256": "956abd1f736273a0d62c742036882f3a1b47922ec62156cdab7a25d5bde0aba6"
+    },
+    {
+      "path": "apps/OpenComputerUseWindows/mcp_transport.go",
+      "sha256": "29aabb67a10f5b748fe67d87db9d9ecc711c0221840b94c8305bdad9fd13acff"
+    },
+    {
+      "path": "apps/OpenComputerUseWindows/mcp_transport_test.go",
+      "sha256": "306ff024835013aa450d842161cc4cb9cb69354a69e3539a68bea2ad641e4708"
+    },
+    {
+      "path": "apps/OpenComputerUseWindows/observation_cli_test.go",
+      "sha256": "93ebb990e38180caae9184caef83713a084ebf775e518e60ec5e2d88983159d9"
+    },
+    {
+      "path": "apps/OpenComputerUseWindows/observation_test.go",
+      "sha256": "8c134e7862ab87bf1afc486b965dc1e1e22626ce973a3581366993d01ba2c503"
+    },
+    {
+      "path": "apps/OpenComputerUseWindows/pattern_integration_windows_test.go",
+      "sha256": "cc46facabdd30bc56ed62b247ee05760f43831cdd4596f12e7f1e9977b2cbaf5"
     },
     {
       "path": "apps/OpenComputerUseWindows/runtime.ps1",
-      "sha256": "af5b4dbeae10847f69a190562d4f40e3f11d78ac989f0c95260bd95f640e7ed8"
+      "sha256": "2a0fcbd6da3be690bbc548964e10f3977e84972fe8aeccebfd7c5e922c89bf67"
+    },
+    {
+      "path": "apps/OpenComputerUseWindows/testdata/hosted-window-fixture.ps1",
+      "sha256": "bc6e72ba7c3747d41c47e282877505f9c7154813107b0c92d1e0d190db74d715"
+    },
+    {
+      "path": "apps/OpenComputerUseWindows/testdata/integrity-fixture.ps1",
+      "sha256": "11b8390371e311f3a0b998682efd437f7ebf244d37c57ffb827401d7dca735da"
+    },
+    {
+      "path": "apps/OpenComputerUseWindows/testdata/low-integrity-dispatch.ps1",
+      "sha256": "52d0e5d2a7388ff2593f9ece0e8a460aecd67fdf44a7d986194ce8c10879c6a2"
+    },
+    {
+      "path": "apps/OpenComputerUseWindows/testdata/modal-fixture.ps1",
+      "sha256": "f9d159b3489dc8e979a9956a75f4abe6490d437717100c16a1e18ea20e745ada"
+    },
+    {
+      "path": "apps/OpenComputerUseWindows/testdata/pattern-fixture.ps1",
+      "sha256": "b0e961bada19c6ee4ff59690f8d873ebb36e7732b4d89313b6bdfa356f5cb8ec"
+    },
+    {
+      "path": "apps/OpenComputerUseWindows/window_resolution_integration_windows_test.go",
+      "sha256": "c1d52c81d97d2a9bda65f8a13280712aa161fe9f5d82d3a9f195de8862397e48"
+    },
+    {
+      "path": "apps/OpenComputerUseWindows/windows_fixture_test.go",
+      "sha256": "9db2e81e74b4fe9d1354c6b710349c9d6249b88c4a9eb7aa39076a6000f5e7fb"
     },
     {
       "path": "artifacts/tool-comparisons/20260417-focus-behavior/README.md",
@@ -154,11 +302,11 @@
     },
     {
       "path": "docs/ARCHITECTURE.md",
-      "sha256": "906e500c35236842d7b4041ba64facf9cdba5fce62c8b97e43b109a4ff005b7f"
+      "sha256": "b0d4124bce8e4330a2186b7e984a81df1e76144dbbda31a106235c6e73dcd317"
     },
     {
       "path": "docs/CICD.md",
-      "sha256": "a5af661d68447752a5867aabfd2997ead85aaca4e66bf26d557b5298f77ba56a"
+      "sha256": "2a557cba5a25dcd3435ddadd97987304c907e9b1066a3f178f76e6abb71d0775"
     },
     {
       "path": "docs/DESIGN.md",
@@ -182,11 +330,11 @@
     },
     {
       "path": "docs/QUALITY_SCORE.md",
-      "sha256": "374f3bbeb514e0edad367ecdb5bd6578d91be0f07ffdcc2cca49adfd8d8d6484"
+      "sha256": "8927bc39a60f7abeff646ed187fb51fcd231ebcf105edaa9405b928d8563f9de"
     },
     {
       "path": "docs/RELIABILITY.md",
-      "sha256": "cdd4249b1d8262df1848bdec072ad79fe50d980afa81f31800139860d29aa0e3"
+      "sha256": "49e20bbd1e04d7bd6eee3ac00b3cc50907fd59ac928466d8708acfbb4e3a4e84"
     },
     {
       "path": "docs/REPO_COLLAB_GUIDE.md",
@@ -194,11 +342,31 @@
     },
     {
       "path": "docs/SECURITY.md",
-      "sha256": "f3f886a741f8b92e41b54328e085bbc1efeca024d33f79b67f965ae81d7afdc4"
+      "sha256": "021efc1b2bde914ecb8064900759236ea168e59b996ae529ab2ca72fa5b4c1ef"
     },
     {
       "path": "docs/SUPPLY_CHAIN_SECURITY.md",
-      "sha256": "e4904b6561886d093a7cb229251ad39d01e8fd1272fa49fec49b09178f1dc9be"
+      "sha256": "57b7f514928174cef4852f52eaed8b2baaa27d772d7bf7b92e2e0a2ade99014a"
+    },
+    {
+      "path": "docs/assets/locked-use-architecture.png",
+      "sha256": "d732a7398e808380b994bb4fb637976a25e2d3f227e87636b808607d2a7cd69f"
+    },
+    {
+      "path": "docs/assets/windows-target-capture.png",
+      "sha256": "737bd1920d334d50510f30029bf2f9ee8388af4040d5e67e5720a5c3d8ade852"
+    },
+    {
+      "path": "docs/click-outcomes.md",
+      "sha256": "eea402b2e0ec22ac9cf0ba1d06dc901e251af233b2c875191902df10cfef3643"
+    },
+    {
+      "path": "docs/configuration.md",
+      "sha256": "54c4767270ad94a3eb300b97cc0daf4acf52cadf1a726d578b72b99baf15d87e"
+    },
+    {
+      "path": "docs/configuration.zh-CN.md",
+      "sha256": "a5bddc46359d9069d4fc74aef3605d292b0f983e5bb594402f412ec3bf96d5f8"
     },
     {
       "path": "docs/design-docs/core-beliefs.md",
@@ -238,7 +406,7 @@
     },
     {
       "path": "docs/exec-plans/active/20260422-linux-computer-use-runtime.md",
-      "sha256": "baad057bb628b16d528a5466b6e6d8c6d4f9f2f79abe5928e6479d15ae8e419b"
+      "sha256": "95b98da74c33af18ec8d1972ac45cdc1374e17256e88598ada9326418f1e24db"
     },
     {
       "path": "docs/exec-plans/active/20260422-remaining-tool-official-alignment.md",
@@ -255,6 +423,18 @@
     {
       "path": "docs/exec-plans/active/20260901-embedded-app-agent-socket-isolation.md",
       "sha256": "a3c008ce03819861c6da9859edc0a2c190820df57b2079942ef68ecb7869877a"
+    },
+    {
+      "path": "docs/exec-plans/active/20261005-macos-locked-use.md",
+      "sha256": "ed0fa5323b30e05917532a3a1b7673b67af57898abab5d403e33bfd4253abd6b"
+    },
+    {
+      "path": "docs/exec-plans/active/20261031-locked-use-cold-auth-latency.md",
+      "sha256": "510f385a0cb1eec00471d0a63bfdf740eb3bacf238b1ef6425be504c5a674baf"
+    },
+    {
+      "path": "docs/exec-plans/active/20261119-release-1.1.5.md",
+      "sha256": "4f076c91cb6bfe4936eae6abc092a8691408d0d7837ec9c4a7690257caadb073"
     },
     {
       "path": "docs/exec-plans/completed/.gitkeep",
@@ -309,8 +489,208 @@
       "sha256": "97383146807e392fd081cb2ebfc8d91944647da5eae712d97818106a6a40ad85"
     },
     {
+      "path": "docs/exec-plans/completed/20260908-add-sky-key-background-keyboard.md",
+      "sha256": "ddc70ea35fa604f2859570a5e7daa5fdc552604fc2195487e48ea2ef120a7944"
+    },
+    {
+      "path": "docs/exec-plans/completed/20260908-cross-space-background-state.md",
+      "sha256": "5f0bd951bcb267a7e077ae91331004e3c5cee09b6ba1c2075fce0360a00cb902"
+    },
+    {
+      "path": "docs/exec-plans/completed/20260921-js-repl-computer-use.md",
+      "sha256": "b7825d5c321e6f8eea409b25df6948e794870a9513c32815d0818ea03d90e9bc"
+    },
+    {
+      "path": "docs/exec-plans/completed/20260922-ocu-js-repl-cli.md",
+      "sha256": "32ab8dc0e59cf8bd536578b103c9633e3019e127759a0330b19376c905e4ac4f"
+    },
+    {
+      "path": "docs/exec-plans/completed/20260924-harden-pr65-background-operation.md",
+      "sha256": "3cfe1b8a1ea1ec82b604e99f2e511523867d5a06f5e864351d69cc10c05a4ca8"
+    },
+    {
+      "path": "docs/exec-plans/completed/20260929-github-release-downloads.md",
+      "sha256": "ce0273a8907d1c9ca52eb17e47005b352493cbaedd98279e38b46c9a42ebc029"
+    },
+    {
+      "path": "docs/exec-plans/completed/20261009-windows-degenerate-screenshot-guard.md",
+      "sha256": "a2375f9185c6dbdca6a5c42ce54219d119d21ae466460b60719dc41e20a5d5a3"
+    },
+    {
+      "path": "docs/exec-plans/completed/20261010-locked-use-component-names.md",
+      "sha256": "b82aaa9ce17e2ac2096f83562ba47c847a39308f0d083f88a0c8fc4afeb2e6c7"
+    },
+    {
+      "path": "docs/exec-plans/completed/20261010-locked-use-pr-extraction.md",
+      "sha256": "85951ca45157477cc85a6d49e331f8d559a4afeb5fa6fd672c34205723e44f89"
+    },
+    {
+      "path": "docs/exec-plans/completed/20261010-persistent-config.md",
+      "sha256": "be51054ad18c6d251500c4bb92af4b4fca379f02d88241bb7c51ea847f982c6b"
+    },
+    {
+      "path": "docs/exec-plans/completed/20261010-release-1.0.0.md",
+      "sha256": "b6262a7a865a30d4ef9805241563906a312dd658092c5f3ca9f10e1f34e9116f"
+    },
+    {
+      "path": "docs/exec-plans/completed/20261010-targeted-ax-query-hardening.md",
+      "sha256": "0dc9f9710c5e6279084d16a41bffada673a304659d16823a9d40250156d83026"
+    },
+    {
+      "path": "docs/exec-plans/completed/20261013-locked-use-enable.md",
+      "sha256": "508b8950e1a86153db34b1a9bf8bb6deae0d5177c86dd8d88fcafa05ea1ad5ab"
+    },
+    {
+      "path": "docs/exec-plans/completed/20261014-locked-use-unlock-latency.md",
+      "sha256": "9548f899f43fdd0efb63dba76cecc82c7d04a03f60b97d64db25e83c9c5309d9"
+    },
+    {
+      "path": "docs/exec-plans/completed/20261014-v1.1.0-release.md",
+      "sha256": "2439a53c00b9467a5ac0804de193fc76e2eb8ffd219edeac77204751717dfd6d"
+    },
+    {
+      "path": "docs/exec-plans/completed/20261015-release-v1.1.1.md",
+      "sha256": "bd1ed7fe7f4caffe94bb56c609b8efe12987dba3a0e2be1fa520a59516ea0216"
+    },
+    {
+      "path": "docs/exec-plans/completed/20261017-pr100-linux-read-back.md",
+      "sha256": "03f00edf98731e4e508ef3d3bc6a4a22cedcd30e3cfa77c24cc34a7bdf3f42b6"
+    },
+    {
+      "path": "docs/exec-plans/completed/20261017-pr101-selective-observation.md",
+      "sha256": "be031876d4e886593a88b7efef2977e8bd4d7b2f280d3a975984b544b55ed4f4"
+    },
+    {
+      "path": "docs/exec-plans/completed/20261017-pr102-bounded-focus.md",
+      "sha256": "889349369fc44e43564004f2a1d0cb9d5c16609261129bf5a995c9b432a5ac10"
+    },
+    {
+      "path": "docs/exec-plans/completed/20261017-pr103-hidden-details.md",
+      "sha256": "487ee399c73222c75f9acf1959f1f91f4ed02c2bcc60251a6fa960b6f834a34c"
+    },
+    {
+      "path": "docs/exec-plans/completed/20261017-pr68-select-text.md",
+      "sha256": "69db9db7317e157927df83fbe5577d1f8921153d8edf36a219a8c49eb7a5eb62"
+    },
+    {
+      "path": "docs/exec-plans/completed/20261017-pr95-live-cursor-follow.md",
+      "sha256": "1f1ae72dfe5a0b7dcf93db0bd625d7e678cde238e9c3e1bc458560d290d9e91a"
+    },
+    {
+      "path": "docs/exec-plans/completed/20261017-release-v1.1.2.md",
+      "sha256": "6e6ffbca76e49384fa5f7a3262484a5db3c74347792aab4817aa080c779e7676"
+    },
+    {
+      "path": "docs/exec-plans/completed/20261017-repository-rename.md",
+      "sha256": "4a572e385e3121dd92f775afbb5f8d25f384eefaa13a70cb40a6e2892fc9cdae"
+    },
+    {
+      "path": "docs/exec-plans/completed/20261018-pr97-windows-input.md",
+      "sha256": "8a70e73bbb32b109d3044c7e827ec8ea61bcc7299153df87018bacd92b5838f7"
+    },
+    {
+      "path": "docs/exec-plans/completed/20261019-reference-bundles-release.md",
+      "sha256": "8546c576e4c6b13098e0d9de80477c902cf4be128d952369c7c97863e45a919e"
+    },
+    {
+      "path": "docs/exec-plans/completed/20261029-permission-list-anchor.md",
+      "sha256": "e8e58cf36e23354956806fd69debcd0ca7f459c6ec1c17ea788122dea009e54c"
+    },
+    {
+      "path": "docs/exec-plans/completed/20261030-virtual-display-opt-in.md",
+      "sha256": "538be20b8a6d0c4a01245e1c1f44b059a57c47c81874364393c7df110b8c2095"
+    },
+    {
+      "path": "docs/exec-plans/completed/20261031-first-batch-prs.md",
+      "sha256": "8fe60870c8f279c0eb651e3c997b15f6ef0f04c6a85aa8201e4e87ceacecf57f"
+    },
+    {
+      "path": "docs/exec-plans/completed/20261031-pr118-sheet-review.md",
+      "sha256": "ed16e4a05df7ea4907a0172fea01c43797e6d3c5d11bb36930463cc188c1e68c"
+    },
+    {
+      "path": "docs/exec-plans/completed/20261031-pr126-hit-test.md",
+      "sha256": "37d92c6da6feebe918e80b741e271de50d664bc34d7302d5af1c5a139d7d284a"
+    },
+    {
+      "path": "docs/exec-plans/completed/20261031-pr127-descendant-click.md",
+      "sha256": "d5ab6c12d33b701757fcc0cb3862722d54ed7d9b4846c70e349a09914f7eac27"
+    },
+    {
+      "path": "docs/exec-plans/completed/20261031-pr130-live-text.md",
+      "sha256": "a6b6db1c2f3bf82d702bb185ac84b35bfd03ee4bc667c223af96c25b7fab0281"
+    },
+    {
+      "path": "docs/exec-plans/completed/20261101-release-1-1-3.md",
+      "sha256": "4453f7b2f02a6b02dbe8944558bccec16000734713c2c492f8d98450fa4fea92"
+    },
+    {
+      "path": "docs/exec-plans/completed/20261101-visible-tree-budget.md",
+      "sha256": "3f2d355331c56bd44311054179b2e0b2c4e94dc4bf5315bdf9482cc1bfa4e609"
+    },
+    {
+      "path": "docs/exec-plans/completed/20261102-pr111-set-value.md",
+      "sha256": "7d1a601194d742041542ab1f1e330970da406da107c035943eedcb5cc72291e4"
+    },
+    {
+      "path": "docs/exec-plans/completed/20261102-required-release-notarization.md",
+      "sha256": "66745c5fca5e4879686fbabf06e64196ab16044bfba0e27f3a344a29b51a62ee"
+    },
+    {
+      "path": "docs/exec-plans/completed/20261103-windows-capture-click.md",
+      "sha256": "a2b9bd1e85209b0c5746d0e85f8b853fe2c098cb4714caebaa19f0e7cacfd804"
+    },
+    {
+      "path": "docs/exec-plans/completed/20261107-guardian-cleanup-after-idle.md",
+      "sha256": "f2122dce03aa85dbac0486986643830ed40321b8d74f3ea13873c85773ca4e20"
+    },
+    {
+      "path": "docs/exec-plans/completed/20261107-pr143-exclusive-input-monitor.md",
+      "sha256": "0615de4077620410b7b8fcd4a91ad2aad4b14656d3f97867f2013442406f6f46"
+    },
+    {
+      "path": "docs/exec-plans/completed/20261107-pr147-windows-targeting.md",
+      "sha256": "4486eb0414451d0d37493bbda02a70da4e1f30afa693d55ec8cbcd24109e1d73"
+    },
+    {
+      "path": "docs/exec-plans/completed/20261107-pr148-secondary-screen-shields.md",
+      "sha256": "1b3ad49a91bf87becf49b557cb3ee67845636095e2b908f475799297b55140a7"
+    },
+    {
+      "path": "docs/exec-plans/completed/20261107-pr154-snapshot-geometry.md",
+      "sha256": "5c8dfaebd375d88f0384e02ab48d37552ce392807fbb8bad09cddd36420a5892"
+    },
+    {
+      "path": "docs/exec-plans/completed/20261107-release-1.1.4.md",
+      "sha256": "115d414db1b925bca20b8233113da288f48a5cc9a62bbaec3fa8162fedfb4ef4"
+    },
+    {
+      "path": "docs/exec-plans/completed/20261109-action-correctness-batch.md",
+      "sha256": "45ef8478f7cc00fb925ec15377bb9ba47f48fe2fe38723c1da3edda355942ef4"
+    },
+    {
+      "path": "docs/exec-plans/completed/20261109-password-and-click-safety.md",
+      "sha256": "81711d531a9edc8b78e2a6d24c87ade1d48b85a18fdb7337371dec6d1a779045"
+    },
+    {
+      "path": "docs/exec-plans/completed/20261109-windows-selection-linux-session.md",
+      "sha256": "8d06d0f4bee0fe632f501141a7148f86920742fbf7f2b28b5fe35c62f6e65d78"
+    },
+    {
+      "path": "docs/exec-plans/completed/20261112-pr187-display-readiness.md",
+      "sha256": "0248cd810f60e20ff4d77817b268e4692daa1b58755bb3ef1f95f368ec89dc39"
+    },
+    {
+      "path": "docs/exec-plans/completed/20261113-pr-reliability-batch.md",
+      "sha256": "05d9ab84e08f8c06151bc715f037e2841c3c81c0eb9b0af7d61d409477b2bbfc"
+    },
+    {
+      "path": "docs/exec-plans/completed/20261116-pr-protocol-performance-batch.md",
+      "sha256": "a9786af3470bfd57d75717589f1002c5d7fc8333ce3e5f65548b51700393ad4c"
+    },
+    {
       "path": "docs/exec-plans/tech-debt-tracker.md",
-      "sha256": "b546284851b640c4c5bdf6d15fb551572ad9fe8fea24343b9e8ab20d99bfac0c"
+      "sha256": "2ba8a078cad787f68bb8190937c74070d090d328cf6416465c833bbe56b71e47"
     },
     {
       "path": "docs/exec-plans/templates/execution-plan.md",
@@ -1089,12 +1469,336 @@
       "sha256": "82df698036bf9ac417fe326ac13c22305552ee01515baf2f2613204e4a9e0947"
     },
     {
+      "path": "docs/histories/2026-09/20260908-2230-add-sky-key-background-keyboard.md",
+      "sha256": "74ce4c37d7e3abe4c08c7fd889d373484ad1949c2df30836b5d27fec82c4ae43"
+    },
+    {
+      "path": "docs/histories/2026-09/20260908-2300-background-window-visibility-and-spaces.md",
+      "sha256": "0f5d232899852da3ddf39100e4f80c9547ac34416eeb2671e56276107275c8df"
+    },
+    {
+      "path": "docs/histories/2026-09/20260908-2330-agent-display-window-placement.md",
+      "sha256": "12104fdc4db528258b64d7b12325ab0a82d0a424973f7c650e01f3c475654430"
+    },
+    {
+      "path": "docs/histories/2026-09/20260908-2355-background-input-timing-and-benchmark.md",
+      "sha256": "bac9f6ad69eff9f28091e6696c79fc3a39aee1077266bc84fac1597aaf2225d2"
+    },
+    {
+      "path": "docs/histories/2026-09/20260909-0030-latency-floor-hw-capture-app-matrix.md",
+      "sha256": "07dccf9cd2d20da337a862113a97d4810ea0701a36bbef71a0f65bf7f6cefec1"
+    },
+    {
+      "path": "docs/histories/2026-09/20260909-1551-pr65-compatibility-follow-up.md",
+      "sha256": "2da9c9a464e788207e06d8b8e58bcf066905c979039ff949597849f5d3e29ffe"
+    },
+    {
       "path": "docs/histories/2026-09/20260910-1226-release-0-3-5.md",
       "sha256": "6e2951c4fb923e5d5e06b278eb42319c78890e1dd1a32145994edf9d16653ec0"
     },
     {
+      "path": "docs/histories/2026-09/20260911-2001-add-select-text-tool.md",
+      "sha256": "1682570066dd27473a45d579ee0d71a9091ad08fb4642c19659b3851c84a6569"
+    },
+    {
       "path": "docs/histories/2026-09/20260914-1850-dsh-host-integration.md",
       "sha256": "f4fa69b59d56a0091daca610a5f4660116597d5ca1b24581d1ba9c37d96004e6"
+    },
+    {
+      "path": "docs/histories/2026-09/20260915-2100-targeted-ax-query.md",
+      "sha256": "9e53b4fe6694bbf502797e06ed77592dd7f6b6c85823f510c2d6efa1abb75874"
+    },
+    {
+      "path": "docs/histories/2026-09/20260921-2100-add-js-repl-computer-use.md",
+      "sha256": "e2b474eea8dcfc2acccdf99e2454c7b23907a9c6b93b05a606d391713d476892"
+    },
+    {
+      "path": "docs/histories/2026-09/20260922-1330-js-repl-error-propagation-and-read-back.md",
+      "sha256": "55c81dbdfdbeee96b95424ca4f2305cd37b53948279160ee6ea34882590b8abc"
+    },
+    {
+      "path": "docs/histories/2026-09/20260922-1739-add-ocu-js-repl-cli.md",
+      "sha256": "22b74664451f626f3e5f801bfab2715111ddbce91904e98679a1d7f27d1cf281"
+    },
+    {
+      "path": "docs/histories/2026-09/20260924-1740-harden-pr65-background-sessions.md",
+      "sha256": "b92df09d50c731ad3d293c77bd20b71cb41b718399b001df326e082d74df335d"
+    },
+    {
+      "path": "docs/histories/2026-09/20260929-1059-publish-direct-release-assets.md",
+      "sha256": "59927a4b294789888fcfef75d031f6781300287861d5338a40a2b19b2b68cca4"
+    },
+    {
+      "path": "docs/histories/2026-09/20260929-1139-release-0-3-6.md",
+      "sha256": "cd91784edf61fab56babd6e36bab528f89bbed0b7554f2a885613feb61a21b60"
+    },
+    {
+      "path": "docs/histories/2026-10/20261005-1109-macos-locked-use-preflight.md",
+      "sha256": "2347f99c47024754a581ca02c3f36e02e2a995dd6e40775d62a19e742944504e"
+    },
+    {
+      "path": "docs/histories/2026-10/20261009-1739-fix-linux-press-key-keysym.md",
+      "sha256": "0fb944e4abe5f64597b9e0d7545c1997f92fbc466641f77d0ec48206fc8de418"
+    },
+    {
+      "path": "docs/histories/2026-10/20261009-2103-windows-degenerate-screenshot-guard.md",
+      "sha256": "b87e5f078b2b54b53b04c7fe73b050c24b75e7e3311ea613e02bbc3eae210f07"
+    },
+    {
+      "path": "docs/histories/2026-10/20261010-1429-persistent-config.md",
+      "sha256": "3c100acf65e4b99bf4c88ae7c7837034bfa77543e012ae6cc8c04262d3eb6abf"
+    },
+    {
+      "path": "docs/histories/2026-10/20261010-1451-release-1.0.0.md",
+      "sha256": "bfec1bfe78d87497b479fb4341b177c9bc97b4489bf8500453816a25844da3bd"
+    },
+    {
+      "path": "docs/histories/2026-10/20261010-1745-cursor-live-frame-anchor.md",
+      "sha256": "96c346caab6aa013deb6fe4b1c6061735b195ad8d8a2a76f54303f92e895d2ee"
+    },
+    {
+      "path": "docs/histories/2026-10/20261010-2024-doctor-json-permissions.md",
+      "sha256": "0130b324e0e15a58921fc7245f3f48f38446894882d6102de3808f203ceca527"
+    },
+    {
+      "path": "docs/histories/2026-10/20261013-1911-windows-scroll-coordinates-and-global-input.md",
+      "sha256": "79386158fa1d1315f7bf6568c66f92fa67ef1417b853f7564790375955c41217"
+    },
+    {
+      "path": "docs/histories/2026-10/20261014-0950-v1.1.0-release.md",
+      "sha256": "ca236f24792cea9b24371af968eb7f1e6a1f65cc6db5b50c5927c1fcbcc91c78"
+    },
+    {
+      "path": "docs/histories/2026-10/20261014-2200-locked-use-unlock-latency.md",
+      "sha256": "c4fe9a8f7a5a1d1f79f60a1a02e49e2bd536427e5fe88ef7d1e4625f88e7faff"
+    },
+    {
+      "path": "docs/histories/2026-10/20261015-2012-linux-action-read-back.md",
+      "sha256": "72ff72facdd6cd4e3189dd3832c10ace1e73d8a539613ce8600413d647dea300"
+    },
+    {
+      "path": "docs/histories/2026-10/20261015-2023-linux-selective-observation.md",
+      "sha256": "e7da7a0bc55c7e1a0d7332c84e5d26f66f137d2934b6861637d9bfb7adb8aba4"
+    },
+    {
+      "path": "docs/histories/2026-10/20261015-2035-linux-bounded-focus.md",
+      "sha256": "6868714d98f46af6068da5249895da39c90ec57f03e5154d08d150f7d4e6553d"
+    },
+    {
+      "path": "docs/histories/2026-10/20261015-2035-linux-hidden-details.md",
+      "sha256": "a5b87dc9e48fff94f8d5255d387c6d2814a4abf3af6c6ca6f04a662d60a76be4"
+    },
+    {
+      "path": "docs/histories/2026-10/20261015-2215-release-v1.1.1.md",
+      "sha256": "73591721962ff23ab1a8306225071ee0150f824818f61649aa46936475c49ce0"
+    },
+    {
+      "path": "docs/histories/2026-10/20261017-1449-rename-open-computer-use.md",
+      "sha256": "5bcc18c1b65bca05124b159b8b85130e7d37e478b924fa7dd34870a371bce81d"
+    },
+    {
+      "path": "docs/histories/2026-10/20261017-1510-release-v1.1.2.md",
+      "sha256": "fe68a894db6d56585068c54370c800f039fe93d55658b81d4b7e55ae49d157ea"
+    },
+    {
+      "path": "docs/histories/2026-10/20261019-2336-migrate-reference-bundles-to-releases.md",
+      "sha256": "28b4eaa255f21361619de60034cc44a0b21df13eff4490cef48ed543bb5b68c5"
+    },
+    {
+      "path": "docs/histories/2026-10/20261021-1208-set-value-read-back-verification.md",
+      "sha256": "bb3465858fbb15a941ba5ff29dfc3164007b709309bb60149fb4ee34daa9f246"
+    },
+    {
+      "path": "docs/histories/2026-10/20261023-0111-cli-relative-call-files.md",
+      "sha256": "2aa8550ff76c2cb0bf64a33714a0aa8cfb4eafb61fd75f808472d0f3ab1ae7d8"
+    },
+    {
+      "path": "docs/histories/2026-10/20261023-0113-cursor-nonblocking.md",
+      "sha256": "b4730bee0340a6d869aa2d204533321db3d36b1e9e81a3c247890f2785fae626"
+    },
+    {
+      "path": "docs/histories/2026-10/20261023-0119-agent-display-arrangement.md",
+      "sha256": "0cb9f2745b4e67310a180d4263905082b8883ca00e2c2d4ddb0591bc5d98c2fc"
+    },
+    {
+      "path": "docs/histories/2026-10/20261023-0126-snapshot-focused-sheet.md",
+      "sha256": "1ccc6cbabd2a9eb8a6c425f37efcebb63ef08584a9a130a76ab517492b0783d4"
+    },
+    {
+      "path": "docs/histories/2026-10/20261023-0219-hit-test-window-points.md",
+      "sha256": "2052944ce82ecaadf70f60bdba0d6290456602a0e14dc96a173ee14bee132788"
+    },
+    {
+      "path": "docs/histories/2026-10/20261023-0245-coordinate-click-blank-spot.md",
+      "sha256": "ca22ef082667a5c217065c014a73658bf707d31e12d429dfff3b886b65617c9b"
+    },
+    {
+      "path": "docs/histories/2026-10/20261023-0510-macos-drain-autorelease-pools.md",
+      "sha256": "26f401f014bb1008271ebfc8e202d74e7ca30d8fd0312e54cbd0ec5db13330ba"
+    },
+    {
+      "path": "docs/histories/2026-10/20261023-0535-type-text-live-focus-selection.md",
+      "sha256": "e22b83af10b6c7d5b47a30b049ddb233e17904c710029e48f4521477d67a5bc6"
+    },
+    {
+      "path": "docs/histories/2026-10/20261025-2132-add-locked-use-readme-image.md",
+      "sha256": "c14130df52026221769ed3a2f5139f34b83255c812d7f2c128e10cc185e45a64"
+    },
+    {
+      "path": "docs/histories/2026-10/20261029-1130-fix-permission-panel-rendering.md",
+      "sha256": "0fd0b6b84f5d4d25a1a0ad02c47441ee0a5d49d3b36bd7ea40eca1083dbabc6d"
+    },
+    {
+      "path": "docs/histories/2026-10/20261029-1239-permission-list-anchor.md",
+      "sha256": "ca846a512553b481ab445fdb5dc072aabbde9bd0580e43a15685ae3de7c315ef"
+    },
+    {
+      "path": "docs/histories/2026-10/20261030-virtual-display-opt-in.md",
+      "sha256": "fc8b4130a85f6db020764929cfe04960cf02681d628c19b7673e8e36408ac51c"
+    },
+    {
+      "path": "docs/histories/2026-10/20261031-0550-ax-batched-reads.md",
+      "sha256": "36764f73a49e97875bd649d57814dbc2753a95da3335d096d5c0c1b575c8b5f0"
+    },
+    {
+      "path": "docs/histories/2026-10/20261031-0630-dev-app-variant.md",
+      "sha256": "95d378c39093e82077699c394a6bcc994b1d503428eb92404e768834e9ae2044"
+    },
+    {
+      "path": "docs/histories/2026-10/20261031-2100-locked-use-cold-auth-latency.md",
+      "sha256": "618cc571959e46bad3a905c027aee94ce9d866f3dc1a92690da6899879360a06"
+    },
+    {
+      "path": "docs/histories/2026-11/20261101-1053-release-1-1-3.md",
+      "sha256": "8906de44d283a80dec6329265eb90be237650c4472b697902232f523c37b7d81"
+    },
+    {
+      "path": "docs/histories/2026-11/20261101-1640-locked-use-exclusive-hid-fallback.md",
+      "sha256": "e63933763354325e9c5553f3da59855b6d471d216598b01a8ee5ad395e5ab4b0"
+    },
+    {
+      "path": "docs/histories/2026-11/20261101-2200-visible-tree-budget.md",
+      "sha256": "f075d6b56810f5a6d24a9bce72e5d2b375e8019f35a9b7cd60bbe0a6022c24ff"
+    },
+    {
+      "path": "docs/histories/2026-11/20261102-2304-required-release-notarization.md",
+      "sha256": "cac8f03a4e42834da3cce95ee591a767a20c1b175604a3f5bdc5877141ade1b9"
+    },
+    {
+      "path": "docs/histories/2026-11/20261103-1600-windows-target-capture-click.md",
+      "sha256": "a0ed3dd8a1198af8f6579045a15707f36d275bb3ac53022d9b6e54ca633bca88"
+    },
+    {
+      "path": "docs/histories/2026-11/20261106-1803-snapshot-geometry-robustness.md",
+      "sha256": "d8fe3e7eb8941ca635adf035a426560840c046216912a165582ba3e28c8261ac"
+    },
+    {
+      "path": "docs/histories/2026-11/20261107-0420-hide-windows-powershell-console.md",
+      "sha256": "90991721893c431e6133c91fefb0f34130124c22e96102696531f02215035d73"
+    },
+    {
+      "path": "docs/histories/2026-11/20261107-guardian-cleanup-after-idle.md",
+      "sha256": "1d79c0b96380254f267ea6734e530926ee1d34cfdb71d89e6dd51719bea0070e"
+    },
+    {
+      "path": "docs/histories/2026-11/20261107-pr148-secondary-screen-shields.md",
+      "sha256": "f59cb4dea354e1b1146beba775252e2010ad555ed6bef0bbbd0953a31901bb92"
+    },
+    {
+      "path": "docs/histories/2026-11/20261107-release-1.1.4.md",
+      "sha256": "d21aaf6a1d3661aea11f3f8b702cc38cbd13b655483a541de3dc0eb0a7869c63"
+    },
+    {
+      "path": "docs/histories/2026-11/20261108-2113-ci-sh-clean-checkout.md",
+      "sha256": "9ae744e9cc8db0c5b087eaa46427fa951c140db2e335c76a4ee96d11cb8c55c8"
+    },
+    {
+      "path": "docs/histories/2026-11/20261108-2115-secure-field-values.md",
+      "sha256": "f899c92c168a1bcaa4d952dffe4ee381b01e040a899ce18fc7f7a402c0c79a93"
+    },
+    {
+      "path": "docs/histories/2026-11/20261108-2118-windows-ambiguous-element.md",
+      "sha256": "3b04f61b976d236992424fbd30501f80db48091792537972825ada512a8f4cd2"
+    },
+    {
+      "path": "docs/histories/2026-11/20261108-2130-linux-withhold-password-values.md",
+      "sha256": "7d0a3da97389a21fe719b90b9b8c0aaf100192bb9a9e61bf246c53130ab5e26c"
+    },
+    {
+      "path": "docs/histories/2026-11/20261108-2135-linux-refuse-read-only-set-value.md",
+      "sha256": "a0445719ee863cc52fd7790c1b30eeeec6bf38b3d4b883a40d576e128d2e8036"
+    },
+    {
+      "path": "docs/histories/2026-11/20261108-2140-linux-entry-activate-is-not-a-click.md",
+      "sha256": "5cb233446d794d3ec19932d252e5201ddf27faab8adfe50a8a2909d4d2b922b5"
+    },
+    {
+      "path": "docs/histories/2026-11/20261108-2140-list-apps-spotlight-query.md",
+      "sha256": "73dc8a439c454ef0a48fde46e269c97b4cf07850ab752675f9467b83d17d20d4"
+    },
+    {
+      "path": "docs/histories/2026-11/20261108-2140-windows-keyboard-focus.md",
+      "sha256": "e51ad0e4f22807398d9d17165212423007da848d44e001ac022bf4c7af1feba7"
+    },
+    {
+      "path": "docs/histories/2026-11/20261108-2205-mcp-notifications-cancel.md",
+      "sha256": "ec76e48f662fc62de31a9bd3913e1d0aa3b2aa1119c0fefe82f94e64345da7f9"
+    },
+    {
+      "path": "docs/histories/2026-11/20261108-2205-windows-delivered-action.md",
+      "sha256": "d2cd59d95499d84253e307d9c6e9d2ed89d67bd34758ba01ffb72dcc676723a5"
+    },
+    {
+      "path": "docs/histories/2026-11/20261108-2209-click-chain-stops-after-uncertain-ax.md",
+      "sha256": "30aa75272760085a0b06c89cc5174858a7db40984bdb5b30b3a637bf66273d09"
+    },
+    {
+      "path": "docs/histories/2026-11/20261108-2215-refuse-disabled-press.md",
+      "sha256": "20041dfbd00a6a09247943bdaa13ece1e69dfd203a57999432657aa3f9b98d9d"
+    },
+    {
+      "path": "docs/histories/2026-11/20261108-2221-check-element-before-acting.md",
+      "sha256": "8577fc9b6236b6a5c1ae5c0e57d0d8b257c8238486785c4775f60f7f10dd1eb8"
+    },
+    {
+      "path": "docs/histories/2026-11/20261108-2225-windows-elevated-target.md",
+      "sha256": "27ca219a4ca56b01ab8b284e729075d61583fc1c84a6579c76bf362b25f2d1ee"
+    },
+    {
+      "path": "docs/histories/2026-11/20261108-2235-release-held-mouse-button.md",
+      "sha256": "1b059ad38cd5a4d6a30f866194dc9a5ec8bdd3c882975d6d1378f6f997a086c9"
+    },
+    {
+      "path": "docs/histories/2026-11/20261108-2240-windows-hung-window.md",
+      "sha256": "6db7119e7ee5478eb8e2f3cfa06c5e6c0e3b1402e0fab25b2e85089c8cda5496"
+    },
+    {
+      "path": "docs/histories/2026-11/20261108-2300-windows-pattern-readback.md",
+      "sha256": "723f553abeeaaada2843d961ce765b468c0f3414a617a38c3d4c881ae3d7a084"
+    },
+    {
+      "path": "docs/histories/2026-11/20261108-2310-chrome-web-tree-trigger.md",
+      "sha256": "f36202cd926b66cf9deb7a5ce556edbb5953c2165ebd9268ca658ec58f79ea38"
+    },
+    {
+      "path": "docs/histories/2026-11/20261108-2320-windows-resolve-windows.md",
+      "sha256": "1c958038ad507ee947c2e16b440ee2f6b3e46f188027bfc0216c361fa1b34452"
+    },
+    {
+      "path": "docs/histories/2026-11/20261109-2310-windows-chromium-selection.md",
+      "sha256": "6c156335779e86815dd365c8cc638606af00730a232b26f305a88edcdab52da8"
+    },
+    {
+      "path": "docs/histories/2026-11/20261109-2350-linux-session-discovery.md",
+      "sha256": "b2368738d9984339d2c3f4647bc244691ff1acedd5e8faa6d9de14237ee697e1"
+    },
+    {
+      "path": "docs/histories/2026-11/20261112-2256-pr187-display-readiness.md",
+      "sha256": "20442a6c44a050d4f444b4c0efb121001b988c88964bc6c940445a7579687046"
+    },
+    {
+      "path": "docs/histories/2026-11/20261119-2145-release-1.1.5.md",
+      "sha256": "e0227123a50d3f10e08453d52eb08d3fa0487c76d333fcf9646bb975eb2396ea"
     },
     {
       "path": "docs/histories/20260722-1905-add-sky-click.md",
@@ -1105,12 +1809,72 @@
       "sha256": "bebd9d451154d4f238673e9128f28df59b2b7d07505289ff31e3749c76295c47"
     },
     {
+      "path": "docs/linux-action-read-back.md",
+      "sha256": "71a4dbe8c0e24948f00179c08325ab66a561ac6ca72ada23789cb06969333548"
+    },
+    {
+      "path": "docs/linux-bounded-focus.md",
+      "sha256": "ea3e821e8142fc9a9cf4c0065dd90b3ea83fb2d9ad24d6111d17c4327cc484b1"
+    },
+    {
+      "path": "docs/linux-hidden-details.md",
+      "sha256": "b158ff3bce5d0d3939a92ca44fcf940a568be2e17eb8746aadb169ac84b5e766"
+    },
+    {
+      "path": "docs/linux-selective-observation.md",
+      "sha256": "c402d75824745696490dfe29ab13cfc803e2afd7ddc24fceac9562c6e329f6a4"
+    },
+    {
+      "path": "docs/linux-session-discovery.md",
+      "sha256": "4a714bb1cdc80be0b7f6fbf5db38f3524764a15e6c6372bae9e7f68ff417cc0a"
+    },
+    {
+      "path": "docs/locked-use-display-readiness.md",
+      "sha256": "f6f49b66093c54334ba182b1ebbe633f633266b9ef3c860d1b7b887ffb634aae"
+    },
+    {
+      "path": "docs/locked-use-incident-replay.md",
+      "sha256": "9b51ba8b74a550a25555da44c761950a12fe29fead1af78640ab5c1038f7011f"
+    },
+    {
+      "path": "docs/locked-use-input-monitor.md",
+      "sha256": "148b9e0b7c9568adb9b4a9c52434f0a9b1dc7230fddff2a11342900407a3e23b"
+    },
+    {
+      "path": "docs/locked-use-shield-placement.md",
+      "sha256": "c9ee1564c3f1c4008fe45b8e1d189eb4fbcddf6abf675bed4b186f4b8ba09093"
+    },
+    {
+      "path": "docs/locked-use.en.md",
+      "sha256": "3887d0ebb2a87dc6daeaa7446686aab40f9198e4834e7c3578d918d256f0efc3"
+    },
+    {
+      "path": "docs/locked-use.md",
+      "sha256": "f9a33dba05acdddc9d6564a9f7d7e0eb0701c734bcf5b83dd5b0aaa9db6d4ff0"
+    },
+    {
+      "path": "docs/locked-use.zh-CN.md",
+      "sha256": "d6bd56989b68a3dd8b2d7251eee90eaf859c2b58dec31104473162cc72bde49a"
+    },
+    {
+      "path": "docs/macos-snapshot-geometry.md",
+      "sha256": "9420b619807ff61a4607715a8fe95cd2c1c19fa3b1a5ad5d64580b8b83af87d8"
+    },
+    {
+      "path": "docs/password-fields.md",
+      "sha256": "fa4e0de59d5bf57a0f12ae85a44d14f8dc10f34b5de14e466d15d2a5bb8f3ef5"
+    },
+    {
       "path": "docs/product-specs/index.md",
       "sha256": "fb9063400d32d9de59d4538410ec559ff9679c3996fdcf78ac74f5932fc977bc"
     },
     {
       "path": "docs/references/README.md",
-      "sha256": "766733140a30f1ecf6e1badb387e1cdd5a78bb6f19941f474655213f0b8d9188"
+      "sha256": "63e8dc2a16554f96240ef855e418bc785f21069db824ff9bb3fb5176ecaebe5f"
+    },
+    {
+      "path": "docs/references/background-input-benchmarks.md",
+      "sha256": "c0e33179fb41944da7840d064641c599f6c51ed22a792ab8e8269eb8f3a37a3e"
     },
     {
       "path": "docs/references/codex-computer-use-cli.md",
@@ -1122,11 +1886,11 @@
     },
     {
       "path": "docs/references/codex-computer-use-reverse-engineering/assets/README.md",
-      "sha256": "daa15411ebb48c5519a7172c17319297736160f1e4edfb05abc75ea4c37be8d2"
+      "sha256": "d91173bb4bd429e77d027e84eadeb01691cc72d448b7cde84e676795ede8ad98"
     },
     {
       "path": "docs/references/codex-computer-use-reverse-engineering/background-click-free-tooling.md",
-      "sha256": "07b6fb2d380bcecd128ae0357adedda95c14ae1230d42d11338d1734734c1c76"
+      "sha256": "2ff39ab2198ed27ea2bd06c9058e0e8a2942d40f73f4f84071d061347d36a1d2"
     },
     {
       "path": "docs/references/codex-computer-use-reverse-engineering/baseline-architecture.md",
@@ -1181,20 +1945,48 @@
       "sha256": "b929695579995be8cc26ad74ddf0828aac36fc077be9348cae627e944a1d82ca"
     },
     {
+      "path": "docs/references/js-repl.md",
+      "sha256": "d2c507c5d098a8b3a54bcb03de5fc0f2584578df42200a6937d6ff515f05f93c"
+    },
+    {
+      "path": "docs/references/macos-locked-use-auth-transaction-timing-review.md",
+      "sha256": "7e1a87e361efa8d6f1632345fdf45170f130b32e02e7dd95b18b2fc7d8e0a37f"
+    },
+    {
+      "path": "docs/references/macos-locked-use-authentication.md",
+      "sha256": "9967f5054157ac8da58030b2c61c4d9916db68f5b753e21c0190dae447094e10"
+    },
+    {
+      "path": "docs/references/macos-locked-use-cold-auth-latency.md",
+      "sha256": "3ee33eabc17ff16bad4f094161d306fbb5cfdf8398f081b378d98bedec7dcaa4"
+    },
+    {
+      "path": "docs/references/macos-locked-use-solution-review.md",
+      "sha256": "20043db732eee0e7ca21157405c320119e640dfe47c84d00184ce81cef6b6e06"
+    },
+    {
+      "path": "docs/references/macos-skylight-background-keyboard.md",
+      "sha256": "36a25eb450aedeb248a6f2fc37dc9b1d45381fdb9b06575c70720e3437023d56"
+    },
+    {
+      "path": "docs/references/macos-window-visibility-and-spaces.md",
+      "sha256": "c7204db75de0256798b28bf0e34dcf8d3073b7d7d471cac857cdbff141a9ef65"
+    },
+    {
       "path": "docs/releases/README.md",
-      "sha256": "7821464e03fa8d40f3f6df8f60d883fda6d53e362695ce557d2014d6498377de"
+      "sha256": "516b7e91d421cbb9162f4ac1b135953eb4c2692418d4547f8b4e20a23b48fd58"
     },
     {
       "path": "docs/releases/RELEASE_GUIDE.md",
-      "sha256": "5c9c88414ee74f478a7a64e2079c2834fa06f9c38018512da128f7f2a46d4607"
+      "sha256": "a975c50703dee7ff6b2a429fcbe4b411f372769ed5424e28d9a3578ea69ba4c3"
     },
     {
       "path": "docs/releases/feature-release-notes.md",
-      "sha256": "5ace6b34f35748323f32f9a121830a77b5f74a252b63481e37c194b60e8764b1"
+      "sha256": "58de632875da81525b40ca6973697a537f12e8090b8996d644b0befc71fbc5c7"
     },
     {
       "path": "docs/releases/github/TEMPLATE.md",
-      "sha256": "9e49469ad1b2bfd367d66048ba95fd607b1ed9331f343cbaf3b6ea46b092405d"
+      "sha256": "49201b0de8d986cccef960214c58a661b19f8da06186848ffb6fca674cd589b4"
     },
     {
       "path": "docs/releases/github/v0.2.0.md",
@@ -1229,6 +2021,78 @@
       "sha256": "8906688686b4be61ff8530b01b9b3ccc9f2babda573198036e8c573219e701cb"
     },
     {
+      "path": "docs/releases/github/v0.3.6.md",
+      "sha256": "6ee05422ce7a5b9fd71abb9069198268d173c9d4655269c7b885962f0df077d7"
+    },
+    {
+      "path": "docs/releases/github/v1.0.0.md",
+      "sha256": "bfdcc99dc1a8073e127c2b11cde3877b95eba649d01df6d49c467aa90bd849ea"
+    },
+    {
+      "path": "docs/releases/github/v1.1.0.md",
+      "sha256": "3ab4433ed1b41fed0d7fa91c9fd5577c514e8861af95b2b3b368932d1fbb4873"
+    },
+    {
+      "path": "docs/releases/github/v1.1.1.md",
+      "sha256": "8070b0b946c42069a5f1829e8fac1395d9c3cc1443f5783b7754d0d7db767692"
+    },
+    {
+      "path": "docs/releases/github/v1.1.2.md",
+      "sha256": "a3488deabf9d5de3b6c3fa1935cfc16f9a7beea23b276d8993a417ee2249af36"
+    },
+    {
+      "path": "docs/releases/github/v1.1.3.md",
+      "sha256": "482be157c601e701c2ecef13a26bc731d89358ed7327c11896697bbd987b45d5"
+    },
+    {
+      "path": "docs/releases/github/v1.1.4.md",
+      "sha256": "1a15ca3256658ebe8680a08f570a67ee36c3d6cd3a040f063cc8a7f9cd834992"
+    },
+    {
+      "path": "docs/releases/github/v1.1.5.md",
+      "sha256": "345605838fbe35eba45729f30be4577dcc93a4021a4c3385d5acffa127242ab6"
+    },
+    {
+      "path": "docs/releases/pending-validation.md",
+      "sha256": "de2eb6283d71f80e94bffe552207a52d536bdd8afa5b562187a324499174e8da"
+    },
+    {
+      "path": "docs/releases/reference-bundles.md",
+      "sha256": "4cabc841ebdc27fec57d83bdaabc158ef591812517801a70bb7ec9d799d7f855"
+    },
+    {
+      "path": "docs/selective-observation.md",
+      "sha256": "b57fabd243c115e9e3f1973cb207cea4803d265767fd6472aaafaa6b7e0e4042"
+    },
+    {
+      "path": "docs/set-value-verification.md",
+      "sha256": "16f8e40a22b7d6b7780d2d2e107a673b2dcf4b744d69489ae80b3ec351d3ad6e"
+    },
+    {
+      "path": "docs/targeted-query.md",
+      "sha256": "ec00f0ae2b963c0af78332644f41532fc7f69d5b6baddc05147c74c4596b1534"
+    },
+    {
+      "path": "docs/targeted-query.zh-CN.md",
+      "sha256": "934f4bb64044e6544ef0c3d03593d77c4bc8c3d19ba93af206a074b1f52c3c07"
+    },
+    {
+      "path": "docs/tree-budget.md",
+      "sha256": "17f790e6a8b2f6644dc8434d4bf225fe1536dd0079f5fb9196bc68a2a6b2a488"
+    },
+    {
+      "path": "docs/windows-input.md",
+      "sha256": "52fe146fe342addc5eac0ce6d548ce5d9f261d69bd70c002d4513f1fa724fafb"
+    },
+    {
+      "path": "docs/windows-selected-text.md",
+      "sha256": "93ef6ed7a1a25be1a539b72e2876f7232dca62987acf189d7a0d0e471fd36421"
+    },
+    {
+      "path": "docs/windows-targeting.md",
+      "sha256": "297cea264e81845cdd85c25b8805c9221cf55e7eab4b60587da59f10cf446e07"
+    },
+    {
       "path": "examples/textedit-overlay-seq.json",
       "sha256": "537671bcfe928353f8f41650484cceae0a3f8a484155941a9c65443606f9ed08"
     },
@@ -1257,6 +2121,126 @@
       "sha256": "635d311b26f0ee5587e6e7dff77a9d6b608f5d5a11c32d2f92b11b746d75c909"
     },
     {
+      "path": "experiments/LockedUse/AuthorizationPlugin/Plugin.c",
+      "sha256": "4f52dbfd2d7281c8f2246f0f6bfa8d386beeb4d99980d3a30fd0d74f2ff44aae"
+    },
+    {
+      "path": "experiments/LockedUse/AuthorizationPlugin/PluginTests.c",
+      "sha256": "6f688540ba2f9ffc609232442f392d5491a19a77908219ce277d9808ef5f657a"
+    },
+    {
+      "path": "experiments/LockedUse/AuthorizationPlugin/RemotePlugin.m",
+      "sha256": "b95e826bf5a428892bb15194568a5e2d0fdbd3e7f8e55ca672ef55415f5d266f"
+    },
+    {
+      "path": "experiments/LockedUse/AuthorizationPlugin/RemotePluginTests.c",
+      "sha256": "52dc05d42d9ade2532297e52da169bd67818eea0940380a98b95399ba26f3965"
+    },
+    {
+      "path": "experiments/LockedUse/AuthorizationPlugin/TaskVerifier.swift",
+      "sha256": "eb07273f0535ddcdb8a82febf7f58cb66afdda6e9cd5a3ea7aaeb4b7350b18dd"
+    },
+    {
+      "path": "experiments/LockedUse/AuthorizationPlugin/TaskVerifierDiagnostics.swift",
+      "sha256": "0521a582cd8b8dd7769298bb2a92db96a88b7ef2de6a456a3cc3b8aebd2133ad"
+    },
+    {
+      "path": "experiments/LockedUse/AuthorizationPlugin/TaskVerifierTests.c",
+      "sha256": "85de189c44ccd5a037cb1ae0a3cb02721ddf6ae732bdd521cb2a8d642d0db578"
+    },
+    {
+      "path": "experiments/LockedUse/Sources/AuthorizationProbe.swift",
+      "sha256": "d7ae02a75539aa8a0b40b069b48f1e473d0ad14490f56cd93cf279b06f8d6783"
+    },
+    {
+      "path": "experiments/LockedUse/Sources/Broker/BrokerMain.swift",
+      "sha256": "e041a4ba93571f8da1bb1d5ddc5588610dfd4a740fb8bcab93f90a3354a87d92"
+    },
+    {
+      "path": "experiments/LockedUse/Sources/Guardian/DisplayGuardian.swift",
+      "sha256": "b1d22124542691e6369f88086f932af67535f99a76007480b1b100f484a31464"
+    },
+    {
+      "path": "experiments/LockedUse/Sources/Guardian/DisplayPowerAssertion.swift",
+      "sha256": "cad6240dc3b50fc8731197ded3d2d81964ef98f8995fd8f2a1af663bd89abd19"
+    },
+    {
+      "path": "experiments/LockedUse/Sources/Guardian/DisplayShieldSurface.swift",
+      "sha256": "b0303654a96c5c7b731fb952ee040f05917940f3f2658a2437a6e7d2f592c032"
+    },
+    {
+      "path": "experiments/LockedUse/Sources/Guardian/ExternalFixture.swift",
+      "sha256": "f4036215c37fe03f21b70ffc5efb4c2504888c2cb65672fe7a5212d1dc34defe"
+    },
+    {
+      "path": "experiments/LockedUse/Sources/Guardian/GuardReleaseAcknowledgement.swift",
+      "sha256": "1c0a45ba38bce2fbf58b6dddfb28a90bb2746a8ff7966aa8917dac58a0cdbbd7"
+    },
+    {
+      "path": "experiments/LockedUse/Sources/Guardian/GuardianMain.swift",
+      "sha256": "eb88e603fc4208359cd74f5cdea7f993ac5eb4a96735a7dc58514102f29f2ed6"
+    },
+    {
+      "path": "experiments/LockedUse/Sources/Guardian/LockScreenInteractor.swift",
+      "sha256": "5d14ba2dfa207b84ed61cc8fcaee257178c1a2a3bf2b197e97fd0bfd997857a4"
+    },
+    {
+      "path": "experiments/LockedUse/Sources/Guardian/LockScreenPresentation.swift",
+      "sha256": "d140d2bb3c90ed589c69085e317642c9b89f697144cc91631f17d8cb29d117d7"
+    },
+    {
+      "path": "experiments/LockedUse/Sources/Guardian/LockScreenPublicLabels.swift",
+      "sha256": "336419657971601d7ef0e33dec658bcf81c09d7ae95d6fc39869ca3bee2b1427"
+    },
+    {
+      "path": "experiments/LockedUse/Sources/Guardian/LockUIClickFilter.swift",
+      "sha256": "75936e28c11eb722f102cbef7bcd547f8ef36ab93ad98ace09030cd19a4493da"
+    },
+    {
+      "path": "experiments/LockedUse/Sources/Guardian/NativePhysicalInputBackend.swift",
+      "sha256": "505a668d722eb6f40ef4061f8d64851a325ba21c3018d3d52588c8a7f1f96da7"
+    },
+    {
+      "path": "experiments/LockedUse/Sources/Guardian/PhysicalInputMonitor.swift",
+      "sha256": "18fe71b8187d6993a15ca1beb3f6124bcf268b7b20f0a6c41e335a2eb083f2f0"
+    },
+    {
+      "path": "experiments/LockedUse/Sources/Guardian/ScreenLock.swift",
+      "sha256": "85d56a5c989cfbda54944c07d454a9e12da1c0af9bff996e770e6587888e18f3"
+    },
+    {
+      "path": "experiments/LockedUse/Sources/Guardian/ShieldAppearance.swift",
+      "sha256": "cb59b4d3f793272e854a6949cb3ab796ba81ac2535ae1253e60a15b87b8570f0"
+    },
+    {
+      "path": "experiments/LockedUse/Sources/Guardian/ShieldPreview.swift",
+      "sha256": "ea985234b97eda5829e394af4139d7ab8231ecee7b6fcf5cfe48732b2f783460"
+    },
+    {
+      "path": "experiments/LockedUse/Sources/Guardian/UnshieldedUnlockDiagnostic.swift",
+      "sha256": "8ab38b5f966088f7ca47921ef18eacfa32fc3a034f3865203fe574bae14d2f14"
+    },
+    {
+      "path": "experiments/LockedUse/Sources/Guardian/WatchdogBrokerLink.swift",
+      "sha256": "ab140f20cdd580856975a7caa9b65b3e0a2fa6286fb46dbdeb32cd4b1ed96437"
+    },
+    {
+      "path": "experiments/LockedUse/Sources/Guardian/WatchdogShield.swift",
+      "sha256": "85b13db80bd2f89386dc63ccc9ed03c2e2fc1914cc43f636667b9d0a11957901"
+    },
+    {
+      "path": "experiments/LockedUse/Sources/Installer/InstallerMain.swift",
+      "sha256": "7902fe01d6581bc036d519408afb63706460b844783e8c8d9394d57b35260499"
+    },
+    {
+      "path": "experiments/LockedUse/Sources/RemoteVerificationProbe.swift",
+      "sha256": "633e9d4ca6b68b93d49a801aa3dc0b0ed6b8325a2f9dd1049ebf57f3376105e2"
+    },
+    {
+      "path": "experiments/LockedUse/Tests/GuardianInputTests/PhysicalInputMonitorTests.swift",
+      "sha256": "d0b679aaee4a02749b05b73c902431d3e5cb7a1e465f054fadd62d1b6f07981f"
+    },
+    {
       "path": "experiments/StandaloneCursor/README.md",
       "sha256": "ceaf8259b08388975277c36a54ab7f4252c4372016add1309c87da7ed7c1894d"
     },
@@ -1278,11 +2262,31 @@
     },
     {
       "path": "package.json",
-      "sha256": "a704d4a1e75b5acd3b7314e45f1103bdc06a23e5bbc721e67b78fcb5694e3bf7"
+      "sha256": "a62f6962cd87a79574c90718ba9d421c39cf0f8fb13e3b7326a9122a7b597630"
+    },
+    {
+      "path": "packages/LockedUseNative/PeerIdentity.c",
+      "sha256": "a346192cb63af5179869fcf9797bf4ee6046a442370a1b4bc2c5491d9215ce22"
+    },
+    {
+      "path": "packages/LockedUseNative/include/LockedUseNative.h",
+      "sha256": "342ca19cb559915187e2337bf498ce21da361a64bc293265b4761ded41d7a0ac"
+    },
+    {
+      "path": "packages/OpenComputerUseKit/Sources/OpenComputerUseKit/AXSnapshotReadCache.swift",
+      "sha256": "6be6b2d9b79471ad60855e88f37a163c35bf874e79dfa3792f1e838397dcf38c"
     },
     {
       "path": "packages/OpenComputerUseKit/Sources/OpenComputerUseKit/AccessibilitySnapshot.swift",
-      "sha256": "6a9e6dc298912a8ced8ecb497626bfe5e2c79ef213f449c0d35522e4a75c06aa"
+      "sha256": "f636e052aae08a36afb29cd7c629d4c498f4976e2004f5d09e2e3e4788864c5a"
+    },
+    {
+      "path": "packages/OpenComputerUseKit/Sources/OpenComputerUseKit/AccessibilityTextSelection.swift",
+      "sha256": "0707c070e8031dc24291b71b8a8cc69cf8448fa359530dd0f22e20bacacb7de7"
+    },
+    {
+      "path": "packages/OpenComputerUseKit/Sources/OpenComputerUseKit/AgentDisplay.swift",
+      "sha256": "8601ff3711da2f293c9627d44043594b1ccf45fc05774b79550114a7dbc36af1"
     },
     {
       "path": "packages/OpenComputerUseKit/Sources/OpenComputerUseKit/AppAgentSocketNamespace.swift",
@@ -1290,19 +2294,27 @@
     },
     {
       "path": "packages/OpenComputerUseKit/Sources/OpenComputerUseKit/AppDiscovery.swift",
-      "sha256": "3e83f8745dff44ba79bf063aaba734b7bf2388c3291a4e356330a1679799299f"
+      "sha256": "711e5225c245ad9eb22a797659b6ea91fb0ffc4cf012b3d9d2d281ad7ce47fdc"
     },
     {
       "path": "packages/OpenComputerUseKit/Sources/OpenComputerUseKit/ComputerUseService.swift",
-      "sha256": "b6d754c81299b0692f2bc8ffeff99899474b9822a16715d0667437c95fdc83e2"
+      "sha256": "1dd4aa6b77420bb74a5bb80e9c06bb8673874b29c079c05fed33a3968af608c6"
     },
     {
       "path": "packages/OpenComputerUseKit/Sources/OpenComputerUseKit/ComputerUseToolDispatcher.swift",
-      "sha256": "45e9e21375d4bbb7c7f9d85cdc1d968328279f94a35a642d08d8410258ee2113"
+      "sha256": "e347f151033f8b0d7ccc55796c04b9a97fbbb6d76b19471364905f28c33ff3ac"
     },
     {
       "path": "packages/OpenComputerUseKit/Sources/OpenComputerUseKit/CursorMotionModel.swift",
       "sha256": "dac9bb072f331f0e51f63846133d2dc3b0135f4fb56f001e58edd88b2bf58ad6"
+    },
+    {
+      "path": "packages/OpenComputerUseKit/Sources/OpenComputerUseKit/CursorWindowAnchor.swift",
+      "sha256": "e0329a42671282352106439521cdd44c73c18daa0d975d53f3a77ee5b23bac0a"
+    },
+    {
+      "path": "packages/OpenComputerUseKit/Sources/OpenComputerUseKit/ElementIdentity.swift",
+      "sha256": "5b39a6a1017dddbb75ed53d422d176ae193d644faa295e8f9f2bc889bfed992d"
     },
     {
       "path": "packages/OpenComputerUseKit/Sources/OpenComputerUseKit/Errors.swift",
@@ -1310,39 +2322,191 @@
     },
     {
       "path": "packages/OpenComputerUseKit/Sources/OpenComputerUseKit/FixtureBridge.swift",
-      "sha256": "fb8e8dc32aeebc4b3a3f3c3a6f0b79d97d610dd630abc7bc78d996ca9f23fa01"
+      "sha256": "d223d6e470c42d93f6b426a09a10dcbaae1d9b017bd4ccc26dcef847e477bbde"
+    },
+    {
+      "path": "packages/OpenComputerUseKit/Sources/OpenComputerUseKit/ImageCaptureConfig.swift",
+      "sha256": "e777bd7ab48556688d26d9aec1a66e5dd7a598f755840d1e7351dcecad87202c"
     },
     {
       "path": "packages/OpenComputerUseKit/Sources/OpenComputerUseKit/InputSimulation.swift",
-      "sha256": "5f588e9a12f5a431f5405cc18cb45c9051266f34b79ddd10fe7d14f2aee5c2bd"
+      "sha256": "b292ca007e0ed9cb991166814f81ffcaa0d5b04ac318d55bc69e9406b50c784f"
     },
     {
       "path": "packages/OpenComputerUseKit/Sources/OpenComputerUseKit/KeyMapping.swift",
       "sha256": "e73e8680ceb066d67d8fed73ca7d0a7d2205941df7b24e8512ed150d3c666673"
     },
     {
+      "path": "packages/OpenComputerUseKit/Sources/OpenComputerUseKit/LockedUseActionScope.swift",
+      "sha256": "2b859e5b6a931ee34d9ff62669c2ab3ec759e3f8b378daabfd3ceb3b622de3d5"
+    },
+    {
+      "path": "packages/OpenComputerUseKit/Sources/OpenComputerUseKit/LockedUseAuthorizationRules.swift",
+      "sha256": "1ff93a9ac395a635d661b683132e704cc92f1bdd342904925e151d67b34c801c"
+    },
+    {
+      "path": "packages/OpenComputerUseKit/Sources/OpenComputerUseKit/LockedUseBorrowedSocket.swift",
+      "sha256": "daa5d9e5c023bfb6717435ca212cdbc173767b4482ab9eea9de7e69bc9deafdc"
+    },
+    {
+      "path": "packages/OpenComputerUseKit/Sources/OpenComputerUseKit/LockedUseBrokerConfiguration.swift",
+      "sha256": "1eb473d70b0f97dcf25e9af372666e931021906a7a6607902aa9c0062e2b95de"
+    },
+    {
+      "path": "packages/OpenComputerUseKit/Sources/OpenComputerUseKit/LockedUseBrokerCoordinator.swift",
+      "sha256": "9d2a2fa6fc2fb850e4e838ebcad70ca2a2437ec2da4f27d12861dd1a8f80f697"
+    },
+    {
+      "path": "packages/OpenComputerUseKit/Sources/OpenComputerUseKit/LockedUseBrokerPolling.swift",
+      "sha256": "20841448a457b52dd0f55a7603a51a59fac737965a7d58bcb837008bdd588244"
+    },
+    {
+      "path": "packages/OpenComputerUseKit/Sources/OpenComputerUseKit/LockedUseClickAllowance.swift",
+      "sha256": "bcfda1542a97fc0db4a7d4849647031827e5a3e8eac674b5057e3e2b860e9027"
+    },
+    {
+      "path": "packages/OpenComputerUseKit/Sources/OpenComputerUseKit/LockedUseClientApprovals.swift",
+      "sha256": "043ccc762dec8fd66a350eca2fca58a18430b0c75df0a86f5dcc4049c125420b"
+    },
+    {
+      "path": "packages/OpenComputerUseKit/Sources/OpenComputerUseKit/LockedUseComponentValidation.swift",
+      "sha256": "300536f5d28a40169bced9c9516b19df74530ba5da326f39ba1630a552d84f9e"
+    },
+    {
+      "path": "packages/OpenComputerUseKit/Sources/OpenComputerUseKit/LockedUseDiagnostics.swift",
+      "sha256": "50c62709a321f4886058a09582983ae7f1ac66716e2e72c4712168ffe74071af"
+    },
+    {
+      "path": "packages/OpenComputerUseKit/Sources/OpenComputerUseKit/LockedUseEventEncoding.swift",
+      "sha256": "15ab12ca1ce38b6fa64763f22a8ae49f8840fac15e7c9aabf6c5afc7ae1f453b"
+    },
+    {
+      "path": "packages/OpenComputerUseKit/Sources/OpenComputerUseKit/LockedUseGuardianBootstrap.swift",
+      "sha256": "fe93189a2cbbf0e4fb40f299ab72aff3e3805952dad7be205c01e34f17f851fc"
+    },
+    {
+      "path": "packages/OpenComputerUseKit/Sources/OpenComputerUseKit/LockedUseGuardianBrokerExchange.swift",
+      "sha256": "f6378f52d2e7bce91a57bdb3520524fc5e01445a94fdf7d52dcd52757923f8ef"
+    },
+    {
+      "path": "packages/OpenComputerUseKit/Sources/OpenComputerUseKit/LockedUseGuardianPolicy.swift",
+      "sha256": "d024da4a9a545f26dc8591ace2961eb0b0021756043dee0e21490ace6e545f7e"
+    },
+    {
+      "path": "packages/OpenComputerUseKit/Sources/OpenComputerUseKit/LockedUseIPC.swift",
+      "sha256": "0859e8323c0e501352f8c3991cded03526f1192990ab4488cd0f9be520a68c0c"
+    },
+    {
+      "path": "packages/OpenComputerUseKit/Sources/OpenComputerUseKit/LockedUseIPCSocket.swift",
+      "sha256": "ba88c7cff2381e4eb17b9face3cec879ed1153b935436116840b0f1964257986"
+    },
+    {
+      "path": "packages/OpenComputerUseKit/Sources/OpenComputerUseKit/LockedUseKeychainProbe.swift",
+      "sha256": "17671b8ee7083d73299166df7a2b40dbde9f010db21009dd45f0a6368171152b"
+    },
+    {
+      "path": "packages/OpenComputerUseKit/Sources/OpenComputerUseKit/LockedUsePeerAuthenticator.swift",
+      "sha256": "0240935e17efa128f4673d1da735214dc57b7268d21e2831aecae0e8481adc46"
+    },
+    {
+      "path": "packages/OpenComputerUseKit/Sources/OpenComputerUseKit/LockedUsePeerIdentity.swift",
+      "sha256": "8d91b22e37364a767e65f11ca7c9a92450b4af0a211fe07dbaab7c4db357a3c9"
+    },
+    {
+      "path": "packages/OpenComputerUseKit/Sources/OpenComputerUseKit/LockedUsePermitRegistry.swift",
+      "sha256": "671f3e09fb2739e2c5d5df0e73ec04dec04d451ca14833dd3dda3cfa5eb8e1fc"
+    },
+    {
+      "path": "packages/OpenComputerUseKit/Sources/OpenComputerUseKit/LockedUsePolicyMonitor.swift",
+      "sha256": "ef6551700d3291958e6ce845da8109d8d282d4734a3572815933fc5606c89e23"
+    },
+    {
+      "path": "packages/OpenComputerUseKit/Sources/OpenComputerUseKit/LockedUsePrivateRecord.swift",
+      "sha256": "2a4e3a580a9dacfdf615090a7d6778fea8193e723a5e78dcddbf461c0341582d"
+    },
+    {
+      "path": "packages/OpenComputerUseKit/Sources/OpenComputerUseKit/LockedUseRecoveryDeadline.swift",
+      "sha256": "3ea60be6e8d9836b81de92c94bb414286dfdb1497d3c990ab1248336ed16cff7"
+    },
+    {
+      "path": "packages/OpenComputerUseKit/Sources/OpenComputerUseKit/LockedUseRecoveryRecord.swift",
+      "sha256": "e8ba0b125bfe923454be447f0107af9e40d93afef963d45cc95319f44d4bb60b"
+    },
+    {
+      "path": "packages/OpenComputerUseKit/Sources/OpenComputerUseKit/LockedUseReleaseBarrier.swift",
+      "sha256": "1fe7e603144660914593a9273510cf12d1615c8ace04550abf0b6ca43ff73897"
+    },
+    {
+      "path": "packages/OpenComputerUseKit/Sources/OpenComputerUseKit/LockedUseReturnAllowance.swift",
+      "sha256": "1394e75943d3eb3381402ec80245fd3840a90bed8765f52d0b94912cccaa9123"
+    },
+    {
+      "path": "packages/OpenComputerUseKit/Sources/OpenComputerUseKit/LockedUseSecureStore.swift",
+      "sha256": "f91075b17bec71021e83269ed3d8b6bc54fab0aa9a7d81307750361b8e239d5c"
+    },
+    {
+      "path": "packages/OpenComputerUseKit/Sources/OpenComputerUseKit/LockedUseShieldCoverage.swift",
+      "sha256": "d9a48947d4ca224f1c1d9241ec5cea96a2a4552dbfc3cfee734f06da558753ed"
+    },
+    {
+      "path": "packages/OpenComputerUseKit/Sources/OpenComputerUseKit/LockedUseShieldStatus.swift",
+      "sha256": "7a1abc281d5c2461d1b2c968e1aa25d600bf678cc8df7aa59db12fd2cd5ea2f0"
+    },
+    {
+      "path": "packages/OpenComputerUseKit/Sources/OpenComputerUseKit/LockedUseSigningIdentity.swift",
+      "sha256": "b5af5012ed78fa76c6c6e2bda10b275e69282085af85e2c8042d9e6b3f9b9f5f"
+    },
+    {
+      "path": "packages/OpenComputerUseKit/Sources/OpenComputerUseKit/LockedUseStateMachine.swift",
+      "sha256": "f58a2f14a658477b63a8afde98ceb74c7840759fefcab074618b2dd269c94486"
+    },
+    {
+      "path": "packages/OpenComputerUseKit/Sources/OpenComputerUseKit/LockedUseUnlockCancellation.swift",
+      "sha256": "d68ef83d8841e1f2c6ac047d5a6d938fc9aacc19131c5c3ac9cd0c79c00f1f69"
+    },
+    {
+      "path": "packages/OpenComputerUseKit/Sources/OpenComputerUseKit/LockedUseUnshieldedDiagnostic.swift",
+      "sha256": "8c6c2e99593bf48d369580b1883964d3203f56a761d9b8912f3f5af5ab744a22"
+    },
+    {
+      "path": "packages/OpenComputerUseKit/Sources/OpenComputerUseKit/LockedUseValidationReport.swift",
+      "sha256": "144f455aefee2b725be63c4d76c6459478ac1d2ca589f2a38151c0bf73db0d1c"
+    },
+    {
       "path": "packages/OpenComputerUseKit/Sources/OpenComputerUseKit/MCPServer.swift",
-      "sha256": "9b5fdfef1e3a1aeda73c619279dc7095fe11f09582d09373b9e82c82cb7d44ed"
+      "sha256": "8ea4f53273de2657bc8be62a5002361c4bb6f6d988ca63703e69eef0d08d0a35"
     },
     {
       "path": "packages/OpenComputerUseKit/Sources/OpenComputerUseKit/OpenComputerUseCLI.swift",
-      "sha256": "8fa54242cb25b6ec831bc7c0a3b0a20e4f707e6df6570c61f712af31a7abc73c"
+      "sha256": "815b371f42f4f8f3600173148c50cba885c287bb7173199f079a0b3242b87ae2"
     },
     {
       "path": "packages/OpenComputerUseKit/Sources/OpenComputerUseKit/OpenComputerUseVersion.swift",
-      "sha256": "61952c4514df036f1c46b82c314af5942b3e581ef57e24ace4fa14eb7e49b2f9"
+      "sha256": "740f2b04291debbb78fe6d63d1c1b1b2bd330aa164c10fbbc05454cca217634c"
     },
     {
       "path": "packages/OpenComputerUseKit/Sources/OpenComputerUseKit/Permissions.swift",
-      "sha256": "b068eee3a2f46cd89c4c9524ad1e422066021dfa92688e2ce0c6a8d68576c51a"
+      "sha256": "6f07f205fb6b8c8e77fb0968c379fabdccf2beebc68e32f495ecc5e33ad995a2"
+    },
+    {
+      "path": "packages/OpenComputerUseKit/Sources/OpenComputerUseKit/SetValueReadBack.swift",
+      "sha256": "100ae2ebd62a7cb666284498e251d1a1021304440486893c5f774ee50908be0c"
     },
     {
       "path": "packages/OpenComputerUseKit/Sources/OpenComputerUseKit/SkyClickSimulation.swift",
-      "sha256": "fcae810b7c136b960d09fee336d4d7c2a2697d4825e0f5699a14cb93d9539339"
+      "sha256": "32aa7422856035c77299692244d53f55b4b775e18a57e10aa900159c9a8f6821"
+    },
+    {
+      "path": "packages/OpenComputerUseKit/Sources/OpenComputerUseKit/SkyKeyboardSimulation.swift",
+      "sha256": "7696403989f5751060aeb3e32041dbcdbb228822f853334a5e1808a6bb86b21b"
     },
     {
       "path": "packages/OpenComputerUseKit/Sources/OpenComputerUseKit/SkyLightSPI.swift",
-      "sha256": "00585c598133dc32d288cde8b49ecdb17584f2b4d80c1563c2f29999c0402ea3"
+      "sha256": "785f71975041013628ae4ce884968ca4a2c7ba11f7bab1ecc2f4ae1a882dbb5b"
+    },
+    {
+      "path": "packages/OpenComputerUseKit/Sources/OpenComputerUseKit/SnapshotObservationOptions.swift",
+      "sha256": "0c16928e4d9a30d495d38922d9fcc08e0284175a0eecd2d7a30271c323f3a09b"
     },
     {
       "path": "packages/OpenComputerUseKit/Sources/OpenComputerUseKit/SoftwareCursorGlyphRenderer.swift",
@@ -1350,31 +2514,283 @@
     },
     {
       "path": "packages/OpenComputerUseKit/Sources/OpenComputerUseKit/SoftwareCursorOverlay.swift",
-      "sha256": "07b5f32b4d808f58eb6b149dce1daf587f059bc8bf592e44468321dc1076588a"
+      "sha256": "e970e8e84f45eb76081d525f2db04b10bb474c1ecdfbff8f47019aca7d0aeeb0"
+    },
+    {
+      "path": "packages/OpenComputerUseKit/Sources/OpenComputerUseKit/TargetedQuery.swift",
+      "sha256": "5c687ca0b903569c2064c61c8bda33e65359b8bbd416002b2306c6fa83d50d26"
+    },
+    {
+      "path": "packages/OpenComputerUseKit/Sources/OpenComputerUseKit/TextSelectionResolver.swift",
+      "sha256": "244d8049c7d96d086b04ead6424758917b958d67eb401827e359977c51a9577f"
+    },
+    {
+      "path": "packages/OpenComputerUseKit/Sources/OpenComputerUseKit/TimingLog.swift",
+      "sha256": "8b6c070226feba9de726ffbae6e0ffa26162fca8678360ef012787b7c571e541"
     },
     {
       "path": "packages/OpenComputerUseKit/Sources/OpenComputerUseKit/ToolDefinitions.swift",
-      "sha256": "f4c15a6425d633148614cce315727b328ab727abe29139e03f49332118e39d0c"
+      "sha256": "05edfb3275c549e5dce3fc39535bf8a66754db8c52ae582b32af1adc73df2fbc"
     },
     {
       "path": "packages/OpenComputerUseKit/Sources/OpenComputerUseKit/ToolResult.swift",
-      "sha256": "cba476399f7f6516f30c507b99c258df10a01b16e342f941e42a967b5c43d5c6"
+      "sha256": "831f4a33740d295982057e63ac4dbf527813d333c57a3978d8f7cd4f9e591974"
+    },
+    {
+      "path": "packages/OpenComputerUseKit/Sources/OpenComputerUseKit/VirtualDisplayConfig.swift",
+      "sha256": "37255566a3ee7df629cfcf2d9b89a95c81e5045d1f756e89751c7696fe36b85d"
+    },
+    {
+      "path": "packages/OpenComputerUseKit/Sources/OpenComputerUseKit/WebPEncoding.swift",
+      "sha256": "2a5a4dbc910bba52e37536d5c22a2f89ee9d28fc0a828cf6920c5be5e9f4f7a0"
+    },
+    {
+      "path": "packages/OpenComputerUseKit/Sources/OpenComputerUseKit/WindowCaptureGeometry.swift",
+      "sha256": "3f5288937dde2f5db00037328fc2731ee9ef34e3b4148462a0536c394ef9ad74"
+    },
+    {
+      "path": "packages/OpenComputerUseKit/Sources/OpenComputerUseKit/WindowOcclusionKeepAlive.swift",
+      "sha256": "16e8fb7e78a5b2697526f432c477e08e1635b5fc36fcb069ba3e25a254791c04"
+    },
+    {
+      "path": "packages/OpenComputerUseKit/Tests/OpenComputerUseKitTests/AXSemanticRenderingTests.swift",
+      "sha256": "78e8c4148396a2324c664b9ee15f149ad0e03288753540853b9277dd2527af2f"
+    },
+    {
+      "path": "packages/OpenComputerUseKit/Tests/OpenComputerUseKitTests/AXSnapshotReadCacheTests.swift",
+      "sha256": "32dce828c72d8e07383da058ef3c3e162814b9881d45b461fe44e4990fe1f6ae"
+    },
+    {
+      "path": "packages/OpenComputerUseKit/Tests/OpenComputerUseKitTests/AgentDisplayArrangementTests.swift",
+      "sha256": "69e3e063fd0852a3aac0cf94766480e5cfcd7d6b71d191b993ab24ea571fdd7e"
+    },
+    {
+      "path": "packages/OpenComputerUseKit/Tests/OpenComputerUseKitTests/AgentDisplayLiveTests.swift",
+      "sha256": "0ae8e148130f3cf1e8d3b9449fc819f37a24b32b4386408f82aee572021569d1"
+    },
+    {
+      "path": "packages/OpenComputerUseKit/Tests/OpenComputerUseKitTests/AppDiscoveryTests.swift",
+      "sha256": "175dad633be7cf2d9eb76d940e42112e4efb2e9111f6e740ee368a6f752939a5"
+    },
+    {
+      "path": "packages/OpenComputerUseKit/Tests/OpenComputerUseKitTests/AppMatrixLiveTests.swift",
+      "sha256": "8e46c35d97e69b8bb87951fa6bc9623ad5348e0e49f37d5f097af17f747f84c8"
+    },
+    {
+      "path": "packages/OpenComputerUseKit/Tests/OpenComputerUseKitTests/BackgroundInputBenchmarkLiveTests.swift",
+      "sha256": "49471c6244321650420de75c3f3056119494a1b58e32c50c21dfc79c431c2a53"
+    },
+    {
+      "path": "packages/OpenComputerUseKit/Tests/OpenComputerUseKitTests/CrossSpaceLiveTests.swift",
+      "sha256": "d0697e23dea10a63488a0de28cc398021dccf09d767ae65326aae907e6dd7aa3"
+    },
+    {
+      "path": "packages/OpenComputerUseKit/Tests/OpenComputerUseKitTests/CursorAnimationLatencyLiveTests.swift",
+      "sha256": "2ff2c24b7bb1e4b9773db05a6fb2dacf7c79e2fff5174d6106a21ebd13f4a169"
+    },
+    {
+      "path": "packages/OpenComputerUseKit/Tests/OpenComputerUseKitTests/CursorCancellationTests.swift",
+      "sha256": "760a449d34930714b78728c8d13c442d1996147448e6cc5a99c1348ad4907b8b"
+    },
+    {
+      "path": "packages/OpenComputerUseKit/Tests/OpenComputerUseKitTests/CursorWindowAnchorTests.swift",
+      "sha256": "e8bf68622390f7026ef4ca462ac025edda99081efb77b39a0bae2628203f50d4"
+    },
+    {
+      "path": "packages/OpenComputerUseKit/Tests/OpenComputerUseKitTests/CursorWindowFollowTests.swift",
+      "sha256": "c86d337e431db14902fb3a94d240db635047fb9ebaa888532c368bf045000359"
+    },
+    {
+      "path": "packages/OpenComputerUseKit/Tests/OpenComputerUseKitTests/DragReleaseTests.swift",
+      "sha256": "a3e0c037eb1b03a515bbc8432436664b70b7013e0f88ef12a2ce4ba0b9130a45"
+    },
+    {
+      "path": "packages/OpenComputerUseKit/Tests/OpenComputerUseKitTests/ElementIdentityTests.swift",
+      "sha256": "8994843818f18384ee45153657de61763bb991e82c4f8602cff38016216c8ac1"
+    },
+    {
+      "path": "packages/OpenComputerUseKit/Tests/OpenComputerUseKitTests/ImageCaptureConfigTests.swift",
+      "sha256": "2d36c412ef097fc0971ea0657016c375a0fa7c860e289a7151b729fbf177f888"
+    },
+    {
+      "path": "packages/OpenComputerUseKit/Tests/OpenComputerUseKitTests/LockedUseApprovalTests.swift",
+      "sha256": "5a846b21f2f3f54e006b553f446eddac3f8aa19380cf99c644962d4a862fd393"
+    },
+    {
+      "path": "packages/OpenComputerUseKit/Tests/OpenComputerUseKitTests/LockedUseAuthorizationRulesTests.swift",
+      "sha256": "df4a72f6f16614dae01c7e6befe11d95f54ee8087b36d9f506177f6c913c8ba2"
+    },
+    {
+      "path": "packages/OpenComputerUseKit/Tests/OpenComputerUseKitTests/LockedUseBrokerCoordinatorTests.swift",
+      "sha256": "2ec84781e4ea48a21f9cb7b57d44dc303c482dc039b7d39428521515c749082b"
+    },
+    {
+      "path": "packages/OpenComputerUseKit/Tests/OpenComputerUseKitTests/LockedUseBrokerPollingTests.swift",
+      "sha256": "6811e1101ec50e17301b6aa205828707467526b85f429c6e0857890c0b2e198c"
+    },
+    {
+      "path": "packages/OpenComputerUseKit/Tests/OpenComputerUseKitTests/LockedUseClickAllowanceTests.swift",
+      "sha256": "753d2e9502a12dab7467cb9e73d6e47af184b3d0c6219d0daa7728f5905cdf49"
+    },
+    {
+      "path": "packages/OpenComputerUseKit/Tests/OpenComputerUseKitTests/LockedUseComponentVersionTests.swift",
+      "sha256": "d9b1e1ab139b15633025162fa82aa72f77f7dbac41b3c1845bed70dba2353d40"
+    },
+    {
+      "path": "packages/OpenComputerUseKit/Tests/OpenComputerUseKitTests/LockedUseDispatchTests.swift",
+      "sha256": "f165623abb4b05e41ba208309d5ed36285f9ad8d2611501a350013f32acb3567"
+    },
+    {
+      "path": "packages/OpenComputerUseKit/Tests/OpenComputerUseKitTests/LockedUseGuardianBrokerExchangeTests.swift",
+      "sha256": "b9677db19db3f2682fda25a89019a92c76dad1e21243fa975565ecd5ad09e214"
+    },
+    {
+      "path": "packages/OpenComputerUseKit/Tests/OpenComputerUseKitTests/LockedUseGuardianTests.swift",
+      "sha256": "811fe488f96c41638b2f06a36f2d40a85dec2b5a6a9f85c1ede85db0027ba32f"
+    },
+    {
+      "path": "packages/OpenComputerUseKit/Tests/OpenComputerUseKitTests/LockedUseIPCTests.swift",
+      "sha256": "ec624bee17725ee5da6085d46bed83cbc73721a1a18e5ef96ff898b8d79cb272"
+    },
+    {
+      "path": "packages/OpenComputerUseKit/Tests/OpenComputerUseKitTests/LockedUseIncidentReplayTests.swift",
+      "sha256": "eb9aa8cd6a6388c053dcd6b26c7ad90a0710aac8e8701f45b9f76a397d9771dd"
+    },
+    {
+      "path": "packages/OpenComputerUseKit/Tests/OpenComputerUseKitTests/LockedUsePeerAuthenticatorTests.swift",
+      "sha256": "6f52547ac6438dadc88d7e519e56b688a8db73101e4445f0cec6bbc336c6cfb1"
+    },
+    {
+      "path": "packages/OpenComputerUseKit/Tests/OpenComputerUseKitTests/LockedUsePeerRevalidationTests.swift",
+      "sha256": "981d3badf6322c1c5f0264791199302597d846fd057082e7a1bdb99143df8dfd"
+    },
+    {
+      "path": "packages/OpenComputerUseKit/Tests/OpenComputerUseKitTests/LockedUsePeerTests.swift",
+      "sha256": "ee679831e115946d04c4a6a2771e8c6837d627b91b4441e8b03107082757d0ee"
+    },
+    {
+      "path": "packages/OpenComputerUseKit/Tests/OpenComputerUseKitTests/LockedUsePermitTests.swift",
+      "sha256": "c940236db34df7a6652e19d7883ed681b0068b037ad388bf78796bfd9f98f77d"
+    },
+    {
+      "path": "packages/OpenComputerUseKit/Tests/OpenComputerUseKitTests/LockedUsePolicyMonitorTests.swift",
+      "sha256": "9cabd23c64f486a80cb45b92f825d751c7072c718d8727e8addb07cec1d7a6a3"
+    },
+    {
+      "path": "packages/OpenComputerUseKit/Tests/OpenComputerUseKitTests/LockedUsePrivateRecordTests.swift",
+      "sha256": "774dc729e315875d4afbc62de9face4fe14091fa4042b69f4183a850f1c81ba0"
+    },
+    {
+      "path": "packages/OpenComputerUseKit/Tests/OpenComputerUseKitTests/LockedUseRecoveryDeadlineTests.swift",
+      "sha256": "b653f4dffafbe605e63f54f563ab70115df30c9a194a68f56bff743a82086606"
+    },
+    {
+      "path": "packages/OpenComputerUseKit/Tests/OpenComputerUseKitTests/LockedUseRecoveryTests.swift",
+      "sha256": "181d7a1e80f08cce327293c8bbda763e57e80a00447884b5c3368ea0437e8c3f"
+    },
+    {
+      "path": "packages/OpenComputerUseKit/Tests/OpenComputerUseKitTests/LockedUseReleaseBarrierTests.swift",
+      "sha256": "8a622d1be1a62035db6478b0331a31eaaf8d09b2f253c2cda7833cd25fe78ff2"
+    },
+    {
+      "path": "packages/OpenComputerUseKit/Tests/OpenComputerUseKitTests/LockedUseReturnAllowanceTests.swift",
+      "sha256": "55a4aa0e5f3c1bb751e0b38a0acdf3606b3d7657a117c1dc842cfee8d62da7c8"
+    },
+    {
+      "path": "packages/OpenComputerUseKit/Tests/OpenComputerUseKitTests/LockedUseShieldCoverageTests.swift",
+      "sha256": "9a642f88523a0206a28d2651df3a836cdf863cab64798e5d291c9164e96d65bc"
+    },
+    {
+      "path": "packages/OpenComputerUseKit/Tests/OpenComputerUseKitTests/LockedUseShieldStatusTests.swift",
+      "sha256": "3a49a47ab0c813d1f755b6fa42b4bcc734f5fe568ed67baaaac84c316856f631"
+    },
+    {
+      "path": "packages/OpenComputerUseKit/Tests/OpenComputerUseKitTests/LockedUseTests.swift",
+      "sha256": "656d7ba5d5431f9b05212b5023928d1f0ecd900498f9edd096580ce0152f1322"
+    },
+    {
+      "path": "packages/OpenComputerUseKit/Tests/OpenComputerUseKitTests/LockedUseUnlockCancellationTests.swift",
+      "sha256": "7d601edc760403963f55684b242f1ae64388f4aef7c4a3273e4673f537645876"
+    },
+    {
+      "path": "packages/OpenComputerUseKit/Tests/OpenComputerUseKitTests/LockedUseUnshieldedDiagnosticTests.swift",
+      "sha256": "7f0123ba3b86df724b12c59fb6cca06eb1e3c8ad16f006e8d4ba2be1faeff8a1"
+    },
+    {
+      "path": "packages/OpenComputerUseKit/Tests/OpenComputerUseKitTests/LockedUseValidationTests.swift",
+      "sha256": "1cb051c8198d45f20da511e23333f66805ba4a630f4be8f63a877703ac1b80a2"
+    },
+    {
+      "path": "packages/OpenComputerUseKit/Tests/OpenComputerUseKitTests/LockedUseValidationWaitingTests.swift",
+      "sha256": "68ef4bacdcc48f1b5b8a73d5cd7c0dd285a356ef8ca8c65cb0556809015db332"
+    },
+    {
+      "path": "packages/OpenComputerUseKit/Tests/OpenComputerUseKitTests/OcclusionKeepAliveLiveTests.swift",
+      "sha256": "2f873879d9c37f833ce028be7efb6bd395979e766a906023aaa9a0e9af6ca45f"
     },
     {
       "path": "packages/OpenComputerUseKit/Tests/OpenComputerUseKitTests/OpenComputerUseKitTests.swift",
-      "sha256": "79c6874dc16dedf1309b664cfb8cea0af8e89591ace27490d51e2f19094f4fa1"
+      "sha256": "ced780d3dc1ae0af6b33ffc28fc1af24276aef41e5ca38909d38eaaa4f4b50c3"
+    },
+    {
+      "path": "packages/OpenComputerUseKit/Tests/OpenComputerUseKitTests/SelectiveObservationTests.swift",
+      "sha256": "d020954c499de58103509e11c5c6a50eee4d108df8c2b1491ea0309a8eb67506"
+    },
+    {
+      "path": "packages/OpenComputerUseKit/Tests/OpenComputerUseKitTests/SetValueReadBackTests.swift",
+      "sha256": "a7025b352f555b574dca33d00a918d4eed2dca72e9615fa79a1f9530e196a94f"
     },
     {
       "path": "packages/OpenComputerUseKit/Tests/OpenComputerUseKitTests/SkyClickLiveTests.swift",
       "sha256": "19ff6d80e9c545d94d3614ed99802291b5684cb1069265fdc4012dd44bb7aab7"
     },
     {
+      "path": "packages/OpenComputerUseKit/Tests/OpenComputerUseKitTests/SkyKeyboardLiveTests.swift",
+      "sha256": "588968699f8b3c4283a3405153aac714260e7de2d41f215e87915d50b98afa94"
+    },
+    {
+      "path": "packages/OpenComputerUseKit/Tests/OpenComputerUseKitTests/TargetedAXTests.swift",
+      "sha256": "6d265d8a142fe126454b288ce403a3dd75d952fd3c0e8131f7babc7a6a270cdc"
+    },
+    {
+      "path": "packages/OpenComputerUseKit/Tests/OpenComputerUseKitTests/TargetedQuerySafetyTests.swift",
+      "sha256": "79889a6dccbd617283ff80d4f31d6282161c750f88e3c058d4a0769d740250b5"
+    },
+    {
+      "path": "packages/OpenComputerUseKit/Tests/OpenComputerUseKitTests/TextSelectionOperationTests.swift",
+      "sha256": "2fd57bc7b16d56069c3b5ad1ed3eb9cf72b04a0e40dc324579db26b90761f49a"
+    },
+    {
+      "path": "packages/OpenComputerUseKit/Tests/OpenComputerUseKitTests/TextSelectionResolverTests.swift",
+      "sha256": "6020e7ac3c873b7aad2df95799ea4d46684a12eb7e6c871b092e58df0b783d8e"
+    },
+    {
+      "path": "packages/OpenComputerUseKit/Tests/OpenComputerUseKitTests/VirtualDisplayConfigTests.swift",
+      "sha256": "95b468e5677c036fa65947c2d48735e3a2b4ebd4559777c3e7015d28153afee4"
+    },
+    {
+      "path": "packages/OpenComputerUseKit/Tests/OpenComputerUseKitTests/WebTreeLiveTests.swift",
+      "sha256": "b2fee736a917e880454c5b65b987ad115b8551851a6156a1f679900920c8c609"
+    },
+    {
+      "path": "packages/OpenComputerUseKit/Tests/OpenComputerUseKitTests/WindowCaptureGeometryTests.swift",
+      "sha256": "a8b748d3654e5b775b1be23b539423fc21869c897cdb2f1a6f420989f38a30f9"
+    },
+    {
+      "path": "packages/OpenComputerUseVirtualDisplayShim/OpenComputerUseVirtualDisplayShim.m",
+      "sha256": "0b5f175e3ee1d09954df220701335bfb87839aca42157a585430cb810655dc4f"
+    },
+    {
+      "path": "packages/OpenComputerUseVirtualDisplayShim/include/OpenComputerUseVirtualDisplayShim.h",
+      "sha256": "ff67a72647b7ace2c47f4488ef73089670b7082a922ba48b012181dbb8fd46d6"
+    },
+    {
       "path": "plugins/open-computer-use/.codex-plugin/plugin.json",
-      "sha256": "ab6dcdb24ebce735422c653f6d3099f8cd20279ffde36087bee5f894dd7fac60"
+      "sha256": "9ed612c80f79ae4fe142a5015ca1c4c4d0715bdb42a5f2b535943a60d08f9cbc"
     },
     {
       "path": "plugins/open-computer-use/.mcp.json",
-      "sha256": "c0d635efb73095384a42fd2eb382350f1b1046bf493a37f5ab28999f2db37dfb"
+      "sha256": "7e7072a6582423fbb3e07170cf4c02f73fb5ffc4c528b19c2cb191c7b22152ef"
     },
     {
       "path": "plugins/open-computer-use/assets/open-computer-use-small.svg",
@@ -1383,6 +2799,10 @@
     {
       "path": "plugins/open-computer-use/assets/open-computer-use.svg",
       "sha256": "21edc93c544bcac5c4133e39c64f46a998a02074b1dc2acefdea278a7f7dac83"
+    },
+    {
+      "path": "plugins/open-computer-use/scripts/launch-open-computer-use-repl.sh",
+      "sha256": "ef7786652b21f98319d07ebf8c407c3038f5f95c3981af32c3335b999aecc650"
     },
     {
       "path": "plugins/open-computer-use/scripts/launch-open-computer-use.sh",
@@ -1397,8 +2817,20 @@
       "sha256": "0ce2fb235a42c69efda492b35802326765aea8b21df8bc3c266418c1bb223785"
     },
     {
+      "path": "scripts/build-locked-use-components.sh",
+      "sha256": "252440c4a8b25950311da1b82d2ab0118a56c10d96c5ef3f4030f2eeae19a6af"
+    },
+    {
+      "path": "scripts/build-locked-use-guardian.sh",
+      "sha256": "7d64e2965a6ebee512562751637a06fff5b82c7da7de0229b0d4087d747aa778"
+    },
+    {
+      "path": "scripts/build-locked-use-plugin.sh",
+      "sha256": "0ce4560aa17787c1537eaa2256915b1ab03b29d44aa1e58802646b6a311921bf"
+    },
+    {
       "path": "scripts/build-open-computer-use-app.sh",
-      "sha256": "f69093d7f0fbf7e4c5533a6f70ee5add307a5fbf4e922747d942f0a25893ef2f"
+      "sha256": "21f8880064749f1457b795f54a137df1a6fe71ec92c8ce55b9976a993f26b143"
     },
     {
       "path": "scripts/build-open-computer-use-linux.sh",
@@ -1418,11 +2850,11 @@
     },
     {
       "path": "scripts/check-repo-hygiene.sh",
-      "sha256": "615abfb6e2efb1e25074550b81ee1d5a6db0e8f4fa2d1ec7cdb002aa024748fe"
+      "sha256": "0373c6344c8d0edaa527c6489d9ba6d317c6bc66ce675b3e65d24a92b23d849a"
     },
     {
       "path": "scripts/ci.sh",
-      "sha256": "46726f61f9329f746e209d9a2a6e2aa59d86c984ea1d8afa63ef14ce81bf7fe5"
+      "sha256": "d33289b31ac14d863b235a3ab84a7c723c804c16f6288bb4f1b6a0560b387753"
     },
     {
       "path": "scripts/codex_dump.py",
@@ -1430,7 +2862,7 @@
     },
     {
       "path": "scripts/computer-use-cli/README.md",
-      "sha256": "29fb8ed1793550bc33652dea7ffbb1adc699a61882d4c9cd7e484a654d19ec9d"
+      "sha256": "b3d5002270f112b47e8b2d45a5a8bd2cbd5efa47cfc393b0e6d4c0066dad2dfd"
     },
     {
       "path": "scripts/computer-use-cli/app_server.go",
@@ -1446,7 +2878,7 @@
     },
     {
       "path": "scripts/computer-use-cli/main.go",
-      "sha256": "b1f9cf9772f864ab9cfa7f07fa842541d0fe6ca4fd036f00fa1279e800681f57"
+      "sha256": "3e65329516ab1cf92d61d6ebdd4b7f16dd231d83ec85a992c563da98fa8c711b"
     },
     {
       "path": "scripts/computer-use-cli/main_test.go",
@@ -1466,7 +2898,7 @@
     },
     {
       "path": "scripts/init-project.sh",
-      "sha256": "a441d485ca67444b595ed31cd771e0d843a09a6f4b6721388deff3b21eb6b9cd"
+      "sha256": "b5983214fdd76a5c395024eb48eb921f982a34807e992ca72d7bdf2aed97991a"
     },
     {
       "path": "scripts/install-claude-mcp.sh",
@@ -1478,7 +2910,7 @@
     },
     {
       "path": "scripts/install-codex-plugin.sh",
-      "sha256": "375225eaf6dcd97062a61a30cf1c2b3f52cca63eee149fe744867169f56d2896"
+      "sha256": "4e1fca0776281ec116ed9ef6929b85aece9bd5162a8485ed005d6c382a77b46b"
     },
     {
       "path": "scripts/install-config-helper.mjs",
@@ -1497,6 +2929,22 @@
       "sha256": "82f6effa2ff9748cadd03712f7848e8dcca2ee0e9330bbcaac39bba57fd819c7"
     },
     {
+      "path": "scripts/locked-use-build-common.sh",
+      "sha256": "879e204dc8baed5dfe8035131f23bed330fe5fc2763f0957fae7aa6a92655d8d"
+    },
+    {
+      "path": "scripts/locked_use_report.py",
+      "sha256": "9a108eedb07551a1a624ecd3f042234bdcc41a6527cd2ab081984074a7b91e8d"
+    },
+    {
+      "path": "scripts/manage-locked-use-probe.sh",
+      "sha256": "be7b3a71ad490ab50967f391bda9f9276ce386c1460f47c2ef8c4637a41fb9f3"
+    },
+    {
+      "path": "scripts/measure-locked-use-auth-latency.py",
+      "sha256": "d64903bc4b344ea7a93a06b1ef9cc7ce4d5f25393283c41c632688858c38c3c8"
+    },
+    {
       "path": "scripts/new-exec-plan.sh",
       "sha256": "6f7c24ee7dce6ede6afde56056e3564acdced2a004a78e965e4738b811fd6ca0"
     },
@@ -1505,20 +2953,60 @@
       "sha256": "0bfa5803496427622323aa5d2ee2963763a48f10193b1d143d29000cd1af77e3"
     },
     {
+      "path": "scripts/node-repl/ocu-config.mjs",
+      "sha256": "4d9ae5686c8fdbc3353455e8da31e5259a8b612b92db8edf6b6d49987c6ee8f6"
+    },
+    {
+      "path": "scripts/node-repl/ocu-config.test.mjs",
+      "sha256": "d7053307a5d834783655bbf2c6acd62b616d651f2f7c4fc4d347efa0fffaf0af"
+    },
+    {
+      "path": "scripts/node-repl/open-computer-use-cli.mjs",
+      "sha256": "edff1fb5fbc744791620a623c5e3fdba45540420e70016d9e07eea7d93dc5c65"
+    },
+    {
+      "path": "scripts/node-repl/open-computer-use-cli.test.mjs",
+      "sha256": "5cb51c8c6d6a131ace41a6acc3ee84f49ef904dd1faeac488a08641cb3a6550e"
+    },
+    {
+      "path": "scripts/node-repl/open-computer-use-kernel.mjs",
+      "sha256": "f4031db803c609fb198be243f0722713ec41479eae0487e8934b2b26b7964433"
+    },
+    {
+      "path": "scripts/node-repl/open-computer-use-repl.mjs",
+      "sha256": "c81c5a3c3cadc706b55f8b2501be9b9f7d6ddfda28f4ab8fa161406b80d9e196"
+    },
+    {
+      "path": "scripts/node-repl/open-computer-use-repl.test.mjs",
+      "sha256": "ef3e1fde61da6d709d31c3472eb61d361998a45c5ffe55cdfc652d8388b68d5e"
+    },
+    {
+      "path": "scripts/notarize-open-computer-use.sh",
+      "sha256": "6f54a7dcddd5f2b472b3b6a6cb657fd7ca079af271d7384fe3b8913c5586a832"
+    },
+    {
       "path": "scripts/npm/build-packages.mjs",
-      "sha256": "249875763ac0f5a9363ae4a11141c6789739817b2d8396d9eb936168e18ae896"
+      "sha256": "efcd211c809b0cb0b5aabffa6744d4b64c543aaafa849b5f49a253ce14727879"
     },
     {
       "path": "scripts/npm/publish-packages.mjs",
       "sha256": "f52545cb5e08f197e5faab091d2009896de747394b21af6f981a858f55539530"
     },
     {
+      "path": "scripts/package-github-release-assets.sh",
+      "sha256": "f505f2b44145cf96941724bbc1809b36ae8ddd5b4185abd3c10ccc00cb1c0934"
+    },
+    {
       "path": "scripts/package-skill.sh",
       "sha256": "d0c1db1749066797cd4bbb496c5d7594fc3cfc81af311bde7109ec94b060eb8b"
     },
     {
+      "path": "scripts/prepare-macos-keychain-profile.py",
+      "sha256": "b01d9f22ed4fdc4e7dc7a02dc1e6f36e6e97a00ca7065a01ac33063b5748b7ba"
+    },
+    {
       "path": "scripts/release-package.sh",
-      "sha256": "55e17afd11dd2977b148934fed202fc7b2fbffcd76cfb383ffdef6e63ff7b5da"
+      "sha256": "6bc1cb3ccf05a0feb9ae64afafc0f30c4c9735d496b475f3aff8c368c980dce9"
     },
     {
       "path": "scripts/render-open-computer-use-icon.swift",
@@ -1537,6 +3025,26 @@
       "sha256": "6a57aa2e86bbba8c1aff7986d0634e1ae34f34ce7522af99fbc9a3dca2068f38"
     },
     {
+      "path": "scripts/run-linux-read-back-smoke.sh",
+      "sha256": "fe1f3bfb3eaafb4c1a88289b2d9c99c0d101a51b2995a07bd3711a70a56fc8e1"
+    },
+    {
+      "path": "scripts/run-locked-use-native-validation.py",
+      "sha256": "bde93bdf9ec8bb4f409a1cde1d555cf4daaa0ec39a8030b5847558cdfeeb5409"
+    },
+    {
+      "path": "scripts/run-locked-use-rehearsal.py",
+      "sha256": "d941dd57ae51da4b350039129200e6b5fdcfbc0e91e3aef2527e9b069c6a1afa"
+    },
+    {
+      "path": "scripts/run-locked-use-smoke.py",
+      "sha256": "f7f33c181ee5ac8a5e7114e4e841d4772f8fd95f30cbc3ec20de734abb34f03c"
+    },
+    {
+      "path": "scripts/run-locked-use-unshielded-diagnostic.py",
+      "sha256": "b19b1d93dc2b3a34f1f4044282bc5fd28c106821e11aa6d8a479702f7c19d7f2"
+    },
+    {
       "path": "scripts/run-permission-onboarding-e2e.sh",
       "sha256": "d621a7078688ab6af009142b6e00229c69678b6f2f24efe4d96a59bbf1a67340"
     },
@@ -1553,6 +3061,98 @@
       "sha256": "7a41d52e35970bdb541c4c47d362001492d0b8049f29a46a7c3676dc683eec2b"
     },
     {
+      "path": "scripts/test-macos-keychain-profile.py",
+      "sha256": "76e4df4da9e9465459eadb676c00193a72ac3da4bf3bcf405fb21fe2d0e8605a"
+    },
+    {
+      "path": "scripts/tests/app-variant.test.mjs",
+      "sha256": "a41223fede5a7ced08ccdec42c8daad5229a99087e2c1f7879f1ddacfd0f4199"
+    },
+    {
+      "path": "scripts/tests/fixtures/MacOSAXBatchFixture.swift",
+      "sha256": "82c769983c6c1139b370becc0b8c2950051d1f116c178176eec28d855d4d8f33"
+    },
+    {
+      "path": "scripts/tests/fixtures/MacOSAgentDisplayOwner.m",
+      "sha256": "1c1ea1a8c09965d4388c51a13017c8216a850e72feef2f655ce1ab9c0a889134"
+    },
+    {
+      "path": "scripts/tests/fixtures/MacOSChromeTreeProbe.swift",
+      "sha256": "b558043fd77bfd00f9e9ac550da621a493bcfdf2b46b1a15d3dd66a9a2de26f3"
+    },
+    {
+      "path": "scripts/tests/fixtures/MacOSDisabledFixture.swift",
+      "sha256": "3c173d3ec3fafd16c8a3875228b76b0df01b68d24d4cdaf007f1aeeeebf478c7"
+    },
+    {
+      "path": "scripts/tests/fixtures/MacOSDisplayLayoutFixture.swift",
+      "sha256": "8deb7c3433134c9e5807ea179d18b71382e553447e65e7c53349e4598b17ff1d"
+    },
+    {
+      "path": "scripts/tests/fixtures/MacOSHitTestFixture.swift",
+      "sha256": "f20ae3865901c19cddb1f9f5ad7388a653ff73008a4fd7a1548f859b419ac4ed"
+    },
+    {
+      "path": "scripts/tests/fixtures/MacOSIdentityFixture.swift",
+      "sha256": "ebee370ec490eebacdd0989f05ebf626d54667451815221ecbdc92dedc99dc32"
+    },
+    {
+      "path": "scripts/tests/fixtures/MacOSInputMonitorFixture.swift",
+      "sha256": "485f1a8726bac754a2741478fa492974b9b9bcbb5c2e6758bf0d7c4e675271cd"
+    },
+    {
+      "path": "scripts/tests/fixtures/MacOSObservationFixture.swift",
+      "sha256": "1677fbba648cfb7fd78cae9c0a5f790bb3ac660b73333bd71c5b8794a2e0a832"
+    },
+    {
+      "path": "scripts/tests/fixtures/MacOSResourceProbe.swift",
+      "sha256": "2ae44b6683fe59786cf0d129fb0b85222e8a80b3257506b8d6677b2193e21053"
+    },
+    {
+      "path": "scripts/tests/fixtures/MacOSSheetFixture.swift",
+      "sha256": "1aca42bb5b341d9e01340375a791963b745dba7345342437ea95861a912f1778"
+    },
+    {
+      "path": "scripts/tests/fixtures/MacOSShieldPlacementFixture.swift",
+      "sha256": "d5be6a79ca551b6c6d4708f0ebb1020a2506184c1ba61447fcc68c5e698cc9b3"
+    },
+    {
+      "path": "scripts/tests/fixtures/MacOSSlowClickFixture.swift",
+      "sha256": "868976f9af82b6e8b327ded8369d9e60a3efbd4cd1c1bed5894277b6c33594af"
+    },
+    {
+      "path": "scripts/tests/fixtures/MacOSSnapshotGeometryFixture.swift",
+      "sha256": "52fbbf7001c9d85baf5f92415ef0fcba1944484ba3184d896dc9cb433a97b2ba"
+    },
+    {
+      "path": "scripts/tests/fixtures/MacOSTextInputFixture.swift",
+      "sha256": "42fdd04430cabc5d3045c61668df0b91e904e11e26dbd7866a7606aca42777fc"
+    },
+    {
+      "path": "scripts/tests/fixtures/WindowsInputFixture.ps1",
+      "sha256": "d5f5f0f7e872802c63ec7b80ffc1adbf2dd7d42922c4fe1c593ca9b7e2634be1"
+    },
+    {
+      "path": "scripts/tests/fixtures/WindowsKeyboardFixture.ps1",
+      "sha256": "b9755f24d6c4b52f38c955d70e74fd99f5b92cc7e6b93530d61d1350dfd6e6cf"
+    },
+    {
+      "path": "scripts/tests/fixtures/WindowsObservationFixture.ps1",
+      "sha256": "49ce7709ccc806e726f671d8ec9cec8c621c8a9e63165c7d27f6d93d2d83ee82"
+    },
+    {
+      "path": "scripts/tests/fixtures/WindowsSetValueFixture.ps1",
+      "sha256": "9848dfe37c771fc7f93a74f1ad6009ce89596fc45ce2b20375544748f819fe90"
+    },
+    {
+      "path": "scripts/tests/fixtures/WindowsTargetFixture.ps1",
+      "sha256": "727c77a299733747ee15229f4661b3b02712c709bcee90fed53700387e892f93"
+    },
+    {
+      "path": "scripts/tests/fixtures/WindowsTreeBudgetFixture.ps1",
+      "sha256": "b7687e1c764ed9cfe8397490f5c79e396e68d177ae3e48ed772ccf92785f45c6"
+    },
+    {
       "path": "scripts/tests/fixtures/open-computer-use-mcp.mjs",
       "sha256": "7b4242a2b1f6b0b2a744e6af3adbd8111043ca6e7d104aeeed029bd2c7efe096"
     },
@@ -1561,12 +3161,252 @@
       "sha256": "f9393dfcba0aa1ba77af4004ec10437c8b2c3bcb590fd1b567903811857d4c78"
     },
     {
+      "path": "scripts/tests/linux-observation-js-smoke.mjs",
+      "sha256": "c26a6841589fadcfeef83b4b9b51b7afc31003a2132e3562b8780699d87aa84f"
+    },
+    {
+      "path": "scripts/tests/linux-password-smoke.py",
+      "sha256": "93c25d53facda0a3f6f567731c3ed261f0ba74d4e191483aca2c9688e088f685"
+    },
+    {
+      "path": "scripts/tests/linux-qt-readonly-smoke.py",
+      "sha256": "d8b86aafc9db587b385a0a04079757e1f1e2ade2dd2d8b498d730f1a4483e303"
+    },
+    {
+      "path": "scripts/tests/linux-read-back-smoke.py",
+      "sha256": "3cb9f8000c0fab5049712f810e05548d6ee9743342724fdaffd81f59845cf2d0"
+    },
+    {
+      "path": "scripts/tests/linux-session-discovery-smoke.py",
+      "sha256": "afb57023e829f2c9e2e1ab640454e2e987ef42e7c472bbb841f9d3e52b58ef73"
+    },
+    {
+      "path": "scripts/tests/linux-set-value-smoke.py",
+      "sha256": "629b7d2cb1f73d652f251d2a7a62d21b2b7aab3c3fc12374510a63a312266c43"
+    },
+    {
+      "path": "scripts/tests/linux-tree-budget-smoke.py",
+      "sha256": "e02626f411dad251e4780d366c02e04e87276ae04b23017a4120b9646f44773a"
+    },
+    {
+      "path": "scripts/tests/locked-use-auth-latency.test.py",
+      "sha256": "0559b2ce9d25b8a36f40e4087ffb1446ce88475503aaea290dfd205bd9694c06"
+    },
+    {
+      "path": "scripts/tests/locked-use-native-validation.test.py",
+      "sha256": "29e9f13dcb89d0f02b63ae02fc2344a0d41d2f43bc800ea37966492e16680ba6"
+    },
+    {
+      "path": "scripts/tests/locked-use-notarization.test.py",
+      "sha256": "34787d678277945c84b56029902ab014295ac341c2c7b29510194913b4846a46"
+    },
+    {
+      "path": "scripts/tests/locked-use-rehearsal.test.py",
+      "sha256": "cbf82214f35447301afaa2585c5128edad020943536418b40e9453bcb7152887"
+    },
+    {
+      "path": "scripts/tests/locked-use-release-packaging.test.py",
+      "sha256": "0024e1ec1f9d6720dba96bc986f343d21cb98940e063ec8b032f7baebf8abeb3"
+    },
+    {
+      "path": "scripts/tests/locked-use-release-policy.test.py",
+      "sha256": "a40a9ba5095c43108215eba91c05051e5221efaacf8ff23c5d00a14c54474ba2"
+    },
+    {
+      "path": "scripts/tests/locked-use-report.test.py",
+      "sha256": "4eb4dde8708b6c7d59823ed0c0d54d9acfca71363b59a44e2a860f2f48a885d6"
+    },
+    {
+      "path": "scripts/tests/locked-use-signing.test.sh",
+      "sha256": "b45207b1caae3f1e207cd232276e8e0ca0220f29895c27968617b18f50a19cdc"
+    },
+    {
+      "path": "scripts/tests/locked-use-smoke.test.py",
+      "sha256": "33b0f18046f14b76ddecc34ee8cef49696b625c0a2f95463c6d5fa4937ffbc20"
+    },
+    {
+      "path": "scripts/tests/locked-use-unshielded-diagnostic.test.py",
+      "sha256": "7f6ec723488b5f1f1d7eb95cd2ed7ce370e6d65515fa477b603fb8db005222c8"
+    },
+    {
+      "path": "scripts/tests/macos-app-variant-smoke.py",
+      "sha256": "2a97c70c5ee3aa151baf19b3fc069ce4f0a9ed9a807f3bee89385d8e3cbc0801"
+    },
+    {
+      "path": "scripts/tests/macos-ax-batch-smoke.mjs",
+      "sha256": "9412fa6b94f975bca96164f92ece03a24eaf49a1ea76fb318f0c9a2449757141"
+    },
+    {
+      "path": "scripts/tests/macos-cli-path-smoke.mjs",
+      "sha256": "532085cafcd9b70523a207e8d8a75c159591a41c6dc8609aedf80b7c30b9945f"
+    },
+    {
+      "path": "scripts/tests/macos-click-outcome-smoke.mjs",
+      "sha256": "425053400eaddf13ad71e6865775dd449d96b1b58f275fa64effb01bf8e871e4"
+    },
+    {
+      "path": "scripts/tests/macos-disabled-control-smoke.mjs",
+      "sha256": "87563c998bc7c6762d59d1041d0f885f8ee00eb7ddac0a89862f3a9100a1c693"
+    },
+    {
+      "path": "scripts/tests/macos-element-identity-smoke.mjs",
+      "sha256": "78c89b9bec8cc79648beeec6812b2aa9f39c93d2bdf444a6aae78d6435b5d2d4"
+    },
+    {
+      "path": "scripts/tests/macos-hit-test-smoke.mjs",
+      "sha256": "00ede921939ca94ce953ad5b8fcaf4f94928770eb9112d7c64476a2791c1ffd6"
+    },
+    {
+      "path": "scripts/tests/macos-input-monitor-smoke.py",
+      "sha256": "c0b49395da47219053236fb6770f5bf3f9abe5d7b31417bfda57667dd759f939"
+    },
+    {
+      "path": "scripts/tests/macos-observation-smoke.mjs",
+      "sha256": "ecc6a35c83c8af28f84b8510ea8d728a6ef8062737105349cd82da60695dec01"
+    },
+    {
+      "path": "scripts/tests/macos-request-lifecycle-smoke.mjs",
+      "sha256": "657757ce146f95337715ce938e3f24f1b325fd3dc02aaebe38ecb7a17024a19c"
+    },
+    {
+      "path": "scripts/tests/macos-set-value-smoke.mjs",
+      "sha256": "3ae4256bf972ae74d6cec6365fbf80d1e782a90601ac27ee3216107f59ac5f64"
+    },
+    {
+      "path": "scripts/tests/macos-sheet-smoke.mjs",
+      "sha256": "04f9780917092b4380f27b79466454eb5fa0e901080ca28628bbe4d078bf50e9"
+    },
+    {
+      "path": "scripts/tests/macos-shield-placement-smoke.py",
+      "sha256": "095dbc11297952cddae1e6617463941385d07c497ba0f33d51e48759db48f1a0"
+    },
+    {
+      "path": "scripts/tests/macos-snapshot-geometry-smoke.mjs",
+      "sha256": "77609445b9d5062f23d467b1a92e9ba63c037f6a0cbba1685eace4ce33a8704e"
+    },
+    {
+      "path": "scripts/tests/macos-text-input-smoke.mjs",
+      "sha256": "9d3202ba63b44cf023afa1773e3e312b9c36ee60bbb6fb29df773b785a6083e3"
+    },
+    {
+      "path": "scripts/tests/macos-tree-budget-smoke.mjs",
+      "sha256": "396adb392eede9fcf32a68a3695042e8708b5ce007c54080712e5b98ca93e247"
+    },
+    {
+      "path": "scripts/tests/mcp-notification-smoke.py",
+      "sha256": "dce4f358e603ed7c4a053d36b57f400be46094d47ed5f9c0cc4d33784c80f851"
+    },
+    {
+      "path": "scripts/tests/release-notes.test.mjs",
+      "sha256": "a8b239539ffdc567e9f94497f2576987d6ed1e521c6a6dc25733a3d1159fa2ec"
+    },
+    {
+      "path": "scripts/tests/select-text-smoke.mjs",
+      "sha256": "08ab0d69dcb8c4b915dd64e504657db001ca001b8908deec17c1e506b4ae459d"
+    },
+    {
+      "path": "scripts/tests/windows-action-observation.test.ps1",
+      "sha256": "583dd4825e6f0d4db588f328185c34736f108cdae9dfa77a8018b236049e2b5e"
+    },
+    {
+      "path": "scripts/tests/windows-app-resolution.test.ps1",
+      "sha256": "e12f488c21e8632ac6d512c7be9c90c19cce9930cd168d199351f55ab4448e1a"
+    },
+    {
+      "path": "scripts/tests/windows-element-resolution.test.ps1",
+      "sha256": "00d0bafef872bc2a1690b6ec693f107e8e845f9827c078027c71c37288da7f3c"
+    },
+    {
+      "path": "scripts/tests/windows-elevated-target.test.ps1",
+      "sha256": "7c7fca16206e3edafc0e2edd05ccb1706ac377a6554a77e5aa15628446088713"
+    },
+    {
+      "path": "scripts/tests/windows-fixture-state.ps1",
+      "sha256": "e2a97da5ddaa99b4c3c230f950cd832e3df42fa6677963079731dab58a13f91f"
+    },
+    {
+      "path": "scripts/tests/windows-hung-window.test.ps1",
+      "sha256": "2c6f60ba98bbc7ca68868c9d6492a3077ef8f100f492ab0cf309020ef34cafe7"
+    },
+    {
+      "path": "scripts/tests/windows-input-js-smoke.mjs",
+      "sha256": "0df5692b419d6f291a4200a9476940bb171d632c867d8c4624badadda5fb55f4"
+    },
+    {
+      "path": "scripts/tests/windows-input-smoke.ps1",
+      "sha256": "19714654bf5bf0baac25026bb4d0948314fd1fefc06867c903bebd9b90327388"
+    },
+    {
+      "path": "scripts/tests/windows-input.test.ps1",
+      "sha256": "2fb1f8e74514ce23126ccf6386f90b4c4026874211869ad97a076cf63e54fa14"
+    },
+    {
+      "path": "scripts/tests/windows-keyboard-focus-smoke.ps1",
+      "sha256": "d1a2a412919987083ed4cc9a243b03345f4fc4b2eb514fe8fbd58bb931a8cf40"
+    },
+    {
+      "path": "scripts/tests/windows-keyboard-focus.test.ps1",
+      "sha256": "4f816d6d96def15e0702be4ea483435e2b09f5ab74e76f93c495ad02368080c7"
+    },
+    {
+      "path": "scripts/tests/windows-observation-browser-smoke.ps1",
+      "sha256": "bc239d30bc6fa24cede7b21fc18674febb0093baac7f31475763ba268cbf898d"
+    },
+    {
+      "path": "scripts/tests/windows-observation-js-smoke.mjs",
+      "sha256": "b2cf58c8732096568da1773263e4f8905632d7d53be490e6e6c40a2922ee7e58"
+    },
+    {
+      "path": "scripts/tests/windows-observation-selection.test.ps1",
+      "sha256": "8a5ef41ddc8b1899b00a0270965072ef83d4fd786fa441022675e134da882c5b"
+    },
+    {
+      "path": "scripts/tests/windows-observation-smoke.ps1",
+      "sha256": "912c8f826ae46bffa306b6530c832249d3ccadb660866911d96903ef2201140d"
+    },
+    {
+      "path": "scripts/tests/windows-observation.test.ps1",
+      "sha256": "639695cead7ac7afd44514b13eff2ae6348ab63a4bb1d0d5e1076360b7188e79"
+    },
+    {
+      "path": "scripts/tests/windows-pattern-readback.test.ps1",
+      "sha256": "a9f65af49f48f2371580daf14fac950cf7123540e6dc87908f14d3db3f52f8dc"
+    },
+    {
+      "path": "scripts/tests/windows-set-value-smoke.ps1",
+      "sha256": "9726eabdcc282cdcd40e917dbb6d0a60cd906ebdd32eeab89af904607f932b34"
+    },
+    {
+      "path": "scripts/tests/windows-set-value.test.ps1",
+      "sha256": "73598ab99b35801bf31fe5c103ad4dcff1f4a7a2815daaeaa56cef1953517908"
+    },
+    {
+      "path": "scripts/tests/windows-target-smoke.ps1",
+      "sha256": "dc2990132011be3460ba6b3e386e12085c361e13c79083e455d61d9ae3e1a929"
+    },
+    {
+      "path": "scripts/tests/windows-target.test.ps1",
+      "sha256": "e41762753a8143bec122d026b7258ced391ba495467d59733e9fa39f206ec8c9"
+    },
+    {
+      "path": "scripts/tests/windows-tree-budget-smoke.ps1",
+      "sha256": "9cbb9072869302f97ed4cd82ebfc917170800331d4f6a6a13fc96bf0258e9c46"
+    },
+    {
+      "path": "scripts/tests/windows-tree-budget.test.ps1",
+      "sha256": "79c0923baeca33d0f6f3339c46c007cdf7ee1790d05b1d6f84ed8116ff5ba41d"
+    },
+    {
       "path": "scripts/validate-github-release-notes.mjs",
-      "sha256": "381dd092572a72a6158287062ab285995bb26c0793878c02800dba3a5774cf93"
+      "sha256": "4b5514e8c37193a18a79fa2e17d67db776b5161f44c078c21a50303ed94e85ef"
+    },
+    {
+      "path": "scripts/verify-locked-use-bundle.sh",
+      "sha256": "ce4dc3a2321293231294c6305442398d8cd737512d8b50b80ee01d47ec91c9bb"
     },
     {
       "path": "skills/open-computer-use/SKILL.md",
-      "sha256": "4d5ac06972f8928d0df6b1f2c129ffc29ccd474437fb61a313e801bd4bf475c1"
+      "sha256": "3ea4f82cedbe8fb46bb2cf4a1781eebe51e1fad2091a6e5c702f741d31740d5b"
     },
     {
       "path": "skills/open-computer-use/agents/openai.yaml",
@@ -1574,15 +3414,15 @@
     },
     {
       "path": "skills/open-computer-use/references/installation.md",
-      "sha256": "a8a5477aadf09eb486f6d41120afbd67ec348f0fe626e5bb8cde3b4086d1fc34"
+      "sha256": "aaedb9c7fb5957b2ba824fdd6f29215a8ce4dfd387bbfb0d8a6fe795ae56793a"
     },
     {
       "path": "skills/open-computer-use/references/troubleshooting.md",
-      "sha256": "ff9a4006f443ef9ab32689913d28bb2b0693a1f6187226becc837ea554921785"
+      "sha256": "1d26991774330adb9d0317f1fd0f1d8bc83b0216df70bab5289e847051514291"
     },
     {
       "path": "skills/open-computer-use/references/usage.md",
-      "sha256": "49fb06d5dfc6d4581994ba0fdc83413d45622e118d93b4a7b7a148ea26508388"
+      "sha256": "20fe1fa395b7cbb3cfa70e77dce8bd17456a34c26662f015df8e23c7f5416f14"
     }
   ]
 }

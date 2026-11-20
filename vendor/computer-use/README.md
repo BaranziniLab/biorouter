@@ -24,10 +24,41 @@ reach a fresh clone is worse than one that fails outright.
 The manifest's `excluded` list records files deliberately omitted from upstream.
 Some are artwork extracted from another vendor's application for reverse
 engineering notes; upstream's MIT licence does not cover that artwork. The
-official plugin archive directory and its Git LFS rule are also omitted
-because the ZIP contents are unavailable in this repository's LFS storage.
-They are documentation references, not build inputs. Historical upstream
-documentation under `source/docs/` still describes those archives.
+notes about that vendor's plugin archives, upstream's root `.gitattributes`
+(a nested one would apply its rules to this repository's checkout) and one
+README screenshot whose photograph is not shown to be upstream's own are also
+omitted. They are documentation references, not build inputs. Upstream
+documentation under `source/docs/` still mentions some of them.
+
+### What this helper includes
+
+The pin is upstream 1.1.5 with patch set `biorouter-4`:
+
+- `0001-branding`: BioRouter bundle names, identifier and cursor.
+- `0002-native-capture-isolation`: `screen_capture`, `doctor --json` readiness,
+  per-connection state and cancellation, exact window association, strict
+  numeric arguments, typed and verified `set_value`, measured page scrolling,
+  and the consented Windows drag. Its history note records what the 1.1.5
+  rebase took from upstream instead.
+- `0004-copilot-prompts` and `0005-copilot-accessibility-guidance`: the helper's
+  own text says Biorouter Copilot. The model never reads it; the tool contract
+  it sees comes from `crates/biorouter-mcp/src/computer_use/contract.rs`.
+- `0006-offline-build`: removes the remote libwebp package, so the build stays
+  offline. WebP screenshots are unavailable; PNG and JPEG remain.
+- `0007-biorouter-contract`: MCP advertises and accepts exactly the ten tools,
+  with their earlier arguments. Upstream's `query` and `select_text`, the
+  `include_ax`, `include_screenshot`, `window_placement` and `key_method`
+  options, and Locked Use (unlocking a locked Mac through a root broker) are
+  not available. A locked Mac is refused. On Windows a key chord uses real keys
+  when the host allows global input, because window messages cannot carry
+  modifiers.
+
+Upstream 1.1.5 starts PowerShell without a console window itself (upstream
+#160), so the former `0003-windows-console` patch is gone and
+`scripts/test-computer-use-windows-console.py` builds its pre-fix baseline by
+removing that one call. The daemon points `OPEN_COMPUTER_USE_CONFIG_FILE` at a
+missing file, so upstream's per-user `~/.config/ocu/config.json` cannot change
+Biorouter's helper.
 
 ### Checking for upstream changes
 

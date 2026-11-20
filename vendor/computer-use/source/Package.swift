@@ -8,6 +8,9 @@ let package = Package(
         .macOS(.v14),
     ],
     products: [
+        .executable(name: "OCULockInstaller", targets: ["OCULockInstaller"]),
+        .executable(name: "OCULockService", targets: ["OCULockService"]),
+        .executable(name: "OCUGuardian", targets: ["OCUGuardian"]),
         .library(
             name: "OpenComputerUseKit",
             targets: ["OpenComputerUseKit"]
@@ -33,9 +36,42 @@ let package = Package(
             targets: ["StandaloneCursor"]
         ),
     ],
+    dependencies: [
+        .package(url: "https://github.com/SDWebImage/libwebp-Xcode.git", exact: "1.6.0"),
+    ],
     targets: [
         .target(
+            name: "OpenComputerUseVirtualDisplayShim",
+            path: "packages/OpenComputerUseVirtualDisplayShim",
+            publicHeadersPath: "include",
+            linkerSettings: [
+                .linkedFramework("CoreGraphics"),
+            ]
+        ),
+        .target(
+            name: "LockedUseNative",
+            path: "packages/LockedUseNative",
+            publicHeadersPath: "include",
+            linkerSettings: [.linkedLibrary("bsm")]
+        ),
+        .executableTarget(
+            name: "OCULockInstaller",
+            dependencies: ["OpenComputerUseKit", "LockedUseNative"],
+            path: "experiments/LockedUse/Sources/Installer"
+        ),
+        .executableTarget(
+            name: "OCULockService",
+            dependencies: ["OpenComputerUseKit", "LockedUseNative"],
+            path: "experiments/LockedUse/Sources/Broker"
+        ),
+        .executableTarget(
+            name: "OCUGuardian",
+            dependencies: ["OpenComputerUseKit"],
+            path: "experiments/LockedUse/Sources/Guardian"
+        ),
+        .target(
             name: "OpenComputerUseKit",
+            dependencies: ["OpenComputerUseVirtualDisplayShim", "LockedUseNative", .product(name: "libwebp", package: "libwebp-Xcode")],
             path: "packages/OpenComputerUseKit/Sources/OpenComputerUseKit"
         ),
         .executableTarget(
@@ -70,6 +106,16 @@ let package = Package(
             name: "OpenComputerUseKitTests",
             dependencies: ["OpenComputerUseKit"],
             path: "packages/OpenComputerUseKit/Tests/OpenComputerUseKitTests"
+        ),
+        .testTarget(
+            name: "GuardianInputTests",
+            dependencies: ["OCUGuardian"],
+            path: "experiments/LockedUse/Tests/GuardianInputTests"
+        ),
+        .testTarget(
+            name: "PermissionOnboardingTests",
+            dependencies: ["OpenComputerUse"],
+            path: "apps/OpenComputerUse/Tests/PermissionOnboardingTests"
         ),
         .testTarget(
             name: "StandaloneCursorSupportTests",

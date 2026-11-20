@@ -2,9 +2,9 @@
 
 [![English](https://img.shields.io/badge/English-Click-yellow)](./README.md)
 [![简体中文](https://img.shields.io/badge/简体中文-点击查看-orange)](./README.zh-CN.md)
-[![Release](https://img.shields.io/github/v/release/iFurySt/open-codex-computer-use)](https://github.com/iFurySt/open-codex-computer-use/releases)
-[![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/iFurySt/open-codex-computer-use)
-<a href="https://llmapis.com?source=https%3A%2F%2Fgithub.com%2FiFurySt%2Fopen-codex-computer-use" target="_blank"><img src="https://llmapis.com/api/badge/iFurySt/open-codex-computer-use" alt="LLMAPIS" width="20" /></a>
+[![Release](https://img.shields.io/github/v/release/iFurySt/open-computer-use)](https://github.com/iFurySt/open-computer-use/releases)
+[![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/iFurySt/open-computer-use)
+<a href="https://llmapis.com?source=https%3A%2F%2Fgithub.com%2FiFurySt%2Fopen-computer-use" target="_blank"><img src="https://llmapis.com/api/badge/iFurySt/open-computer-use" alt="LLMAPIS" width="20" /></a>
 
 > [!TIP]
 > Interested in Browser Use? Check out [open-browser-use](https://github.com/iFurySt/open-codex-browser-use).
@@ -37,6 +37,14 @@ https://github.com/user-attachments/assets/e036b1c8-2200-4896-abd4-19225915cf66
 
 <sub><em>`open-computer-use` running on Linux.</em></sub>
 
+### Locked Use
+
+Locked Use is now supported on macOS. `OCU` temporarily unlocks your Mac after it has been locked so the agent can continue working, with protective services such as a full-screen shield in place during use.
+
+![Open Computer Use Locked Use screen](./docs/assets/ocu-locked-use.webp)
+
+See the [Locked Use guide](docs/locked-use.en.md) for setup, installed components, and permissions
+
 ## Quick Start
 
 ```bash
@@ -61,6 +69,7 @@ Before using it, install it into your agent:
 ```bash
 # Install into Codex by writing to ~/.codex/config.toml
 open-computer-use install-codex-mcp
+ocu install-codex-mcp
 ```
 
 Or add it to your own client manually:
@@ -82,14 +91,14 @@ Install the skill directly:
 
 ```bash
 # Install for Codex
-npx skills add iFurySt/open-codex-computer-use -g -a codex --skill open-computer-use -y
+npx skills add iFurySt/open-computer-use -g -a codex --skill open-computer-use -y
 npx skills ls -g -a codex | rg 'open-computer-use'
 ```
 
 Install for Claude Code:
 
 ```bash
-npx skills add iFurySt/open-codex-computer-use -g -a claude-code --skill open-computer-use -y
+npx skills add iFurySt/open-computer-use -g -a claude-code --skill open-computer-use -y
 ```
 
 Update an existing global install, including the Codex install created above:
@@ -108,7 +117,6 @@ Besides the MCP JSON config above, you can also use the built-in commands:
 ```bash
 # Install into Codex by writing to ~/.codex/config.toml
 open-computer-use install-codex-mcp
-ocu install-codex-mcp
 
 # Install as a Codex plugin, mainly for Codex App
 open-computer-use install-codex-plugin
@@ -125,11 +133,6 @@ open-computer-use install-gemini-mcp --scope user
 # Install into opencode by writing to ~/.config/opencode/opencode.json (or the active config file)
 open-computer-use install-opencode-mcp
 
-# Install through DeepSeek Harness's generic MCP compatibility path:
-# verifies the server, then writes a profile patch, turn-boundary hook, and skill
-open-computer-use install-dsh-mcp
-./scripts/install-dsh-mcp.sh --profile web --no-hook
-
 # Call a single Computer Use tool and print the MCP-style JSON result
 open-computer-use call list_apps
 ocu call list_apps
@@ -143,40 +146,28 @@ open-computer-use call --calls-file examples/textedit-overlay-seq.json --sleep 0
 # Check permissions; onboarding only opens when something is missing
 open-computer-use doctor
 
-# Run local validation from a source checkout
-make smoke
-OPEN_COMPUTER_USE_STRESS_LOOPS=20 make stress
-make agent-smoke
-make agent-smoke SCENARIO=fixture-full
-node ./scripts/run-agent-smoke-tests.mjs --agents=claude,codex --command=open-computer-use
-node ./scripts/run-agent-smoke-tests.mjs --scenario=fixture --agents=claude,codex --command=open-computer-use
-node ./scripts/run-agent-smoke-tests.mjs --scenario=fixture-full --agents=claude,codex --command=open-computer-use
-OPEN_COMPUTER_USE_HERMES_PROVIDER=anthropic OPEN_COMPUTER_USE_HERMES_MODEL=claude-opus-4-20250514 make agent-smoke AGENTS=hermes SCENARIO=fixture-full
-node ./scripts/run-agent-smoke-tests.mjs --agents=hermes --hermes-provider=anthropic --hermes-model=claude-opus-4-20250514
-node ./scripts/run-agent-smoke-tests.mjs --scenario=fixture --agents=hermes --hermes-provider=anthropic --hermes-model=claude-opus-4-20250514
-node ./scripts/run-agent-smoke-tests.mjs --scenario=fixture-full --agents=hermes --hermes-provider=anthropic --hermes-model=claude-opus-4-20250514 --hermes-max-turns=12
+# macOS: query permission JSON without opening onboarding
+ocu doctor --json
 
 # Show help
 open-computer-use -h
 ocu -h
 ```
 
-## Cursor Motion
+## Global Configuration
 
-Cursor Motion is an open-source cursor motion system for macOS, based on public information shared by members of the Software.Inc team. You can download the app from the [Releases page](https://github.com/iFurySt/open-codex-computer-use/releases).
-
-[![Cursor Motion custom demo cover](./docs/generated/readme-assets/cursor-motion-demo-cover.png)](https://youtu.be/KRUq5GUHv1Q)
+`ocu` supports global configuration starting with version 1.0.0 to accommodate different workflows and use cases. The default configuration file is `~/.config/ocu/config.json`. You can edit the file directly or use the `ocu config` subcommands. See the [configuration guide](docs/configuration.md) for details.
 
 ## Star History
 
-<a href="https://www.star-history.com/?repos=iFurySt%2Fopen-codex-computer-use&type=date&legend=top-left">
+<a href="https://www.star-history.com/?repos=iFurySt%2Fopen-computer-use&type=date&legend=top-left">
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=ifuryst/open-codex-computer-use&type=date&theme=dark&legend=top-left" />
-    <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=ifuryst/open-codex-computer-use&type=date&legend=top-left" />
-    <img alt="Star History Chart for open-computer-use" src="https://api.star-history.com/chart?repos=ifuryst/open-codex-computer-use&type=date&legend=top-left" />
+    <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=ifuryst/open-computer-use&type=date&theme=dark&legend=top-left" />
+    <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=ifuryst/open-computer-use&type=date&legend=top-left" />
+    <img alt="Star History Chart for open-computer-use" src="https://api.star-history.com/chart?repos=ifuryst/open-computer-use&type=date&legend=top-left" />
   </picture>
 </a>
 
 ## License
 
-[MIT](./LICENSE).
+[MIT](./LICENSE)

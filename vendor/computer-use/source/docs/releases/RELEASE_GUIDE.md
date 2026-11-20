@@ -19,7 +19,16 @@
 
 ## 当前 release 入口
 
+GitHub 仓库规范地址是 `https://github.com/iFurySt/open-computer-use`。仓库改名不改变三个既有 npm 包名、CLI 别名、App Bundle ID 或签名团队。新 release notes 使用当前地址；校验器仍接受已发布 notes 的旧仓库链接，历史正文不批量改写。兼容性回归可运行 `node --test scripts/tests/release-notes.test.mjs`。
+
+npm staging 的 `repository.url` 必须与发布所在的 GitHub 仓库一致，否则 provenance / Trusted Publishing 可能失败。改名后应逐个核对 `open-computer-use`、`open-computer-use-mcp`、`open-codex-computer-use-mcp` 的 npm Trusted Publisher，workflow 文件仍为 `release.yml`。`npm publish --dry-run` 和 `npm whoami` 不能验证 GitHub OIDC；可在同一 workflow 文件的临时分支上，使用 GitHub OIDC 向 npm 官方 token-exchange API 验证三个包均返回 HTTP 201，不输出、保存或使用返回的 token，不执行 publish。该检查证明认证可用，完整构建 / provenance / 发布仍以实际发版为准。
+
+publisher 即使已绑定仓库不可变身份、页面仍显示 Valid，也不能据此推断改名后的认证可用：本次迁移的旧名称连接在真实 token exchange 中返回 HTTP 404。应以新仓库名新增连接，沿用原有权限，并验证真实认证。创建连接需要账号所有者逐包完成 npm 的安全密钥二步验证。旧名连接保留为迁移记录，下次正式发版成功后可按需清理；它们不能作为新仓库认证的 fallback。参考 [npm 官方 Trusted Publishing 文档](https://docs.npmjs.com/trusted-publishers/)与 [npm Registry API](https://api-docs.npmjs.com/)。
+
+2026-10-17 的迁移已通过 [真实认证复验](https://github.com/iFurySt/open-computer-use/actions/runs/39012120822)：三个包的 token exchange 均返回 HTTP 201，新连接随后从 Pending validation 变为 Valid。该认证复验没有发布新版本或保存返回的 token，当时 npm 版本仍为 1.1.1。后续 [v1.1.2 正式发布](https://github.com/iFurySt/open-computer-use/actions/runs/39012969782) 已验证四个 job 成功、三个包通过 OIDC 发布，新仓库元信息与 provenance 已进入 registry。
+
 - 本地 staging / 打 tgz：`./scripts/release-package.sh`
+- 本地重新封装 GitHub Release assets：`./scripts/package-github-release-assets.sh --version <version>`
 - 本地构建 Cursor Motion DMG：`./scripts/build-cursor-motion-dmg.sh --configuration release --arch universal --version <version>`
 - 本地 stage npm 包目录：`node ./scripts/npm/build-packages.mjs`
 - 本地 publish：`node ./scripts/npm/publish-packages.mjs`
@@ -28,6 +37,16 @@
 - GitHub Release 正文：`docs/releases/github/vX.Y.Z.md`
 - GitHub Release 页面：workflow 使用审核过的英文 notes 文件创建或更新，不直接引用 PR 标题自动生成正文。
 
+## 参考资料归档 Release
+
+官方 `computer-use` 原始 ZIP 使用独立的 `reference-bundles` tag / Release 分发，下载入口为 `https://github.com/iFurySt/open-computer-use/releases/download/reference-bundles/<filename>`。它只归档研究输入，不属于下面的 patch / minor 软件发版流程，不 bump plugin / npm / App 版本。
+
+- 标记为 pre-release，并显式设置 `--latest=false`，保持正式版本的 latest 下载入口。
+- tag 使用不匹配 `v*` 或 `*.*.*` 的固定名称 `reference-bundles`，避免触发应用与 npm release workflow。
+- 每个附件先校验 SHA-256 和 ZIP 完整性，上传后从公开固定 URL 重新下载并验证；发布说明使用英文。
+- 保留已发布 tag 与文件名，不覆盖既有版本附件；新增版本使用新的文件名，并同步仓库内的下载说明、`SHA256SUMS` 和 Release 中的校验清单。
+- 仓库不再跟踪这些 ZIP 或其 LFS 指针。目录说明见[官方参考包](../references/codex-computer-use-reverse-engineering/assets/official-bundles/computer-use/README.md)。
+
 ## 当前版本源
 
 这个仓库当前有三类 release 版本源：
@@ -35,6 +54,7 @@
 - npm staging 包版本：以 `plugins/open-computer-use/.codex-plugin/plugin.json` 里的 `version` 为准。
 - GitHub Release 正文：以 `docs/releases/github/<tag>.md` 为准，文件名必须与实际 tag 完全一致。
 - `CursorMotion-<version>.dmg` 文件名与 GitHub Release asset 版本：以 release tag 为准；workflow 会把 `vX.Y.Z` 规范化成 `X.Y.Z` 写进 DMG 文件名，也可以在本地显式传 `--version`。
+- Open Computer Use direct-download asset 版本：以 plugin manifest 为准；`package-github-release-assets.sh --version` 会拒绝与 manifest 不一致的版本。
 
 也就是说：
 
@@ -83,13 +103,14 @@ node ./scripts/validate-github-release-notes.mjs --tag v0.1.14
 
 ### 3. 本地验证版本源已经生效
 
-至少跑这四步：
+至少跑这些步骤：
 
 ```bash
 node ./scripts/validate-github-release-notes.mjs --tag v0.1.14
 swift test
 node ./scripts/npm/build-packages.mjs --out-dir dist/release/npm-staging-check
 ./scripts/build-cursor-motion-dmg.sh --configuration release --arch universal --version 0.1.14
+./scripts/package-github-release-assets.sh --version 0.1.14
 ```
 
 然后直接检查 staging 包版本和 DMG 文件名：
@@ -102,9 +123,14 @@ test -x "dist/release/npm-staging-check/open-computer-use/bin/ocu"
 node -e "const bin=require('./dist/release/npm-staging-check/open-computer-use/package.json').bin; if (bin.ocu !== 'bin/ocu') process.exit(1)"
 node -e "if (require('./dist/release/npm-staging-check/open-computer-use/package.json').optionalDependencies) process.exit(1)"
 ls dist/release/cursor-motion/CursorMotion-0.1.14.dmg
+test -f dist/release/github/Open-Computer-Use-0.1.14-macOS-universal.app.zip
+test "$(find dist/release/github -maxdepth 1 -type f -name 'open-computer-use-cli-*' | wc -l | tr -d ' ')" = 4
+(cd dist/release/github && shasum -a 256 -c SHA256SUMS)
 ```
 
 如果这里打印的不是目标版本，或者 DMG 没按目标版本名产出，不要打 tag。
+
+本地 macOS 默认的 Bash 3.2 在 `set -u` 下展开空数组时可能报 `args[@]: unbound variable`，尤其是未显式设置签名 keychain 的 Locked Use 构建。遇到此错误时，将已安装的 Bash 5 所在目录置于该次构建的 PATH 首位，再运行原命令；不要关闭签名或删掉 Locked Use 组件来绕过。CI 使用显式 signing keychain，因此不一定复现本机这条空数组路径。
 
 如果当前 checkout 里已经有和目标版本一致的 `dist/Open Computer Use.app`，也可以临时加 `--skip-build` 跳过重复构建；但在干净 checkout 里不要默认加这个参数，否则 staging 脚本会因为缺少 `dist/Open Computer Use.app` 而失败。
 
@@ -123,10 +149,12 @@ git push origin main
 git push origin v0.1.14
 ```
 
-tag push 后，`.github/workflows/release.yml` 会自动做两件事：
+tag push 后，`.github/workflows/release.yml` 会自动完成：
 
 - 发布 npm 包。
-- 构建 `CursorMotion-0.1.14.dmg`，并创建或更新同名 tag 的 GitHub Release asset。
+- 构建 Open Computer Use 的 macOS app、Linux / Windows CLI 与 skill 直接下载包。
+- 构建 `CursorMotion-0.1.14.dmg`。
+- 等全部构建 job 成功后，一次性创建或更新同名 tag 的 GitHub Release assets。
 
 ### 6. 检查 GitHub Release notes
 
@@ -136,7 +164,7 @@ tag push 后，`.github/workflows/release.yml` 会自动做两件事：
 gh release view v0.1.14 --json body,url
 ```
 
-workflow 会使用 `docs/releases/github/<tag>.md` 创建新 Release；如果 Release 已经存在，则在覆盖上传 DMG 后用同一文件更新正文。GitHub 自动生成 notes 不再是正文来源，因此 PR 标题使用中文也不会改变公开 Release 的语言。
+workflow 会使用 `docs/releases/github/<tag>.md` 创建新 Release；如果 Release 已经存在，则覆盖上传 macOS app、Linux / Windows CLI、skill、checksums、manifest 和 DMG，并用同一文件更新正文。GitHub 自动生成 notes 不再是正文来源，因此 PR 标题使用中文也不会改变公开 Release 的语言。
 
 最低要求：
 
@@ -144,13 +172,17 @@ workflow 会使用 `docs/releases/github/<tag>.md` 创建新 Release；如果 Re
 - `What's Changed` 必须列出本次用户可感知的 1-3 个英文变化。
 - 保留 `Full Changelog` 链接。
 
+### 7. 跟进发布后验证
+
+检查 [发布后待验证](pending-validation.md)，只对本次版本实际包含的修复跟进。发布后按已记录的维护者授权，在对应 issue 告知准确版本号并请报告者复测；更新邀请与反馈状态，不能把待验证项写成已通过。
+
 ## Release 失败时怎么查
 
 ### 1. 先看最新 run
 
 ```bash
-gh run list -R iFurySt/open-codex-computer-use --limit 10
-gh run view -R iFurySt/open-codex-computer-use <run-id> --log-failed
+gh run list -R iFurySt/open-computer-use --limit 10
+gh run view -R iFurySt/open-computer-use <run-id> --log-failed
 ```
 
 ### 2. 重点看哪一类错误
@@ -167,19 +199,31 @@ gh run view -R iFurySt/open-codex-computer-use <run-id> --log-failed
 - `npm error need auth ... You need to authorize this machine using npm adduser`
   - 如果日志显示已经选择 `GitHub Actions OIDC trusted publishing`，优先检查 CI 里的 npm CLI 版本；trusted publishing 需要 npm `11.5.1+`，当前 release workflow 的 npm package job 使用 Node `24` 并显式检查 npm 版本。
   - 如果 npm CLI 版本满足要求仍报这个错误，说明 npmjs.com 包侧还没有把当前 GitHub repo / workflow 文件配置成 trusted publisher。
+- 发布成功后，`npm view` 仍显示旧版本或目标版本返回 404
+  - 先核对 CI 中每个包的 publish 成功日志。registry 元数据的 CDN 响应可能带有 `max-age=300`，短时间内仍返回旧内容；`--prefer-online` 也可能读到同一份边缘缓存。
+  - 可通过 `https://registry.npmjs.org/-/package/<package-name>/dist-tags` 核对实时 dist-tag；待缓存刷新后，再确认三个包的目标版本和 `latest` 一致，避免把传播延迟误判为发布失败。
+  - v1.1.2 曾出现 tarball 已返回 HTTP 200，但版本元数据仍返回 404 的传播窗口。可只读核对带唯一查询参数的完整 packument 辅助定位，最终仍以普通 `npm view` 与实际安装确认，不能用单个缓存响应判断需要重发。
+- `gh attestation verify` 提示 `unsupported tlog public key type: PKIX_ED25519`
+  - 先用新版官方 GitHub CLI 复验。此次本机 `gh 2.49.0` 无法读取新的 Sigstore trusted root，而临时下载并核对官方 archive digest 的 `gh 2.102.0` 验证同一制品成功；旧验证器的不兼容不能据此判定 Release 签名失效。复验应同时限制 `--repo iFurySt/open-computer-use` 与 `--signer-workflow iFurySt/open-computer-use/.github/workflows/release.yml`。
+- attestation 的 `bundle_url` 下载遇到 TLS 超时
+  - 可读取 `gh api repos/iFurySt/open-computer-use/attestations/sha256:<制品摘要>`。如果响应中含有内联 `attestations[].bundle`，将各 bundle 保存为 JSONL，再用 `gh attestation verify <制品> --bundle <JSONL>` 校验；仍须指定上述仓库和 workflow 身份。此方法只更换下载路径，不跳过签名验证；不要把临时签名下载 URL 写进仓库。
 - 构建阶段失败
-  - 优先看 `Build npm release artifacts`、`Build Cursor Motion DMG` 或 Swift 编译错误。
+  - 优先看 `Build npm release artifacts`、`package-github-release-assets.sh` 的架构/归档校验、`Build Cursor Motion DMG` 或 Swift 编译错误。
 - GitHub Release 资产上传失败
-  - 优先看 `Publish Cursor Motion DMG to GitHub Releases`，确认 tag 是否存在、`GH_TOKEN` 权限是否正常，以及生成的 `CursorMotion-<version>.dmg` 路径是否匹配。
+  - 优先看 `publish-github-release` job，确认两个上游 artifact 都已上传、tag 存在、`GH_TOKEN` 权限正常，以及下载后的 asset 路径匹配。
 - publish 认证失败
   - 再去看 `.github/workflows/release.yml`、`scripts/npm/publish-packages.mjs` 和 npm trusted publishing / token fallback 配置。
 
 ## 当前已知边界
 
-- `Open Computer Use` 的 npm release 产物在没有配置 `OPEN_COMPUTER_USE_CODESIGN_P12_BASE64` / `OPEN_COMPUTER_USE_CODESIGN_P12_PASSWORD` 等 secrets 时，仍会退回 ad-hoc signing；配置后会先导入 `Developer ID Application` 证书，再按该 identity 统一签名。
-- `Cursor Motion` 当前 release 资产会优先复用 `OPEN_COMPUTER_USE_CODESIGN_*` 对 app 做 `Developer ID Application` 签名；如果同时配置 `APPLE_NOTARY_API_KEY_P8_BASE64`、`APPLE_NOTARY_KEY_ID`、`APPLE_NOTARY_ISSUER_ID`、`APPLE_DEVELOPER_TEAM_ID`，workflow 会继续对 `.dmg` 执行 notarization 和 staple。
-- 如果上述 secrets 缺失，workflow 会分别退回 ad-hoc signing 或跳过 notarization，而不是阻塞整条 release。
+- `Open Computer Use` 的正式 npm / 直接下载制品需要配置 `OPEN_COMPUTER_USE_CODESIGN_P12_BASE64` / `OPEN_COMPUTER_USE_CODESIGN_P12_PASSWORD`；导入 Developer ID 身份后按同一 team 签名主 App 与 Locked Use 组件。缺少签名时正式发布失败；日常无签名构建可显式关闭 Locked Use 嵌入。
+- tag 发布和手动选择发布 npm 均要求 Open Computer Use 使用 Developer ID 签名，且 `APPLE_NOTARY_*` 与 `APPLE_DEVELOPER_TEAM_ID` secrets 齐全。workflow 会先公证 Locked Use payload，并为授权 bundle / Guardian 附票据，再重签、公证并 staple 外层 `.app`，最后无重编译地刷新 npm 包、app zip、checksums 和 manifest；缺少任一条件、公证不为 `Accepted`、附票据或校验失败都会阻止后续发布。手动只构建（`publish_to_npm=false`）可跳过公证，产物不能当作已公证版本。嵌套组件位于外层资源封印中，不能只在现有外层签名后 staple 子组件。发布前应核对 npm 解包后的授权 bundle 也通过 `stapler validate`，并完成安装后的冷 / 热解锁对比，详见 [冷加载诊断](../references/macos-locked-use-cold-auth-latency.md)。
+- `Cursor Motion` 当前 release 资产必须复用 `OPEN_COMPUTER_USE_CODESIGN_*` 对 app 做 `Developer ID Application` 签名；必须配置 `APPLE_NOTARY_API_KEY_P8_BASE64`、`APPLE_NOTARY_KEY_ID`、`APPLE_NOTARY_ISSUER_ID`、`APPLE_DEVELOPER_TEAM_ID`，workflow 对 `.dmg` 执行 notarization，确认 `Accepted` 后 staple 并 validate，任何失败均阻止 GitHub Release 发布。
+- Open Computer Use 的正式发布必须包含 Locked Use 签名组件，缺少 Apple 签名身份时构建失败，不能静默发布不完整的 App；正式发布不允许跳过公证；离线门槛回归为 `python3 scripts/tests/locked-use-release-policy.test.py`。
+- 签名 release App 默认自动构建并内嵌与主 App 同架构的 Locked Use 组件；支持 native / arm64 / x86_64 / universal。CI 显式设置 OPEN_COMPUTER_USE_INCLUDE_LOCKED_USE=1，制品检查覆盖四个组件的架构和严格嵌套签名。
 - `open-computer-use` npm root 包会内置六个 `os-arch` native artifacts，包体积会比 macOS-only 版本更大；release 前要确认 staging 包里包含 `dist/Open Computer Use.app`、`dist/linux/` 和 `dist/windows/`，并确认 launcher 没有声明 `optionalDependencies`。
+- 直接下载的 Linux / Windows CLI archive 只包含 native CLI / MCP runtime；`ocu js` / `ocu repl` 所需的 Node adapter 继续通过 npm 包分发。
+- macOS direct download 必须保留完整 `.app` bundle；不要单独分发 `Contents/MacOS/OpenComputerUse`，否则无法可靠复用 app-scoped 权限身份。
 
 ## 如果 tag 已经打错了
 
@@ -209,3 +253,7 @@ git push origin :refs/tags/v0.1.14
 - 如果 release 流程本身有变化，这份 `docs/releases/RELEASE_GUIDE.md`
 
 如果一次 release 暴露出新的流程坑，就不要只在聊天里记住，直接补进这份文档。
+
+Locked Use 组件签名同样必须在 CI 临时 signing keychain 可搜索的上下文中执行；仅传 codesign --keychain 不能替代现有的临时搜索列表处理。helper 在成功和失败时均恢复列表，scripts/tests/locked-use-signing.test.sh 用模拟 keychain 回归此边界，不触碰真实用户 keychain。
+
+主 App 与 Locked Use 组件显式以 `codesign --options runtime,library` 签名，确保运行时有 `CS_REQUIRE_LV`；仅启用 Hardened Runtime 不能替代进程校验要求的 Library Validation 标志。构建时 kernel verifier 正例必须通过，不能跳过或放宽生产 requirement。

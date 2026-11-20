@@ -25,10 +25,11 @@ MANIFEST = VENDOR / "source-manifest.json"
 SCHEMA = 1
 
 # Upstream paths that are deliberately NOT vendored. The extracted assets are
-# artwork from another vendor's application, outside upstream's MIT licence.
-# The official bundle archives are reference inputs whose LFS objects are not
-# available in this repository. None of these files is a build input. Record
-# each omission in the manifest so an upstream refresh cannot restore it.
+# artwork from another vendor's application, outside upstream's MIT licence,
+# and the official-bundle notes describe that vendor's archives. One README
+# image carries a photograph that is not shown to be upstream's own. None of
+# these files is a build input. Record each omission in the manifest so an
+# upstream refresh cannot restore it.
 EXCLUDED = [
     (
         "docs/references/codex-computer-use-reverse-engineering/assets/extracted-",
@@ -38,13 +39,19 @@ EXCLUDED = [
     ),
     (
         ".gitattributes",
-        "only configures Git LFS for the omitted official bundle archives; "
-        "not a build input",
+        "a nested .gitattributes would apply its rules to BioRouter's own checkout "
+        "of the vendored tree; upstream's only configured Git LFS for the reference "
+        "archives and is not a build input",
     ),
     (
         "docs/references/codex-computer-use-reverse-engineering/assets/official-bundles/",
-        "official plugin archives are unavailable in this repository's Git LFS "
-        "storage and are documentation references rather than build inputs",
+        "describes a third party's plugin archives, which upstream now distributes "
+        "outside the repository; documentation references rather than build inputs",
+    ),
+    (
+        "docs/assets/ocu-locked-use.webp",
+        "README screenshot whose background photograph and avatar are not shown to "
+        "be upstream's own work; documentation only, and not a build input",
     ),
 ]
 

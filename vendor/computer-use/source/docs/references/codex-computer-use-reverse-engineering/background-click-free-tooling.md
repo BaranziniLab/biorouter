@@ -181,7 +181,7 @@ tail -n 20 /tmp/bgclick-echoapp.log
 - `research/` 下的一次性 Ghidra project。
 - 大体积 `llvm-objdump` / `rabin2 -zz` / strings 原始输出。
 - 临时 Swift package 的 `.build/`。
-- 从官方 bundle 直接导出的二进制或大资源，除非明确放到 `docs/references/.../assets/` 并配合 Git LFS 规则。
+- 从官方 bundle 直接导出的原始 ZIP 或大体积二进制；需要留档时放到独立的 `reference-bundles` Release，在 `docs/references/.../assets/` 中只提交下载说明与校验值。已经用于结论说明的小型提取图片可以继续随文档保留。
 
 可以提交这些内容：
 

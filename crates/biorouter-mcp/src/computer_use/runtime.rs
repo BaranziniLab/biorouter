@@ -226,6 +226,14 @@ impl Runtime {
             format!("biorouter-{}-{installation}", manifest::UPSTREAM_VERSION),
         );
         command.env("OPEN_COMPUTER_USE_ALLOW_GLOBAL_POINTER_FALLBACKS", "1");
+        // The helper reads image and virtual-display settings from the upstream
+        // tool's per-user config file. Point it at a file that does not exist, so
+        // a person's own upstream configuration cannot change Copilot's helper.
+        command.env(
+            "OPEN_COMPUTER_USE_CONFIG_FILE",
+            temporary_files.path().join("ocu-config.json"),
+        );
+        command.env("OPEN_COMPUTER_USE_VIRTUAL_DISPLAY_ENABLED", "false");
         command
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -463,13 +471,14 @@ pub(super) mod tests {
 import json, os, subprocess, sys, time
 with open('tools.json') as f: tools = json.load(f)
 with open('mode') as f: mode = f.read()
+with open('environment.json', 'w') as f: json.dump(dict(os.environ), f)
 count = 0
 for line in sys.stdin:
     request = json.loads(line)
     if 'id' not in request: continue
     method = request['method']
     if method == 'initialize':
-        result = {'protocolVersion':'2025-03-26','serverInfo':{'version':'0.3.5'}}
+        result = {'protocolVersion':'2025-03-26','serverInfo':{'version':'1.1.5'}}
     elif method == 'tools/list': result = tools
     else:
         count += 1
@@ -515,6 +524,24 @@ for line in sys.stdin:
             .unwrap();
         assert_eq!(other.content[0].as_text().unwrap().text, "1");
         assert_eq!(other.is_error, Some(true));
+    }
+
+    #[tokio::test]
+    async fn helper_never_reads_the_upstream_tool_config_of_the_person() {
+        let (root, _runtime) = fixture("success").await;
+        let environment: serde_json::Map<String, Value> =
+            serde_json::from_slice(&std::fs::read(root.path().join("environment.json")).unwrap())
+                .unwrap();
+        let config = environment["OPEN_COMPUTER_USE_CONFIG_FILE"]
+            .as_str()
+            .unwrap();
+        let private = environment["TMPDIR"].as_str().unwrap();
+        assert!(std::path::Path::new(config).starts_with(private));
+        assert!(!std::path::Path::new(config).exists());
+        assert_eq!(
+            environment["OPEN_COMPUTER_USE_VIRTUAL_DISPLAY_ENABLED"],
+            Value::from("false")
+        );
     }
 
     #[tokio::test]

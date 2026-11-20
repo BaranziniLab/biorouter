@@ -12,6 +12,13 @@ public struct ToolResultContentItem: @unchecked Sendable {
         )
     }
 
+    static func screenshotImage(_ data: Data) -> ToolResultContentItem {
+        ToolResultContentItem(dictionary: [
+            "type": "image", "data": data.base64EncodedString(),
+            "mimeType": data.starts(with: [0xff, 0xd8, 0xff]) ? "image/jpeg" : (data.count >= 12 && String(data: data.subdata(in: 8..<12), encoding: .ascii) == "WEBP" ? "image/webp" : "image/png"),
+        ])
+    }
+
     public static func pngImage(_ data: Data) -> ToolResultContentItem {
         ToolResultContentItem(
             dictionary: [
@@ -34,6 +41,13 @@ public struct ToolCallResult: @unchecked Sendable {
 
     public var primaryText: String? {
         content.first(where: { $0.dictionary["type"] as? String == "text" })?.dictionary["text"] as? String
+    }
+
+    /// Plain-text CLI output includes observation notes but never image bytes.
+    public var textContent: String {
+        content.compactMap { item in
+            item.dictionary["type"] as? String == "text" ? item.dictionary["text"] as? String : nil
+        }.joined(separator: "\n")
     }
 
     public var asDictionary: [String: Any] {
