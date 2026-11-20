@@ -109,6 +109,30 @@ test('finds the synthetic profile and offers the import once', async () => {
   expect(sites.sites.map((entry: { site: string }) => entry.site)).toContain('site-a.test');
 });
 
+test('main asks the person itself before reading anything, and Cancel imports nothing (S3)', async () => {
+  const dashboard = site.url('publicA', '/dashboard');
+  const result = await call(
+    'importRun',
+    {
+      profileId: 'Default',
+      logins: true,
+      bookmarks: true,
+      history: true,
+      settings: true,
+      sites: null,
+    },
+    'cancel'
+  );
+  expect(result).toEqual({ ok: false, error: 'The import was cancelled.', cancelled: true });
+  const asked = await call('lastImportConfirmation');
+  expect(asked.message).toBe('Import from Chrome (Work)?');
+  expect(asked.detail).toContain('Logins (cookies) for every site');
+  expect(await call('cookieFlags', 'http://site-a.test/')).toEqual([]);
+  expect((await call('importStatus')).imports).toEqual([]);
+  await call('open', 'dash-cancel', dashboard);
+  await expect.poll(title('dash-cancel')).toBe('Dashboard: signed out');
+});
+
 test('an imported login signs the dashboard in, and removing it signs it out', async () => {
   const dashboard = site.url('publicA', '/dashboard');
   await call('open', 'dash', dashboard);

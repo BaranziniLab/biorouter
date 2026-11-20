@@ -92,6 +92,9 @@ const everything = {
   sites: null,
 };
 
+/** The person chose Import in main's own confirmation. */
+const yes = async () => true;
+
 describe('the Chrome import service (BB-21 to BB-25)', () => {
   it('offers the import once, until it is dismissed or done', async () => {
     const { svc } = service();
@@ -105,8 +108,44 @@ describe('the Chrome import service (BB-21 to BB-25)', () => {
     svc.dismissOffer();
     expect(svc.status().offerFirstUse).toBe(false);
     const fresh = service({ stateDir: path.join(dir, 'other') });
-    await fresh.svc.run(everything);
+    await fresh.svc.run(everything, yes);
     expect(fresh.svc.status().offerFirstUse).toBe(false);
+  });
+
+  it('reads nothing until main’s own confirmation says yes (S3)', async () => {
+    const asked = vi.fn(fixtureKeyProvider(fixture.password, 'darwin'));
+    const { svc, jar, preferences, changed, lines, stateDir } = service({ keyProvider: asked });
+    const before = preferences.get();
+    const confirm = vi.fn(async () => false);
+    const result = await svc.run({ ...everything, sites: ['site-a.test', 'site-b.test'] }, confirm);
+    expect(result).toEqual({ ok: false, error: 'The import was cancelled.', cancelled: true });
+    expect(confirm).toHaveBeenCalledTimes(1);
+    const [text] = confirm.mock.calls[0] as unknown as [{ message: string; detail: string }];
+    expect(text.message).toBe('Import from Chrome (Work)?');
+    for (const line of [
+      'Logins (cookies) for 2 sites',
+      'Bookmarks',
+      'History from the last 90 days',
+      'Settings: search engine, languages and default zoom',
+      'Saved passwords and payment data are never imported.',
+      'macOS will then ask to allow access to Chrome Safe Storage.',
+    ]) {
+      expect(text.detail).toContain(line);
+    }
+    expect(asked).not.toHaveBeenCalled();
+    expect(jar.cookies.size).toBe(0);
+    expect(fs.existsSync(path.join(stateDir, 'imported.json'))).toBe(false);
+    expect(preferences.get()).toEqual(before);
+    expect(changed).toEqual([]);
+    expect(svc.status().imports).toEqual([]);
+    expect(lines.some((line) => line.startsWith('cancelled'))).toBe(true);
+
+    // A confirmation that fails is a Cancel, and the import can be asked again.
+    const failing = await svc.run(everything, async () => {
+      throw new Error('no window');
+    });
+    expect(failing).toMatchObject({ ok: false, cancelled: true });
+    expect((await svc.run(everything, yes)).ok).toBe(true);
   });
 
   it('says nothing is available when no Chrome is found', () => {
@@ -117,7 +156,7 @@ describe('the Chrome import service (BB-21 to BB-25)', () => {
 
   it('imports into the browser, records a summary, and keeps values out of every file', async () => {
     const { svc, jar, store, preferences, changed, lines, stateDir } = service();
-    const result = await svc.run(everything);
+    const result = await svc.run(everything, yes);
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     expect(result.summary).toMatchObject({
@@ -175,7 +214,7 @@ describe('the Chrome import service (BB-21 to BB-25)', () => {
       sameSite: 'lax',
     });
     preferences.set({ acceptLanguages: 'de' });
-    const result = await svc.run(everything);
+    const result = await svc.run(everything, yes);
     if (!result.ok) throw new Error(result.error);
     expect(preferences.get().acceptLanguages).toBe('en-US,en,fr-CA');
 
@@ -196,12 +235,15 @@ describe('the Chrome import service (BB-21 to BB-25)', () => {
 
   it('removes a cookie by its key even after the site refreshed it', async () => {
     const { svc, jar } = service();
-    const result = await svc.run({
-      ...everything,
-      bookmarks: false,
-      history: false,
-      settings: false,
-    });
+    const result = await svc.run(
+      {
+        ...everything,
+        bookmarks: false,
+        history: false,
+        settings: false,
+      },
+      yes
+    );
     if (!result.ok) throw new Error(result.error);
     await jar.set({
       url: 'http://site-a.test/',
@@ -218,8 +260,8 @@ describe('the Chrome import service (BB-21 to BB-25)', () => {
 
   it('replaces an earlier import of the same profile instead of adding a second line', async () => {
     const { svc, jar, store } = service();
-    const first = await svc.run({ ...everything, sites: ['site-a.test'] });
-    const second = await svc.run({ ...everything, bookmarks: false, sites: ['site-b.test'] });
+    const first = await svc.run({ ...everything, sites: ['site-a.test'] }, yes);
+    const second = await svc.run({ ...everything, bookmarks: false, sites: ['site-b.test'] }, yes);
     if (!first.ok || !second.ok) throw new Error('import failed');
     const status = svc.status();
     expect(status.imports).toHaveLength(1);
@@ -234,7 +276,7 @@ describe('the Chrome import service (BB-21 to BB-25)', () => {
     const { svc, jar } = service({
       keyProvider: async () => ({ ok: false, reason: 'not-allowed' }),
     });
-    const result = await svc.run(everything);
+    const result = await svc.run(everything, yes);
     expect(result.ok && result.summary).toMatchObject({ logins: 'not-allowed', bookmarks: 5 });
     expect(jar.cookies.size).toBe(0);
   });
@@ -244,7 +286,7 @@ describe('the Chrome import service (BB-21 to BB-25)', () => {
     const { svc } = service({ platform: 'win32', keyProvider });
     expect(svc.status()).toMatchObject({ loginsSupported: false, asksForKeyAccess: false });
     expect(svc.sites('Default')).toEqual({ readable: false, sites: [], total: 0 });
-    const result = await svc.run(everything);
+    const result = await svc.run(everything, yes);
     expect(result.ok && result.summary.logins).toBe('unsupported');
     expect(keyProvider).not.toHaveBeenCalled();
   });
@@ -252,20 +294,23 @@ describe('the Chrome import service (BB-21 to BB-25)', () => {
   it('refuses a profile it did not find itself', async () => {
     const { svc } = service();
     for (const profileId of ['Profile 9', '../escape', '../../etc', '']) {
-      expect(await svc.run({ ...everything, profileId })).toEqual({
+      expect(await svc.run({ ...everything, profileId }, yes)).toEqual({
         ok: false,
         error: 'That Chrome profile was not found.',
       });
       expect(svc.sites(profileId).readable).toBe(false);
     }
     expect(
-      await svc.run({
-        ...everything,
-        logins: false,
-        bookmarks: false,
-        history: false,
-        settings: false,
-      })
+      await svc.run(
+        {
+          ...everything,
+          logins: false,
+          bookmarks: false,
+          history: false,
+          settings: false,
+        },
+        yes
+      )
     ).toEqual({
       ok: false,
       error: 'Choose something to import.',

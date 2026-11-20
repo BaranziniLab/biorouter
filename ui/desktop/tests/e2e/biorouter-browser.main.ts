@@ -38,6 +38,7 @@ import {
   embeddedBrowserSearchEngine,
 } from '../../src/utils/embeddedBrowser';
 import { chromeImportSource } from '../../src/browser/chromeImport/appSource';
+import type { ImportConfirmationText } from '../../src/browser/chromeImport/confirm';
 import {
   createChromeImportService,
   validImportRequest,
@@ -100,6 +101,7 @@ async function centerOf(contents: WebContents, selector: string) {
 // this run reads only the synthetic profile BIOROUTER_BROWSER_TEST_CHROME_DIR names and derives
 // its key from the fixture password; never a real profile or a real key store.
 let chromeImport: ChromeImportService | null = null;
+let lastImportConfirmation: ImportConfirmationText | null = null;
 function chromeImportService(): ChromeImportService {
   if (chromeImport) return chromeImport;
   const source = chromeImportSource({
@@ -296,11 +298,17 @@ const api = {
   importStatus: () => chromeImportService().status(),
   importProfiles: () => chromeImportService().profiles(),
   importSites: (profileId: string) => chromeImportService().sites(profileId),
-  importRun: (request: unknown) => {
+  // main.ts answers through its own native dialog (S3); the harness answers for the person and
+  // keeps what the dialog would have said.
+  importRun: (request: unknown, answer: 'import' | 'cancel' = 'import') => {
     const valid = validImportRequest(request);
     if (!valid) throw new Error('malformed request');
-    return chromeImportService().run(valid);
+    return chromeImportService().run(valid, async (text) => {
+      lastImportConfirmation = text;
+      return answer === 'import';
+    });
   },
+  lastImportConfirmation: () => lastImportConfirmation,
   importRemove: (id: string) => chromeImportService().remove(id),
   /** The partition's cookies for `url`, without values: names and flags only. */
   cookieFlags: async (url: string) => {

@@ -149,6 +149,21 @@ describe('the import dialog (BB-21)', () => {
     );
   });
 
+  it('returns to the choices without an error when the person cancels main’s confirmation', async () => {
+    const bridge = installImport(status());
+    bridge.run.mockResolvedValueOnce({
+      ok: false,
+      error: 'The import was cancelled.',
+      cancelled: true,
+    } as never);
+    installElectron(bridge);
+    const { dialog } = await openDialog();
+    await userEvent.click(within(dialog).getByTestId('chrome-import-run'));
+    await waitFor(() => expect(bridge.run).toHaveBeenCalled());
+    expect(await within(dialog).findByTestId('chrome-import-run')).toBeTruthy();
+    expect(within(dialog).queryByRole('alert')).toBeNull();
+  });
+
   it('will not import with logins on and no site chosen', async () => {
     const bridge = installImport(status());
     installElectron(bridge);

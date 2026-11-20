@@ -252,6 +252,7 @@ import {
   validImportRequest,
   type ChromeImportService,
 } from './browser/chromeImport/service';
+import type { ImportConfirmationText } from './browser/chromeImport/confirm';
 import { heicToPng } from './utils/heicConvert';
 import {
   managedAppHasFocusedField,
@@ -5686,11 +5687,34 @@ ipcMain.handle('biorouter-browser-import:sites', (event, payload: { profileId?: 
     : { readable: false, sites: [], total: 0 }
 );
 
+/**
+ * S3: the import's own confirmation, a native dialog this process shows over the window that
+ * asked. A page cannot answer it, so a compromised or buggy renderer cannot start an import
+ * alone; the service reads nothing from the profile but its name before the answer.
+ */
+async function confirmChromeImport(
+  owner: BrowserWindow,
+  text: ImportConfirmationText
+): Promise<boolean> {
+  if (owner.isDestroyed()) return false;
+  const { response } = await dialog.showMessageBox(owner, {
+    type: 'question',
+    buttons: ['Cancel', text.confirmLabel],
+    defaultId: 1,
+    cancelId: 0,
+    noLink: true,
+    message: text.message,
+    detail: text.detail,
+  });
+  return response === 1;
+}
+
 ipcMain.handle('biorouter-browser-import:run', async (event, payload: unknown) => {
-  if (!browserImportOwner(event)) return { ok: false, error: 'This window cannot import.' };
+  const owner = browserImportOwner(event);
+  if (!owner) return { ok: false, error: 'This window cannot import.' };
   const request = validImportRequest(payload);
   if (!request) return { ok: false, error: 'The import request was malformed.' };
-  return chromeImportService().run(request);
+  return chromeImportService().run(request, (text) => confirmChromeImport(owner, text));
 });
 
 ipcMain.handle('biorouter-browser-import:remove', async (event, payload: { id?: unknown }) => {

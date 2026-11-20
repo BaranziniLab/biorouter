@@ -104,4 +104,14 @@ describe('the Chrome import census (BB-21)', () => {
       expect(body, channel).toMatch(/browserImportOwner\(event\)/);
     }
   });
+
+  it('the import starts only after main’s own native confirmation (S3)', () => {
+    const main = fs.readFileSync(path.join(DESKTOP, 'src/main.ts'), 'utf8');
+    const start = main.indexOf("ipcMain.handle('biorouter-browser-import:run'");
+    const body = main.slice(start, main.indexOf('ipcMain.handle(', start + 1));
+    expect(body).toMatch(/\.run\(request, \(text\) => confirmChromeImport\(owner, text\)\)/);
+    const confirm = main.slice(main.indexOf('async function confirmChromeImport'));
+    expect(confirm.slice(0, 600)).toMatch(/dialog\.showMessageBox\(owner,/);
+    expect(confirm.slice(0, 600)).toMatch(/return response === 1;/);
+  });
 });

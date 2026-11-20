@@ -146,4 +146,5 @@ export type ChromeImportRequest = {
 
 export type ChromeImportResult =
   | { ok: true; summary: ChromeImportSummary }
-  | { ok: false; error: string };
+  /** `cancelled` when the person chose Cancel in main's own confirmation. */
+  | { ok: false; error: string; cancelled?: true };

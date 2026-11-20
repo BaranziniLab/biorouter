@@ -151,7 +151,8 @@ export function ChromeImportDialog({
     });
     await refreshChromeImportStatus();
     if (!result.ok) {
-      setError(result.error);
+      // Cancel in the app's own confirmation is the person's answer, not a failure.
+      setError(result.cancelled ? null : result.error);
       setStep({ kind: 'choose' });
       return;
     }

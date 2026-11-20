@@ -9,6 +9,7 @@ import type {
   ChromeImportSites,
   ChromeImportStatus,
 } from '../types';
+import { importConfirmation, type ConfirmImport } from './confirm';
 import { cookieSite, type ElectronCookieDetails, type ImportedCookieKey } from './cookies';
 import { planCookieSites, runChromeImport, type AppliedSettings, type ImportLog } from './importer';
 import type { KeyProvider } from './keyProvider';
@@ -139,7 +140,11 @@ export function createChromeImportService(deps: ChromeImportServiceDeps) {
       writeManifest(deps.stateDir, manifest);
     },
 
-    async run(request: ChromeImportRequest): Promise<ChromeImportResult> {
+    /**
+     * Import what `request` names, once `confirm` (main's own native dialog, S3) says the person
+     * chose to. Nothing in the profile but its name is read before that answer.
+     */
+    async run(request: ChromeImportRequest, confirm: ConfirmImport): Promise<ChromeImportResult> {
       if (running) return { ok: false, error: 'An import is already running.' };
       const profile = profiles().find((candidate) => candidate.id === request.profileId);
       const dir =
@@ -149,6 +154,17 @@ export function createChromeImportService(deps: ChromeImportServiceDeps) {
         return { ok: false, error: 'Choose something to import.' };
       }
       running = true;
+      let confirmed = false;
+      try {
+        confirmed = await confirm(importConfirmation(request, profile.name, deps.platform));
+      } catch {
+        confirmed = false;
+      }
+      if (!confirmed) {
+        running = false;
+        deps.log('cancelled', {});
+        return { ok: false, error: 'The import was cancelled.', cancelled: true };
+      }
       try {
         const manifest = readManifest(deps.stateDir);
         const previous = manifest.imports.find(
@@ -222,6 +238,9 @@ export function createChromeImportService(deps: ChromeImportServiceDeps) {
           profileName: profile.name,
           importedAt: now(),
           logins: request.logins ? report.logins : (previous?.logins ?? 'not-chosen'),
+          loginsMissingKey: request.logins
+            ? report.loginsMissingKey
+            : (previous?.loginsMissingKey ?? null),
           cookies: cookieKeys.length,
           cookieSites: new Set(cookieKeys.map((key) => cookieSite(new URL(key.url).hostname))).size,
           skipped: request.logins ? sum(report.cookies.skipped) : (previous?.skipped ?? 0),
