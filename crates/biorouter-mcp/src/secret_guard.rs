@@ -2212,6 +2212,261 @@ mod tests {
             );
         }
     }
+
+    /// The R script of `issue546_quoted_r_data_is_not_a_shell_path`. Its
+    /// `res$IHS[…]` is refused whenever the body is read as a script this
+    /// command runs, which makes it a probe for whether a body was classified
+    /// as data.
+    const ISSUE546_R_BODY: &str =
+        "res <- data.frame(IHS = c(1, Inf))\nres$IHS[is.finite(res$IHS)]\n";
+
+    /// A Windows host reads the input under both grammars, and the Windows
+    /// reading keeps `\` literal. The delimiter is still read the POSIX way, so
+    /// `<<\EOF` ends at `EOF` and the body is data under both readings; and the
+    /// grammar comes back for the words after it.
+    #[test]
+    fn issue546_a_windows_host_reads_every_quoted_delimiter_as_data() {
+        let fake = FakeHome::new();
+        let (g, env) = (fake.guard(), fake.env());
+        let bases = [resolve::Base::Dir(fake.project.clone())];
+        for delimiter in ["'EOF'", "\"EOF\"", "\\EOF", "'E'OF"] {
+            for target in ["summarize.R", r"out\summarize.R"] {
+                let command = format!("cat > {target} <<{delimiter}\n{ISSUE546_R_BODY}EOF\n");
+                for windows_host in [true, false] {
+                    assert!(
+                        resolve::Resolver::new(&g, &env)
+                            .scan_command_as_host(&command, &bases, windows_host)
+                            .is_ok(),
+                        "{command:?} (windows host: {windows_host})"
+                    );
+                }
+                assert!(
+                    resolve::Resolver::new(&g, &env)
+                        .under_one_grammar_for_tests(true, &command, &bases)
+                        .is_ok(),
+                    "the Windows reading alone refused {command:?}"
+                );
+            }
+        }
+        // The floor still holds in that body on a Windows host.
+        for body in [
+            "cd ~/.aws\ncat cred\"\"entials\n",
+            "cat ~/.aws/credentials\n",
+            "cd ~/.aws\ncat cred$(printf e)ntials\n",
+        ] {
+            let command = format!("cat > notes.md <<\\EOF\n{body}EOF\n");
+            assert!(
+                resolve::Resolver::new(&g, &env)
+                    .scan_command_as_host(&command, &bases, true)
+                    .is_err(),
+                "{command:?}"
+            );
+        }
+    }
+
+    /// Only `cat > FILE <<'DELIM'`, alone or beside more of the same, is data.
+    /// Each form below changes one thing, and each puts the R body back under
+    /// the script reading that refuses it.
+    #[test]
+    fn issue546_only_a_plain_file_write_is_data() {
+        let fake = FakeHome::new();
+        let (g, env) = (fake.guard(), fake.env());
+        let r = ISSUE546_R_BODY;
+        for command in [
+            format!("cat > a.R <<'EOF'\n{r}EOF\n"),
+            format!("cat <<'EOF' > a.R\n{r}EOF\n"),
+            format!("> a.R cat <<'EOF'\n{r}EOF\n"),
+            format!("cat >> a.R <<-'EOF'\n\t{r}\tEOF\n"),
+            format!("cat >| a.R <<'EOF'\n{r}EOF\n"),
+            format!("cat > a.R <<'EOF'\n{r}EOF\ncat > b.R <<'EOF'\n{r}EOF\n"),
+            format!("cat > a.R <<'A' && cat > b.md <<\"B\"\n{r}A\n{r}B\n"),
+        ] {
+            assert_eq!(scan_command(&g, &env, &command), None, "{command}");
+        }
+        for command in [
+            // Something else in the same input could run what was written.
+            format!("cat > a.R <<'EOF'\n{r}EOF\nRscript a.R\n"),
+            format!("mkdir -p out && cat > a.R <<'EOF'\n{r}EOF\n"),
+            format!("cat > a.R <<'EOF'\n{r}EOF\nbash a.R\n"),
+            // The output goes somewhere that may run it.
+            format!("cat <<'EOF' | tee a.R\n{r}EOF\n"),
+            format!("cat > a.R <<'EOF' | sh\n{r}EOF\n"),
+            format!("(cat > a.R <<'EOF'\n{r}EOF\n)"),
+            format!("cat <<'EOF'\n{r}EOF\n"),
+            format!("cat 2>&1 <<'EOF'\n{r}EOF\n"),
+            // Not bare `cat`, or not only one file.
+            format!("sudo cat > a.R <<'EOF'\n{r}EOF\n"),
+            format!("X=1 cat > a.R <<'EOF'\n{r}EOF\n"),
+            format!("\\cat > a.R <<'EOF'\n{r}EOF\n"),
+            format!("cat -v > a.R <<'EOF'\n{r}EOF\n"),
+            format!("cat - > a.R <<'EOF'\n{r}EOF\n"),
+            format!("cat > a.R > b.R <<'EOF'\n{r}EOF\n"),
+            format!("cat > \"$OUT\" <<'EOF'\n{r}EOF\n"),
+            format!("cat > a.R <<'EOF' <<'EOG'\n{r}EOF\n{r}EOG\n"),
+            // A delimiter that does not make the body plain text everywhere.
+            format!("cat > a.R <<EOF\n{r}EOF\n"),
+            format!("cat > a.R <<$'EOF'\n{r}EOF\n"),
+            format!("cat > a.R <<'EOF'\n{r}"),
+            format!("cat > a.R <<'EOF'\n{r}EOF\r\n"),
+        ] {
+            assert!(
+                scan_command(&g, &env, &command).is_some(),
+                "a form that is not a plain file write was read as data: {command:?}"
+            );
+        }
+    }
+
+    /// The lexer reads `\r` as a blank and the shell reads it as part of a
+    /// word, so after `<<'EOF'\r` the shell's delimiter is `EOF\r`. Its body
+    /// then ends at the first `EOF\r` line, and what this lexer would call the
+    /// rest of the body runs as commands. Such a body is never data.
+    #[test]
+    fn issue546_a_carriage_return_after_the_delimiter_is_never_data() {
+        let fake = FakeHome::new();
+        issue546_assert_heredoc_denied(
+            &fake,
+            "cat > a.md <<'EOF'\r\nEOF\r\ncd \"$(echo ~/.aws)\"\ncat credentials\nEOF\n",
+        );
+    }
+
+    /// The secret floor reads every word of a data body, whatever program the
+    /// line starts with, so a link or a spelling trick is refused in any
+    /// position.
+    #[test]
+    #[cfg(unix)]
+    fn issue546_aliases_in_any_position_of_a_data_body_are_refused() {
+        let fake = FakeHome::new().with_links();
+        for body in [
+            "head creds-link",
+            "X=1 cat creds-link",
+            "unknownprefix aws-link/credentials",
+            "creds-link",
+            "less aws-link/cred*",
+            "head ~/.a\"ws\"/credentials",
+            "printf '%s' \"$(cat creds-link)\"",
+            "Use `cat creds-link` to check.",
+        ] {
+            issue546_assert_heredoc_denied(
+                &fake,
+                &format!("cat > notes.md <<'EOF'\nprose first\n{body}\nEOF\n"),
+            );
+        }
+    }
+
+    /// Prose stops spending the symlink budget, and nothing else does: a link
+    /// in a data body after more real files than the budget covers, or after
+    /// more path-looking words than the code pass reads, is still refused, and
+    /// so is an unstable name that the disk answers with anything but "not
+    /// found".
+    #[test]
+    #[cfg(unix)]
+    fn issue546_a_data_body_keeps_the_budget_for_real_files_and_links() {
+        let fake = FakeHome::new().with_links();
+        let (g, env) = (fake.guard(), fake.env());
+        let many = fake.project.join("many");
+        fs::create_dir_all(&many).unwrap();
+        let mut files = Vec::new();
+        for i in 0..600 {
+            fs::write(many.join(format!("f{i}.txt")), "x\n").unwrap();
+            files.push(format!("many/f{i}.txt"));
+        }
+        // The control: the same body without the link is allowed.
+        let files = files.join(" ");
+        let plain = format!("cat > notes.md <<'EOF'\nreader {files}\nEOF\n");
+        assert_eq!(scan_command(&g, &env, &plain), None);
+        // 600 real files, then a link.
+        issue546_assert_heredoc_denied(
+            &fake,
+            &format!("cat > notes.md <<'EOF'\nreader {files} creds-link\nEOF\n"),
+        );
+        // More than 2048 path-looking words, then a link.
+        let long: Vec<String> = (0..2100)
+            .map(|i| format!("many/f{}.txt", i % 600))
+            .collect();
+        issue546_assert_heredoc_denied(
+            &fake,
+            &format!(
+                "cat > notes.md <<'EOF'\n{}\nreader creds-link\nEOF\n",
+                long.join("\n")
+            ),
+        );
+        // `data.csv/x.` is "not a directory", not "not found": resolved, and
+        // past the budget an unstable name is unverifiable.
+        let words: Vec<String> = (0..600).map(|i| format!("data.csv/x{i}.")).collect();
+        issue546_assert_heredoc_denied(
+            &fake,
+            &format!("cat > notes.md <<'EOF'\n{}\nEOF\n", words.join(" ")),
+        );
+    }
+
+    /// A zsh `(D)` in a data body turns dot-file globbing on for that body,
+    /// as it would if the body ran, and for nothing else in the command.
+    #[test]
+    fn issue546_dot_globbing_stays_inside_its_data_body() {
+        let fake = FakeHome::new();
+        fs::write(fake.project.join(".env"), "TOKEN=fixture\n").unwrap();
+        let (g, env) = (fake.guard(), fake.env());
+        assert!(scan_command(&g, &env, "cat > a.zsh <<'EOF'\nls *(D)\nEOF\n").is_some());
+        assert!(scan_command(
+            &g,
+            &env,
+            "cat > a.sh <<'EOF'\nshopt -s dotglob\ncat *\nEOF\n"
+        )
+        .is_some());
+        for command in [
+            "cat > a.md <<'EOF'\nGrade (D) students\nEOF\ncat > b.md <<'EOF'\n* item\nEOF\n",
+            "cat > a.sh <<'EOF'\nshopt -s dotglob\nEOF\ncat > b.md <<'EOF'\n* item\nEOF\n",
+        ] {
+            assert_eq!(scan_command(&g, &env, command), None, "{command}");
+        }
+    }
+
+    /// A data body is one level deeper, like any nested script, so nesting
+    /// past the limit inside it is still refused.
+    #[test]
+    fn issue546_nesting_inside_a_data_body_keeps_the_limit() {
+        let fake = FakeHome::new();
+        let (g, env) = (fake.guard(), fake.env());
+        // The body is one level, so four `sh -c` inside it is five: past the
+        // limit of four, exactly as it was before data bodies existed.
+        let mut deep = "echo hi".to_string();
+        for _ in 0..4 {
+            deep = format!("sh -c {}", shell_quote(&deep));
+        }
+        issue546_assert_heredoc_denied(&fake, &format!("cat > x.sh <<'EOF'\n{deep}\nEOF\n"));
+        let mut shallow = "echo hi".to_string();
+        for _ in 0..3 {
+            shallow = format!("sh -c {}", shell_quote(&shallow));
+        }
+        assert_eq!(
+            scan_command(&g, &env, &format!("cat > x.sh <<'EOF'\n{shallow}\nEOF\n")),
+            None
+        );
+    }
+
+    /// Code read from stdin names files by strings with no `/` in them. A
+    /// string that is a protected path is refused when the body is a script
+    /// or code; a data body that only mentions one reads nothing.
+    #[test]
+    fn issue546_code_from_stdin_is_judged_by_its_strings() {
+        let fake = FakeHome::new();
+        fs::write(fake.project.join(".env"), "TOKEN=fixture\n").unwrap();
+        let (g, env) = (fake.guard(), fake.env());
+        for command in [
+            "python3 - <<'EOF'\nprint(open('.env').read())\nEOF\n",
+            "python - <<'EOF'\nprint(open(\".env\").read())\nEOF\n",
+            "node <<'EOF'\nrequire('fs').readFileSync(\"id_ed25519\")\nEOF\n",
+            "cat <<'EOF' | python3\nopen('secrets.yaml')\nEOF\n",
+        ] {
+            issue546_assert_heredoc_denied(&fake, command);
+        }
+        for command in [
+            "python3 - <<'EOF'\nprint('hello, world')\nprint(open(\"data.csv\").read())\nEOF\n",
+            "cat > load.py <<'EOF'\nprint(open('.env').read())\nEOF\n",
+        ] {
+            assert_eq!(scan_command(&g, &env, command), None, "{command}");
+        }
+    }
 }
 
 // External candidate: append to secret_guard.rs after the existing test modules.

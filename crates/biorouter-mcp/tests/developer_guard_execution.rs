@@ -232,6 +232,51 @@ async fn issue546_real_shell_refuses_executable_stdin_and_a_later_secret_read_be
     );
 }
 
+/// The guard decides where a quoted here-document ends without running it, so
+/// the real shell has to end it at the same line for every quoting it accepts:
+/// each file below must hold the body exactly, and nothing after it.
+#[tokio::test]
+async fn issue546_real_shell_ends_every_quoted_delimiter_where_the_guard_does() {
+    let root = fixture();
+    let body = "res <- data.frame(IHS = c(1, Inf))\nres$IHS[is.finite(res$IHS)]\n";
+    let delimiters = ["'EOF'", "\"EOF\"", "\\EOF", "'E'OF"];
+    let commands: Vec<String> = delimiters
+        .iter()
+        .enumerate()
+        .map(|(i, delimiter)| format!("cat > out{i}.R <<{delimiter}\n{body}EOF\n"))
+        .collect();
+    let outcomes = call_real_tools(root.path(), commands.iter().map(|c| shell(c)).collect()).await;
+    for (i, outcome) in outcomes.iter().enumerate() {
+        text(outcome);
+        assert_eq!(
+            std::fs::read_to_string(root.path().join(format!("out{i}.R"))).unwrap(),
+            body,
+            "{}",
+            delimiters[i]
+        );
+    }
+}
+
+#[tokio::test]
+async fn issue546_real_shell_refuses_code_from_stdin_that_opens_a_secret_by_name() {
+    let root = fixture();
+    let outcomes = call_real_tools(
+        root.path(),
+        vec![shell(
+            "printf launched > code-launch-marker; python3 - <<'EOF'\nopen('copy.txt', 'w').write(open('config/.env').read())\nEOF\n",
+        ), shell(
+            "printf launched > bare-launch-marker; cd config && python3 - <<'EOF'\nprint(open('.env').read())\nEOF\n",
+        )],
+    )
+    .await;
+    for outcome in &outcomes {
+        refused(outcome);
+    }
+    for name in ["code-launch-marker", "bare-launch-marker", "copy.txt"] {
+        assert!(!root.path().join(name).exists(), "{name}");
+    }
+}
+
 #[tokio::test]
 async fn issue538_real_log_read_does_not_authorize_a_sibling_daemon_credential() {
     let root = fixture();
