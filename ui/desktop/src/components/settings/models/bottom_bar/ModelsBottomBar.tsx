@@ -717,7 +717,8 @@ export default function ModelsBottomBar({
           side="top"
           align="end"
           sideOffset={menuSideOffset}
-          className="w-72"
+          // The composer popovers' one width (`--composer-popover-width`), shared with the `+`.
+          className="br-model-menu"
           aria-describedby={notes ? notesId : undefined}
           // The menu's arrow keys visit rows only, and Tab leaves the menu; this adds the selected
           // effort segment and the InfoTips (the two About glyphs, the affiliation badge).
@@ -751,7 +752,7 @@ export default function ModelsBottomBar({
               )}
             </div>
             {providerLine && (
-              // Read whole at the menu's 288px, never cut (live QA, 2026-11-12: "Llama
+              // Read whole at the menu's 288px (`--composer-popover-width`), never cut (live QA, 2026-11-12: "Llama
               // Server · Private …" and "On this mac…"). The provider and the tier are one
               // line that wraps; who covers the model is its own line, glyph first, so a
               // wrap never strands a "·" at the start of a line.

@@ -54,7 +54,11 @@ const TOKEN_NAMES = [
   '--dur-fast-max',
   '--ease-out',
   '--ease-spring',
+  '--composer-popover-width',
 ];
+
+/** The width the composer's two popovers share (main.css), in pixels. */
+const POPOVER_WIDTH = Number(MAIN_CSS.match(/\n\s*--composer-popover-width:\s*(\d+)px;/)?.[1]);
 
 /** The first declaration of each token in main.css, so a token change reaches this test. */
 function readTokens(): string {
@@ -442,10 +446,11 @@ describe('the + popover keeps its segmented control above the + (R-25)', () => {
             m.list.bottom - EPSILON
           );
           // Opened on the composer card's left edge, 9px left of the `+` (the card's 1px border
-          // and 8px padding, `PLUS_INSET_IN_CARD` in ComposerPlusMenu.tsx), at the width that
-          // keeps four whole words.
+          // and 8px padding, `PLUS_INSET_IN_CARD` in ComposerPlusMenu.tsx), at the width the model
+          // menu takes too (`--composer-popover-width`).
           near(m.popover.left, m.plus.left - 9, `${where}: popover left`);
-          near(m.popover.width, 344, `${where}: popover width`);
+          expect(POPOVER_WIDTH, 'main.css declares the shared width').toBeGreaterThan(0);
+          near(m.popover.width, POPOVER_WIDTH, `${where}: popover width`);
           // ...and not one pixel away from where it was on the first list.
           near(m.control.top, first.control.top, `${where}: control top`);
           near(m.control.left, first.control.left, `${where}: control left`);

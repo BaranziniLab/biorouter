@@ -162,10 +162,11 @@ function grantScope(descendants: boolean): string {
 }
 
 /**
- * The working folder's card (`FolderAccessCard`, a `FooterCard`): it opens from the footer's folder
- * chip and names the folder the chat works in, lets an empty chat choose another, and lists every
- * other folder the chat may use, each with Revoke. It replaced the footer's "Folder access" button
- * and its dialog.
+ * The working folder's card (`FolderAccessCard`, a `FooterCard`): a click on the footer's folder
+ * chip opens it once the chat has messages (an empty chat's click opens the folder chooser
+ * instead). It names the folder the chat works in, says it is fixed, and lists every other folder
+ * the chat may use, each with Revoke. It replaced the footer's "Folder access" button and its
+ * dialog.
  */
 export const FOLDER_ACCESS_COPY = {
   /** The card's accessible name (it is a `dialog`). */
@@ -178,8 +179,6 @@ export const FOLDER_ACCESS_COPY = {
   workingFolderUnknown: 'Not known yet.',
   /** #44: once the chat has messages the folder cannot change, and the card says so. */
   lockedNote: 'Fixed once the chat has messages.',
-  /** The empty chat's way to another folder (the native chooser). */
-  chooseFolder: 'Choose folder…',
   otherFolders: 'Other approved folders',
   /**
    * Its InfoTip's name reads "About other approved folders"; the InfoTip holds when a session
@@ -230,8 +229,17 @@ export const FOOTER_COPY = {
    */
   folderLabel: (dir: string, shown?: string) =>
     shown && !dir.includes(shown) ? `Working folder: ${shown} (${dir})` : `Working folder: ${dir}`,
-  /** The folder item's name while an existing chat's folder is not known yet. */
+  /** The folder item's name while an existing chat's folder is not known yet, and its tooltip. */
   folderUnknownLabel: 'Working folder: not known yet',
+  /**
+   * The folder item's tooltip (the model chip's label tooltip): this, then the folder written as
+   * the app writes one (`~/Desktop/project`), then one line of status below.
+   */
+  folderTooltipLabel: 'Working folder:',
+  /** The status line while a click opens the folder chooser (Home, a chat with no messages yet). */
+  folderChangeHint: 'Click to choose another folder',
+  /** #44: the status line once the chat has messages, when the folder can no longer change. */
+  folderFixedHint: 'Fixed for this chat',
   folderUpdateFailedTitle: 'Working folder update failed',
   folderUpdateFailed: 'The working folder could not be changed.',
   /**

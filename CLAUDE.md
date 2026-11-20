@@ -1473,18 +1473,17 @@ value's *location* is as load-bearing as the number.
   right; the folder and the model on Home. Sending plays a short lift of the sent
   text and Send's arrow (`composer/useSendMotion.ts`, transform and opacity only,
   none under reduced motion), and Send's arrow settles in on the spring when the
-  field goes from empty to written (`data-armed`). The three readout
-  footer items open the same light hover card (`bottom_menu/useFooterCard.ts`,
+  field goes from empty to written (`data-armed`). The two readouts, the
+  context ring and the cost, open the same light hover card (`bottom_menu/useFooterCard.ts`,
   `bottom_menu/FooterCard.tsx`) with one behaviour: a hover previews it after
   300ms and a Tab at once (its trigger holds nothing), a click, tap, Enter or Space keeps it
   (its trigger holds `--background-fill-strong`, `data-pinned`), a hover never
   replaces a kept card, Escape or a press outside closes it, one card is open at
   a time, and it hangs above the composer card. That is the app's one pointer
   rule, "hover peeks, click pins" (`design.md` D-43; `docs/desktop-ui/shared-controls.md`,
-  "Hover and click"). The folder card writes a path as `~/…` in the sans reading
-  (`FooterCardPath`, `utils/folderPath.ts`), never mono. A new footer item
-  uses that card, never a `Tooltip` (`docs/desktop-ui/shared-controls.md`,
-  "Composer footer cards"). The card's classes live in one module,
+  "Hover and click"). A new readout uses that card, never a `Tooltip`
+  (`docs/desktop-ui/shared-controls.md`, "Composer footer cards").
+  The card's classes live in one module,
   `composer/composerCard.ts`, and Home renders the
   same `ChatInput`, so the two never differ. Its surface,
   `composerCardSurfaceClassName`, is also what the in-place message edit card in
@@ -1517,6 +1516,21 @@ value's *location* is as load-bearing as the number.
     `:has()`, so a component test that focuses the textarea and reads
     `borderColor` sees the resting value and passes whether the rule exists or
     not.
+  - **The working folder is a CONTROL, like the model chip** (owner, 2026-11-19,
+    D-43 amended; `bottom_menu/DirSwitcher.tsx`): a hover or Tab shows the app's
+    label `Tooltip` (the model chip's and the microphone's, with
+    `useSurfaceTriggerHint`): "Working folder: ~/…" (`tildePath` + `PathSegments`,
+    `.br-folder-tip__path`, never mono) and one status line. While the chat is empty
+    (Home, or no messages yet) the click opens the native chooser directly, with no
+    card. Once it has messages the folder is fixed (#44; the daemon's
+    `try_update_working_dir_if_empty` answers 409 too), the tooltip says "Fixed for
+    this chat", and the click opens the folder access card (`FolderAccessCard`,
+    kept from the start, never on hover), which lists the chat's other approved
+    folders with Revoke. ⚠ That card is the desktop's and the browser's ONLY revoke
+    control (`docs/security/folder-access.md`); do not drop it to make the locked
+    chip inert. It still joins the line's `FooterCardGroup` (one card at a time).
+    The card writes a path as `~/…` in the sans reading (`FooterCardPath`,
+    `utils/folderPath.ts`), never mono, and has no Choose folder… button.
   - **The `+` popover's switcher never moves** (R-25, owner message 13).
     `composer/ComposerPlusMenu.tsx` (which replaced the `+` menu AND the Tools
     chip, owner 2026-11-13) opens one popover above the `+` holding one list at a
@@ -1524,7 +1538,13 @@ value's *location* is as load-bearing as the number.
     LAST child. A click on `+` always opens on Add (attach files, mention,
     commands, decision monitors: the menu recipe's rows); the other three are the
     tool lists (a search field, a scope line saying where a change applies with
-    Enable all or Disable all, the switch rows). The control rides the
+    Enable all or Disable all, the switch rows). It is the model menu's width
+    (owner, 2026-11-19): ONE token, `--composer-popover-width` (288px, `main.css`),
+    sets both (`.br-plus-popover`, `.br-model-menu`); never write a second literal.
+    At 288px four equal columns cut "Knowledge", so the control runs in `fit` mode,
+    each segment its label plus 4px a side plus an equal share of the room
+    (`composer/composerPopovers.browser.test.tsx` measures both widths and every
+    label whole at the three Text sizes). The control rides the
     popover's bottom edge, 6px above the `+` (`sideOffset`): Radix places a `side="top"` popover by its bottom, so a
     longer or shorter list grows or shrinks it upward. ⚠ `avoidCollisions={false}`
     is load-bearing (collision handling would flip the popover below the chip or

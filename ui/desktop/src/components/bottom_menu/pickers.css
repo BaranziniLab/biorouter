@@ -102,6 +102,13 @@
   display: inline-flex;
 }
 
+/* The model chip's menu (`ModelsBottomBar`), at the width the `+` popover takes
+   too (`--composer-popover-width`, main.css): the composer's two popovers are one
+   family. */
+.br-model-menu {
+  width: var(--composer-popover-width);
+}
+
 /*
  * The Tools popover: one column, the list on top and the segmented control on
  * the bottom edge, directly above the chip (R-25). Radix pins a `side="top"`
@@ -301,7 +308,10 @@
  * Folder, ring and cost: 24px hit areas that read as text until hovered.
  *
  * HOVER PEEKS, CLICK PINS (docs/desktop-ui/shared-controls.md, "Composer footer
- * cards"). Each item is a disclosure trigger, and its states are:
+ * cards"). The ring and the cost are disclosure triggers; the folder is a
+ * control whose hover shows a label tooltip and whose click opens the folder
+ * chooser, or, once the chat has messages, its folder access card, which marks
+ * it kept like the others. Their states are:
  *   - rest: no ground, the muted ink;
  *   - the pointer on it: the ink overlay and the default ink, whether or not its
  *     card shows yet;
@@ -407,12 +417,29 @@ button.br-footline__item[data-pinned] .br-footline__ring-track {
   transition-duration: 0ms;
 }
 
-/* A folder name, never a path: the path is in the chip's card. */
+/* A folder name, never a path: the path is in the chip's label tooltip. */
 .br-footline__name {
   min-width: 0;
   max-width: 240px;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+/* The folder in the folder chip's label tooltip (`DirSwitcher`), drawn in the
+   same pieces as a folder in a footer card (`PathSegments`): a long path breaks
+   after a separator, inside a name only when that name is wider than the
+   tooltip, and a name's own spaces are kept as written. */
+.br-folder-tip__path {
+  overflow-wrap: anywhere;
+}
+
+.br-folder-tip__path .br-path-piece {
+  display: inline-block;
+  max-width: 100%;
+}
+
+.br-folder-tip__path bdi {
+  white-space: pre-wrap;
 }
 
 /*

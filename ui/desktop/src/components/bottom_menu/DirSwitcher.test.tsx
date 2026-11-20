@@ -1,14 +1,17 @@
 import { describe, it, expect, vi, beforeEach, beforeAll, afterAll } from 'vitest';
-import { act, render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { act, render, screen, fireEvent, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 
-// #44 — the empty-chat-only working-directory rule at the chip level. The
-// chip's click pins its card in every state; while the chat is completely
-// empty (both the pre-session #39 path and a fresh zero-message session) the
-// card's Choose folder… opens the chooser, and once the chat has messages the
-// card offers none, so the chip can never reach updateWorkingDir. The card's
-// own behaviour is pinned in FolderAccessCard.test.tsx, and when every footer
-// card opens and closes in useFooterCard.test.tsx.
+// The folder chip is a CONTROL (owner, 2026-11-19): a hover shows the app's
+// label tooltip (the model chip's), naming the folder as `~/…` with one line of
+// status, and a click does the chip's one job with no card in between. #44 —
+// the empty-chat-only working-directory rule at the chip level: while the chat
+// is completely empty (both the pre-session #39 path and a fresh zero-message
+// session) the click opens the native chooser itself; once the chat has
+// messages the click opens the folder access card (the chat's other folders
+// and Revoke), which offers no chooser, so the chip can never reach
+// updateWorkingDir. What the card says is pinned in FolderAccessCard.test.tsx,
+// and when a footer card opens and closes in useFooterCard.test.tsx.
 
 vi.mock('../../api', () => ({
   updateWorkingDir: vi.fn(async () => ({ data: {} })),
@@ -31,6 +34,7 @@ import { ChatState } from '../../types/chatState';
 import { updateWorkingDir } from '../../api';
 import { toastError } from '../../toasts';
 import { FOLDER_ACCESS_COPY, FOOTER_COPY } from './copy';
+import { FOOTER_CARD_OPEN_DELAY_MS } from './useFooterCard';
 
 const WORKING_DIR = '/Users/wgu/Desktop';
 const CHOSEN_DIR = '/Users/wgu/Desktop/data';
@@ -68,8 +72,8 @@ beforeEach(() => {
  * Spec 3.7: the footer names the FOLDER, never the path, in both states (names,
  * not IDs or paths, principle 10), with the word the sidebar's folder groups use
  * (`folderName`, utils/folderPath.ts, whose own cases are folderPath.test.ts's).
- * The path is one hover away, in the card. The name sits in a `<bdi>` so a
- * right-to-left folder name cannot reorder the line around it.
+ * The path is one hover away, in the label tooltip. The name sits in a `<bdi>`
+ * so a right-to-left folder name cannot reorder the line around it.
  */
 describe('the chip names the folder, inside its bidi isolate', () => {
   it.each([
@@ -202,20 +206,34 @@ describe('deriveWorkingDirLocked', () => {
 });
 
 /**
- * The chip's click pins its card; the card's Choose folder… opens the chooser.
- * The press is inside act with the chooser's answer, so the chip's state
- * updates after it land there too.
+ * The chip's click opens the chooser itself while the folder can change. The
+ * press is inside act with the chooser's answer, so the chip's state updates
+ * after it land there too.
  */
-async function chooseFromCard() {
-  fireEvent.click(screen.getByRole('button', { name: /^Working folder/ }), { detail: 1 });
-  const choose = await screen.findByRole('button', { name: FOLDER_ACCESS_COPY.chooseFolder });
+async function clickChip() {
   await act(async () => {
-    fireEvent.click(choose);
+    fireEvent.click(screen.getByRole('button', { name: /^Working folder/ }), { detail: 1 });
   });
 }
 
+/** A chooser that answers only when the test says so. */
+function pendingChooser() {
+  let answer: (value: { canceled: boolean; filePaths: string[] }) => void = () => {};
+  const chooser = vi.fn(
+    () =>
+      new Promise<{ canceled: boolean; filePaths: string[] }>((resolve) => {
+        answer = resolve;
+      })
+  );
+  window.electron.directoryChooser = chooser as unknown as typeof window.electron.directoryChooser;
+  return { chooser, answer: (value: { canceled: boolean; filePaths: string[] }) => answer(value) };
+}
+
+/** The label tooltip Radix shows on a hover, past its 500ms delay. */
+const findTooltip = () => screen.findByRole('tooltip', {}, { timeout: 3000 });
+
 describe('DirSwitcher while the chat is empty', () => {
-  it('opens the chooser and persists the choice for a zero-message session', async () => {
+  it('opens the chooser on the click itself, with no card in between, and persists the choice', async () => {
     const onWorkingDirChange = vi.fn();
     render(
       <DirSwitcher
@@ -226,12 +244,16 @@ describe('DirSwitcher while the chat is empty', () => {
       />
     );
 
-    // A real button naming the folder; the path is its name.
+    // A real button naming the folder; the path is its name. It opens the
+    // system's own dialog, not a popup in the page.
     const chip = screen.getByRole('button');
     expect(chip).toHaveTextContent('Desktop');
     expect(chip).toHaveAccessibleName(`Working folder: ${WORKING_DIR}`);
-    await chooseFromCard();
+    expect(chip).not.toHaveAttribute('aria-haspopup');
+    await clickChip();
 
+    expect(window.electron.directoryChooser).toHaveBeenCalledTimes(1);
+    expect(screen.queryByRole('dialog')).toBeNull();
     // throwOnError is required: without it the generated client resolves with
     // an error object on a 409 and the failure path would never run.
     await waitFor(() =>
@@ -244,6 +266,15 @@ describe('DirSwitcher while the chat is empty', () => {
     // The displayed dir and the recents list update only after success.
     expect(onWorkingDirChange).toHaveBeenCalledWith(CHOSEN_DIR);
     expect(window.electron.addRecentDir).toHaveBeenCalledWith(CHOSEN_DIR);
+  });
+
+  it('opens the chooser from the keyboard too', async () => {
+    const user = userEvent.setup();
+    render(<DirSwitcher sessionId={undefined} workingDir={WORKING_DIR} locked={false} />);
+    act(() => screen.getByRole('button').focus());
+    await user.keyboard('{Enter}');
+    await waitFor(() => expect(window.electron.directoryChooser).toHaveBeenCalledTimes(1));
+    expect(screen.queryByRole('dialog')).toBeNull();
   });
 
   it('leaves the displayed dir and recents untouched when the server refuses (409)', async () => {
@@ -262,7 +293,7 @@ describe('DirSwitcher while the chat is empty', () => {
       />
     );
 
-    await chooseFromCard();
+    await clickChip();
 
     await waitFor(() => expect(updateWorkingDir).toHaveBeenCalled());
     await waitFor(() => expect(onRestartEnd).toHaveBeenCalled());
@@ -279,7 +310,7 @@ describe('DirSwitcher while the chat is empty', () => {
   it('says "folder", like the rest of the line, when the server gives no reason', async () => {
     vi.mocked(updateWorkingDir).mockRejectedValueOnce({});
     render(<DirSwitcher sessionId="session-1" workingDir={WORKING_DIR} locked={false} />);
-    await chooseFromCard();
+    await clickChip();
     await waitFor(() => expect(toastError).toHaveBeenCalled());
     expect(toastError).toHaveBeenCalledWith({
       title: FOOTER_COPY.folderUpdateFailedTitle,
@@ -300,16 +331,84 @@ describe('DirSwitcher while the chat is empty', () => {
       />
     );
 
-    await chooseFromCard();
+    await clickChip();
 
     await waitFor(() => expect(onWorkingDirChange).toHaveBeenCalledWith(CHOSEN_DIR));
     expect(updateWorkingDir).not.toHaveBeenCalled();
   });
+
+  it('opens one chooser at a time, and a click while it is up arms nothing for after it (#50)', async () => {
+    const { chooser, answer } = pendingChooser();
+    const onWorkingDirChange = vi.fn();
+    render(
+      <DirSwitcher
+        sessionId={undefined}
+        workingDir={WORKING_DIR}
+        locked={false}
+        onWorkingDirChange={onWorkingDirChange}
+      />
+    );
+    await clickChip();
+    await clickChip();
+    expect(chooser).toHaveBeenCalledTimes(1);
+
+    await act(async () => answer({ canceled: true, filePaths: [] }));
+    // Nothing was chosen, nothing opened after the chooser, and nothing is marked.
+    expect(onWorkingDirChange).not.toHaveBeenCalled();
+    expect(chooser).toHaveBeenCalledTimes(1);
+    expect(screen.queryByRole('dialog')).toBeNull();
+    expect(screen.getByRole('button')).not.toHaveAttribute('data-pinned');
+  });
+
+  it('shows the folder and what a click does in the label tooltip on a hover, and no card', async () => {
+    const user = userEvent.setup();
+    render(<DirSwitcher sessionId="session-1" workingDir={WORKING_DIR} locked={false} />);
+    await user.hover(screen.getByRole('button'));
+
+    const tip = await findTooltip();
+    expect(tip).toHaveTextContent(`${FOOTER_COPY.folderTooltipLabel} ${WORKING_DIR}`);
+    expect(tip).toHaveTextContent(FOOTER_COPY.folderChangeHint);
+    expect(tip).not.toHaveTextContent(FOOTER_COPY.folderFixedHint);
+    // A hover only shows: past the footer cards' delay, still no card and no chooser.
+    await act(() => new Promise((done) => setTimeout(done, FOOTER_CARD_OPEN_DELAY_MS + 50)));
+    expect(screen.queryByRole('dialog')).toBeNull();
+    expect(window.electron.directoryChooser).not.toHaveBeenCalled();
+  });
+
+  it('shows the label tooltip on a Tab onto the chip, and opens nothing', async () => {
+    const user = userEvent.setup();
+    render(
+      <>
+        <button type="button">Before</button>
+        <DirSwitcher sessionId={undefined} workingDir={WORKING_DIR} locked={false} />
+      </>
+    );
+    act(() => screen.getByRole('button', { name: 'Before' }).focus());
+    await user.tab();
+    expect(screen.getByRole('button', { name: /^Working folder/ })).toHaveFocus();
+    expect(await findTooltip()).toHaveTextContent(FOOTER_COPY.folderChangeHint);
+    expect(screen.queryByRole('dialog')).toBeNull();
+    expect(window.electron.directoryChooser).not.toHaveBeenCalled();
+  });
+
+  it('writes a folder under home as ~/… in the tooltip', async () => {
+    Object.assign(window, {
+      appConfig: {
+        get: (key: string) =>
+          ({ BIOROUTER_HOME_DIR: '/Users/wgu', BIOROUTER_LOCAL_BACKEND: true })[key],
+      },
+    });
+    const user = userEvent.setup();
+    render(<DirSwitcher sessionId={undefined} workingDir={WORKING_DIR} locked={false} />);
+    await user.hover(screen.getByRole('button'));
+    const tip = await findTooltip();
+    expect(tip).toHaveTextContent(`${FOOTER_COPY.folderTooltipLabel} ~/Desktop`);
+    expect(tip).not.toHaveTextContent('/Users/wgu');
+  });
 });
 
 describe('DirSwitcher once the chat has messages (locked, #44)', () => {
-  it('names the folder on a button that opens its card, which offers no chooser', async () => {
-    const user = userEvent.setup();
+  it('names the folder on a button that opens the folder access card, which offers no chooser', async () => {
     render(<DirSwitcher sessionId="session-1" workingDir={WORKING_DIR} locked={true} />);
 
     // Basename only, on the one button there is.
@@ -319,16 +418,38 @@ describe('DirSwitcher once the chat has messages (locked, #44)', () => {
     expect(screen.getAllByRole('button')).toEqual([label]);
     expect(screen.queryByTestId('dir-switcher')).not.toBeInTheDocument();
     expect(label).toHaveAttribute('aria-haspopup', 'dialog');
-    // A screen reader gets the path without opening the card.
+    expect(label).toHaveAttribute('aria-expanded', 'false');
+    // A screen reader gets the path without the tooltip.
     expect(label).toHaveAccessibleName(`Working folder: ${WORKING_DIR}`);
 
-    // The full path is one hover away, in the card, which says the folder is
-    // fixed and has no Choose folder….
-    await user.hover(label);
+    // A click opens the card, which says the folder is fixed and holds no
+    // control that chooses a folder; the chip shows it kept.
+    await clickChip();
     const card = await screen.findByRole('dialog', { name: FOLDER_ACCESS_COPY.cardLabel });
     expect(card).toHaveTextContent(WORKING_DIR);
     expect(card).toHaveTextContent(FOLDER_ACCESS_COPY.lockedNote);
-    expect(screen.queryByRole('button', { name: FOLDER_ACCESS_COPY.chooseFolder })).toBeNull();
+    expect(within(card).queryByRole('button', { name: /choose/i })).toBeNull();
+    expect(label).toHaveAttribute('aria-expanded', 'true');
+    expect(label).toHaveAttribute('data-pinned', 'true');
+
+    // A second click closes it.
+    await clickChip();
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    expect(label).not.toHaveAttribute('data-pinned');
+  });
+
+  it('shows the folder and that it is fixed in the label tooltip on a hover, and no card', async () => {
+    const user = userEvent.setup();
+    render(<DirSwitcher sessionId="session-1" workingDir={WORKING_DIR} locked={true} />);
+    await user.hover(screen.getByTestId('dir-switcher-locked'));
+
+    const tip = await findTooltip();
+    expect(tip).toHaveTextContent(`${FOOTER_COPY.folderTooltipLabel} ${WORKING_DIR}`);
+    expect(tip).toHaveTextContent(FOOTER_COPY.folderFixedHint);
+    expect(tip).not.toHaveTextContent(FOOTER_COPY.folderChangeHint);
+    await act(() => new Promise((done) => setTimeout(done, FOOTER_CARD_OPEN_DELAY_MS + 50)));
+    expect(screen.queryByRole('dialog')).toBeNull();
+    expect(screen.getByTestId('dir-switcher-locked')).not.toHaveAttribute('data-pinned');
   });
 
   it('never opens the chooser or calls updateWorkingDir', async () => {
@@ -350,12 +471,58 @@ describe('DirSwitcher once the chat has messages (locked, #44)', () => {
     expect(updateWorkingDir).not.toHaveBeenCalled();
     expect(onWorkingDirChange).not.toHaveBeenCalled();
   });
+
+  it('opens the card from the keyboard and moves focus into it; Escape gives it back', async () => {
+    const user = userEvent.setup();
+    render(<DirSwitcher sessionId="session-1" workingDir={WORKING_DIR} locked={true} />);
+    const chip = screen.getByTestId('dir-switcher-locked');
+    act(() => chip.focus());
+    await user.keyboard('{Enter}');
+    const card = await screen.findByRole('dialog', { name: FOLDER_ACCESS_COPY.cardLabel });
+    await waitFor(() => expect(card).toHaveFocus());
+    await user.keyboard('{Escape}');
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    expect(chip).toHaveFocus();
+    // Focus handed back by a program shows no tooltip.
+    await act(() => new Promise((done) => setTimeout(done, 700)));
+    expect(screen.queryByRole('tooltip')).toBeNull();
+  });
+
+  it('says the folder is not known yet, and still opens the card on a click', async () => {
+    const user = userEvent.setup();
+    render(<DirSwitcher sessionId="session-1" workingDir={null} locked={true} />);
+    const chip = screen.getByTestId('dir-switcher-unknown');
+    expect(chip).toHaveAccessibleName(FOOTER_COPY.folderUnknownLabel);
+    await user.hover(chip);
+    expect(await findTooltip()).toHaveTextContent(FOOTER_COPY.folderUnknownLabel);
+    await clickChip();
+    expect(
+      await screen.findByRole('dialog', { name: FOLDER_ACCESS_COPY.cardLabel })
+    ).toHaveTextContent(FOLDER_ACCESS_COPY.workingFolderUnknown);
+    expect(window.electron.directoryChooser).not.toHaveBeenCalled();
+  });
 });
 
-// #50 — the chip's card must keep ONE control mode for its whole life. Both
-// branches render the same Popover root in the same position, so React
-// reconciles them into a single instance; when the working directory locks
-// after the first message that instance must not flip from controlled
+describe('the reveal chord (Cmd-click on macOS, Ctrl-click elsewhere)', () => {
+  it.each([
+    ['an empty chat', false],
+    ['a chat with messages', true],
+  ])('opens the folder in the file manager in %s and does nothing else', async (_case, locked) => {
+    Object.assign(window.electron, { platform: 'darwin' });
+    render(<DirSwitcher sessionId="session-1" workingDir={WORKING_DIR} locked={locked} />);
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button'), { detail: 1, metaKey: true });
+    });
+    expect(window.electron.openDirectoryInExplorer).toHaveBeenCalledWith(WORKING_DIR);
+    expect(window.electron.directoryChooser).not.toHaveBeenCalled();
+    expect(screen.queryByRole('dialog')).toBeNull();
+  });
+});
+
+// #50 — the chip's card and its tooltip must each keep ONE control mode for
+// their whole life. Both states render the same roots in the same position, so
+// React reconciles them into a single instance; when the working directory
+// locks after the first message that instance must not flip from controlled
 // (`open`/`onOpenChange`) to uncontrolled. Radix warns about it, and the
 // state it warns about is the one that once yielded a stuck-open or
 // unresponsive tooltip on this chip.
@@ -383,7 +550,7 @@ describe('DirSwitcher card control mode (#50)', () => {
     warn.mockRestore();
   });
 
-  it('still reveals the full path on hover once locked', async () => {
+  it('still shows the full path in the tooltip on hover once locked', async () => {
     const user = userEvent.setup();
     const { rerender } = render(
       <DirSwitcher sessionId="session-1" workingDir={WORKING_DIR} locked={false} />
@@ -391,18 +558,18 @@ describe('DirSwitcher card control mode (#50)', () => {
     rerender(<DirSwitcher sessionId="session-1" workingDir={WORKING_DIR} locked={true} />);
 
     await user.hover(screen.getByTestId('dir-switcher-locked'));
-    expect(
-      await screen.findByRole('dialog', { name: FOLDER_ACCESS_COPY.cardLabel })
-    ).toHaveTextContent(WORKING_DIR);
+    const tip = await findTooltip();
+    expect(tip).toHaveTextContent(WORKING_DIR);
+    expect(tip).toHaveTextContent(FOOTER_COPY.folderFixedHint);
   });
 });
 
 /// The footer is sans (principle 3: mono is for machine strings), and so is the
-/// folder in its card: it is a reading like the card's others, written as the
-/// app writes a folder everywhere (`FooterCardPath`). jsdom never runs Tailwind,
-/// so these assert classes and markup; the face itself is measured in Chromium
-/// (footerCard.browser.test.tsx).
-describe('DirSwitcher: the folder name and the path in its card are both sans', () => {
+/// folder in its tooltip and its card: a reading written as the app writes a
+/// folder everywhere (`PathSegments`, `FooterCardPath`). jsdom never runs
+/// Tailwind, so these assert classes and markup; the face itself is measured in
+/// Chromium (footerCard.browser.test.tsx).
+describe('DirSwitcher: the folder name, the path in its tooltip and in its card are sans', () => {
   /** A folder the card writes (`FooterCardPath`), found by the absolute path it stands for. */
   const byPath = (container: Element | Document, absolute: string) =>
     [...container.querySelectorAll<HTMLElement>('[data-path]')].find(
@@ -418,11 +585,30 @@ describe('DirSwitcher: the folder name and the path in its card are both sans', 
     expect(screen.getByText('Desktop').closest('.font-mono')).toBeNull();
   });
 
-  it('writes the path in the card as a value, with nothing in monospace', async () => {
+  it('writes the path in the tooltip name by name, with nothing in monospace', async () => {
     const user = userEvent.setup();
+    render(<DirSwitcher sessionId="session-1" workingDir={WORKING_DIR} locked={false} />);
+    await user.hover(screen.getByRole('button'));
+    await findTooltip();
+    // Radix draws the visible tooltip and a hidden copy for assistive technology; both are drawn
+    // from the same markup.
+    const paths = [...document.querySelectorAll<HTMLElement>('.br-folder-tip__path')];
+    expect(paths.length).toBeGreaterThan(0);
+    for (const path of paths) {
+      expect(path).toHaveAttribute('dir', 'ltr');
+      expect([...path.querySelectorAll('bdi')].map((bdi) => bdi.textContent)).toEqual([
+        'Users',
+        'wgu',
+        'Desktop',
+      ]);
+      expect(path.closest('.font-mono')).toBeNull();
+    }
+  });
+
+  it('writes the path in the card as a value, with nothing in monospace', async () => {
     render(<DirSwitcher sessionId="session-1" workingDir={WORKING_DIR} locked={true} />);
 
-    await user.hover(screen.getByTestId('dir-switcher-locked'));
+    await clickChip();
     const card = await screen.findByRole('dialog', { name: FOLDER_ACCESS_COPY.cardLabel });
 
     const path = byPath(card, WORKING_DIR);

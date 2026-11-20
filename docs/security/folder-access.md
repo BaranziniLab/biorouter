@@ -53,63 +53,67 @@ ability to bypass another tool's permissions. An unattended route returns a stru
 In the desktop app, and in a browser served by `biorouter serve`, the name of the chat's
 working folder (its workspace) sits beneath the chat composer. It is the folder's own name, as
 the sidebar's folder groups show it: `~` for your home folder, and `Crew` for the folder Crew
-tasks run in. Point at the name for a moment, or move focus to it with Tab, and a preview of a
-card opens above the composer. It never covers the draft or the composer's controls. The card
-has two sections:
+tasks run in. Point at the name for a moment, or move focus to it with Tab, and a small tooltip
+shows where the folder is, such as "Working folder: ~/Desktop/BioRouter", and one line of status.
+Clicking the name does one thing, which depends on the chat:
 
-- **Working folder** shows where the folder is. On Home, and in a chat that has no messages
-  yet, a **Choose folder…** button in this section picks a different working folder. Once the
-  chat has messages its working folder is fixed, and the section says so instead. The info icon
-  beside the **Working folder** label says what folder approval covers: the file editor, file
-  analysis and image tools ask before they use another folder, and shell commands and document
-  tools do not ask.
-- **Other approved folders**, in a chat only, lists every other folder allowed for this
-  session. Each one shows its access (read only, or read and write), whether it includes
-  subfolders, and a **Revoke** button. The info icon beside its label says when a session grant
-  ends, and that folders allowed once are not listed, because that approval covers only its
-  pending operation.
+- **On Home, and in a chat that has no messages yet,** the tooltip says "Click to choose another
+  folder", and a click opens the system folder chooser straight away. While the chooser is on
+  screen, the tooltip and the card stay closed.
+- **Once the chat has messages** its working folder is fixed, and the tooltip says "Fixed for
+  this chat". A click opens the chat's folder access card above the composer. It never covers
+  the draft or the composer's controls. Pointing at the name never opens the card.
 
-The card shows only the folders and their buttons. What explains them is in those info icons:
-point at one, or move focus to it with Tab, to read its words, and click it to keep them open.
-A screen reader hears the same words as the icon's description.
+The card has two sections:
 
-Every folder in the card is written in the card's ordinary text, in one colour. In the desktop
-app, `~` stands for your home folder, so a folder in it reads `~/Desktop/BioRouter`, and a folder
-anywhere else is written in full. In a browser served by `biorouter serve`, and when the desktop
-app uses an external backend, every folder is written in full, because it may be on another
-computer whose home folder is not yours. A long path wraps after a `/` or a `\`, not in the middle
-of a folder's name, and selecting it copies exactly what it shows. Each **Revoke** button reads its
-folder's full path to a screen reader. The folder approval card in the chat is different on
-purpose: there the folder is the exact thing you are allowing, so it is written in full in a
-monospaced face, `~` never stands in for it, and it still wraps after a separator.
+- **Working folder** shows where the folder is and says it is fixed once the chat has messages.
+  The info icon beside the **Working folder** label says what folder approval covers: the file
+  editor, file analysis and image tools ask before they use another folder, and shell commands
+  and document tools do not ask.
+- **Other approved folders** lists every other folder allowed for this session. Each one shows
+  its access (read only, or read and write), whether it includes subfolders, and a **Revoke**
+  button. The info icon beside its label says when a session grant ends, and that folders
+  allowed once are not listed, because that approval covers only its pending operation.
 
-- A card that a hover or Tab opened is a preview. It closes when the pointer leaves both the
-  name and the card, or when focus moves away from the name, and the name looks as it does at
-  rest.
-- Click the folder name, or press Enter or Space while it has focus, to keep the card open.
-  This works in every state, including Home and a chat before its first message, and the name
-  then stays shaded until the card closes. A second click closes it. Opening it from the
+Only a chat that has had a turn can hold a session grant, so the card belongs to the chat whose
+folder no longer changes. The card shows only the folders and their buttons. What explains them
+is in those info icons: point at one, or move focus to it with Tab, to read its words, and click
+it to keep them open. A screen reader hears the same words as the icon's description.
+
+Every folder in the card and in the tooltip is written in ordinary text, in one colour. In the
+desktop app, `~` stands for your home folder, so a folder in it reads `~/Desktop/BioRouter`, and a
+folder anywhere else is written in full. In a browser served by `biorouter serve`, and when the
+desktop app uses an external backend, every folder is written in full, because it may be on
+another computer whose home folder is not yours. A long path wraps after a `/` or a `\`, not in the
+middle of a folder's name, and selecting it in the card copies exactly what it shows. Each
+**Revoke** button reads its folder's full path to a screen reader. The folder approval card in the
+chat is different on purpose: there the folder is the exact thing you are allowing, so it is
+written in full in a monospaced face, `~` never stands in for it, and it still wraps after a
+separator.
+
+- Click the folder name, or press Enter or Space while it has focus, to open the card, and the
+  name stays shaded until the card closes. A second click closes it. Opening it from the
   keyboard also moves focus into the card. The first Tab stop there is the info icon beside
-  **Working folder**, whose words then show; further Tabs reach **Choose folder…**, the info icon
-  beside **Other approved folders** and each **Revoke** button. While an info icon's words are
-  showing, the first Escape closes only them and the card stays open. A press inside the card
-  keeps it open too.
-- A kept card stays open when the pointer moves away, when the page scrolls and when you switch
-  to another window. Escape, or a click outside the card, closes it, as does focus moving to
+  **Working folder**, whose words then show; further Tabs reach the info icon beside **Other
+  approved folders** and each **Revoke** button. While an info icon's words are showing, the
+  first Escape closes only them and the card stays open. A press inside the card keeps it open
+  too.
+- The card stays open when the pointer moves away, when the page scrolls and when you switch to
+  another window. Escape, or a click outside the card, closes it, as does focus moving to
   something else in the page. Escape, and Shift+Tab from the card itself, return focus to the
   folder name; a click outside leaves focus where you clicked.
-- While the system folder chooser that **Choose folder…** opens is on screen, no card shows.
 - While an existing chat's working folder has not loaded, a folder icon without a name stands
-  in for it and opens the same card. The Working folder section reads "Not known yet.", and
-  the chat's grants stay listed and revocable.
+  in for it. Its tooltip says the folder is not known yet, and a click opens the same card,
+  whose Working folder section reads "Not known yet.", so the chat's grants stay listed and
+  revocable.
 - In the desktop app, ⌘-click on macOS, or Ctrl-click on Windows and Linux, on the name opens
-  the folder in the file manager and does not keep the card. In a browser served by
-  `biorouter serve` there is no file manager to open, so the same click keeps the card like any
-  other click.
-- The context ring and the cost beside it open cards that behave the same way. One card is
-  open at a time across the footer: a preview gives way to the next one you point at, but while
-  you have kept a card open, pointing at another item opens nothing, so the kept card and
-  anything you typed in it stay. Click the other item, or Tab to it, to switch.
+  the folder in the file manager and does nothing else. In a browser served by `biorouter
+  serve` there is no file manager to open, so the same click is an ordinary click.
+- The context ring and the cost beside it open cards of their own: pointing at one shows its
+  card for a quick look, and a click keeps it. One card is open at a time across the footer:
+  while you have kept a card open, the folder access card included, pointing at another item
+  opens nothing, so the kept card and anything you typed in it stay. Click the other item, or
+  Tab to it, to switch.
 - In a browser, the Other approved folders section also holds the **Folder approval key**
   field once the chat has a grant to revoke. Where that key comes from is the info icon beside
   the field's label, and the field's description. See [Browser setup](#browser-setup).

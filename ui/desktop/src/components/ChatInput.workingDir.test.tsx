@@ -1,6 +1,6 @@
 import React from 'react';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { act, render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { act, render, screen, fireEvent, waitFor, within } from '@testing-library/react';
 
 // #39 — the pre-session working-directory wiring contract. With no sessionId,
 // a DirSwitcher change has nothing to persist to; the ONLY thing keeping the
@@ -147,17 +147,15 @@ function holdRowRead(sessionId: string) {
 }
 
 /**
- * Choose a folder the way a person does: the chip's click pins its card, and
- * the card's Choose folder… opens the chooser (offered only while the chat is
- * empty, #44).
+ * Choose a folder the way a person does: the chip's click opens the chooser
+ * itself while the chat is empty (#44, owner 2026-11-19: no card in between).
+ * Inside act with the chooser's answer, so the updates after it land there too.
  */
-async function chooseFromCard(chip: HTMLElement) {
-  fireEvent.click(chip, { detail: 1 });
-  const choose = await screen.findByRole('button', { name: FOLDER_ACCESS_COPY.chooseFolder });
-  // Inside act with the chooser's answer, so the updates after it land there too.
+async function chooseByClick(chip: HTMLElement) {
   await act(async () => {
-    fireEvent.click(choose);
+    fireEvent.click(chip, { detail: 1 });
   });
+  expect(screen.queryByRole('dialog')).toBeNull();
 }
 
 /**
@@ -196,7 +194,7 @@ describe('ChatInput pre-session working-directory wiring (#39)', () => {
     // footer shows the folder's name, and the chip's name carries the path.
     const chip = screen.getByRole('button', { name: `Working folder: ${DEFAULT_DIR}` });
     expect(chip).toHaveTextContent('workdir');
-    await chooseFromCard(chip);
+    await chooseByClick(chip);
 
     await waitFor(() => expect(onWorkingDirChange).toHaveBeenCalledWith(CHOSEN_DIR));
 
@@ -212,8 +210,8 @@ describe('ChatInput pre-session working-directory wiring (#39)', () => {
 });
 
 // #44 — once the chat has messages, ChatInput must render the folder chip
-// locked: the basename on a button that holds the folder card open (the full
-// path and folder access are in the card), and the card offers no chooser.
+// locked: the basename on a button whose click opens the folder access card
+// (the full path and the chat's other folders), and the card offers no chooser.
 describe('ChatInput working-directory lock once the chat has messages (#44)', () => {
   it('renders the chip as a locked basename whose click opens the card, not the chooser', async () => {
     renderChatInput(vi.fn(), { sessionId: 'session-1', messagesLength: 2 });
@@ -242,7 +240,7 @@ describe('ChatInput working-directory lock once the chat has messages (#44)', ()
     const card = await screen.findByRole('dialog', { name: FOLDER_ACCESS_COPY.cardLabel });
     await waitFor(() => expect(measured).toHaveBeenCalled());
     expect(card).toHaveTextContent(FOLDER_ACCESS_COPY.lockedNote);
-    expect(screen.queryByRole('button', { name: FOLDER_ACCESS_COPY.chooseFolder })).toBeNull();
+    expect(within(card).queryByRole('button', { name: /choose/i })).toBeNull();
     const path = byPath(card, SESSION_DIR);
     expect(path).toHaveTextContent(SESSION_DIR);
     expect(path).toHaveClass('br-footer-card__path');
@@ -349,7 +347,7 @@ describe('ChatInput folder for a chat that exists (V2-R7-3)', () => {
   it('keeps the folder a new tab showed when its first message creates the chat', async () => {
     const onWorkingDirChange = vi.fn();
     const view = renderChatInput(onWorkingDirChange);
-    await chooseFromCard(screen.getByRole('button', { name: `Working folder: ${DEFAULT_DIR}` }));
+    await chooseByClick(screen.getByRole('button', { name: `Working folder: ${DEFAULT_DIR}` }));
     await waitFor(() => expect(onWorkingDirChange).toHaveBeenCalledWith(CHOSEN_DIR));
     await screen.findByRole('button', { name: `Working folder: ${CHOSEN_DIR}` });
     const folders = recordFolders();

@@ -521,16 +521,26 @@
 
 /* ── The `+` popover: Add, then the three tool lists ─────────────────────── */
 
-/* The Tools popover's recipe (`.br-picker-popover`, pickers.css), a little wider
-   so four segments (Add, Extensions, Skills, Knowledge) keep their whole words. */
+/* The Tools popover's recipe (`.br-picker-popover`, pickers.css) at the model
+   menu's width: the two popovers that open from the composer share one width,
+   `--composer-popover-width` (main.css). */
 .br-picker-popover.br-plus-popover {
-  width: 344px;
+  width: var(--composer-popover-width);
 }
 
-/* Four equal columns of about 80px: the segments' 10px side padding would cut
-   "Extensions" and "Knowledge" short, so it is 4px here. The thumb and the
-   spring are the primitive's, untouched. */
+/* Four segments that keep their whole words at that width. Each is its label
+   plus at least 4px a side, and the track's leftover room is shared out
+   equally, so the gaps between the four labels are equal and the whole track
+   answers a click. Equal columns would leave "Knowledge" (64px in the body face
+   at 13px) 59px. So the control runs in `fit` mode, which measures the chosen
+   segment for its thumb; the thumb and the spring are the primitive's. */
+.br-plus-popover .br-segmented {
+  display: flex;
+  inline-size: 100%;
+}
+
 .br-plus-popover .br-segmented-item {
+  flex: 1 1 auto;
   padding-inline: 4px;
 }
 
