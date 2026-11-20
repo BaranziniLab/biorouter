@@ -3230,6 +3230,63 @@ mod tests {
 
     use super::*;
 
+    /// **Every setting a client reads back through `/config/read` is still
+    /// answered** (#532). The route answers `null` for a plaintext key that is
+    /// neither one of the app's settings nor declared by a built-in provider,
+    /// and a client cannot tell that `null` from a setting that was never
+    /// saved, so a key missing from [`PLAINTEXT_SETTINGS`] reads as a reset
+    /// setting. The list is every key the desktop renderer (`useConfig().read`,
+    /// `readConfig`), the CLI's Crew commands and the workspace harness ask for
+    /// as plaintext; four more are served by their own arms before any
+    /// classification. A new client read belongs here.
+    #[test]
+    fn every_setting_a_client_reads_back_is_answered() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let config = Config::new_with_file_secrets(
+            dir.path().join("config.yaml"),
+            dir.path().join("secrets.yaml"),
+        )
+        .unwrap();
+        for key in [
+            "BIOROUTER_PROVIDER",
+            "BIOROUTER_MODEL",
+            "BIOROUTER_MODE",
+            "BIOROUTER_MAX_TURNS",
+            "WORKSPACE_ANNOUNCE_ONLY",
+            "BIOROUTER_WORKSPACE_OPEN_SUBAGENT_TABS",
+            "BIOROUTER_WORKER_PROVIDER",
+            "BIOROUTER_WORKER_MODEL",
+            "CREW_TASK_MODEL",
+            "BIOROUTER_ONBOARDING_SKIPPED",
+            "BIOROUTER_AUTO_COMPACT_THRESHOLD",
+            "BIOROUTER_AUTO_COMPACT_MAX_TOKENS",
+            // The provider catalog's Azure row, a key the provider declares.
+            "AZURE_OPENAI_ENDPOINT",
+        ] {
+            assert_eq!(
+                classify_config_key(&config, key),
+                Ok(ConfigKeyClassification::Plaintext),
+                "{key} is read back by a client and would answer null"
+            );
+        }
+        assert!(biorouter::privacy::is_privacy_tiers_key(
+            "BIOROUTER_PRIVACY_TIERS"
+        ));
+        assert!(biorouter::privacy::is_privacy_tiers_record_key(
+            "BIOROUTER_PRIVACY_TIERS_RECORD"
+        ));
+        assert!(biorouter::privacy::mixing::is_mixing_policy_key(
+            "BIOROUTER_PRIVACY_MIXING_POLICY"
+        ));
+        // `model-limits` is answered by the first arm of `read_config`.
+
+        // The other side of the rule: a value nothing declares stays unread.
+        assert_eq!(
+            classify_config_key(&config, "SOME_EXPORTED_TOKEN"),
+            Ok(ConfigKeyClassification::Unknown)
+        );
+    }
+
     /// W2-PRV-2. A check that sends a credential (`live`) or names new values
     /// (`candidate`) needs the proof of a person on a daemon that holds a key; a
     /// plain construction check stays open, as it was.
