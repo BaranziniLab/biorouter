@@ -251,6 +251,25 @@ import {
   type AnywhereSource,
 } from './utils/dictationAnywhere';
 import type { Transcript } from './components/dictation/dictationApi';
+import { FnKeyService, fnKeyHelperPath, type FnKeyStatus } from './utils/fnKeyHelper';
+import {
+  defaultFnKeySettings,
+  fnDictationRunning,
+  fnStartRoute,
+  fnToggleRoute,
+  parseFnKeySettings,
+  type FnKeySettings,
+  type FnKeyView,
+  type FnWorld,
+} from './utils/dictationFnKey';
+import type { FnIntent } from './utils/fnGesture';
+import {
+  DictationIndicator,
+  INDICATOR_SIZE,
+  indicatorModeFor,
+  parseIndicatorReport,
+  type DictationActivityReport,
+} from './utils/dictationIndicator';
 import {
   bindManagedAppPreviewBackend,
   fetchDaemonAppOrigin,
@@ -4515,6 +4534,284 @@ ipcMain.handle('dictation:anywhere:set', async (event, raw: unknown) => {
   return await pending;
 });
 
+// ── The fn key shortcut and the dictation indicator (macOS) ───────────────────
+// Hold fn to talk, double-tap fn for hands-free (`utils/fnGesture.ts`), read by the
+// `biorouter-fnkey` helper (`utils/fnKeyHelper.ts`), which runs only while the shortcut is on.
+// A gesture goes to the Biorouter window in front, or, with another app in front and **Use fn in
+// other apps** on, to Dictate to clipboard as the global shortcut would (`utils/dictationFnKey.ts`).
+// The setting is in `<config>/dictation/fn-key.json`, written only here, like `anywhere.json`.
+let fnKeySettings: FnKeySettings = defaultFnKeySettings(process.platform);
+let fnKeyService: FnKeyService | null = null;
+let fnSettingsQueue: Promise<unknown> = Promise.resolve();
+/** Which dictation the current hold started, so its release reaches that one and no other. */
+let fnHold: { kind: 'window'; windowId: number } | { kind: 'anywhere'; generation: number } | null =
+  null;
+/** Each reporting page's dictation activity (`dictation:indicator`), by its webContents id. */
+const dictationReports = new Map<number, { windowId: number; report: DictationActivityReport }>();
+const watchedDictationReporters = new Set<number>();
+let dictationIndicator: DictationIndicator | null = null;
+
+const FN_KEY_STATUS_OFF: FnKeyStatus = {
+  supported: false,
+  active: false,
+  permission: 'unknown',
+  listening: false,
+  fnUsage: null,
+  failed: false,
+};
+
+function fnKeyStorePath(): string {
+  return path.join(biorouterConfigDir(), 'dictation', 'fn-key.json');
+}
+
+async function readFnKeySettings(): Promise<void> {
+  try {
+    fnKeySettings = parseFnKeySettings(
+      JSON.parse(await fs.readFile(fnKeyStorePath(), 'utf8')),
+      process.platform
+    );
+  } catch {
+    fnKeySettings = defaultFnKeySettings(process.platform);
+  }
+}
+
+async function writeFnKeySettings(settings: FnKeySettings): Promise<void> {
+  const filename = fnKeyStorePath();
+  await fs.mkdir(path.dirname(filename), { recursive: true, mode: 0o700 });
+  const temporary = `${filename}.${process.pid}.tmp`;
+  await fs.writeFile(temporary, JSON.stringify(settings), { mode: 0o600 });
+  await fs.rename(temporary, filename);
+}
+
+function fnKeyView(): FnKeyView {
+  return {
+    settings: fnKeySettings,
+    status: fnKeyService?.status() ?? FN_KEY_STATUS_OFF,
+    anywhereOn: anywhereSettings.enabled && !anywhereOffRequested,
+  };
+}
+
+function broadcastFnKey(): void {
+  const view = fnKeyView();
+  for (const win of windowMap.values()) {
+    if (!win.isDestroyed()) win.webContents.send('dictation:fn:state', view);
+  }
+}
+
+function startFnKeyShortcut(): void {
+  if (process.platform !== 'darwin') return;
+  fnKeyService ??= new FnKeyService({
+    platform: process.platform,
+    helperPath: fnKeyHelperPath(app),
+    // No environment: the helper needs none, so none of the app's reaches it.
+    spawn: (file) => spawn(file, [], { stdio: ['pipe', 'pipe', 'ignore'], env: {} }),
+    onIntent: handleFnIntent,
+    onStatus: () => broadcastFnKey(),
+  });
+  fnKeyService.setActive(fnKeySettings.enabled);
+  broadcastFnKey();
+}
+
+function fnWorld(): FnWorld {
+  const focused = BrowserWindow.getFocusedWindow();
+  let recordingWindowId: number | null = null;
+  for (const { windowId, report } of dictationReports.values()) {
+    if (
+      (report.activity === 'arming' || report.activity === 'recording') &&
+      windowMap.has(windowId)
+    ) {
+      recordingWindowId = windowId;
+      break;
+    }
+  }
+  return {
+    focusedAppWindowId:
+      focused && !focused.isDestroyed() && windowMap.get(focused.id) === focused
+        ? focused.id
+        : null,
+    recordingWindowId,
+    anywherePhase: anywhereState.phase,
+    anywhereFnOn:
+      fnKeySettings.enabled &&
+      fnKeySettings.otherApps &&
+      anywhereSettings.enabled &&
+      !anywhereOffRequested,
+  };
+}
+
+function sendFnIntent(windowId: number, intent: FnIntent): void {
+  const win = windowMap.get(windowId);
+  if (win && !win.isDestroyed()) win.webContents.send('dictation:fn:intent', intent);
+}
+
+function handleFnIntent(intent: FnIntent): void {
+  const world = fnWorld();
+  switch (intent) {
+    case 'start-hold': {
+      fnHold = null;
+      if (fnDictationRunning(world)) return;
+      const route = fnStartRoute(world);
+      if (route?.kind === 'window') {
+        sendFnIntent(route.windowId, 'start-hold');
+        fnHold = { kind: 'window', windowId: route.windowId };
+      } else if (route?.kind === 'anywhere') {
+        // The global shortcut's source: public dictionary terms only, and the switch governs it.
+        void startAnywhere('shortcut', false);
+        if (anywhereState.phase === 'arming')
+          fnHold = { kind: 'anywhere', generation: anywhereGeneration };
+      }
+      return;
+    }
+    case 'end-hold':
+    case 'cancel-hold': {
+      const hold = fnHold;
+      fnHold = null;
+      if (!hold) return;
+      if (hold.kind === 'window') {
+        sendFnIntent(hold.windowId, intent);
+        return;
+      }
+      const live = anywhereState.phase === 'arming' || anywhereState.phase === 'recording';
+      if (hold.generation !== anywhereGeneration || !live) return;
+      // A release stops and copies (or cancels a start whose microphone never opened); fn with
+      // another key cancels.
+      if (intent === 'cancel-hold') cancelAnywhere();
+      else void startAnywhere('shortcut', false);
+      return;
+    }
+    case 'toggle': {
+      fnHold = null;
+      const route = fnToggleRoute(world);
+      if (route?.kind === 'window') sendFnIntent(route.windowId, 'toggle');
+      else if (route?.kind === 'anywhere') void startAnywhere('shortcut', false);
+      return;
+    }
+  }
+}
+
+function indicatorWorkArea() {
+  return screen.getDisplayNearestPoint(screen.getCursorScreenPoint()).workArea;
+}
+
+/**
+ * The indicator's window: transparent, never focused, ignoring the mouse, out of the Dock and
+ * Mission Control, and over every Space and full-screen app (`utils/dictationIndicator.ts`).
+ */
+function createIndicatorWindow(): BrowserWindow {
+  const win = new BrowserWindow({
+    width: INDICATOR_SIZE.width,
+    height: INDICATOR_SIZE.height,
+    show: false,
+    frame: false,
+    transparent: true,
+    backgroundColor: '#00000000',
+    hasShadow: false,
+    resizable: false,
+    movable: false,
+    minimizable: false,
+    maximizable: false,
+    fullscreenable: false,
+    focusable: false,
+    skipTaskbar: true,
+    alwaysOnTop: true,
+    hiddenInMissionControl: true,
+    type: 'panel',
+    webPreferences: {
+      sandbox: true,
+      contextIsolation: true,
+      nodeIntegration: false,
+      spellcheck: false,
+      backgroundThrottling: false,
+    },
+  });
+  win.setIgnoreMouseEvents(true);
+  win.setAlwaysOnTop(true, 'screen-saver');
+  win.setVisibleOnAllWorkspaces(true, {
+    visibleOnFullScreen: true,
+    skipTransformProcessType: true,
+  });
+  win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
+  win.webContents.on('will-navigate', (event) => event.preventDefault());
+  return win;
+}
+
+function updateDictationIndicator(): void {
+  if (process.platform !== 'darwin') return;
+  const { mode, level } = indicatorModeFor(
+    [...dictationReports.values()].map(({ report }) => report)
+  );
+  if (mode === 'hidden' && !dictationIndicator) return;
+  dictationIndicator ??= new DictationIndicator({
+    createWindow: createIndicatorWindow,
+    workArea: indicatorWorkArea,
+  });
+  dictationIndicator.update(mode, level);
+}
+
+ipcMain.on('dictation:indicator', (event, raw: unknown) => {
+  if (!isDictationSender(event) && !isDictationCaptureSender(event)) return;
+  const report = parseIndicatorReport(raw);
+  const contents = event.sender;
+  const win = BrowserWindow.fromWebContents(contents);
+  if (!report || !win) return;
+  if (!watchedDictationReporters.has(contents.id)) {
+    watchedDictationReporters.add(contents.id);
+    const id = contents.id;
+    contents.once('destroyed', () => {
+      watchedDictationReporters.delete(id);
+      dictationReports.delete(id);
+      updateDictationIndicator();
+    });
+  }
+  dictationReports.set(contents.id, { windowId: win.id, report });
+  updateDictationIndicator();
+});
+
+ipcMain.handle('dictation:fn:get', (event) => {
+  if (!isDictationSender(event)) return null;
+  return fnKeyView();
+});
+
+ipcMain.handle('dictation:fn:set', async (event, raw: unknown) => {
+  if (!isDictationSender(event)) return null;
+  const next = parseFnKeySettings(raw, process.platform);
+  const apply = async () => {
+    const previous = fnKeySettings;
+    fnKeySettings = next;
+    fnKeyService?.setActive(next.enabled);
+    try {
+      await writeFnKeySettings(next);
+    } catch {
+      // Unsaved, the next launch reads the old file; keep that one in effect now too.
+      fnKeySettings = previous;
+      fnKeyService?.setActive(previous.enabled);
+    }
+    broadcastFnKey();
+    return fnKeyView();
+  };
+  const pending = fnSettingsQueue.then(apply);
+  fnSettingsQueue = pending.catch(() => undefined);
+  return await pending;
+});
+
+ipcMain.handle('dictation:fn:open-settings', async (event, pane: unknown) => {
+  if (!isDictationSender(event)) return false;
+  if (process.platform !== 'darwin') return false;
+  if (pane === 'input-monitoring') {
+    // Asking once lists Biorouter on that page (and shows the system prompt the first time).
+    fnKeyService?.requestPermission();
+    await shell.openExternal(
+      'x-apple.systempreferences:com.apple.preference.security?Privacy_ListenEvent'
+    );
+    return true;
+  }
+  if (pane === 'keyboard') {
+    await shell.openExternal('x-apple.systempreferences:com.apple.preference.keyboard');
+    return true;
+  }
+  return false;
+});
+
 ipcMain.handle('dictation:anywhere:preview-focused', async (event, raw: unknown) => {
   if (!isDictationSender(event)) return false;
   if (!raw || typeof raw !== 'object') return false;
@@ -7920,6 +8217,10 @@ async function appMain() {
     type: anywhereSettings.enabled ? 'enable' : 'disable',
   });
   registerAnywhereShortcut();
+  await readFnKeySettings();
+  startFnKeyShortcut();
+  // A grant made in System Settings reaches a new helper: look again when Biorouter comes back.
+  app.on('browser-window-focus', () => fnKeyService?.refresh());
   // Create tray if enabled in settings
   const settings = loadSettings();
   if (settings.showMenuBarIcon) {
@@ -8681,6 +8982,8 @@ async function getAllowList(): Promise<string[]> {
 }
 
 app.on('will-quit', async () => {
+  fnKeyService?.dispose();
+  dictationIndicator?.dispose();
   clearAnywhereReview();
   stopAnywherePowerBlocker();
   if (anywhereShortcut) globalShortcut.unregister(anywhereShortcut);

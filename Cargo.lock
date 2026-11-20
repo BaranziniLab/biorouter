@@ -1289,6 +1289,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "biorouter-fnkey"
+version = "1.94.5"
+
+[[package]]
 name = "biorouter-mcp"
 version = "1.94.5"
 dependencies = [

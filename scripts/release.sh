@@ -1008,6 +1008,7 @@ cmd_verify() {
              "$DESK/out/Biorouter-darwin-x64/Biorouter.app"; do
     if [ -d "$app" ]; then
       "$ROOT/scripts/check-auth-helper-bundled.sh" "$app" || ok=0
+      "$ROOT/scripts/check-fn-key-helper-bundled.sh" "$app" || ok=0
       # Read back out of the signed, stapled app: the setup service sends these bytes to a
       # server and refuses them unless they match the manifest beside them.
       check_bundled_crew_broker "$app/Contents/Resources/bin" "$v" || ok=0
@@ -1028,7 +1029,8 @@ cmd_verify() {
              "$DESK/out/Biorouter-darwin-x64/Biorouter.app"; do
     if [ -d "$app" ]; then
       if assert_mac_deployment_target \
-           "$app/Contents/Resources/bin/biorouter" "$app/Contents/Resources/bin/biorouterd"; then
+           "$app/Contents/Resources/bin/biorouter" "$app/Contents/Resources/bin/biorouterd" \
+           "$app/Contents/Resources/bin/biorouter-fnkey"; then
         log "bundled backends declare macOS 12.0 and import nothing newer strongly ✓ (${app#"$DESK"/})"
       else
         ok=0

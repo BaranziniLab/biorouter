@@ -19,6 +19,7 @@ import {
   setDictationSnapshotForTests,
 } from './dictationSession';
 import { refreshDictationStatus, resetDictationStoreForTests } from './dictationStore';
+import { resetFnKeyStoreForTests } from './fnKeyStore';
 import { needsSharedOriginNotice, resetSharedOriginNoticeForTests } from './sharedOriginGate';
 import {
   DICTATION_CONTEXT_BYTES,
@@ -239,6 +240,55 @@ describe('phases and names', () => {
     expect(mic()).toHaveAccessibleName('Dictate');
     expect(mic()).toHaveAttribute('aria-keyshortcuts', 'Meta+Shift+D');
     expect(mic()).toHaveAttribute('aria-pressed', 'false');
+  });
+
+  it('names the fn gestures, beside the chord, once the fn shortcut works on macOS', async () => {
+    resetFnKeyStoreForTests();
+    const working = {
+      settings: { enabled: true, otherApps: false },
+      status: {
+        supported: true,
+        active: true,
+        permission: 'granted',
+        listening: true,
+        fnUsage: 0,
+        failed: false,
+      },
+      anywhereOn: false,
+    };
+    Object.assign(window.electron, { dictationFnGet: vi.fn(async () => working) });
+    try {
+      render(<Host />);
+      fireEvent.focus(screen.getByTestId('field'));
+      await settle();
+      expect(mic()).toHaveAttribute('aria-keyshortcuts', 'Fn Meta+Shift+D');
+    } finally {
+      resetFnKeyStoreForTests();
+    }
+  });
+
+  it('keeps the chord alone while the fn listener does not run (no Input Monitoring yet)', async () => {
+    resetFnKeyStoreForTests();
+    const waiting = {
+      settings: { enabled: true, otherApps: false },
+      status: {
+        supported: true,
+        active: true,
+        permission: 'denied',
+        listening: false,
+        fnUsage: null,
+        failed: false,
+      },
+      anywhereOn: false,
+    };
+    Object.assign(window.electron, { dictationFnGet: vi.fn(async () => waiting) });
+    try {
+      render(<Host />);
+      await settle();
+      expect(mic()).toHaveAttribute('aria-keyshortcuts', 'Meta+Shift+D');
+    } finally {
+      resetFnKeyStoreForTests();
+    }
   });
 
   it('arms, records with its timer, then transcribes and inserts nothing it was not given', async () => {

@@ -1,6 +1,8 @@
 import { useEffect, useState } from 'react';
 import { startCapture, type Capture } from './capture';
 import { createDictationStream, DictationStreamError, type DictationStream } from './transport';
+import { levelToMeter } from './level';
+import { INDICATOR_REPORT_INTERVAL_MS } from '../../utils/dictationIndicator';
 import {
   ensureDictationStatus,
   getDictationStatusSnapshot,
@@ -45,7 +47,15 @@ type CaptureReply =
 export default function DictationCapturePage() {
   const [phase, setPhase] = useState<'idle' | 'recording' | 'transcribing'>('idle');
 
+  // The on-screen indicator (`utils/dictationIndicator.ts`): this page's phase as it changes, and
+  // the level while recording, below. Nothing but the phase word and a number is sent.
   useEffect(() => {
+    window.electron.dictationIndicator?.({ activity: phase, level: 0 });
+  }, [phase]);
+  useEffect(() => () => window.electron.dictationIndicator?.({ activity: 'idle', level: 0 }), []);
+
+  useEffect(() => {
+    let lastLevelAt = -Infinity;
     let capture: Capture | null = null;
     let stream: DictationStream | null = null;
     let finishingStream: DictationStream | null = null;
@@ -119,10 +129,18 @@ export default function DictationCapturePage() {
       try {
         const nextCapture = await startCapture({
           noiseSuppression: false,
-          onChunk: (pcm) => {
+          onChunk: (pcm, chunkLevel) => {
             if (!sameCaptureOperation(token, generation, cancelled)) return;
             if (stream) stream.push(pcm);
             else pending.push(pcm);
+            const at = performance.now();
+            if (stream && at - lastLevelAt >= INDICATOR_REPORT_INTERVAL_MS) {
+              lastLevelAt = at;
+              window.electron.dictationIndicator?.({
+                activity: 'recording',
+                level: levelToMeter(chunkLevel.rms),
+              });
+            }
           },
           onLive: () => {
             if (sameCaptureOperation(token, generation, cancelled))

@@ -77,6 +77,7 @@ import {
 import './models.css';
 import './speechModels.css';
 import { DEFAULT_ANYWHERE_SHORTCUT } from '../../../utils/dictationAnywhere';
+import { DictationShortcutRows, FnOtherAppsRow } from './DictationShortcutRows';
 
 /**
  * **Settings > Models > Speech models** (DD-66, PR-18): install, use, remove, update and cancel
@@ -125,6 +126,11 @@ function SpeechModelSectionBody() {
       help={dictationMessage('MSG-SETTINGS-HELP')}
       data-testid="speech-models-section"
     >
+      {/* The privacy line comes first in the section, above the shortcut rows (DD-92). Its slot
+          holds `null` until the status is read, so the shortcut rows keep their place in the
+          tree and never remount when it arrives. */}
+      {status ? <SpeechSectionNotes status={status} /> : null}
+      <DictationShortcutRows />
       <AnywhereSettingsRows
         available={Boolean(status?.policy.enabled.allowed && status.policy.capture.allowed)}
         modelReady={Boolean(status && hasUsableModel(status))}
@@ -178,6 +184,28 @@ function disclosure(status: DictationStatus): string {
   }
 }
 
+/**
+ * The section's notes, at its top: the privacy line (visible text, never an InfoTip), the remote
+ * install note and the managed policy note.
+ */
+function SpeechSectionNotes({ status }: { status: DictationStatus }) {
+  return (
+    <>
+      <Note tone="neutral" testId="speech-privacy-line" className="mb-2">
+        {disclosure(status)}
+        <DisclosureDetail place={dictationDaemonPlace(status)} />
+      </Note>
+      {dictationDaemonPlace(status).kind === 'external-backend' &&
+        status.install.reason === dictationMessage('MSG-INSTALL-AGENT') && (
+          <Note tone="warning" role="status" testId="remote-no-key">
+            {dictationMessage('MSG-REMOTE-NO-KEY', { host: status.host })}
+          </Note>
+        )}
+      <ManagedPolicyNote policy={status.policy} className="mb-2" />
+    </>
+  );
+}
+
 function SpeechModelRows({ status }: { status: DictationStatus }) {
   const models = useSpeechModels();
   const activation = useDictionaryActivationChoice(status);
@@ -206,17 +234,6 @@ function SpeechModelRows({ status }: { status: DictationStatus }) {
 
   return (
     <>
-      <Note tone="neutral" testId="speech-privacy-line" className="mb-2">
-        {disclosure(status)}
-        <DisclosureDetail place={dictationDaemonPlace(status)} />
-      </Note>
-      {dictationDaemonPlace(status).kind === 'external-backend' &&
-        status.install.reason === dictationMessage('MSG-INSTALL-AGENT') && (
-          <Note tone="warning" role="status" testId="remote-no-key">
-            {dictationMessage('MSG-REMOTE-NO-KEY', { host: status.host })}
-          </Note>
-        )}
-      <ManagedPolicyNote policy={status.policy} className="mb-2" />
       {(!hasUsableModel(status) || activation.needsSave) &&
       status.policy.dictionary.allowed !== false &&
       activation.showChoice ? (
@@ -1093,7 +1110,10 @@ function AnywhereSettingsRows({
       shortcut: nextShortcut,
       disclosureShown,
     });
-    if (next) setSnapshot(next);
+    if (next) {
+      setSnapshot(next);
+      setShortcut(next.shortcut ?? '');
+    }
   };
   const enable = async () => {
     if (!available || !modelReady || snapshot.captureAllowed === false) return;
@@ -1107,11 +1127,14 @@ function AnywhereSettingsRows({
       });
       if (result.response !== 0) return;
     }
-    await change(
-      true,
-      snapshot.shortcut || (snapshot.tray ? null : DEFAULT_ANYWHERE_SHORTCUT),
-      true
-    );
+    // A shortcut is saved, and so registered, when none is: off macOS the suggested key
+    // combination, and on macOS only without the menu bar icon, where the fn key (Use fn in
+    // other apps) is the suggested way in. GNOME on Wayland cannot register one at all.
+    const suggested =
+      snapshot.gnomeWayland || (window.electron.platform === 'darwin' && snapshot.tray)
+        ? null
+        : DEFAULT_ANYWHERE_SHORTCUT;
+    await change(true, snapshot.shortcut || suggested, true);
   };
   return (
     <>
@@ -1142,17 +1165,15 @@ function AnywhereSettingsRows({
           }
         />
       </SettingRow>
+      {snapshot.enabled && <FnOtherAppsRow />}
       {snapshot.enabled && (
-        <SettingRow
-          label="Dictation shortcut"
-          help="Turn the shortcut on to start and stop Dictate to clipboard from another app."
-        >
+        <SettingRow label="Dictation shortcut" help={dictationMessage('MSG-SHORTCUT-HELP')}>
           <Input
             machine
             aria-label="Dictation shortcut"
             value={shortcut}
             disabled={snapshot.gnomeWayland}
-            placeholder={DEFAULT_ANYWHERE_SHORTCUT}
+            placeholder="None"
             onChange={(event) => setShortcut(event.target.value)}
             onBlur={() => void change(true, shortcut || null)}
           />

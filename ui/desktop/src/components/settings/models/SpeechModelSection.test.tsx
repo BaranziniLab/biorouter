@@ -1118,6 +1118,22 @@ describe('Dictate into other apps', () => {
     serve(status({ models: both(), active_model: TURBO }));
   });
 
+  // The privacy line is the section's first line; the keyboard rows and this switch follow it.
+  it('sits below the section privacy line, as the keyboard row does', async () => {
+    Object.assign(window.electron, { platform: 'win32' });
+    bridge(anywhere());
+    await renderSection();
+    const privacy = screen.getByTestId('speech-privacy-line');
+    const control = await screen.findByRole('switch', {
+      name: DICTATION_ACTIONS.dictateIntoOtherApps,
+    });
+    const chord = screen.getByTestId('dictation-chord-row');
+    const follows = (node: Node) =>
+      Boolean(privacy.compareDocumentPosition(node) & Node.DOCUMENT_POSITION_FOLLOWING);
+    expect(follows(control)).toBe(true);
+    expect(follows(chord)).toBe(true);
+  });
+
   it('is a switch named by its row, not a checkbox', async () => {
     bridge(anywhere());
     await renderSection();
@@ -1183,6 +1199,36 @@ describe('Dictate into other apps', () => {
       })
     );
     await waitFor(() => expect(control).toHaveAttribute('aria-checked', 'false'));
+  });
+
+  // The shortcut used to be saved only when the menu bar icon was missing, while the field showed
+  // the suggestion as grey placeholder text: it read as set and was never registered, so
+  // Ctrl+Alt+Shift+D did nothing on Windows and Linux.
+  it('off macOS, turning on registers the suggested shortcut, and the field shows it as its value', async () => {
+    Object.assign(window.electron, { platform: 'win32' });
+    const { set } = bridge(anywhere({ disclosureShown: true }));
+    const user = userEvent.setup();
+    await renderSection();
+    await user.click(
+      await screen.findByRole('switch', { name: DICTATION_ACTIONS.dictateIntoOtherApps })
+    );
+    await waitFor(() =>
+      expect(set).toHaveBeenCalledWith({
+        enabled: true,
+        shortcut: 'CommandOrControl+Alt+Shift+D',
+        disclosureShown: true,
+      })
+    );
+    const field = await screen.findByRole('textbox', { name: 'Dictation shortcut' });
+    expect(field).toHaveValue('CommandOrControl+Alt+Shift+D');
+  });
+
+  it('an empty shortcut field says None rather than showing a shortcut that is not set', async () => {
+    bridge(anywhere({ enabled: true, disclosureShown: true }));
+    await renderSection();
+    const field = await screen.findByRole('textbox', { name: 'Dictation shortcut' });
+    expect(field).toHaveValue('');
+    expect(field).toHaveAttribute('placeholder', 'None');
   });
 
   it('is disabled while no speech model is ready', async () => {
