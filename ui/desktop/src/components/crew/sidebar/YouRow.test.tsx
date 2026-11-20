@@ -95,7 +95,9 @@ describe('YouRow', () => {
     expect(document.querySelector('[data-crew-you-login]')).toBeNull();
   });
 
-  it('renders the SSH login alone, in monospace, with a placeholder avatar, before any snapshot', () => {
+  // The login is chrome, so it is in the sidebar's sans at the nav label's size, the role "Settings"
+  // beside it wears on /crew (owner, 2026-11-19; design.md D-33). It used to be monospace.
+  it('renders the SSH login alone, in the sidebar’s sans, with a placeholder avatar, before any snapshot', () => {
     renderYou(
       makeController({
         snapshot: null,
@@ -108,7 +110,8 @@ describe('YouRow', () => {
     const login = screen.getByText('fixture');
     expect(login.childNodes).toHaveLength(1);
     expect(login.firstChild?.nodeType).toBe(Node.TEXT_NODE);
-    expect(login).toHaveClass('font-mono');
+    expect(login).not.toHaveClass('font-mono');
+    expect(login).toHaveClass('text-secondary', 'text-text-muted');
     expect(document.querySelector('[data-crew-you-place]')).toBeNull();
     expect(document.querySelector('[data-person-context]')).toBeNull();
     const avatar = document.querySelector('[data-slot="avatar"]');
@@ -289,7 +292,7 @@ describe('YouRow', () => {
     );
     const login = screen.getByText('crew_alice@lab-server');
     expect(login.childNodes).toHaveLength(1);
-    expect(login).toHaveClass('font-mono');
+    expect(login).not.toHaveClass('font-mono');
     expect(screen.queryByText(/52\.33\.141\.141/)).toBeNull();
   });
 
