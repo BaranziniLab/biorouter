@@ -263,6 +263,10 @@ pub const NOT_DESTINATION_CONFIG_KEYS: &[(&str, &str)] = &[
     ("BEDROCK_BACKOFF_MULTIPLIER", "retry policy"),
     ("BEDROCK_MAX_RETRY_INTERVAL_MS", "retry policy"),
     ("BEDROCK_OPERATION_TIMEOUT_SECS", "transport timeout"),
+    (
+        "BEDROCK_PROMPT_CACHING",
+        "prompt-caching checkpoints, sent to the same host",
+    ),
     ("DATABRICKS_MAX_RETRIES", "retry policy"),
     ("DATABRICKS_INITIAL_RETRY_INTERVAL_MS", "retry policy"),
     ("DATABRICKS_BACKOFF_MULTIPLIER", "retry policy"),

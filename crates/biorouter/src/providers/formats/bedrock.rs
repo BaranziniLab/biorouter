@@ -27,6 +27,341 @@ use crate::conversation::message::{Message, MessageContent};
 use crate::model::ModelConfig;
 use crate::providers::utils::RequestLog;
 
+/// The Claude models AWS lists for explicit prompt caching through Converse,
+/// with cache checkpoints accepted in `system`, `messages` and `tools` and at
+/// most four per request: the "Supported models, Regions, and explicit caching
+/// limits" table of
+/// <https://docs.aws.amazon.com/bedrock/latest/userguide/prompt-caching.html>,
+/// read 2026-11-19 (#527). Base ids; an inference profile's geography prefix
+/// is removed before matching ([`bedrock_prompt_caching_model`]).
+///
+/// ⚠ Exactly the table, not a family pattern. Claude Sonnet 4.5 is in
+/// `BEDROCK_KNOWN_MODELS` and is NOT in the table, so it is sent no cache
+/// points. A model this list does not name is sent none: an unsupported
+/// checkpoint is a `ValidationException`, not a quiet no-op. Amazon Nova is
+/// left out because it takes no checkpoint in `tools`, which this placement
+/// always uses when tools are offered.
+const BEDROCK_PROMPT_CACHING_MODELS: &[&str] = &[
+    "anthropic.claude-fable-5-2",
+    "anthropic.claude-mythos-5-2",
+    "anthropic.claude-haiku-5-5",
+    "anthropic.claude-sonnet-5-5",
+    "anthropic.claude-opus-5-5",
+    "anthropic.claude-fable-5-1",
+    "anthropic.claude-mythos-5-1",
+    "anthropic.claude-fable-5",
+    "anthropic.claude-mythos-5",
+    "anthropic.claude-opus-5",
+    "anthropic.claude-opus-4-8",
+    "anthropic.claude-opus-4-7",
+    "anthropic.claude-opus-4-6-v1",
+    "anthropic.claude-opus-4-5-20251101-v1:0",
+    "anthropic.claude-sonnet-5",
+    "anthropic.claude-sonnet-4-6",
+    "anthropic.claude-haiku-4-5-20251001-v1:0",
+];
+
+/// The geography prefixes of Bedrock's cross-region inference profiles
+/// (`us.anthropic.…`, `global.anthropic.…`).
+const BEDROCK_PROFILE_PREFIXES: &[&str] =
+    &["us", "us-gov", "eu", "apac", "au", "jp", "ca", "global"];
+
+/// The two most recent user turns that carry content get a checkpoint. With
+/// the system prompt and the tool list that is four, the most Claude takes.
+const BEDROCK_MESSAGE_CACHE_POINTS: usize = 2;
+
+/// Whether AWS lists `model` (a base id or an inference profile id) for
+/// Converse prompt caching. See [`BEDROCK_PROMPT_CACHING_MODELS`].
+pub(crate) fn bedrock_prompt_caching_model(model: &str) -> bool {
+    let base = BEDROCK_PROFILE_PREFIXES
+        .iter()
+        .find_map(|prefix| {
+            model
+                .strip_prefix(prefix)
+                .and_then(|rest| rest.strip_prefix('.'))
+        })
+        .unwrap_or(model);
+    BEDROCK_PROMPT_CACHING_MODELS.contains(&base)
+}
+
+/// Prompt caching for one Bedrock or Versa Bedrock provider instance (#527).
+///
+/// On unless `BEDROCK_PROMPT_CACHING` is `false`. A model whose endpoint
+/// refused the cache points (a gateway that does not pass `cachePoint`
+/// through) is remembered here and sent none again by this instance, on
+/// either API. Cloned into a stream so a refusal that arrives after the
+/// stream opened is remembered too.
+#[derive(Debug, Clone)]
+pub(crate) struct BedrockPromptCaching {
+    enabled: bool,
+    refused: std::sync::Arc<std::sync::Mutex<HashSet<String>>>,
+}
+
+impl Default for BedrockPromptCaching {
+    fn default() -> Self {
+        Self::new(true)
+    }
+}
+
+impl BedrockPromptCaching {
+    pub(crate) fn new(enabled: bool) -> Self {
+        Self {
+            enabled,
+            refused: Default::default(),
+        }
+    }
+
+    /// `BEDROCK_PROMPT_CACHING`, shared by both Bedrock cards like the other
+    /// `BEDROCK_*` tuning keys. Absent is on. A value that is not a boolean
+    /// turns caching off and says so in the log: whoever set it meant to
+    /// change something, and off is the setting that cannot break a request.
+    pub(crate) fn from_config(config: &crate::config::Config) -> Self {
+        match config.get_param::<bool>("BEDROCK_PROMPT_CACHING") {
+            Ok(enabled) => Self::new(enabled),
+            Err(crate::config::ConfigError::NotFound(_)) => Self::new(true),
+            Err(_) => {
+                tracing::warn!(
+                    "BEDROCK_PROMPT_CACHING is not true or false; Bedrock prompt caching is off"
+                );
+                Self::new(false)
+            }
+        }
+    }
+
+    /// Whether a request to `model` should carry cache points now.
+    pub(crate) fn applies_to(&self, model: &str) -> bool {
+        self.enabled
+            && bedrock_prompt_caching_model(model)
+            && !self
+                .refused
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .contains(model)
+    }
+
+    /// The endpoint refused cache points for `model`: send it none from now on.
+    pub(crate) fn refuse(&self, model: &str) {
+        let newly = self
+            .refused
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(model.to_string());
+        if newly {
+            tracing::warn!(
+                model,
+                "the Bedrock endpoint refused prompt-caching checkpoints; sending this model none from now on"
+            );
+        }
+    }
+}
+
+/// What one Converse or ConverseStream request sends besides the model and its
+/// inference settings. Both APIs build it here, so they cannot disagree.
+#[derive(Debug, Clone)]
+pub(crate) struct BedrockRequestParts {
+    pub(crate) system: Vec<bedrock::SystemContentBlock>,
+    pub(crate) messages: Vec<bedrock::Message>,
+    pub(crate) tool_config: Option<bedrock::ToolConfiguration>,
+    /// How many `cachePoint` blocks the request carries (at most four).
+    pub(crate) cache_points: usize,
+}
+
+fn bedrock_cache_point() -> Result<bedrock::CachePointBlock> {
+    Ok(bedrock::CachePointBlock::builder()
+        .r#type(bedrock::CachePointType::Default)
+        .build()?)
+}
+
+/// Whether a converted message is a user turn with something in it to cache
+/// up to: a tool result, an image or document, or text that is not empty.
+fn user_turn_with_content(message: &bedrock::Message) -> bool {
+    matches!(message.role, bedrock::ConversationRole::User)
+        && message.content.iter().any(|block| match block {
+            bedrock::ContentBlock::Text(text) => !text.is_empty(),
+            bedrock::ContentBlock::CachePoint(_) | bedrock::ContentBlock::ReasoningContent(_) => {
+                false
+            }
+            _ => true,
+        })
+}
+
+/// The system prompt, messages and tool list of one request, with Converse
+/// prompt-caching checkpoints when `cache` is set (#527).
+///
+/// Placement follows the AWS guide: checkpoints are read in the order `tools`,
+/// `system`, `messages`, so one goes after the last tool spec, one after the
+/// system text, and one after each of the two most recent user turns with
+/// content. Four at most. A checkpoint before the model's minimum prefix length
+/// is accepted and simply not cached, so no token count is needed here. The
+/// conversation itself is never changed: only `cachePoint` blocks are added.
+pub(crate) fn bedrock_request_parts(
+    model: &str,
+    system: &str,
+    messages: &[Message],
+    tools: &[Tool],
+    cache: bool,
+) -> Result<BedrockRequestParts> {
+    let mut parts = BedrockRequestParts {
+        system: vec![bedrock::SystemContentBlock::Text(system.to_string())],
+        messages: to_bedrock_messages(model, messages)?,
+        tool_config: None,
+        cache_points: 0,
+    };
+    let mut tool_list: Vec<bedrock::Tool> =
+        tools.iter().map(to_bedrock_tool).collect::<Result<_>>()?;
+    if cache && !tool_list.is_empty() {
+        tool_list.push(bedrock::Tool::CachePoint(bedrock_cache_point()?));
+        parts.cache_points += 1;
+    }
+    if !tool_list.is_empty() {
+        parts.tool_config = Some(
+            bedrock::ToolConfiguration::builder()
+                .set_tools(Some(tool_list))
+                .build()?,
+        );
+    }
+    if !cache {
+        return Ok(parts);
+    }
+    if !system.is_empty() {
+        parts.system.push(bedrock::SystemContentBlock::CachePoint(
+            bedrock_cache_point()?,
+        ));
+        parts.cache_points += 1;
+    }
+    let mut marked = 0;
+    for message in parts.messages.iter_mut().rev() {
+        if marked == BEDROCK_MESSAGE_CACHE_POINTS {
+            break;
+        }
+        if user_turn_with_content(message) {
+            message
+                .content
+                .push(bedrock::ContentBlock::CachePoint(bedrock_cache_point()?));
+            parts.cache_points += 1;
+            marked += 1;
+        }
+    }
+    Ok(parts)
+}
+
+/// A wire error code as the AWS JSON protocols spell it: the part before the
+/// first `:`, after a `namespace#` prefix. `None` when nothing is left.
+fn normalized_wire_error_code(code: &str) -> Option<&str> {
+    let code = code.split(':').next()?;
+    let code = code.split_once('#').map_or(code, |(_, code)| code);
+    (!code.is_empty()).then_some(code)
+}
+
+/// Every error code the raw response states agrees with the SDK's own: the
+/// `x-amzn-errortype` header and the body's `code` and `__type`, each a string
+/// that names `expected` (or, when the SDK found none, no code anywhere). A
+/// body that is not a small JSON object is not evidence of anything.
+fn raw_error_codes_agree<E>(error: &SdkError<E>, expected: Option<&str>) -> bool
+where
+    E: ProvideErrorMetadata + std::error::Error + 'static,
+{
+    let Some(response) = error.raw_response() else {
+        return false;
+    };
+    let Some(bytes) = response.body().bytes() else {
+        return false;
+    };
+    if bytes.len() > 4096 {
+        return false;
+    }
+    let Ok(Value::Object(body)) = serde_json::from_slice::<Value>(bytes) else {
+        return false;
+    };
+    let mut codes = Vec::new();
+    if let Some(header) = response.headers().get("x-amzn-errortype") {
+        let Some(code) = normalized_wire_error_code(header) else {
+            return false;
+        };
+        codes.push(code.to_string());
+    }
+    for key in ["code", "__type"] {
+        if let Some(value) = body.get(key) {
+            let Some(code) = value.as_str().and_then(normalized_wire_error_code) else {
+                return false;
+            };
+            codes.push(code.to_string());
+        }
+    }
+    match expected {
+        Some(expected) => !codes.is_empty() && codes.iter().all(|code| code == expected),
+        None => codes.is_empty(),
+    }
+}
+
+/// Whether a message is a refusal of the cache checkpoints themselves.
+fn names_a_cache_point_refusal(message: &str) -> bool {
+    let reason = message
+        .to_ascii_lowercase()
+        .replace(['"', '\'', '`', '[', ']', ':'], " ")
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    [
+        "cachepoint is not supported",
+        "cachepoint not supported",
+        "cachepoint field is not supported",
+        "cache point is not supported",
+        "cache points are not supported",
+        "unsupported cachepoint",
+        "unsupported cache point",
+        "unknown field cachepoint",
+        "unknown parameter cachepoint",
+        "unrecognized field cachepoint",
+        "extraneous key cachepoint is not permitted",
+        "prompt caching is not supported",
+    ]
+    .iter()
+    .any(|refusal| reason.contains(refusal))
+}
+
+/// Whether an opening Converse or ConverseStream failure is the endpoint
+/// refusing the cache checkpoints, and nothing else (#527).
+///
+/// Deliberately strict, because the answer is a second request: an HTTP 400
+/// the SDK typed as a `ValidationException` (or could not type at all), whose
+/// raw codes agree with that ([`raw_error_codes_agree`]), and whose message
+/// says the checkpoints are what it refused. A 401 or 403, any other code, an
+/// unrelated validation error and a body the SDK could not read all keep their
+/// ordinary classification and send nothing more.
+pub(crate) fn bedrock_cache_point_rejected<E>(error: &SdkError<E>) -> bool
+where
+    E: ProvideErrorMetadata + std::error::Error + 'static,
+{
+    let Some(service_error) = error.as_service_error() else {
+        return false;
+    };
+    if error.raw_response().map(|r| r.status().as_u16()) != Some(400) {
+        return false;
+    }
+    let code = service_error.code();
+    if !matches!(code, None | Some("ValidationException")) || !raw_error_codes_agree(error, code) {
+        return false;
+    }
+    service_error
+        .message()
+        .and_then(clean_gateway_message)
+        .or_else(|| gateway_message(error))
+        .is_some_and(|message| names_a_cache_point_refusal(&message))
+}
+
+/// A refusal of the cache checkpoints that arrives after the response stream
+/// opened (#527): the stream's typed `ValidationException` saying so. There is
+/// no status or body here, only the event, so the typed variant and its words
+/// are the whole test.
+fn stream_event_rejects_cache_points<R>(err: &SdkError<ConverseStreamOutputError, R>) -> bool {
+    matches!(
+        err.as_service_error(),
+        Some(ConverseStreamOutputError::ValidationException(e))
+            if e.message().is_some_and(names_a_cache_point_refusal)
+    )
+}
+
 /// Conservative output ceiling used when a Bedrock model has no BioRouter
 /// override. Current Claude 4.5+ models support at least 64K output, while an
 /// unlisted/non-Claude model keeps the broadly supported 4K fallback.
@@ -1670,7 +2005,50 @@ impl BedrockStreamDecoder {
 pub fn bedrock_message_stream(
     response: ConverseStreamResponse,
     model_name: String,
+    log: RequestLog,
+) -> crate::providers::base::MessageStream {
+    bedrock_message_stream_watching_cache(response, model_name, log, None)
+}
+
+/// The request a stream was opened with carried cache checkpoints, and the
+/// policy that should hear about it if the endpoint refuses them only after
+/// the stream opened (#527).
+pub(crate) struct BedrockCacheWatch {
+    pub(crate) policy: BedrockPromptCaching,
+    pub(crate) model: String,
+}
+
+/// What the user is told when the endpoint refused the cache checkpoints after
+/// the stream opened. A server error, so the agent's one retry sends the
+/// request again, now without them.
+const CACHE_POINTS_REFUSED_MID_STREAM: &str = "The Bedrock endpoint refused prompt caching for \
+     this model after the reply started. Biorouter turned prompt caching off for this model and \
+     will send the request again without it.";
+
+/// A failure raised after the stream opened: a refusal of the request's own
+/// cache checkpoints is remembered on the policy and retried as a server error
+/// (#527); anything else is [`classify_bedrock_stream_event_error`]'s.
+fn mid_stream_error<R: std::fmt::Debug + Send + Sync + 'static>(
+    err: SdkError<ConverseStreamOutputError, R>,
+    watch: Option<&BedrockCacheWatch>,
+) -> ProviderError {
+    match watch {
+        Some(watch) if stream_event_rejects_cache_points(&err) => {
+            watch.policy.refuse(&watch.model);
+            ProviderError::ServerError(CACHE_POINTS_REFUSED_MID_STREAM.to_string())
+        }
+        _ => classify_bedrock_stream_event_error(err),
+    }
+}
+
+/// [`bedrock_message_stream`], remembering a refusal of the request's cache
+/// checkpoints that arrives as a stream event (#527). Without `watch` the two
+/// are the same.
+pub(crate) fn bedrock_message_stream_watching_cache(
+    response: ConverseStreamResponse,
+    model_name: String,
     mut log: RequestLog,
+    watch: Option<BedrockCacheWatch>,
 ) -> crate::providers::base::MessageStream {
     Box::pin(async_stream::try_stream! {
         let mut receiver = response.stream;
@@ -1681,7 +2059,7 @@ pub fn bedrock_message_stream(
                 Ok(Some(event)) => event,
                 Ok(None) => break,
                 Err(err) => {
-                    let provider_error = classify_bedrock_stream_event_error(err);
+                    let provider_error = mid_stream_error(err, watch.as_ref());
                     let _ = log.error(&provider_error);
                     // Terminates the stream with this error. Any tool block still
                     // open is intentionally NOT flushed as a callable request.
@@ -3709,5 +4087,355 @@ mod safe_detail_tests {
             code: None,
         };
         assert_eq!(safe_detail(&bare, None), "no further detail was returned");
+    }
+}
+
+#[cfg(test)]
+mod prompt_cache_tests {
+    //! #527: where Converse prompt-caching checkpoints go, which models get
+    //! them, and which failures count as the endpoint refusing them.
+    use super::*;
+    use aws_sdk_bedrockruntime::config::http::HttpResponse;
+    use aws_sdk_bedrockruntime::error::ErrorMetadata;
+    use aws_sdk_bedrockruntime::operation::converse::ConverseError;
+    use aws_sdk_bedrockruntime::types::error::{ThrottlingException, ValidationException};
+    use aws_smithy_runtime_api::http::StatusCode;
+    use aws_smithy_types::body::SdkBody;
+    use rmcp::model::CallToolResult;
+
+    const MODEL: &str = "us.anthropic.claude-opus-5-5";
+
+    fn service_err(status: u16, body: &str, inner: ConverseError) -> SdkError<ConverseError> {
+        let resp = HttpResponse::new(
+            StatusCode::try_from(status).unwrap(),
+            SdkBody::from(body.as_bytes().to_vec()),
+        );
+        SdkError::service_error(inner, resp)
+    }
+
+    fn typed_validation(message: &str) -> ConverseError {
+        ConverseError::ValidationException(
+            ValidationException::builder()
+                .message(message)
+                .meta(
+                    ErrorMetadata::builder()
+                        .code("ValidationException")
+                        .message(message)
+                        .build(),
+                )
+                .build(),
+        )
+    }
+
+    fn untyped() -> ConverseError {
+        ConverseError::generic(ErrorMetadata::builder().build())
+    }
+
+    fn cache_points(parts: &BedrockRequestParts) -> usize {
+        let system = parts
+            .system
+            .iter()
+            .filter(|block| matches!(block, bedrock::SystemContentBlock::CachePoint(_)))
+            .count();
+        let tools = parts.tool_config.as_ref().map_or(0, |config| {
+            config
+                .tools
+                .iter()
+                .filter(|tool| matches!(tool, bedrock::Tool::CachePoint(_)))
+                .count()
+        });
+        let messages = parts
+            .messages
+            .iter()
+            .flat_map(|message| &message.content)
+            .filter(|block| matches!(block, bedrock::ContentBlock::CachePoint(_)))
+            .count();
+        system + tools + messages
+    }
+
+    fn without_cache_points(mut parts: BedrockRequestParts) -> BedrockRequestParts {
+        parts
+            .system
+            .retain(|block| !matches!(block, bedrock::SystemContentBlock::CachePoint(_)));
+        for message in &mut parts.messages {
+            message
+                .content
+                .retain(|block| !matches!(block, bedrock::ContentBlock::CachePoint(_)));
+        }
+        if let Some(config) = &mut parts.tool_config {
+            config
+                .tools
+                .retain(|tool| !matches!(tool, bedrock::Tool::CachePoint(_)));
+        }
+        parts.cache_points = 0;
+        parts
+    }
+
+    fn lookup_tool() -> Tool {
+        Tool::new(
+            "fixture__lookup".to_string(),
+            "Synthetic lookup".to_string(),
+            rmcp::object!({"type": "object", "properties": {}}),
+        )
+    }
+
+    #[test]
+    fn issue_527_only_the_models_aws_lists_get_cache_points() {
+        for model in BEDROCK_PROMPT_CACHING_MODELS {
+            assert!(bedrock_prompt_caching_model(model), "{model}");
+            for prefix in BEDROCK_PROFILE_PREFIXES {
+                assert!(
+                    bedrock_prompt_caching_model(&format!("{prefix}.{model}")),
+                    "{prefix}.{model}"
+                );
+            }
+        }
+        for model in [
+            // In `BEDROCK_KNOWN_MODELS`, absent from AWS's prompt-caching table.
+            "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
+            "us.anthropic.claude-invented-5-5",
+            "us.anthropic.claude-opus-5-5-latest",
+            "us.anthropic.claude-opus-4-6",
+            "unknown.anthropic.claude-opus-5-5",
+            "us.amazon.nova-pro-v1:0",
+            "arn:aws:bedrock:us-west-2:123456789012:inference-profile/us.anthropic.claude-opus-5-5",
+        ] {
+            assert!(!bedrock_prompt_caching_model(model), "{model}");
+        }
+    }
+
+    #[test]
+    fn issue_527_a_refusal_is_scoped_to_one_instance_and_one_model() {
+        let policy = BedrockPromptCaching::new(true);
+        let shared = policy.clone();
+        let other = "us.anthropic.claude-sonnet-5-5";
+        assert!(policy.applies_to(MODEL) && policy.applies_to(other));
+        shared.refuse(MODEL);
+        assert!(!policy.applies_to(MODEL), "a clone shares the refusal");
+        assert!(policy.applies_to(other));
+        assert!(BedrockPromptCaching::default().applies_to(MODEL));
+        assert!(!BedrockPromptCaching::new(false).applies_to(MODEL));
+        assert!(!policy.applies_to("us.anthropic.claude-invented-5-5"));
+    }
+
+    #[tokio::test]
+    async fn issue_527_the_setting_reads_a_boolean_and_anything_else_is_off() {
+        let directory = tempfile::TempDir::new().unwrap();
+        let config = crate::config::Config::new(
+            directory.path().join("config.yaml"),
+            "bedrock-cache-fixture",
+        )
+        .unwrap();
+        assert!(BedrockPromptCaching::from_config(&config).applies_to(MODEL));
+        for (value, expected) in [("true", true), ("false", false), ("maybe", false)] {
+            let policy = crate::config::with_config_overrides(
+                std::collections::HashMap::from([(
+                    "BEDROCK_PROMPT_CACHING".to_string(),
+                    value.to_string(),
+                )]),
+                async { BedrockPromptCaching::from_config(&config) },
+            )
+            .await;
+            assert_eq!(policy.applies_to(MODEL), expected, "{value}");
+        }
+    }
+
+    #[test]
+    fn issue_527_checkpoints_follow_tools_system_and_the_last_two_user_turns() {
+        let call = CallToolRequestParams {
+            task: None,
+            name: "fixture__lookup".into(),
+            arguments: Some(rmcp::object!({"query": "synthetic"})),
+            meta: None,
+        };
+        let history = vec![
+            Message::user().with_text("first question"),
+            Message::assistant().with_text("first answer"),
+            Message::user().with_text("second question"),
+            Message::assistant()
+                .with_thinking("signed thought", "synthetic-signature")
+                .with_tool_request("call-1", Ok(call)),
+            Message::user().with_tool_response(
+                "call-1",
+                Ok(CallToolResult {
+                    content: vec![Content::text("native tool result")],
+                    structured_content: None,
+                    is_error: Some(false),
+                    meta: None,
+                }),
+            ),
+        ];
+        let original = history.clone();
+        let cached =
+            bedrock_request_parts(MODEL, "system", &history, &[lookup_tool()], true).unwrap();
+        assert_eq!(cached.cache_points, 4);
+        assert_eq!(cache_points(&cached), 4);
+        assert!(matches!(
+            cached.system.as_slice(),
+            [
+                bedrock::SystemContentBlock::Text(_),
+                bedrock::SystemContentBlock::CachePoint(_)
+            ]
+        ));
+        let tools = &cached.tool_config.as_ref().unwrap().tools;
+        assert!(matches!(
+            tools.as_slice(),
+            [bedrock::Tool::ToolSpec(_), bedrock::Tool::CachePoint(_)]
+        ));
+        let marked: Vec<usize> = cached
+            .messages
+            .iter()
+            .enumerate()
+            .filter(|(_, message)| {
+                matches!(
+                    message.content.last(),
+                    Some(bedrock::ContentBlock::CachePoint(_))
+                )
+            })
+            .map(|(index, _)| index)
+            .collect();
+        assert_eq!(marked, vec![2, 4], "the tool-result turn is the latest");
+
+        let plain =
+            bedrock_request_parts(MODEL, "system", &history, &[lookup_tool()], false).unwrap();
+        assert_eq!(plain.cache_points, 0);
+        assert_eq!(cache_points(&plain), 0);
+        let stripped = without_cache_points(cached);
+        assert_eq!(stripped.system, plain.system);
+        assert_eq!(stripped.messages, plain.messages);
+        assert_eq!(stripped.tool_config, plain.tool_config);
+        assert_eq!(
+            plain.messages,
+            to_bedrock_messages(MODEL, &history).unwrap(),
+            "without caching the request is what it always was"
+        );
+        assert_eq!(history, original, "the stored history is never changed");
+    }
+
+    #[test]
+    fn issue_527_nothing_to_cache_gets_no_checkpoint() {
+        let messages = [
+            Message::user().with_text("question"),
+            Message::user(),
+            Message::user()
+                .with_text("image")
+                .with_image("aW1hZ2U=", "image/png"),
+        ];
+        let parts = bedrock_request_parts(MODEL, "", &messages, &[], true).unwrap();
+        assert!(parts.tool_config.is_none());
+        assert_eq!(
+            parts.system,
+            vec![bedrock::SystemContentBlock::Text(String::new())],
+            "an empty system prompt gets no checkpoint"
+        );
+        assert_eq!(parts.cache_points, 2);
+        assert_eq!(cache_points(&parts), 2);
+        assert!(
+            parts.messages[1].content.is_empty(),
+            "an empty user turn is skipped, not given a lone checkpoint"
+        );
+        let many: Vec<Message> = (0..9)
+            .map(|n| Message::user().with_text(format!("turn {n}")))
+            .collect();
+        let parts = bedrock_request_parts(MODEL, "system", &many, &[lookup_tool()], true).unwrap();
+        assert_eq!(parts.cache_points, 4, "never more than four");
+    }
+
+    #[test]
+    fn issue_527_only_a_specific_http_400_is_a_cache_refusal() {
+        let said = "cachePoint is not supported for this model";
+        let body = serde_json::json!({"code": "ValidationException", "message": said}).to_string();
+        assert!(bedrock_cache_point_rejected(&service_err(
+            400,
+            &body,
+            typed_validation(said)
+        )));
+        assert!(bedrock_cache_point_rejected(&service_err(
+            400,
+            r#"{"message":"cachePoint is not supported for this model"}"#,
+            untyped(),
+        )));
+        for status in [401, 403, 429, 500] {
+            assert!(
+                !bedrock_cache_point_rejected(&service_err(
+                    status,
+                    r#"{"message":"cachePoint is not supported"}"#,
+                    untyped(),
+                )),
+                "{status}"
+            );
+        }
+        for message in [
+            "temperature is invalid; cachePoint is supported",
+            "cachePoint prefix is too short",
+            "invalid model identifier",
+        ] {
+            assert!(
+                !bedrock_cache_point_rejected(&service_err(
+                    400,
+                    &serde_json::json!({"message": message}).to_string(),
+                    untyped(),
+                )),
+                "{message}"
+            );
+        }
+        // As the SDK builds it: a typed error carries its own code.
+        let throttled = ConverseError::ThrottlingException(
+            ThrottlingException::builder()
+                .message("cachePoint is not supported")
+                .meta(
+                    ErrorMetadata::builder()
+                        .code("ThrottlingException")
+                        .message("cachePoint is not supported")
+                        .build(),
+                )
+                .build(),
+        );
+        assert!(!bedrock_cache_point_rejected(&service_err(
+            400,
+            r#"{"message":"cachePoint is not supported"}"#,
+            throttled,
+        )));
+    }
+
+    #[test]
+    fn issue_527_a_refusal_after_the_stream_opened_turns_caching_off_and_retries() {
+        let refusal = |message: &str| {
+            SdkError::<ConverseStreamOutputError, ()>::service_error(
+                ConverseStreamOutputError::ValidationException(
+                    ValidationException::builder().message(message).build(),
+                ),
+                (),
+            )
+        };
+        let policy = BedrockPromptCaching::new(true);
+        let watch = BedrockCacheWatch {
+            policy: policy.clone(),
+            model: MODEL.to_string(),
+        };
+
+        // Another validation failure mid-stream keeps its classification and
+        // leaves caching on.
+        let other = mid_stream_error(refusal("max_tokens is invalid"), Some(&watch));
+        assert!(
+            matches!(other, ProviderError::ExecutionError(_)),
+            "{other:?}"
+        );
+        assert!(policy.applies_to(MODEL));
+
+        // Without a watch (the request carried no checkpoints) a refusal is
+        // not ours to act on.
+        let unwatched = mid_stream_error(refusal("cachePoint is not supported"), None);
+        assert!(matches!(unwatched, ProviderError::ExecutionError(_)));
+        assert!(policy.applies_to(MODEL));
+
+        let refused = mid_stream_error(refusal("cachePoint is not supported"), Some(&watch));
+        assert_eq!(
+            refused,
+            ProviderError::ServerError(CACHE_POINTS_REFUSED_MID_STREAM.to_string())
+        );
+        assert!(crate::agents::mistakes::is_recoverable(&refused));
+        assert!(!policy.applies_to(MODEL), "the next request goes without");
+        assert!(policy.applies_to("us.anthropic.claude-sonnet-5-5"));
     }
 }

@@ -715,6 +715,86 @@ mod hosted_refresh_wire_tests {
         assert_eq!(body["messages"][3]["tool_call_id"], "lookup-1");
     }
 
+    /// #548 over the wire: a streamed reply's reasoning arrives as one delta
+    /// per fragment on both sides of its tool call, and the follow-up request
+    /// replays it as one merged entry plus the encrypted entry, unchanged.
+    #[tokio::test]
+    async fn streamed_reasoning_fragments_are_replayed_merged() {
+        use futures::StreamExt;
+        let server = MockServer::start().await;
+        let summary = |text: &str| json!({"type":"reasoning.summary","summary":text,"id":"summary-a","index":0,"format":"openai-responses-v1"});
+        let encrypted = json!({"type":"reasoning.encrypted","data":"AAEC/w==","id":"opaque-a","index":1,"format":"openai-responses-v1"});
+        let chunk = |delta: Value, finish: Option<&str>| {
+            format!(
+                "data: {}\n\n",
+                json!({"id":"or-1","model":"openai/gpt-6.2-sol","choices":[{"index":0,"delta":delta,"finish_reason":finish}]})
+            )
+        };
+        let mut body = String::new();
+        for n in 0..5 {
+            body.push_str(&chunk(
+                json!({"reasoning_details":[summary(&format!("part {n} "))]}),
+                None,
+            ));
+        }
+        body.push_str(&chunk(
+            json!({"tool_calls":[{"index":0,"id":"lookup-1","type":"function","function":{"name":"lookup","arguments":"{"}}]}),
+            None,
+        ));
+        for n in 5..10 {
+            body.push_str(&chunk(
+                json!({"reasoning_details":[summary(&format!("part {n} "))]}),
+                None,
+            ));
+        }
+        body.push_str(&chunk(
+            json!({"reasoning_details":[encrypted.clone()]}),
+            None,
+        ));
+        body.push_str(&chunk(
+            json!({"tool_calls":[{"index":0,"function":{"arguments":"}"}}]}),
+            Some("tool_calls"),
+        ));
+        body.push_str("data: [DONE]\n\n");
+        Mock::given(method("POST"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .insert_header("content-type", "text/event-stream")
+                    .set_body_string(body),
+            )
+            .mount(&server)
+            .await;
+        let provider = provider(server.uri(), "openai/gpt-6.2-sol");
+        let history = vec![Message::user().with_text("lookup")];
+        let mut stream = provider.stream("system", &history, &[]).await.unwrap();
+        let mut assistant = None;
+        while let Some(item) = stream.next().await {
+            if let (Some(message), _, _) = item.unwrap() {
+                if message
+                    .content
+                    .iter()
+                    .any(|c| matches!(c, MessageContent::ToolRequest(_)))
+                {
+                    assistant = Some(message);
+                }
+            }
+        }
+        let expected: String = (0..10).map(|n| format!("part {n} ")).collect();
+        let expected = json!([summary(&expected), encrypted]);
+        let history = vec![
+            history[0].clone(),
+            assistant.expect("the tool call was decoded"),
+            Message::user().with_tool_response(
+                "lookup-1",
+                Ok(CallToolResult::success(vec![Content::text("found")])),
+            ),
+        ];
+        let payload =
+            create_request_based_on_model(&provider.model, "system", &history, &[], true).unwrap();
+        assert_eq!(payload["messages"][2]["reasoning_details"], expected);
+        assert_eq!(payload["messages"][3]["tool_call_id"], "lookup-1");
+    }
+
     #[tokio::test]
     async fn hosted_refresh_openrouter_live_catalogue_excludes_incompatible_routes() {
         let server = MockServer::start().await;

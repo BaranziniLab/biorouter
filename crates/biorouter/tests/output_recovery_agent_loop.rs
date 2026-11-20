@@ -2592,11 +2592,28 @@ async fn issue_542_empty_and_whitespace_replies_get_one_hidden_corrective_attemp
             .iter()
             .any(|message| message.as_concat_text().contains("finished")));
         let sent = provider.sent.lock().unwrap();
-        assert!(sent[1].iter().any(|message| !message.is_user_visible()
+        // The request normalizer merges consecutive user turns (Bedrock
+        // Converse, for one, requires alternating roles), so when the empty
+        // reply answered the person's own message the note reaches the model
+        // inside that turn. What keeps it hidden is the row it is stored as.
+        assert!(sent[1].iter().any(|message| message
+            .as_concat_text()
+            .to_ascii_lowercase()
+            .contains("empty")));
+        assert!(reply.stored.iter().any(|message| !message.is_user_visible()
+            && message.is_agent_visible()
             && message
                 .as_concat_text()
                 .to_ascii_lowercase()
                 .contains("empty")));
+        assert!(reply
+            .stored
+            .iter()
+            .filter(|message| message.is_user_visible())
+            .all(|message| !message
+                .as_concat_text()
+                .to_ascii_lowercase()
+                .contains("reply was empty")));
     }
 }
 
@@ -2768,4 +2785,246 @@ async fn issue_542_already_cancelled_reply_never_enters_the_provider() {
     .await
     .expect("already-cancelled reply must settle");
     assert_eq!(provider.calls.load(Ordering::SeqCst), 0);
+}
+
+/// #548 through the agent loop: one reply's reasoning arrives as many streamed
+/// `reasoning_details` fragments around a tool call, the next request fails
+/// with a transient in-stream error (#542) and is retried, and both follow-up
+/// requests must replay the reply's reasoning as ONE merged array, with the
+/// encrypted entry byte for byte, exactly once.
+struct Issue548Provider {
+    calls: AtomicUsize,
+    sent: Mutex<Vec<Vec<Message>>>,
+    tool_directory: Mutex<Option<String>>,
+}
+
+const ISSUE_548_ENCRYPTED: &str = "AAEC/w==";
+
+fn issue_548_summary(text: &str) -> Value {
+    json!({"type":"reasoning.summary","summary":text,"id":"summary-a","index":0,"format":"openai-responses-v1"})
+}
+
+fn issue_548_encrypted() -> Value {
+    json!({"type":"reasoning.encrypted","data":ISSUE_548_ENCRYPTED,"id":"opaque-a","index":1,"format":"openai-responses-v1"})
+}
+
+fn issue_548_decoded(frames: Vec<Value>) -> MessageStream {
+    let mut lines: Vec<anyhow::Result<String>> = frames
+        .into_iter()
+        .map(|frame| Ok(format!("data: {frame}")))
+        .collect();
+    lines.push(Ok("data: [DONE]".to_string()));
+    let decoded = biorouter::providers::formats::openai::response_to_streaming_message(
+        futures::stream::iter(lines),
+    );
+    // What `OpenRouterProvider::stream` does to every message it yields.
+    Box::pin(decoded.map(|item| {
+        item.map(|(message, usage, pending)| {
+            let message = message.map(|mut message| {
+                biorouter::providers::formats::openrouter::stamp_reasoning_details_provenance(
+                    &mut message,
+                    "openrouter",
+                );
+                message
+            });
+            (message, usage, pending)
+        })
+        .map_err(|error| {
+            error
+                .downcast::<ProviderError>()
+                .unwrap_or_else(|error| ProviderError::RequestFailed(error.to_string()))
+        })
+    }))
+}
+
+#[async_trait]
+impl Provider for Issue548Provider {
+    async fn complete_with_model(
+        &self,
+        _model: &ModelConfig,
+        _system: &str,
+        _messages: &[Message],
+        _tools: &[Tool],
+    ) -> Result<(Message, ProviderUsage), ProviderError> {
+        Ok((
+            Message::assistant().with_text("synthetic name"),
+            ProviderUsage::new("mock-model".into(), Usage::default()),
+        ))
+    }
+
+    async fn stream(
+        &self,
+        _system: &str,
+        messages: &[Message],
+        _tools: &[Tool],
+    ) -> Result<MessageStream, ProviderError> {
+        self.sent.lock().unwrap().push(messages.to_vec());
+        let chunk = |delta: Value, finish: Option<&str>| json!({"id":"issue-548-turn","model":"synthetic/model","choices":[{"index":0,"delta":delta,"finish_reason":finish}]});
+        let frames = match self.calls.fetch_add(1, Ordering::SeqCst) {
+            0 => {
+                let command = if cfg!(windows) {
+                    "[System.IO.File]::AppendAllText('issue-548-effects.txt', 'done')"
+                } else {
+                    "printf done >> issue-548-effects.txt"
+                };
+                let arguments = json!({
+                    "command": command,
+                    "working_directory": self.tool_directory.lock().unwrap().clone(),
+                })
+                .to_string();
+                let (head, tail) = arguments.split_at(arguments.len() / 2);
+                let mut frames: Vec<Value> = (0..20)
+                    .map(|n| chunk(json!({"reasoning_details":[issue_548_summary(&format!("step {n}. "))]}), None))
+                    .collect();
+                frames.push(chunk(json!({"tool_calls":[{"index":0,"id":"issue-548-call","type":"function","function":{"name":"developer__shell","arguments":head}}]}), None));
+                frames.extend((20..40).map(|n| {
+                    chunk(
+                        json!({"reasoning_details":[issue_548_summary(&format!("step {n}. "))]}),
+                        None,
+                    )
+                }));
+                frames.push(chunk(
+                    json!({"reasoning_details":[issue_548_encrypted()]}),
+                    None,
+                ));
+                frames.push(chunk(
+                    json!({"tool_calls":[{"index":0,"function":{"arguments":tail}}]}),
+                    Some("tool_calls"),
+                ));
+                frames
+            }
+            1 => vec![
+                json!({"error":{"code":503,"metadata":{"error_type":"provider_unavailable"},"message":"PRIVATE_PROVIDER_PAYLOAD"},"choices":[{"index":0,"delta":{},"finish_reason":"error"}]}),
+            ],
+            2 => vec![chunk(json!({"content":"finished"}), Some("stop"))],
+            call => panic!("an unplanned extra provider attempt: {call}"),
+        };
+        Ok(issue_548_decoded(frames))
+    }
+
+    fn supports_streaming(&self) -> bool {
+        true
+    }
+    fn get_model_config(&self) -> ModelConfig {
+        ModelConfig::new_or_fail("mock-model")
+    }
+    fn metadata() -> ProviderMetadata {
+        AlternatingStormProvider::metadata()
+    }
+    fn get_name(&self) -> &str {
+        "output-recovery-mock"
+    }
+}
+
+#[tokio::test]
+async fn issue_548_a_retried_follow_up_replays_one_merged_reasoning_array() {
+    let provider = Arc::new(Issue548Provider {
+        calls: AtomicUsize::new(0),
+        sent: Mutex::default(),
+        tool_directory: Mutex::default(),
+    });
+    let expected_summary: String = (0..40).map(|n| format!("step {n}. ")).collect();
+    let expected = json!([issue_548_summary(&expected_summary), issue_548_encrypted()]);
+    with_config_overrides(
+        HashMap::from([
+            ("BIOROUTER_MISTAKE_STREAK_DETECTION".into(), "true".into()),
+            ("BIOROUTER_PROVIDER_ERROR_RETRIES".into(), "1".into()),
+        ]),
+        async {
+            let (agent, sessions, id, work, _data, _permissions) =
+                test_agent(provider.clone()).await;
+            *provider.tool_directory.lock().unwrap() =
+                Some(work.path().to_string_lossy().into_owned());
+            let stream = agent
+                .reply(
+                    Message::user().with_text("Complete the synthetic task."),
+                    SessionConfig {
+                        id: id.clone(),
+                        schedule_id: None,
+                        max_turns: Some(8),
+                        max_tool_calls: None,
+                        budget: None,
+                        retry_config: None,
+                        reasoning_effort: None,
+                    },
+                    None,
+                )
+                .await
+                .unwrap();
+            tokio::pin!(stream);
+            let mut aborted = false;
+            tokio::time::timeout(Duration::from_secs(10), async {
+                while let Some(event) = stream.next().await {
+                    aborted |= matches!(event.unwrap(), AgentEvent::TurnAborted { .. });
+                }
+            })
+            .await
+            .expect("bounded synthetic reply");
+            assert!(!aborted);
+            assert_eq!(provider.calls.load(Ordering::SeqCst), 3);
+            assert_eq!(
+                std::fs::read_to_string(work.path().join("issue-548-effects.txt")).unwrap(),
+                "done",
+                "the tool ran once, and the retry did not run it again"
+            );
+
+            let sent = provider.sent.lock().unwrap().clone();
+            for (call, request) in sent.iter().enumerate().skip(1) {
+                let carried: Vec<&Value> = request
+                    .iter()
+                    .flat_map(|message| &message.content)
+                    .filter_map(|content| match content {
+                        MessageContent::ToolRequest(request) => {
+                            request.metadata.as_ref()?.get("reasoning_details")
+                        }
+                        _ => None,
+                    })
+                    .collect();
+                assert_eq!(carried, vec![&expected], "request {call}");
+
+                let mut payload = json!({
+                    "messages": biorouter::providers::formats::openai::format_messages(
+                        request,
+                        &biorouter::providers::utils::ImageFormat::OpenAi,
+                    )
+                });
+                biorouter::providers::formats::openrouter::add_reasoning_details_to_request(
+                    &mut payload,
+                    request,
+                );
+                let replayed: Vec<&Value> = payload["messages"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .filter_map(|message| message.get("reasoning_details"))
+                    .collect();
+                assert_eq!(replayed, vec![&expected], "request {call} replays it once");
+                assert!(!payload.to_string().contains("PRIVATE_PROVIDER_PAYLOAD"));
+            }
+
+            let stored = sessions
+                .get_session(&id, true)
+                .await
+                .unwrap()
+                .conversation
+                .unwrap();
+            let stored_arrays: Vec<&Value> = stored
+                .messages()
+                .iter()
+                .flat_map(|message| &message.content)
+                .filter_map(|content| match content {
+                    MessageContent::ToolRequest(request) => {
+                        request.metadata.as_ref()?.get("reasoning_details")
+                    }
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(stored_arrays, vec![&expected], "stored merged, once");
+            assert!(stored
+                .messages()
+                .iter()
+                .any(|message| message.as_concat_text().contains("finished")));
+        },
+    )
+    .await;
 }

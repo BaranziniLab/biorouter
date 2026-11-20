@@ -228,6 +228,9 @@ static MODEL_CONTEXT_WINDOWS: Lazy<HashMap<&'static str, usize>> = Lazy::new(|| 
         ("gemini-4-hydrogen", 1_048_576),
         ("gemini-4-argon", 1_048_576),
         ("gemini-4-carbon", 1_048_576),
+        // Gemini 4 Neon: "a unified 1M-token context window"
+        // (https://aistudio.google.com/docs/pricing, read 2026-11-19).
+        ("gemini-4-neon", 1_048_576),
         // Llama Server catalog names (`providers/llamacpp.rs`). `gemma4-31b` is
         // in the catalog; the other `gemma4*` rows are retired catalog names,
         // which a chat now runs as `qwen3.8-27b` but whose windows stay true.
