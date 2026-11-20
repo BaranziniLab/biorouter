@@ -528,6 +528,15 @@ impl WorkspaceServices for ServerWorkspaceServices {
         .await
     }
 
+    fn browser_route_refusal(
+        &self,
+        session_id: &str,
+    ) -> Option<biorouter::workspace_services::BrowserChannelError> {
+        crate::workspace::bridge::bridge_for_session(session_id)
+            .is_none()
+            .then(|| no_window_for_the_chat(crate::workspace::bridge::any_attached()))
+    }
+
     async fn gui_command(
         &self,
         frame: serde_json::Value,
@@ -567,11 +576,7 @@ pub(crate) async fn browser_request_on(
     use crate::workspace::bridge::BrowserWait;
     use biorouter::workspace_services::BrowserChannelError;
     let Some(bridge) = primary else {
-        return Err(if any_window {
-            BrowserChannelError::ChatNotOnScreen
-        } else {
-            BrowserChannelError::NoDesktop
-        });
+        return Err(no_window_for_the_chat(any_window));
     };
     match bridge
         .emit_and_wait_cancellable(frame, deadline + BROWSER_DEADLINE_GRACE, cancel)
@@ -588,6 +593,20 @@ pub(crate) async fn browser_request_on(
             abandon_browser_operation(&bridge, &request_id, session_id);
             Err(BrowserChannelError::Cancelled)
         }
+    }
+}
+
+/// Why an operation for a chat that no attached window holds fails: one rule, shared by
+/// [`browser_request_on`] and [`ServerWorkspaceServices::browser_route_refusal`], so the check
+/// before the consent wait can never refuse a call the operation itself would have sent.
+pub(crate) fn no_window_for_the_chat(
+    any_window: bool,
+) -> biorouter::workspace_services::BrowserChannelError {
+    use biorouter::workspace_services::BrowserChannelError;
+    if any_window {
+        BrowserChannelError::ChatNotOnScreen
+    } else {
+        BrowserChannelError::NoDesktop
     }
 }
 
@@ -1971,6 +1990,40 @@ mod tests {
         .await
         .unwrap_err();
         assert_eq!(err, BrowserChannelError::NoDesktop);
+    }
+
+    /// The check before the consent wait answers what the operation itself would: the same
+    /// rule, and a chat no attached window holds is refused whichever other windows the test
+    /// binary has attached (the registry is process-wide, so only `is_some` is asserted
+    /// against it).
+    #[tokio::test]
+    async fn the_route_check_before_the_consent_wait_refuses_a_chat_no_window_holds() {
+        use biorouter::workspace_services::{BrowserChannelError, WorkspaceServices};
+        for any_window in [true, false] {
+            let operation = browser_request_on(
+                None,
+                any_window,
+                browser_frame(),
+                "chat-1",
+                std::time::Duration::from_secs(5),
+                &tokio_util::sync::CancellationToken::new(),
+            )
+            .await
+            .unwrap_err();
+            assert_eq!(operation, no_window_for_the_chat(any_window));
+        }
+        assert_eq!(
+            no_window_for_the_chat(true),
+            BrowserChannelError::ChatNotOnScreen
+        );
+
+        let state = crate::state::AppState::new().await.unwrap();
+        let services = ServerWorkspaceServices::new(state);
+        let unseen = format!("no-window-holds-{}", uuid::Uuid::new_v4());
+        assert!(
+            services.browser_route_refusal(&unseen).is_some(),
+            "a chat no window holds is refused before the consent wait"
+        );
     }
 
     #[tokio::test]

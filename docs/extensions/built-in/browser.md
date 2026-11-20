@@ -17,8 +17,9 @@ action happens in the visible panel, in the chat's own tab, and the person allow
 The capability is on by default in **Settings > Chat > Capabilities > Biorouter Browser**. Being
 on only offers the tools. The agent cannot use them until the person allows it in the chat.
 
-It exists only in the desktop app. In `biorouter serve`, in the CLI running on its own and in a
-subagent, the tools are not offered, because no Electron window is there to hold a page.
+It exists only in the desktop app, and only in a person's own chat. In `biorouter serve`, in the
+CLI running on its own, in a subagent and in a scheduled run, the tools are not offered, because no
+window there can hold a page or show the approval.
 
 ## Tools
 
@@ -112,7 +113,8 @@ it and does not move the task to Copilot or to a script.
 
 - **Only on screen.** The agent drives a tab only in the chat's own side panel, while the chat is
   the active tab of its window. If the chat is behind another tab, or not open, the tool says so
-  and the agent asks the person to open the chat.
+  and the agent asks the person to open the chat. A chat that is not open in any window gets that
+  answer at once, without waiting for an approval nobody can see.
 - **Only its own tabs.** The agent sees the tabs it opened and the tabs those pages opened, never
   a tab the person opened.
 - **Local addresses.** A chat on a public model cannot open a private network or loopback
