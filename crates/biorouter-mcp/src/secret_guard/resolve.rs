@@ -1207,6 +1207,17 @@ impl<'a> Resolver<'a> {
                 return Err(self.finding(shown, Some(relative), Reason::PatternTail));
             }
         }
+        // A known final name that is a conventional `.env` template (issue #522)
+        // cannot end a floor path: the only floor pattern whose last component
+        // reaches it is `**/.env.*`, and the template exceptions reopen exactly
+        // that name. Asked of the guard as well, so a `.biorouterignore` that
+        // denies the template again, or a spelling the guard does not reopen
+        // (`.env.Example`), still goes on to the comparison below.
+        if let Some(name) = suffix.last().and_then(|(tokens, _)| literal_of(tokens)) {
+            if is_env_template_name(&name) && !self.guard.is_denied(Path::new(&name)) {
+                return Ok(());
+            }
+        }
         for pattern in floor_components() {
             // Align the two right-anchored: the candidate's known tail against
             // the deny pattern's last components. Whichever is shorter is the
@@ -1521,6 +1532,22 @@ fn literal_of(tokens: &[Tok]) -> Option<String> {
             _ => None,
         })
         .collect()
+}
+
+/// Whether `name` is one of the `.env` template names the floor reopens
+/// ([`super::DEFAULT_SECRET_TEMPLATE_EXCEPTIONS`]), for [`Resolver::tails`].
+fn is_env_template_name(name: &str) -> bool {
+    static TEMPLATES: Lazy<Vec<Vec<Tok>>> = Lazy::new(|| {
+        super::DEFAULT_SECRET_TEMPLATE_EXCEPTIONS
+            .iter()
+            .map(|pattern| {
+                glob::parse_pattern(pattern.trim_start_matches('!').trim_start_matches("**/"))
+            })
+            .collect()
+    });
+    TEMPLATES
+        .iter()
+        .any(|template| glob::matches(template, name, false))
 }
 
 /// The floor's patterns as component globs, for [`Resolver::tails`].

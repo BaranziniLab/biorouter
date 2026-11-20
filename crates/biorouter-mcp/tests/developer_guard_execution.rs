@@ -187,6 +187,27 @@ async fn issue522_real_tool_dispatch_preserves_an_explicit_project_template_deny
 }
 
 #[tokio::test]
+async fn issue522_real_shell_reads_a_template_inside_a_longer_command_line() {
+    let root = fixture();
+    let outcomes = call_real_tools(
+        root.path(),
+        vec![
+            shell("cat config/.env.example | head -1 > piped-template.txt"),
+            shell("printf launched > piped-launch-marker; cat config/.env | head -1 > piped-secret.txt"),
+        ],
+    )
+    .await;
+    text(&outcomes[0]);
+    assert_eq!(
+        std::fs::read(root.path().join("piped-template.txt")).unwrap(),
+        b"REGION=fixture\n"
+    );
+    refused(&outcomes[1]);
+    assert!(!root.path().join("piped-launch-marker").exists());
+    assert!(!root.path().join("piped-secret.txt").exists());
+}
+
+#[tokio::test]
 async fn issue546_real_shell_preserves_inert_quoted_heredoc_data_exactly() {
     let root = fixture();
     let body =

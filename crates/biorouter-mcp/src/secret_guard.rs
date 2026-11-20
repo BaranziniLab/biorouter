@@ -89,6 +89,37 @@ pub const DEFAULT_SECRET_PATTERNS: &[&str] = &[
     "**/daemon/user-action-key.json",
 ];
 
+/// Conventional `.env` templates, reopened on top of the floor (issue #522).
+///
+/// `**/.env.*` above also matches the templates a repository commits next to
+/// its `.env`, which hold variable names and no values, so an agent could not
+/// read one or run the usual `cp .env.example .env`. These negations are added
+/// right after the floor and before any `.biorouterignore`, so gitignore's
+/// last-match-wins order still lets a project or the global file deny a
+/// template again. They name exact file names only: `.env`, `.env.local` and
+/// `.env.production` stay denied, and a template that is a symlink is judged
+/// as the file it reaches, so a link from `.env.example` to `.env` is refused.
+pub const DEFAULT_SECRET_TEMPLATE_EXCEPTIONS: &[&str] = &[
+    "!**/.env.example",
+    "!**/.env.sample",
+    "!**/.env.template",
+    "!**/.env.dist",
+    "!**/.env.tpl",
+    "!**/.env.defaults",
+    "!**/.env.*.example",
+];
+
+/// Add the built-in floor, then its template exceptions, to a builder. Both
+/// guard constructors call this, so their floors cannot drift apart.
+fn add_builtin_floor(builder: &mut GitignoreBuilder) {
+    for pattern in DEFAULT_SECRET_PATTERNS
+        .iter()
+        .chain(DEFAULT_SECRET_TEMPLATE_EXCEPTIONS)
+    {
+        let _ = builder.add_line(None, pattern);
+    }
+}
+
 /// Object keys whose string values are treated as file paths and scanned in
 /// full (every whitespace token). Tokens under any other key are only scanned
 /// when they contain a path separator, so a `.env` mentioned in prose (e.g. a
@@ -113,6 +144,9 @@ fn key_is_pathlike(key: &str) -> bool {
                 | "destination"
                 | "location"
                 | "uri"
+                // An MCP resource locator. Read as a path, so a bare name and a
+                // template that is a symlink are judged (issue #522).
+                | "resource"
                 | "url"
                 | "folder"
         )
@@ -152,10 +186,8 @@ impl SecretGuard {
         let cwd = path.root();
         let mut builder = GitignoreBuilder::new(cwd);
         let mut machine_builder = GitignoreBuilder::new(cwd);
-        for pattern in DEFAULT_SECRET_PATTERNS {
-            let _ = builder.add_line(None, pattern);
-            let _ = machine_builder.add_line(None, pattern);
-        }
+        add_builtin_floor(&mut builder);
+        add_builtin_floor(&mut machine_builder);
         if let Ok(dirs) = crate::paths::platform_dirs() {
             let global = dirs.config.join(".biorouterignore");
             let _ = builder.add(&global);
@@ -194,10 +226,8 @@ impl SecretGuard {
         let mut builder = GitignoreBuilder::new(cwd);
         let mut machine_builder = GitignoreBuilder::new(cwd);
 
-        for pat in DEFAULT_SECRET_PATTERNS {
-            let _ = builder.add_line(None, pat);
-            let _ = machine_builder.add_line(None, pat);
-        }
+        add_builtin_floor(&mut builder);
+        add_builtin_floor(&mut machine_builder);
 
         let project_local = cwd.join(".biorouterignore");
         for source in sources {
@@ -430,6 +460,14 @@ impl SecretGuard {
     /// Every string also gets the literal whitespace-token pass the guard has
     /// always made, now without the `exists()` gate. It is IO-free and it is
     /// what keeps this change from permitting anything the old scan refused.
+    /// The whole string is one more literal candidate for a path argument, and
+    /// for any other value only when it is a single word (see [`Whole`]).
+    ///
+    /// This scan does not know which tool it is reading, so prose keeps the
+    /// separator rule even where a tool never opens it. The dispatch boundary,
+    /// which does know, leaves out the free-text fields of the bundled Todo
+    /// tools and the source of Code Execution's `execute_code`, whose inner
+    /// calls are each dispatched, and judged, on their own (issue #522).
     ///
     /// A sibling `working_directory` / `cwd` argument is treated as another
     /// directory the command may run in, because for the Developer shell it is
@@ -478,7 +516,7 @@ impl SecretGuard {
             return Some(DeniedAccess::from(finding));
         }
         let mut found = None;
-        self.legacy_scan(command, true, &mut found);
+        self.legacy_scan(command, true, Whole::OnlyOneWord, &mut found);
         found
     }
 
@@ -492,7 +530,7 @@ impl SecretGuard {
         env: &ShellEnv,
     ) -> Option<DeniedAccess> {
         let mut found = None;
-        self.legacy_scan(code, true, &mut found);
+        self.legacy_scan(code, true, Whole::OnlyOneWord, &mut found);
         if found.is_some() {
             return found;
         }
@@ -579,7 +617,12 @@ impl SecretGuard {
                 return;
             }
         }
-        self.legacy_scan(s, pathlike_key, found);
+        let whole = if kind == KeyKind::Path {
+            Whole::Always
+        } else {
+            Whole::OnlyOneWord
+        };
+        self.legacy_scan(s, pathlike_key, whole, found);
         if found.is_some() || kind != KeyKind::Path {
             return;
         }
@@ -590,11 +633,24 @@ impl SecretGuard {
 
     /// The whole string, then each whitespace token, taken literally — the
     /// scan the guard has always made, minus its `exists()` gate.
-    fn legacy_scan(&self, s: &str, pathlike_key: bool, found: &mut Option<DeniedAccess>) {
+    fn legacy_scan(
+        &self,
+        s: &str,
+        pathlike_key: bool,
+        whole: Whole,
+        found: &mut Option<DeniedAccess>,
+    ) {
         let trimmed = s.trim();
 
         // Whole-string candidate (covers a plain `{"path": ".env"}` argument).
-        if (pathlike_key || has_separator(trimmed)) && self.candidate_is_denied(trimmed) {
+        let whole_is_a_candidate = match whole {
+            Whole::Always => true,
+            Whole::OnlyOneWord => !trimmed.contains(char::is_whitespace),
+        };
+        if whole_is_a_candidate
+            && (pathlike_key || has_separator(trimmed))
+            && self.candidate_is_denied(trimmed)
+        {
             *found = Some(DeniedAccess::literal(trimmed));
             return;
         }
@@ -691,6 +747,22 @@ impl From<resolve::Finding> for DeniedAccess {
             reason: finding.reason,
         }
     }
+}
+
+/// Whether [`SecretGuard::legacy_scan`] also takes the whole string as one
+/// path.
+///
+/// A path argument can hold spaces, so its whole value is one candidate. A
+/// command line, a script or prose is several words: each word is a candidate
+/// of its own (and a command is also read by the resolver, which keeps a
+/// quoted path with spaces together), while the whole text names no file. It
+/// used to be judged as one anyway, which refused `cat config/.env.example |
+/// head` because the text after its last `/`, `.env.example | head`, matches
+/// `**/.env.*` (issue #522). Every word of it is still judged.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Whole {
+    Always,
+    OnlyOneWord,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -2260,8 +2332,15 @@ mod issue522_guard_tests {
         }
     }
 
+    /// The generic scan does not know which tool a key belongs to, and `code`
+    /// under an unknown tool can be a program that opens the path (Compute's
+    /// `compute_python`, an external runner). So a slash path in a prose key
+    /// stays refused here; only the dispatch boundary, which knows the call is
+    /// the bundled Todo or Code Execution tool, leaves those fields out
+    /// (`agents::extension_manager`'s `issue522_` tests). A template and an
+    /// ordinary file in the same prose stay readable.
     #[test]
-    fn issue522_slash_mentions_in_prose_and_code_are_not_file_access() {
+    fn issue522_generic_prose_keys_keep_the_floor_for_slash_paths() {
         let root = tempfile::tempdir().unwrap();
         let guard = SecretGuard::for_dir(root.path());
         for key in [
@@ -2273,18 +2352,41 @@ mod issue522_guard_tests {
             "commit_message",
             "code",
         ] {
-            let args = serde_json::Map::from_iter([(
+            let protected = serde_json::Map::from_iter([(
                 key.to_string(),
                 json!("configuration/.env copy still needs the user"),
             )]);
+            let denied = guard
+                .find_denied_access(&protected)
+                .unwrap_or_else(|| panic!("prose key {key} let a protected path through"));
+            assert_eq!(denied.shown, "configuration/.env", "{key}");
             assert!(
-                guard.find_denied_access(&args).is_none(),
-                "prose key {key} was treated as an access"
+                denied.message().contains("secret/credential deny pattern"),
+                "{key}: {}",
+                denied.message()
             );
+            for benign in [
+                "configuration/notes.md copy still needs the user",
+                "configuration/.env.example copy still needs the user",
+            ] {
+                let args = serde_json::Map::from_iter([(key.to_string(), json!(benign))]);
+                assert!(
+                    guard.find_denied_access(&args).is_none(),
+                    "prose key {key} refused {benign:?}"
+                );
+            }
         }
-        assert!(guard
+        let denied = guard
             .find_denied_access(
                 json!({"updates": [{"id": "1", "text": "configuration/.env needs the user"}]})
+                    .as_object()
+                    .unwrap(),
+            )
+            .expect("a nested prose key keeps the floor");
+        assert_eq!(denied.shown, "configuration/.env");
+        assert!(guard
+            .find_denied_access(
+                json!({"updates": [{"id": "1", "text": "configuration/notes.md needs the user"}]})
                     .as_object()
                     .unwrap()
             )
@@ -2403,5 +2505,121 @@ mod issue522_unclassified_controls {
                 .find_denied_access(args.as_object().unwrap())
                 .is_some());
         }
+    }
+}
+
+/// Issue #522 through the resolver: a template is reopened wherever the guard
+/// can see its name, and nothing it shares a prefix with is.
+#[cfg(test)]
+mod issue522_template_resolution {
+    use super::*;
+    use serde_json::json;
+
+    fn command_denial(guard: &SecretGuard, env: &ShellEnv, command: &str) -> Option<String> {
+        guard
+            .find_denied_access_in(json!({ "command": command }).as_object().unwrap(), env)
+            .map(|denied| denied.shown)
+    }
+
+    #[test]
+    fn issue522_template_with_an_unknown_root_is_readable_and_its_neighbours_are_not() {
+        let root = tempfile::tempdir().unwrap();
+        let guard = SecretGuard::for_dir(root.path());
+        let env = ShellEnv::with_vars([("HOME", root.path().to_string_lossy().into_owned())]);
+        for command in [
+            "cat \"$(git rev-parse --show-toplevel)/config/.env.example\"",
+            "cp \"$UNSET_ROOT/config/.env.sample\" config/settings.txt",
+            "cat \"$(pwd)/.env.production.example\"",
+            "cat \"$(pwd)/.ENV.EXAMPLE\"",
+        ] {
+            assert_eq!(command_denial(&guard, &env, command), None, "{command}");
+        }
+        for command in [
+            "cat \"$(git rev-parse --show-toplevel)/config/.env\"",
+            "cat \"$(git rev-parse --show-toplevel)/config/.env.local\"",
+            "cat \"$UNSET_ROOT/.env.production\"",
+            "cat \"$UNSET_ROOT/.env.example.bak\"",
+            "cat \"$UNSET_ROOT/.env.Example\"",
+            "cat \"$UNSET_ROOT/.env.example/id_rsa\"",
+        ] {
+            assert!(command_denial(&guard, &env, command).is_some(), "{command}");
+        }
+    }
+
+    /// The literal pass used to take a whole command line as one path, so the
+    /// text after its last `/` (`.env.example | head -5`) matched `**/.env.*`.
+    #[test]
+    fn issue522_a_template_followed_by_more_words_is_readable() {
+        let root = tempfile::tempdir().unwrap();
+        let guard = SecretGuard::for_dir(root.path());
+        let env = ShellEnv::with_vars([("HOME", root.path().to_string_lossy().into_owned())]);
+        for command in [
+            "cat config/.env.example | head -5",
+            "cp config/.env.example .",
+            "grep -n REGION config/.env.example && echo done",
+        ] {
+            assert_eq!(command_denial(&guard, &env, command), None, "{command}");
+            assert_eq!(
+                guard
+                    .find_denied_in_command(command, root.path(), &env)
+                    .map(|denied| denied.shown),
+                None,
+                "{command}"
+            );
+        }
+        for command in [
+            "cat config/.env | head -5",
+            "cp config/.env.local .",
+            "grep -n REGION config/.env.example config/.env.production && echo done",
+        ] {
+            assert!(command_denial(&guard, &env, command).is_some(), "{command}");
+            assert!(
+                guard
+                    .find_denied_in_command(command, root.path(), &env)
+                    .is_some(),
+                "{command}"
+            );
+        }
+    }
+
+    #[test]
+    fn issue522_a_project_deny_still_reaches_a_template_with_an_unknown_root() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::write(root.path().join(".biorouterignore"), ".env.example\n").unwrap();
+        let guard = SecretGuard::for_dir(root.path());
+        let env = ShellEnv::with_vars([("HOME", root.path().to_string_lossy().into_owned())]);
+        assert!(command_denial(
+            &guard,
+            &env,
+            "cat \"$(git rev-parse --show-toplevel)/config/.env.example\""
+        )
+        .is_some());
+    }
+
+    #[test]
+    fn issue522_globs_open_a_template_and_never_the_secret_beside_it() {
+        let root = tempfile::tempdir().unwrap();
+        let config = root.path().join("config");
+        std::fs::create_dir(&config).unwrap();
+        std::fs::write(config.join(".env.example"), "REGION=\n").unwrap();
+        let guard = SecretGuard::for_dir(root.path());
+        let env = ShellEnv::with_vars([("HOME", root.path().to_string_lossy().into_owned())]);
+        assert_eq!(command_denial(&guard, &env, "cat config/.e*"), None);
+        assert_eq!(
+            command_denial(&guard, &env, "cat config/.[e]nv.example"),
+            None
+        );
+
+        std::fs::write(config.join(".env.local"), "SYNTHETIC=only\n").unwrap();
+        assert!(command_denial(&guard, &env, "cat config/.e*").is_some());
+        assert_eq!(
+            command_denial(&guard, &env, "cat config/.[e]nv.example"),
+            None
+        );
+
+        std::fs::write(config.join(".env"), "SYNTHETIC=only\n").unwrap();
+        assert!(command_denial(&guard, &env, "cat config/.[e]nv").is_some());
+        assert!(command_denial(&guard, &env, "cat config/.EN?").is_some());
+        assert!(command_denial(&guard, &env, "cat CONFIG/.ENV").is_some());
     }
 }
