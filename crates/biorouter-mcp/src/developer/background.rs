@@ -1889,7 +1889,12 @@ mod tests {
         use super::*;
         use futures::FutureExt;
 
-        const READY_MS: u64 = 750;
+        // A bound on failure only: every wait returns as soon as its condition
+        // holds. 750 ms was too short for a fixture shell to start and print on a
+        // loaded host (seen with the whole workspace's lib tests running beside
+        // vitest). It stays under the fixtures' own windows (`sleep 5`, the 3 s
+        // release loop), which must still be open when the wait ends.
+        const READY_MS: u64 = 3000;
         const ADVISORY_MS: u64 = 2000;
 
         async fn finish_finite_jobs(jobs: &BackgroundJobs) -> Result<(), String> {
