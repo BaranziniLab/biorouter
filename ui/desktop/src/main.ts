@@ -170,6 +170,7 @@ import {
   openUpdateSettings,
   popUpTrayMenu,
   registerUpdateIpcHandlers,
+  setChatWindowPredicate,
   setTrayRef,
   setupAutoUpdater,
   updateTrayMenu,
@@ -1008,7 +1009,7 @@ if (
       }
 
       // Only focus existing windows for non-bot/workflow URLs
-      const existingWindows = BrowserWindow.getAllWindows();
+      const existingWindows = menuBarWindows(BrowserWindow.getAllWindows(), isChatWindow);
       if (existingWindows.length > 0) {
         const mainWindow = existingWindows[0];
         if (mainWindow.isMinimized()) {
@@ -1053,7 +1054,7 @@ let pendingBrxtFilePath: string | null = null;
  * leave the user with a window.
  */
 async function ensureWindowAfterDeepLink(openDir?: string | null) {
-  if (BrowserWindow.getAllWindows().length > 0) return;
+  if (menuBarWindows(BrowserWindow.getAllWindows(), isChatWindow).length > 0) return;
   log.warn('[Main] Deep link produced no window; opening a plain one instead');
   await createNewWindow(app, openDir || undefined);
 }
@@ -1097,8 +1098,8 @@ async function handleProtocolUrl(url: string) {
     }
     await ensureWindowAfterDeepLink(openDir);
   } else {
-    // For other URL types, reuse existing window if available
-    const existingWindows = BrowserWindow.getAllWindows();
+    // For other URL types, reuse an existing chat window if available
+    const existingWindows = menuBarWindows(BrowserWindow.getAllWindows(), isChatWindow);
     if (existingWindows.length > 0) {
       firstOpenWindow = existingWindows[0];
       if (firstOpenWindow.isMinimized()) {
@@ -1230,7 +1231,7 @@ app.on('open-url', async (_event, url) => {
     pendingDeepLink = url;
     log.info('[Main] Stored pending deep link for processing after React ready:', url);
 
-    const existingWindows = BrowserWindow.getAllWindows();
+    const existingWindows = menuBarWindows(BrowserWindow.getAllWindows(), isChatWindow);
     if (existingWindows.length > 0) {
       firstOpenWindow = existingWindows[0];
       if (firstOpenWindow.isMinimized()) firstOpenWindow.restore();
@@ -1435,6 +1436,13 @@ let appConfig = {
 };
 
 const windowMap = new Map<number, BrowserWindow>();
+/**
+ * A chat window, as opposed to the dictation windows (the hidden capture window, a dismissed review
+ * card, the indicator), which are BrowserWindows too. Every path that brings Biorouter forward or
+ * asks whether a window is open uses this one test (`utils/menuBarReveal.ts`).
+ */
+const isChatWindow = (win: BrowserWindow): boolean => windowMap.has(win.id);
+setChatWindowPredicate(isChatWindow);
 const copilotPermissionSettings = new CopilotPermissionSettings();
 const biorouterdClients = new Map<number, Client>();
 /**
@@ -2835,7 +2843,7 @@ const createTray = () => {
 
   try {
     tray = new Tray(iconPath);
-    setTrayRef(tray, (win) => windowMap.has(win.id));
+    setTrayRef(tray, isChatWindow);
     updateTrayMenu(getUpdateAvailable());
 
     if (process.platform === 'win32' || process.platform === 'darwin') {
@@ -2854,7 +2862,7 @@ const createTray = () => {
 };
 
 const showWindow = async () => {
-  const windows = menuBarWindows(BrowserWindow.getAllWindows(), (win) => windowMap.has(win.id));
+  const windows = menuBarWindows(BrowserWindow.getAllWindows(), isChatWindow);
 
   if (windows.length === 0) {
     log.info('No chat window is open, creating a new one...');
@@ -4122,7 +4130,9 @@ async function confirmAnywhereRemote(
 async function startAnywhere(
   source: AnywhereSource,
   privateConfirmed: boolean,
-  preview?: { owner: BrowserWindow; viewId: string }
+  preview?: { owner: BrowserWindow; viewId: string },
+  /** fn down began this start: while it answers true for its generation, a refusal is silent. */
+  quiet?: (generation: number) => boolean
 ) {
   const switchOn = anywhereSettings.enabled && !anywhereOffRequested;
   if (source === 'shortcut' && !switchOn) return false;
@@ -4208,7 +4218,7 @@ async function startAnywhere(
       type: 'refuse',
       reason: availability === 'no-model' ? 'no-model' : 'policy',
     });
-    if (availability === 'no-model')
+    if (availability === 'no-model' && !quiet?.(generation))
       void showAnywhereReview('Set up a speech model in Settings > Models > Speech models.');
     return false;
   }
@@ -4523,9 +4533,18 @@ ipcMain.handle('dictation:anywhere:set', async (event, raw: unknown) => {
 let fnKeySettings: FnKeySettings = defaultFnKeySettings(process.platform);
 let fnKeyService: FnKeyService | null = null;
 let fnSettingsQueue: Promise<unknown> = Promise.resolve();
-/** Which dictation the current hold started, so its release reaches that one and no other. */
+/**
+ * Which dictation the current press started (at fn down, or at the hold threshold), so its
+ * release, a tap or another key reaches that one and no other.
+ */
 let fnHold: { kind: 'window'; windowId: number } | { kind: 'anywhere'; generation: number } | null =
   null;
+/**
+ * The Dictate to clipboard start that fn down began and no hold has confirmed yet: while it is
+ * this one, a refusal says nothing (the press may be a tap), and once the hold is confirmed or the
+ * double-tap keeps it, a refusal is shown as a shortcut's would be.
+ */
+let fnQuietGeneration: number | null = null;
 /** Each reporting page's dictation activity (`dictation:indicator`), by its webContents id. */
 const dictationReports = new Map<number, { windowId: number; report: DictationActivityReport }>();
 const watchedDictationReporters = new Set<number>();
@@ -4624,21 +4643,63 @@ function sendFnIntent(windowId: number, intent: FnIntent): void {
   if (win && !win.isDestroyed()) win.webContents.send('dictation:fn:intent', intent);
 }
 
+/** The Dictate to clipboard start `hold` names is still the one arming or recording. */
+function fnAnywhereHoldLive(hold: typeof fnHold): boolean {
+  return (
+    hold?.kind === 'anywhere' &&
+    hold.generation === anywhereGeneration &&
+    (anywhereState.phase === 'arming' || anywhereState.phase === 'recording')
+  );
+}
+
+/**
+ * Whether fn down may start Dictate to clipboard before the press is known to be a hold: only
+ * when nothing would be asked first, so a tap opens nothing. A remote daemon may ask for consent
+ * and a microphone not yet allowed asks macOS; those wait for the hold, as before.
+ */
+function fnMayPrimeAnywhere(): boolean {
+  return (
+    anywhereBackendIdentity()?.managed === true &&
+    systemPreferences.getMediaAccessStatus('microphone') === 'granted'
+  );
+}
+
 function handleFnIntent(intent: FnIntent): void {
   const world = fnWorld();
   switch (intent) {
+    case 'prime':
     case 'start-hold': {
+      // At the threshold a capture this press started at fn down goes on: the window keeps its
+      // own, and Dictate to clipboard's now says why it stops, as a shortcut's would.
+      if (intent === 'start-hold' && fnHold?.kind === 'window') {
+        sendFnIntent(fnHold.windowId, 'start-hold');
+        return;
+      }
+      if (intent === 'start-hold' && fnAnywhereHoldLive(fnHold)) {
+        fnQuietGeneration = null;
+        return;
+      }
       fnHold = null;
+      fnQuietGeneration = null;
       if (fnDictationRunning(world)) return;
       const route = fnStartRoute(world);
       if (route?.kind === 'window') {
-        sendFnIntent(route.windowId, 'start-hold');
+        sendFnIntent(route.windowId, intent);
         fnHold = { kind: 'window', windowId: route.windowId };
       } else if (route?.kind === 'anywhere') {
+        if (intent === 'prime' && !fnMayPrimeAnywhere()) return;
         // The global shortcut's source: public dictionary terms only, and the switch governs it.
-        void startAnywhere('shortcut', false);
-        if (anywhereState.phase === 'arming')
+        const quiet = intent === 'prime';
+        void startAnywhere(
+          'shortcut',
+          false,
+          undefined,
+          (generation) => fnQuietGeneration === generation
+        );
+        if (anywhereState.phase === 'arming') {
           fnHold = { kind: 'anywhere', generation: anywhereGeneration };
+          if (quiet) fnQuietGeneration = anywhereGeneration;
+        }
       }
       return;
     }
@@ -4646,6 +4707,7 @@ function handleFnIntent(intent: FnIntent): void {
     case 'cancel-hold': {
       const hold = fnHold;
       fnHold = null;
+      fnQuietGeneration = null;
       if (!hold) return;
       if (hold.kind === 'window') {
         sendFnIntent(hold.windowId, intent);
@@ -4660,7 +4722,12 @@ function handleFnIntent(intent: FnIntent): void {
       return;
     }
     case 'toggle': {
+      const hold = fnHold;
       fnHold = null;
+      fnQuietGeneration = null;
+      // The double-tap's second press already started Dictate to clipboard: it goes on,
+      // hands-free. A window decides the same for its own (`fnGestureClient.ts`).
+      if (fnAnywhereHoldLive(hold)) return;
       const route = fnToggleRoute(world);
       if (route?.kind === 'window') sendFnIntent(route.windowId, 'toggle');
       else if (route?.kind === 'anywhere') void startAnywhere('shortcut', false);
@@ -6534,8 +6601,8 @@ ipcMain.handle('brxt:uninstall', async (_event, { extensionName }: { extensionNa
 });
 
 function handleBrxtFileOpen(filePath: string) {
-  // Find the main window (or store for when one is ready)
-  const win = BrowserWindow.getAllWindows().find((w) => !w.isDestroyed());
+  // Find a chat window (or store for when one is ready); a dictation window cannot install it
+  const win = menuBarWindows(BrowserWindow.getAllWindows(), isChatWindow)[0];
   if (win) {
     win.webContents.send('open-brxt-file', filePath);
     win.focus();
@@ -7431,12 +7498,15 @@ const createNewWindow = async (app: App, dir?: string | null) => {
   return await createChat(app, undefined, openDir);
 };
 
+/**
+ * **Focus Biorouter Window** (⌘⌥G) and hiding the Dock icon: the chat windows come forward, the
+ * newest gets the input focus, and with none open a new one opens. Never a dictation window, which
+ * is hidden on purpose and would otherwise be shown, or counted as the open window.
+ */
 const focusWindow = () => {
-  const windows = BrowserWindow.getAllWindows();
+  const windows = menuBarWindows(BrowserWindow.getAllWindows(), isChatWindow);
   if (windows.length > 0) {
-    windows.forEach((win) => {
-      win.show();
-    });
+    windows.forEach((win) => revealFromMenuBar(win, process.platform));
     windows[windows.length - 1].webContents.send('focus-input');
   } else {
     createNewWindow(app);
@@ -8272,7 +8342,9 @@ async function appMain() {
   buildApplicationMenu();
 
   app.on('activate', () => {
-    if (BrowserWindow.getAllWindows().length === 0) {
+    // The Dock icon with no chat window open opens one, even while a hidden dictation window
+    // (the capture window, a review card, the indicator) is still alive.
+    if (menuBarWindows(BrowserWindow.getAllWindows(), isChatWindow).length === 0) {
       createNewWindow(app);
     }
   });

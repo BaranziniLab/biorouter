@@ -1560,14 +1560,17 @@ fn render_execute_code_request(call: &CallToolRequestParams, debug: bool) {
     print_section_rule(&format!("{} tool call{}", count, plural), "execute_code");
 
     for (i, node) in tool_graph.iter().filter_map(Value::as_object).enumerate() {
-        let tool = node
-            .get("tool")
-            .and_then(Value::as_str)
-            .unwrap_or("unknown");
-        let desc = node
-            .get("description")
-            .and_then(Value::as_str)
-            .unwrap_or("");
+        // #525: the model's own words, shown as the calls the script ran are.
+        let tool = executed_calls::person_safe_text(
+            node.get("tool")
+                .and_then(Value::as_str)
+                .unwrap_or("unknown"),
+        );
+        let desc = executed_calls::person_safe_text(
+            node.get("description")
+                .and_then(Value::as_str)
+                .unwrap_or(""),
+        );
         let deps: Vec<_> = node
             .get("depends_on")
             .and_then(Value::as_array)

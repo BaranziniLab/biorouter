@@ -65,13 +65,26 @@ describe('the fn key setting', () => {
 describe('where fn dictates', () => {
   it('into other apps only as the global shortcut does: public terms, governed by the switch', () => {
     const handler = slice('function handleFnIntent(', 'function indicatorWorkArea()');
-    expect(count(handler, "startAnywhere('shortcut', false)")).toBe(3);
+    expect(count(handler, "startAnywhere('shortcut', false")).toBe(3);
     expect(handler).not.toContain("startAnywhere('tray'");
     expect(handler).not.toMatch(/startAnywhere\('shortcut', true\)/);
     const world = slice('function fnWorld(', 'function sendFnIntent(');
     expect(world).toContain(
       'fnKeySettings.enabled && fnKeySettings.otherApps && anywhereSettings.enabled && !anywhereOffRequested'
     );
+  });
+});
+
+describe('capture from fn down', () => {
+  it('into other apps only when nothing would be asked first, and silent until the hold', () => {
+    const may = slice('function fnMayPrimeAnywhere()', 'function handleFnIntent(');
+    expect(may).toContain('anywhereBackendIdentity()?.managed === true');
+    expect(may).toContain("systemPreferences.getMediaAccessStatus('microphone') === 'granted'");
+    const handler = slice('function handleFnIntent(', 'function indicatorWorkArea()');
+    expect(handler).toContain("if (intent === 'prime' && !fnMayPrimeAnywhere()) return;");
+    expect(handler).toContain('(generation) => fnQuietGeneration === generation');
+    const start = slice('async function startAnywhere(', 'function cancelAnywhere()');
+    expect(start).toContain("availability === 'no-model' && !quiet?.(generation)");
   });
 });
 

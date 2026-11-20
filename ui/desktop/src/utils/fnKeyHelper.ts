@@ -3,7 +3,8 @@
  * program is, what its lines mean, and the service that keeps it running while the fn shortcut
  * is on and turns what it reports into gesture intents (`fnGesture.ts`).
  *
- * The helper reports only fn down, fn up and "another key while fn was down". It is never started
+ * The helper reports only fn down, fn up and "another key while fn was down, or the first one
+ * just after it was released" (which ends the wait for a second tap). It is never started
  * while the shortcut is off, so a Mac with the shortcut off runs no keyboard listener at all.
  */
 import path from 'node:path';

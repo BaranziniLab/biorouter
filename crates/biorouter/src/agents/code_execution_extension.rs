@@ -2482,6 +2482,50 @@ fn truncate_record_text(text: &str, max_bytes: usize) -> String {
     format!("{}…", text.get(..end).unwrap_or_default())
 }
 
+/// A sub-call's arguments as its record keeps them (#525): every credential the
+/// secret detector recognises withheld from the WHOLE text, then cut to
+/// `MAX_TOOL_CALL_RECORD_TEXT_BYTES`.
+///
+/// The record is shown to a person (the desktop's executed calls, the
+/// terminal's under `--debug`), and the dispatch path never screens it. Cut
+/// first, a credential that straddles the cut leaves a prefix too short for
+/// the detector to recognise afterwards. Both readings the terminal makes are
+/// made here: the JSON text, where a value is recognised by its key, and each
+/// decoded string, where `NAME=value` is recognised at the start of a line that
+/// the text form only holds as a `\n` escape.
+fn record_args(args_json: &str) -> String {
+    let withhold = |text: &str| {
+        crate::guardrails::secret_output::redact_text(text).map(|(withheld, _)| withheld)
+    };
+    let mut text = withhold(args_json).unwrap_or_else(|| args_json.to_string());
+    if let Ok(mut value) = serde_json::from_str::<Value>(&text) {
+        if withhold_strings(&mut value, &withhold) {
+            text = value.to_string();
+        }
+    }
+    truncate_record_text(&text, MAX_TOOL_CALL_RECORD_TEXT_BYTES)
+}
+
+/// Withhold credentials in every string inside `value`; whether any changed.
+fn withhold_strings(value: &mut Value, withhold: &impl Fn(&str) -> Option<String>) -> bool {
+    match value {
+        Value::String(text) => match withhold(text) {
+            Some(withheld) => {
+                *text = withheld;
+                true
+            }
+            None => false,
+        },
+        Value::Array(items) => items.iter_mut().fold(false, |changed, item| {
+            withhold_strings(item, withhold) || changed
+        }),
+        Value::Object(fields) => fields.values_mut().fold(false, |changed, item| {
+            withhold_strings(item, withhold) || changed
+        }),
+        _ => false,
+    }
+}
+
 /// One executed sub-call inside an `execute_code` run (issue #28). Attached to
 /// the result as `biorouter/tool-calls` META — never content — so the UI can
 /// show exactly which tools ran, with which inputs, and which one failed,
@@ -2490,8 +2534,8 @@ fn truncate_record_text(text: &str, max_bytes: usize) -> String {
 struct ToolCallRecord {
     /// Prefixed tool name, e.g. "developer__shell".
     tool: String,
-    /// The exact JSON arguments string, truncated to
-    /// `MAX_TOOL_CALL_RECORD_TEXT_BYTES`.
+    /// The JSON arguments string, credentials withheld and then truncated to
+    /// `MAX_TOOL_CALL_RECORD_TEXT_BYTES` (see [`record_args`]).
     args: String,
     /// "ok" | "error".
     status: &'static str,
@@ -2521,7 +2565,7 @@ impl ToolCallRecord {
     fn ok(tool: &str, args_json: &str, result_bytes: usize) -> Self {
         Self {
             tool: truncate_record_text(tool, MAX_TOOL_CALL_RECORD_NAME_BYTES),
-            args: truncate_record_text(args_json, MAX_TOOL_CALL_RECORD_TEXT_BYTES),
+            args: record_args(args_json),
             status: "ok",
             error: None,
             failure: None,
@@ -2547,7 +2591,7 @@ impl ToolCallRecord {
         };
         Self {
             tool: truncate_record_text(tool, MAX_TOOL_CALL_RECORD_NAME_BYTES),
-            args: truncate_record_text(args_json, MAX_TOOL_CALL_RECORD_TEXT_BYTES),
+            args: record_args(args_json),
             status: "error",
             error: Some(error),
             failure: Some(ErrorProvenance {
@@ -5794,6 +5838,46 @@ mod tests {
         let truncated = truncate_record_text(&multi, 3);
         assert!(truncated.starts_with('é'));
         assert!(truncated.ends_with('…'));
+    }
+
+    /// #525: a credential the 2 KB cut would split is withheld before the
+    /// cut, so no prefix of it reaches a record; and one under a `NAME=value`
+    /// line inside a decoded string is withheld too.
+    #[test]
+    fn a_record_withholds_credentials_before_it_cuts() {
+        let token = format!("sk-ant-{}", "A1b2C3d4".repeat(6));
+        for split_at in [3, 8, 12, 20, 40] {
+            let lead = r#"{"command":"echo "#.len() + 1;
+            let padding = "x".repeat(MAX_TOOL_CALL_RECORD_TEXT_BYTES - split_at - lead);
+            let args =
+                serde_json::json!({ "command": format!("echo {padding} {token}") }).to_string();
+            let cut_at = args.find(&token).unwrap();
+            assert!(
+                cut_at < MAX_TOOL_CALL_RECORD_TEXT_BYTES
+                    && cut_at + token.len() > MAX_TOOL_CALL_RECORD_TEXT_BYTES,
+                "the fixture must straddle the cut"
+            );
+            let kept = record_args(&args);
+            assert!(kept.len() <= MAX_TOOL_CALL_RECORD_TEXT_BYTES + '…'.len_utf8());
+            assert!(!kept.contains("sk-ant-A1b"), "split at {split_at}: {kept}");
+            assert!(!kept.contains("A1b2C3d4"), "split at {split_at}: {kept}");
+        }
+
+        let secret = "q9w8e7r6t5y4u3i2o1p0";
+        let args = serde_json::json!({
+            "command": format!("echo start\nexport DEPLOY_TOKEN={secret}\nrun")
+        })
+        .to_string();
+        assert!(
+            crate::guardrails::secret_output::redact_text(&args).is_none(),
+            "the text form alone does not see it, which is why the strings are read too"
+        );
+        let kept = record_args(&args);
+        assert!(!kept.contains(secret), "{kept}");
+        assert!(kept.contains("echo start"), "{kept}");
+
+        let plain = serde_json::json!({ "command": "ls -la" }).to_string();
+        assert_eq!(record_args(&plain), plain);
     }
 
     #[test]

@@ -3,7 +3,10 @@
 //! The helper sees every key press on the Mac while it listens, so this module is
 //! where its privacy is decided: only three facts ever leave the process. The fn
 //! key went down, it came up, and some other key or modifier was pressed while it
-//! was down. No key code, character, or timing of any other key is ever written.
+//! was down or within [`TAP_FOLLOW_MS`] of its release (only the first such key
+//! after each release, so a tap followed by typing is not read as half of a
+//! double-tap). No key code or character is ever written, and no other key's
+//! timing beyond that one.
 //! The app reads one JSON object per line (`ui/desktop/src/utils/fnKeyHelper.ts`,
 //! `parseFnHelperLine`), and writes one command per line back.
 
@@ -20,13 +23,19 @@ pub const FN_KEY_CODES: [i64; 2] = [63, 179];
 
 pub const PROTOCOL_VERSION: u32 = 1;
 
+/// How long after fn is released the next key still counts as the gesture's
+/// business: the app's double-tap gap (`FN_DOUBLE_TAP_GAP_MS` in
+/// `ui/desktop/src/utils/fnGesture.ts`), so fn, a letter, fn is two taps.
+pub const TAP_FOLLOW_MS: u64 = 400;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Signal {
     FnDown,
     FnUp,
     /// A key or another modifier while fn is down: fn is being used as a
     /// modifier (fn with an arrow, Delete, an F key or a letter), so the app
-    /// drops the gesture.
+    /// drops the gesture. Also the first one within [`TAP_FOLLOW_MS`] after fn
+    /// is released, which ends the app's wait for a second tap.
     Other,
 }
 
@@ -55,12 +64,15 @@ pub fn parse_command(line: &str) -> Option<Command> {
     }
 }
 
-/// Follows fn through the event stream. It holds only whether fn is down and
-/// which other modifiers are, never a key code or character.
+/// Follows fn through the event stream. It holds only whether fn is down,
+/// which other modifiers are, and when fn was last released until the next key
+/// comes, never a key code or character.
 #[derive(Debug, Default)]
 pub struct FnTracker {
     fn_down: bool,
     modifiers: u64,
+    /// When fn was last released, until the first key or modifier after it.
+    released_at: Option<u64>,
 }
 
 impl FnTracker {
@@ -68,11 +80,12 @@ impl FnTracker {
         Self {
             fn_down: false,
             modifiers: 0,
+            released_at: None,
         }
     }
 
-    /// A `kCGEventFlagsChanged` event: a modifier went down or up.
-    pub fn flags_changed(&mut self, key_code: i64, flags: u64) -> Vec<Signal> {
+    /// A `kCGEventFlagsChanged` event at `at_ms`: a modifier went down or up.
+    pub fn flags_changed(&mut self, key_code: i64, flags: u64, at_ms: u64) -> Vec<Signal> {
         let fn_now = flags & SECONDARY_FN != 0;
         let modifiers = flags & OTHER_MODIFIERS;
         let added = modifiers & !self.modifiers != 0;
@@ -83,8 +96,10 @@ impl FnTracker {
             }
             self.fn_down = fn_now;
             if !fn_now {
+                self.released_at = Some(at_ms);
                 return vec![Signal::FnUp];
             }
+            self.released_at = None;
             // fn pressed while another modifier is already held is a shortcut
             // of its own, never a dictation gesture.
             return if modifiers != 0 {
@@ -97,18 +112,31 @@ impl FnTracker {
             // The fn release was not seen (secure input took it, for one), but
             // the flags say fn is up now.
             self.fn_down = false;
+            self.released_at = Some(at_ms);
             return vec![Signal::FnUp];
         }
-        if self.fn_down && added {
-            vec![Signal::Other]
+        if added {
+            self.other(at_ms).into_iter().collect()
         } else {
             Vec::new()
         }
     }
 
-    /// A `kCGEventKeyDown` event. Only whether fn was down is used.
-    pub fn key_down(&mut self) -> Option<Signal> {
-        self.fn_down.then_some(Signal::Other)
+    /// A `kCGEventKeyDown` event at `at_ms`. Only whether fn was down, or just
+    /// released, is used.
+    pub fn key_down(&mut self, at_ms: u64) -> Option<Signal> {
+        self.other(at_ms)
+    }
+
+    /// Another key or modifier: reported while fn is down, and once within
+    /// [`TAP_FOLLOW_MS`] of its release. Any key after a release ends that
+    /// window, so at most one key's timing leaves per release.
+    fn other(&mut self, at_ms: u64) -> Option<Signal> {
+        if self.fn_down {
+            return Some(Signal::Other);
+        }
+        let released = self.released_at.take()?;
+        (at_ms.saturating_sub(released) <= TAP_FOLLOW_MS).then_some(Signal::Other)
     }
 }
 
@@ -178,55 +206,89 @@ mod tests {
     const SHIFT_KEY: i64 = 56;
     const COMMAND_KEY: i64 = 55;
 
+    /// Far enough after any release that no key counts as following it.
+    const LATER: u64 = 100_000;
+
     #[test]
     fn fn_down_and_up_are_reported_once_each() {
         let mut tracker = FnTracker::new();
         assert_eq!(
-            tracker.flags_changed(63, SECONDARY_FN),
+            tracker.flags_changed(63, SECONDARY_FN, 0),
             vec![Signal::FnDown]
         );
-        assert_eq!(tracker.flags_changed(63, SECONDARY_FN), vec![]);
-        assert_eq!(tracker.flags_changed(63, 0), vec![Signal::FnUp]);
-        assert_eq!(tracker.flags_changed(63, 0), vec![]);
+        assert_eq!(tracker.flags_changed(63, SECONDARY_FN, 10), vec![]);
+        assert_eq!(tracker.flags_changed(63, 0, 20), vec![Signal::FnUp]);
+        assert_eq!(tracker.flags_changed(63, 0, 30), vec![]);
     }
 
     #[test]
     fn the_globe_key_code_counts_as_fn() {
         let mut tracker = FnTracker::new();
         assert_eq!(
-            tracker.flags_changed(179, SECONDARY_FN),
+            tracker.flags_changed(179, SECONDARY_FN, 0),
             vec![Signal::FnDown]
         );
-        assert_eq!(tracker.flags_changed(179, 0), vec![Signal::FnUp]);
+        assert_eq!(tracker.flags_changed(179, 0, 10), vec![Signal::FnUp]);
     }
 
     #[test]
     fn a_key_while_fn_is_down_is_other_and_says_nothing_else() {
         let mut tracker = FnTracker::new();
-        assert_eq!(tracker.key_down(), None);
-        tracker.flags_changed(63, SECONDARY_FN);
-        assert_eq!(tracker.key_down(), Some(Signal::Other));
-        tracker.flags_changed(63, 0);
-        assert_eq!(tracker.key_down(), None);
+        assert_eq!(tracker.key_down(0), None);
+        tracker.flags_changed(63, SECONDARY_FN, 10);
+        assert_eq!(tracker.key_down(20), Some(Signal::Other));
+        tracker.flags_changed(63, 0, 30);
+        assert_eq!(tracker.key_down(LATER), None);
+    }
+
+    /// fn, a letter, fn within the double-tap gap is two taps: the first key
+    /// after a release is reported, once, and only within the gap.
+    #[test]
+    fn the_first_key_soon_after_a_release_is_other_and_no_later_one_is() {
+        let mut tracker = FnTracker::new();
+        tracker.flags_changed(63, SECONDARY_FN, 1_000);
+        tracker.flags_changed(63, 0, 1_080);
+        assert_eq!(tracker.key_down(1_080 + TAP_FOLLOW_MS), Some(Signal::Other));
+        assert_eq!(tracker.key_down(1_080 + TAP_FOLLOW_MS + 1), None);
+
+        tracker.flags_changed(63, SECONDARY_FN, 2_000);
+        tracker.flags_changed(63, 0, 2_080);
+        assert_eq!(tracker.key_down(2_080 + TAP_FOLLOW_MS + 1), None);
+        assert_eq!(tracker.key_down(2_080 + TAP_FOLLOW_MS + 2), None);
+
+        tracker.flags_changed(63, SECONDARY_FN, 3_000);
+        tracker.flags_changed(63, 0, 3_080);
+        assert_eq!(
+            tracker.flags_changed(SHIFT_KEY, SHIFT, 3_100),
+            vec![Signal::Other]
+        );
+        assert_eq!(tracker.key_down(3_120), None);
+
+        // While fn is down again, every key is reported, as before any release.
+        tracker.flags_changed(63, 0, 3_200);
+        tracker.flags_changed(63, SECONDARY_FN, 4_000);
+        tracker.flags_changed(63, 0, 4_050);
+        tracker.flags_changed(63, SECONDARY_FN, 4_100);
+        assert_eq!(tracker.key_down(4_150), Some(Signal::Other));
     }
 
     #[test]
     fn a_modifier_pressed_while_fn_is_down_is_other_and_its_release_is_not() {
         let mut tracker = FnTracker::new();
-        tracker.flags_changed(63, SECONDARY_FN);
+        tracker.flags_changed(63, SECONDARY_FN, 0);
         assert_eq!(
-            tracker.flags_changed(SHIFT_KEY, SECONDARY_FN | SHIFT),
+            tracker.flags_changed(SHIFT_KEY, SECONDARY_FN | SHIFT, 10),
             vec![Signal::Other]
         );
-        assert_eq!(tracker.flags_changed(SHIFT_KEY, SECONDARY_FN), vec![]);
+        assert_eq!(tracker.flags_changed(SHIFT_KEY, SECONDARY_FN, 20), vec![]);
     }
 
     #[test]
     fn fn_pressed_while_command_is_held_is_down_then_other() {
         let mut tracker = FnTracker::new();
-        assert_eq!(tracker.flags_changed(COMMAND_KEY, COMMAND), vec![]);
+        assert_eq!(tracker.flags_changed(COMMAND_KEY, COMMAND, 0), vec![]);
         assert_eq!(
-            tracker.flags_changed(63, COMMAND | SECONDARY_FN),
+            tracker.flags_changed(63, COMMAND | SECONDARY_FN, 10),
             vec![Signal::FnDown, Signal::Other]
         );
     }
@@ -234,17 +296,20 @@ mod tests {
     #[test]
     fn a_missed_fn_release_is_recovered_from_the_next_flags() {
         let mut tracker = FnTracker::new();
-        tracker.flags_changed(63, SECONDARY_FN);
-        assert_eq!(tracker.flags_changed(SHIFT_KEY, SHIFT), vec![Signal::FnUp]);
-        assert_eq!(tracker.key_down(), None);
+        tracker.flags_changed(63, SECONDARY_FN, 0);
+        assert_eq!(
+            tracker.flags_changed(SHIFT_KEY, SHIFT, 10),
+            vec![Signal::FnUp]
+        );
+        assert_eq!(tracker.key_down(LATER), None);
     }
 
     #[test]
     fn modifiers_without_fn_report_nothing() {
         let mut tracker = FnTracker::new();
-        assert_eq!(tracker.flags_changed(SHIFT_KEY, SHIFT), vec![]);
-        assert_eq!(tracker.flags_changed(SHIFT_KEY, 0), vec![]);
-        assert_eq!(tracker.key_down(), None);
+        assert_eq!(tracker.flags_changed(SHIFT_KEY, SHIFT, 0), vec![]);
+        assert_eq!(tracker.flags_changed(SHIFT_KEY, 0, 10), vec![]);
+        assert_eq!(tracker.key_down(20), None);
     }
 
     #[test]

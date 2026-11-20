@@ -381,6 +381,35 @@ async fn issue545_canonical_policy_and_private_roster_controls() {
     assert!(!transcript.to_string().contains(HIDDEN));
 }
 
+/// A prefixed name nobody offered still reaches dispatch, which finds no such
+/// tool; its answer now lists the tools this turn offered, as a bare name's
+/// refusal does, and never the private tool Gate E withheld.
+#[tokio::test]
+async fn issue545_an_unoffered_prefixed_name_lists_only_the_offered_tools() {
+    let fixture = Fixture::new("absent__execute_code", "{}", HooksConfig::default()).await;
+    let (cards, transcript) = fixture.run().await;
+    let text = transcript.to_string();
+    assert!(cards.is_empty());
+    assert!(fixture.public_calls.lock().unwrap().is_empty());
+    assert!(
+        text.contains("Tool 'absent__execute_code' not found"),
+        "{text}"
+    );
+    assert!(
+        text.contains("No tool named `absent__execute_code` is offered for this turn."),
+        "{text}"
+    );
+    assert!(
+        text.contains("Tools offered for this turn include"),
+        "{text}"
+    );
+    assert!(text.contains(&format!("`{CANONICAL}`")), "{text}");
+    assert!(
+        !text.contains(HIDDEN),
+        "hint disclosed a withheld private tool"
+    );
+}
+
 #[tokio::test]
 async fn issue545_canonical_managed_deny_also_blocks_the_bare_alias_before_dispatch() {
     for pattern in [CANONICAL, "code_execution__.*"] {

@@ -1781,7 +1781,7 @@ impl DeveloperServer {
     /// appending `&`; this returns a job_id and a log file you can read with `tail`.
     #[tool(
         name = "shell",
-        description = "Execute a command in the shell.This will return the output and error concatenated into a single string, as you would see from running on the command line. There will also be an indication of if the command succeeded or failed. Avoid commands that produce a large amount of output, and consider piping those outputs to files. For a long-lived command (dev server, build, test suite, training run) that you need to keep running and observe, set background=true instead of appending `&`: it returns a job_id and the path of a log file that receives the job's output and ends with its exit status, which you can read with `tail`; if you have shell_status and shell_kill, they also peek at, wait for and stop the job. A foreground command has a wall-clock budget (240s by default): if it exceeds it, its whole process group is killed and the call fails, so anything that may run longer belongs in background=true."
+        description = "Execute a command in the shell.This will return the output and error concatenated into a single string, as you would see from running on the command line. There will also be an indication of if the command succeeded or failed. Avoid commands that produce a large amount of output, and consider piping those outputs to files. For a long-lived command (dev server, build, test suite, training run) that you need to keep running and observe, set background=true instead of appending `&`: it returns a job_id and the path of a log file that receives the job's output and ends with its exit status, which you can read with `tail`; if you have shell_status and shell_kill, they also peek at, wait for and stop the job. A foreground command has a wall-clock budget (240s by default): if it exceeds it, its whole process group is killed and the call fails, so anything that may run longer belongs in background=true. Keep each foreground command, any sleep included, under about 200s at the default budget; one that starts with a sleep as long as the budget is refused without running."
     )]
     pub async fn shell(
         &self,
@@ -1814,6 +1814,23 @@ impl DeveloperServer {
         // Validate the shell command against the directory it will really run
         // in, so a relative path is judged where it resolves (H1).
         self.validate_shell_command(command, working_dir.as_deref())?;
+
+        // Issue #537: a foreground command that opens with a sleep as long as
+        // the budget would only spend the budget to be killed inside it.
+        if !params.background.unwrap_or(false) {
+            if let (Some(limit), Some(secs)) = (
+                self.foreground_timeout,
+                super::shell::leading_sleep_secs(command),
+            ) {
+                if secs >= limit.as_secs_f64() {
+                    return Err(ErrorData::new(
+                        ErrorCode::INVALID_PARAMS,
+                        super::shell::sleep_over_budget_message(secs, limit),
+                        None,
+                    ));
+                }
+            }
+        }
 
         // Snapshot the pre-command content of any file this command redirects
         // to (`>`/`>>`), so `undo_edit` can revert shell-driven writes, not just
@@ -6999,6 +7016,97 @@ mod tests {
 
                 cleanup_test_service(running_service, peer);
             });
+        }
+
+        /// #537 step 5: a foreground command that opens with a sleep as long as
+        /// the budget is refused before anything runs; a shorter poll, the same
+        /// sleep in the background, and a background call are left alone.
+        #[test]
+        #[serial]
+        #[cfg(unix)]
+        fn a_leading_sleep_over_the_budget_is_refused_before_it_runs() {
+            run_shell_test(|| async {
+                let server =
+                    create_test_server().with_foreground_timeout(Some(Duration::from_secs(3)));
+                let running_service = serve_directly(server.clone(), create_test_transport(), None);
+                let peer = running_service.peer().clone();
+
+                let dir = tempfile::tempdir().unwrap();
+                let ran = dir.path().join("ran");
+                let began = Instant::now();
+                let error = run_foreground(
+                    &server,
+                    &peer,
+                    5381,
+                    format!("sleep 3; touch \"{}\"", ran.display()),
+                )
+                .await
+                .expect_err("a 3 s sleep under a 3 s budget is refused");
+                assert!(began.elapsed() < Duration::from_secs(2));
+                assert_eq!(error.code, ErrorCode::INVALID_PARAMS);
+                assert!(error.message.starts_with("Not run"), "{}", error.message);
+                assert!(
+                    error.message.contains("3s foreground limit"),
+                    "{}",
+                    error.message
+                );
+                assert!(!ran.exists());
+
+                let result =
+                    run_foreground(&server, &peer, 5382, "sleep 1; echo polled".to_string())
+                        .await
+                        .expect("a poll under the budget runs");
+                assert_eq!(model_text(&result), "polled\n");
+
+                let result = run_foreground(
+                    &server,
+                    &peer,
+                    5383,
+                    "sleep 30 > /dev/null 2>&1 &\necho detached".to_string(),
+                )
+                .await
+                .expect("a backgrounded sleep is not a leading sleep");
+                assert_eq!(model_text(&result), "detached\n");
+
+                // The job ends on its own a second after the call returns.
+                let result = server
+                    .shell(
+                        Parameters(ShellParams {
+                            working_directory: None,
+                            command: "sleep 3".to_string(),
+                            background: Some(true),
+                            label: None,
+                        }),
+                        RequestContext {
+                            ct: Default::default(),
+                            id: NumberOrString::Number(5384),
+                            meta: Default::default(),
+                            extensions: Default::default(),
+                            peer: peer.clone(),
+                        },
+                    )
+                    .await
+                    .expect("background=true has no foreground budget to refuse by");
+                assert_ne!(result.is_error, Some(true));
+
+                cleanup_test_service(running_service, peer);
+            });
+        }
+
+        /// #537 step 4: the description gives a margin under the budget, so a
+        /// poll is not sized to exactly the limit.
+        #[test]
+        fn the_shell_description_states_a_margin_under_the_budget() {
+            let tools = DeveloperServer::tool_router().list_all();
+            let shell = tools.iter().find(|tool| tool.name == "shell").unwrap();
+            let description = shell.description.as_deref().unwrap_or_default();
+            assert!(description.contains("240s by default"), "{description}");
+            assert!(description.contains("any sleep included"), "{description}");
+            assert!(description.contains("under about 200s"), "{description}");
+            assert!(
+                description.contains("refused without running"),
+                "{description}"
+            );
         }
     }
 

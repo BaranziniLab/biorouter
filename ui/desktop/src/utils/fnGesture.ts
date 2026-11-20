@@ -2,19 +2,25 @@
  * The fn key's dictation gestures on macOS, as a pure reducer that Electron main feeds with what
  * the `biorouter-fnkey` helper reports (`fnKeyHelper.ts`):
  *
- * - **Hold fn** for {@link FN_HOLD_MS} or longer: push to talk. Dictation starts then and stops
- *   when fn is released.
+ * - **Hold fn** for {@link FN_HOLD_MS} or longer: push to talk. Capture starts the moment fn goes
+ *   down (`prime`), so the first words are kept, the hold is confirmed at the threshold
+ *   (`start-hold`), and dictation stops when fn is released.
  * - **Double-tap fn**: two presses each shorter than {@link FN_HOLD_MS}, the second within
- *   {@link FN_DOUBLE_TAP_GAP_MS} of the first release. It starts hands-free dictation, or stops
- *   whatever dictation is running, so a second double-tap ends it.
+ *   {@link FN_DOUBLE_TAP_GAP_MS} of the first release, with no other key between them. It starts
+ *   hands-free dictation, or stops whatever dictation is running, so a second double-tap ends it.
  * - **fn with any other key or modifier** (fn and an arrow, Delete, an F key or a letter) drops
- *   the gesture; if a hold had started dictation, that recording is cancelled.
- * - A single short tap does nothing.
+ *   the gesture and cancels what it captured. Another key after a tap ends the wait for a second
+ *   tap, so fn, a letter, fn is two taps and not a double-tap.
+ * - A single short tap does nothing: what its press captured is discarded (`cancel-hold`).
  *
  * The reducer only names intents. What an intent does depends on what is running, which it does
- * not know: `toggle` stops a running dictation (one the microphone button started included) and
- * starts one otherwise, and `start-hold` does nothing while one runs. Main and the renderer make
- * those calls (`main.ts`, `components/dictation/fnGestureClient.ts`).
+ * not know: `prime` and `start-hold` do nothing while another dictation runs, `start-hold` keeps
+ * a capture `prime` started, and `toggle` keeps the capture the second press started (hands-free)
+ * or, when that press started none, stops a running dictation (one the microphone button started
+ * included) and starts one otherwise. Main and the renderer make those calls (`main.ts`,
+ * `components/dictation/fnGestureClient.ts`), and a caller that cannot start a capture silently at
+ * fn down (no speech model yet, a permission prompt, a consent to give) leaves `prime` alone, so a
+ * tap never opens anything.
  */
 
 /** How long fn is held before it counts as a hold; a shorter press is a tap. */
@@ -28,7 +34,7 @@ export type FnGestureState =
   | { kind: 'pressed'; downAt: number; second: boolean }
   /** A hold started push to talk; fn is still down. */
   | { kind: 'holding' }
-  /** One short tap ended; a second press may follow. */
+  /** One short tap ended with no other key after it; a second press may follow. */
   | { kind: 'tapped'; upAt: number }
   /** fn was used with another key; nothing happens until it is released. */
   | { kind: 'spoiled' };
@@ -41,7 +47,7 @@ export type FnGestureEvent =
   /** The listener stopped, or the shortcut was turned off: forget the gesture. */
   | { type: 'reset' };
 
-export type FnIntent = 'start-hold' | 'end-hold' | 'cancel-hold' | 'toggle';
+export type FnIntent = 'prime' | 'start-hold' | 'end-hold' | 'cancel-hold' | 'toggle';
 
 export interface FnGestureStep {
   state: FnGestureState;
@@ -69,39 +75,45 @@ const unchanged = (state: FnGestureState): FnGestureStep => step(state, [], dead
 
 export function nextFnGesture(state: FnGestureState, event: FnGestureEvent): FnGestureStep {
   if (event.type === 'reset') {
-    // No release will come, so a hold ends as its release would have ended it.
-    return step(FN_GESTURE_IDLE, state.kind === 'holding' ? ['end-hold'] : []);
+    // No release will come, so a hold ends as its release would have ended it, and a press that
+    // was not yet a hold drops what it captured.
+    if (state.kind === 'holding') return step(FN_GESTURE_IDLE, ['end-hold']);
+    return step(FN_GESTURE_IDLE, state.kind === 'pressed' ? ['cancel-hold'] : []);
   }
   switch (state.kind) {
     case 'idle':
       if (event.type === 'fn-down') {
         const next: FnGestureState = { kind: 'pressed', downAt: event.at, second: false };
-        return step(next, [], deadlineOf(next));
+        return step(next, ['prime'], deadlineOf(next));
       }
       return unchanged(state);
     case 'tapped':
       if (event.type === 'fn-down') {
         const second = event.at - state.upAt <= FN_DOUBLE_TAP_GAP_MS;
         const next: FnGestureState = { kind: 'pressed', downAt: event.at, second };
-        return step(next, [], deadlineOf(next));
+        return step(next, ['prime'], deadlineOf(next));
       }
+      // Typing after a tap: fn was used for something else, so the next tap is a first tap.
+      if (event.type === 'other-key') return step(FN_GESTURE_IDLE);
       if (event.type === 'tick' && event.at >= state.upAt + FN_DOUBLE_TAP_GAP_MS) {
         return step(FN_GESTURE_IDLE);
       }
       return unchanged(state);
     case 'pressed':
-      if (event.type === 'other-key') return step({ kind: 'spoiled' });
+      if (event.type === 'other-key') return step({ kind: 'spoiled' }, ['cancel-hold']);
       if (event.type === 'tick' && event.at >= state.downAt + FN_HOLD_MS) {
         return step({ kind: 'holding' }, ['start-hold']);
       }
       if (event.type === 'fn-up') {
         if (event.at - state.downAt >= FN_HOLD_MS) {
-          // The tick was late; the press was a hold all the same, so it talked for no time.
-          return step(FN_GESTURE_IDLE);
+          // The tick was late; the press was a hold all the same, and it has been capturing
+          // since fn went down, so it ends as a hold.
+          return step(FN_GESTURE_IDLE, ['start-hold', 'end-hold']);
         }
         if (state.second) return step(FN_GESTURE_IDLE, ['toggle']);
+        // A tap: what the press captured is discarded, and a second tap may follow.
         const next: FnGestureState = { kind: 'tapped', upAt: event.at };
-        return step(next, [], deadlineOf(next));
+        return step(next, ['cancel-hold'], deadlineOf(next));
       }
       return unchanged(state);
     case 'holding':

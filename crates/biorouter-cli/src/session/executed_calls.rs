@@ -135,7 +135,7 @@ fn executed_call(record: &Value) -> Option<ExecutedCall> {
     })
 }
 
-fn call_arguments(recorded: &str) -> CallArguments {
+pub(crate) fn call_arguments(recorded: &str) -> CallArguments {
     // Withheld in the JSON text first: a value under a key that names a secret
     // (`{"OPENAI_API_KEY": "…"}`) is recognised there, by its key, and nowhere
     // once the object is taken apart. The marker that replaces a value keeps

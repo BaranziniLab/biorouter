@@ -235,7 +235,8 @@ sees it (`offered_tool_for_name` in `crates/biorouter/src/agents/reply_parts.rs`
 | A bare name (no `__`) that ends exactly one offered tool's name | It is that tool. The call is renamed before inspection, so a managed policy, a hook or a permission that names `developer__shell` judges it, and the arguments are coerced to that tool's schema. The tool result records both names (`providerAuthored` and `actuallyExecuted`). |
 | A bare name that ends several offered names | It does not run. The model is told the call was not run and given the offered names it could mean. |
 | A bare name that matches nothing offered, such as `developer_shell` | It does not run. The model is told so, with up to 20 offered names, the closest first. |
-| A prefixed name nobody offered, or a bare `subagent` | Unchanged: dispatch decides, as before. |
+| A prefixed name nobody offered, such as `developer__shel` | Dispatch decides, as before, because it may route a name the roster did not list. When it answers that no such tool exists (`Tool '…' not found`, or an MCP server's `tool not found`), the answer is followed by the same list: up to 20 offered names, the closest first, then the tools of the extension it names. |
+| A bare `subagent` | Unchanged: dispatch decides, as before. |
 
 The names listed always come from the roster this turn offered, never from every tool the
 extension manager holds, so a private server's tool hidden from a public model (Gate E) is never

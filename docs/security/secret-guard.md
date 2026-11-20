@@ -278,6 +278,13 @@ data body skips this, because writing a file that mentions `.env` reads nothing.
 whitespace pass over the whole command still runs, so a protected path written out in full, such
 as `~/.aws/credentials`, is refused inside a data body too.
 
+A refusal for a word inside a body says so, and says how the body was read. A body read as a
+script adds that the guard reads it as a script this command may run, and that file content goes
+in a call of its own as `cat > FILE <<'EOF'` with the delimiter quoted. A data body adds that the
+guard still reads a body written to a file, because the file can be run later. Without it, a model
+that wrote the body as text looked for the refused word among its commands and found nothing.
+When bodies nest, the outermost one is named, because that is the one the caller wrote.
+
 ### Cost
 
 The scan runs on every tool call, so it is bounded: at most 512 symlink resolutions, 64

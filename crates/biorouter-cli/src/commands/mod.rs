@@ -20,6 +20,7 @@ pub mod project;
 pub mod run_report;
 pub mod schedule;
 pub mod serve;
+pub mod serve_account;
 pub mod serve_restart;
 pub mod session;
 pub mod session_decisions;

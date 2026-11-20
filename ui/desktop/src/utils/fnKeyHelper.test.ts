@@ -198,11 +198,12 @@ describe('the fn key service', () => {
     helpers[0].say(READY);
     expect(fnKey.status()).toMatchObject({ permission: 'granted', listening: true, fnUsage: 0 });
     helpers[0].say('{"type":"fn","down":true}');
+    expect(intents).toEqual(['prime']);
     advance(FN_HOLD_MS);
-    expect(intents).toEqual(['start-hold']);
+    expect(intents).toEqual(['prime', 'start-hold']);
     advance(1500);
     helpers[0].say('{"type":"fn","down":false}');
-    expect(intents).toEqual(['start-hold', 'end-hold']);
+    expect(intents).toEqual(['prime', 'start-hold', 'end-hold']);
   });
 
   it('keeps a hold a hold when its lines reach a busy main thread late, together', () => {
@@ -215,7 +216,7 @@ describe('the fn key service', () => {
     now = 12_000;
     helpers[0].say('{"type":"fn","down":true,"t":6000}');
     helpers[0].say('{"type":"fn","down":false,"t":6700}');
-    expect(intents).toEqual(['start-hold', 'end-hold']);
+    expect(intents).toEqual(['prime', 'start-hold', 'end-hold']);
   });
 
   it('the ready line lines the clocks up, so even the first hold read late keeps its length', () => {
@@ -229,7 +230,7 @@ describe('the fn key service', () => {
     now = 5_000;
     helpers[0].say('{"type":"fn","down":true,"t":51200}');
     helpers[0].say('{"type":"fn","down":false,"t":52000}');
-    expect(intents).toEqual(['start-hold', 'end-hold']);
+    expect(intents).toEqual(['prime', 'start-hold', 'end-hold']);
   });
 
   it('a double-tap that arrives late is still a double-tap', () => {
@@ -244,7 +245,20 @@ describe('the fn key service', () => {
       [false, 10_260],
     ] as const)
       helpers[0].say(`{"type":"fn","down":${down},"t":${t}}`);
-    expect(intents).toEqual(['toggle']);
+    expect(intents).toEqual(['prime', 'cancel-hold', 'prime', 'toggle']);
+  });
+
+  it('a key the helper reports between two taps makes them two taps', () => {
+    const fnKey = service();
+    fnKey.setActive(true);
+    helpers[0].say(READY);
+    now = 10_000;
+    helpers[0].say('{"type":"fn","down":true,"t":10000}');
+    helpers[0].say('{"type":"fn","down":false,"t":10080}');
+    helpers[0].say('{"type":"other","t":10150}');
+    helpers[0].say('{"type":"fn","down":true,"t":10200}');
+    helpers[0].say('{"type":"fn","down":false,"t":10260}');
+    expect(intents).toEqual(['prime', 'cancel-hold', 'prime', 'cancel-hold']);
   });
 
   it('fn with another key reaches the gesture as a cancel', () => {
@@ -256,7 +270,7 @@ describe('the fn key service', () => {
     helpers[0].say('{"type":"other"}');
     advance(FN_HOLD_MS * 3);
     helpers[0].say('{"type":"fn","down":false}');
-    expect(intents).toEqual([]);
+    expect(intents).toEqual(['prime', 'cancel-hold']);
   });
 
   it('turning the shortcut off stops the helper and ends a hold in progress', () => {
@@ -266,14 +280,14 @@ describe('the fn key service', () => {
     helpers[0].say('{"type":"fn","down":true}');
     advance(FN_HOLD_MS);
     fnKey.setActive(false);
-    expect(intents).toEqual(['start-hold', 'end-hold']);
+    expect(intents).toEqual(['prime', 'start-hold', 'end-hold']);
     expect(helpers[0].ended).toBe(true);
     expect(helpers[0].killed).toBe(true);
     expect(fnKey.status()).toMatchObject({ active: false, listening: false });
     // Its late lines are not listened to.
     helpers[0].say('{"type":"fn","down":true}');
     advance(FN_HOLD_MS);
-    expect(intents).toEqual(['start-hold', 'end-hold']);
+    expect(intents).toEqual(['prime', 'start-hold', 'end-hold']);
   });
 
   it('reports a missing permission, asks only when told to, and restarts on a grant', () => {
@@ -333,7 +347,7 @@ describe('the fn key service', () => {
     helpers[0].say('{"type":"fn","down":true}');
     advance(FN_HOLD_MS);
     helpers[0].emit('exit', null);
-    expect(intents).toEqual(['start-hold', 'end-hold']);
+    expect(intents).toEqual(['prime', 'start-hold', 'end-hold']);
   });
 
   it('a helper whose listener macOS refused despite the grant counts as failed', () => {

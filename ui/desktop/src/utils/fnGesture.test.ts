@@ -23,9 +23,9 @@ function run(events: FnGestureEvent[], start: FnGestureState = FN_GESTURE_IDLE) 
 }
 
 describe('the fn gesture reducer', () => {
-  it('a hold starts push to talk at the threshold and the release ends it', () => {
+  it('a hold captures from fn down, is confirmed at the threshold and the release ends it', () => {
     const pressed = nextFnGesture(FN_GESTURE_IDLE, { type: 'fn-down', at: 1000 });
-    expect(pressed.intents).toEqual([]);
+    expect(pressed.intents).toEqual(['prime']);
     expect(pressed.deadline).toBe(1000 + FN_HOLD_MS);
     const early = nextFnGesture(pressed.state, { type: 'tick', at: 1000 + FN_HOLD_MS - 1 });
     expect(early.intents).toEqual([]);
@@ -37,12 +37,12 @@ describe('the fn gesture reducer', () => {
     expect(released.state).toEqual(FN_GESTURE_IDLE);
   });
 
-  it('a single short tap does nothing, and the wait for a second tap ends', () => {
+  it('a single short tap discards what its press captured, and the wait for a second tap ends', () => {
     const { state, intents } = run([
       { type: 'fn-down', at: 0 },
       { type: 'fn-up', at: 120 },
     ]);
-    expect(intents).toEqual([]);
+    expect(intents).toEqual(['prime', 'cancel-hold']);
     expect(state.kind).toBe('tapped');
     const after = run([{ type: 'tick', at: 120 + FN_DOUBLE_TAP_GAP_MS }], state);
     expect(after.intents).toEqual([]);
@@ -55,7 +55,8 @@ describe('the fn gesture reducer', () => {
       { type: 'fn-up', at: 100 },
       { type: 'fn-down', at: 100 + FN_DOUBLE_TAP_GAP_MS },
     ]);
-    expect(intents).toEqual([]);
+    expect(intents).toEqual(['prime', 'cancel-hold', 'prime']);
+    // The second press's capture is not discarded: `toggle` keeps it, hands-free.
     const done = run([{ type: 'fn-up', at: 600 }], state);
     expect(done.intents).toEqual(['toggle']);
     expect(done.state).toEqual(FN_GESTURE_IDLE);
@@ -68,7 +69,7 @@ describe('the fn gesture reducer', () => {
       { type: 'fn-down', at: 100 + FN_DOUBLE_TAP_GAP_MS + 1 },
       { type: 'fn-up', at: 600 },
     ]);
-    expect(intents).toEqual([]);
+    expect(intents).toEqual(['prime', 'cancel-hold', 'prime', 'cancel-hold']);
     expect(state.kind).toBe('tapped');
   });
 
@@ -80,28 +81,29 @@ describe('the fn gesture reducer', () => {
       { type: 'tick', at: 250 + FN_HOLD_MS },
       { type: 'fn-up', at: 2000 },
     ]);
-    expect(intents).toEqual(['start-hold', 'end-hold']);
+    expect(intents).toEqual(['prime', 'cancel-hold', 'prime', 'start-hold', 'end-hold']);
   });
 
-  it('a press longer than the threshold is never a tap, even with a late timer', () => {
+  it('a press longer than the threshold is a hold, even with a late timer', () => {
     const { intents, state } = run([
       { type: 'fn-down', at: 0 },
       { type: 'fn-up', at: 50 },
       { type: 'fn-down', at: 200 },
       { type: 'fn-up', at: 200 + FN_HOLD_MS },
     ]);
-    expect(intents).toEqual([]);
+    // It captured from fn down, so it is kept as a hold rather than dropped.
+    expect(intents).toEqual(['prime', 'cancel-hold', 'prime', 'start-hold', 'end-hold']);
     expect(state).toEqual(FN_GESTURE_IDLE);
   });
 
-  it('fn with another key before the threshold never starts dictation', () => {
+  it('fn with another key before the threshold discards the capture and never confirms it', () => {
     const { intents, state } = run([
       { type: 'fn-down', at: 0 },
       { type: 'other-key', at: 80 },
       { type: 'tick', at: FN_HOLD_MS },
       { type: 'tick', at: 5000 },
     ]);
-    expect(intents).toEqual([]);
+    expect(intents).toEqual(['prime', 'cancel-hold']);
     expect(state.kind).toBe('spoiled');
     expect(run([{ type: 'fn-up', at: 6000 }], state).state).toEqual(FN_GESTURE_IDLE);
   });
@@ -113,7 +115,7 @@ describe('the fn gesture reducer', () => {
       { type: 'other-key', at: 900 },
       { type: 'fn-up', at: 1000 },
     ]);
-    expect(intents).toEqual(['start-hold', 'cancel-hold']);
+    expect(intents).toEqual(['prime', 'start-hold', 'cancel-hold']);
   });
 
   it('fn with another key on the second press drops the double-tap', () => {
@@ -124,7 +126,7 @@ describe('the fn gesture reducer', () => {
       { type: 'other-key', at: 250 },
       { type: 'fn-up', at: 300 },
     ]);
-    expect(intents).toEqual([]);
+    expect(intents).toEqual(['prime', 'cancel-hold', 'prime', 'cancel-hold']);
     expect(state).toEqual(FN_GESTURE_IDLE);
   });
 
@@ -136,7 +138,23 @@ describe('the fn gesture reducer', () => {
       { type: 'fn-down', at: 200 },
       { type: 'fn-up', at: 260 },
     ]);
-    expect(intents).toEqual([]);
+    expect(intents).toEqual(['prime', 'cancel-hold', 'prime', 'cancel-hold']);
+    expect(intents).not.toContain('toggle');
+  });
+
+  it('a tap, another key and a tap within the gap is two taps, not a double-tap', () => {
+    const { intents, state } = run([
+      { type: 'fn-down', at: 0 },
+      { type: 'fn-up', at: 80 },
+      { type: 'other-key', at: 150 },
+      { type: 'fn-down', at: 220 },
+      { type: 'fn-up', at: 300 },
+    ]);
+    expect(intents).toEqual(['prime', 'cancel-hold', 'prime', 'cancel-hold']);
+    expect(state.kind).toBe('tapped');
+    expect(run([{ type: 'other-key', at: 100 }], { kind: 'tapped', upAt: 80 }).state).toEqual(
+      FN_GESTURE_IDLE
+    );
   });
 
   it('repeated downs and stray ups change nothing', () => {
@@ -145,15 +163,17 @@ describe('the fn gesture reducer', () => {
       { type: 'fn-down', at: 10 },
       { type: 'fn-down', at: 20 },
     ]);
-    expect(intents).toEqual([]);
+    expect(intents).toEqual(['prime']);
     expect(state).toEqual({ kind: 'pressed', downAt: 10, second: false });
   });
 
-  it('a reset ends a hold as its release would, and forgets anything else', () => {
+  it('a reset ends a hold as its release would, discards a press, and forgets anything else', () => {
     expect(nextFnGesture({ kind: 'holding' }, { type: 'reset' }).intents).toEqual(['end-hold']);
+    const pressed = nextFnGesture({ kind: 'pressed', downAt: 0, second: true }, { type: 'reset' });
+    expect(pressed.intents).toEqual(['cancel-hold']);
+    expect(pressed.state).toEqual(FN_GESTURE_IDLE);
     for (const state of [
       FN_GESTURE_IDLE,
-      { kind: 'pressed', downAt: 0, second: true } as FnGestureState,
       { kind: 'tapped', upAt: 0 } as FnGestureState,
       { kind: 'spoiled' } as FnGestureState,
     ]) {
@@ -196,13 +216,14 @@ describe('the gesture driver', () => {
       () => now
     );
     driver.feed({ type: 'fn-down', at: now });
+    expect(intents).toEqual(['prime']);
     advance(FN_HOLD_MS - 1);
-    expect(intents).toEqual([]);
+    expect(intents).toEqual(['prime']);
     advance(1);
-    expect(intents).toEqual(['start-hold']);
+    expect(intents).toEqual(['prime', 'start-hold']);
     advance(2000);
     driver.feed({ type: 'fn-up', at: now });
-    expect(intents).toEqual(['start-hold', 'end-hold']);
+    expect(intents).toEqual(['prime', 'start-hold', 'end-hold']);
   });
 
   it('applies an overdue tick before the next event, so a late timer cannot lose a hold', () => {
@@ -214,7 +235,7 @@ describe('the gesture driver', () => {
     driver.feed({ type: 'fn-down', at: 0 });
     // The timer has not run (the event loop was busy), and fn comes up after the threshold.
     driver.feed({ type: 'fn-up', at: FN_HOLD_MS + 500 });
-    expect(intents).toEqual(['start-hold', 'end-hold']);
+    expect(intents).toEqual(['prime', 'start-hold', 'end-hold']);
   });
 
   it('a double-tap toggles, and a single tap leaves no timer behind', () => {
@@ -230,14 +251,14 @@ describe('the gesture driver', () => {
     driver.feed({ type: 'fn-down', at: now });
     advance(80);
     driver.feed({ type: 'fn-up', at: now });
-    expect(intents).toEqual(['toggle']);
+    expect(intents).toEqual(['prime', 'cancel-hold', 'prime', 'toggle']);
     driver.feed({ type: 'fn-down', at: now });
     advance(80);
     driver.feed({ type: 'fn-up', at: now });
     advance(FN_DOUBLE_TAP_GAP_MS + 10);
     expect(driver.current).toEqual(FN_GESTURE_IDLE);
     expect(vi.getTimerCount()).toBe(0);
-    expect(intents).toEqual(['toggle']);
+    expect(intents).toEqual(['prime', 'cancel-hold', 'prime', 'toggle', 'prime', 'cancel-hold']);
   });
 
   it('dispose ends a hold and clears its timer', () => {
@@ -249,7 +270,7 @@ describe('the gesture driver', () => {
     driver.feed({ type: 'fn-down', at: now });
     advance(FN_HOLD_MS);
     driver.dispose();
-    expect(intents).toEqual(['start-hold', 'end-hold']);
+    expect(intents).toEqual(['prime', 'start-hold', 'end-hold']);
     expect(vi.getTimerCount()).toBe(0);
   });
 });

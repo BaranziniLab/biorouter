@@ -107,9 +107,24 @@ export function applyFontSize(size: FontSize): void {
   document.documentElement.style.setProperty('--app-font-scale', String(FONT_SIZE_SCALE[size]));
 }
 
+/**
+ * A choice storage would not keep (site data blocked), held for this window until it reloads, so
+ * the choice still applies and the control still shows it. Null once a choice is saved.
+ */
+let unsavedFontSize: FontSize | null = null;
+
 export function setFontSize(size: FontSize): void {
-  localStorage.setItem(FONT_SIZE_STORAGE_KEY, size);
-  localStorage.removeItem(LEGACY_FONT_SIZE_STORAGE_KEY);
+  unsavedFontSize = size;
+  const storage = defaultStorage();
+  try {
+    if (storage) {
+      storage.setItem(FONT_SIZE_STORAGE_KEY, size);
+      storage.removeItem(LEGACY_FONT_SIZE_STORAGE_KEY);
+      unsavedFontSize = null;
+    }
+  } catch {
+    // Storage is blocked: the size applies to this window and is not remembered.
+  }
   applyFontSize(size);
   window.dispatchEvent(new Event(CHANGE_EVENT));
 }
@@ -120,8 +135,11 @@ function subscribe(onChange: () => void): () => void {
       event.key === FONT_SIZE_STORAGE_KEY ||
       event.key === LEGACY_FONT_SIZE_STORAGE_KEY ||
       event.key === null
-    )
+    ) {
+      // Another window could write, so storage holds the choice again.
+      unsavedFontSize = null;
       onChange();
+    }
   };
   window.addEventListener('storage', onStorage);
   window.addEventListener(CHANGE_EVENT, onChange);
@@ -131,7 +149,7 @@ function subscribe(onChange: () => void): () => void {
   };
 }
 
-const readFontSize = () => loadFontSize();
+const readFontSize = () => unsavedFontSize ?? loadFontSize();
 
 export function useFontSize() {
   const fontSize = useSyncExternalStore(subscribe, readFontSize);

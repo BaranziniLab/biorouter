@@ -22,6 +22,7 @@ paper trail behind a feature (design specs, implementation plans, review records
 
 | Document | What it covers |
 | -------- | -------------- |
+| [v1.94.6](v1.94.6.md) | Fixes the gaps a BioRouterBench review found in shell commands, unattended runs, custom system prompts and the secret guard, keeps `biorouter serve`'s access token out of logs, and adds fn key dictation on macOS, a simpler Dictionary page and a narrower window. Draft: the built-in browser section is a placeholder. |
 | [v1.94.5](v1.94.5.md) | Adds dictation, enforced monthly budgets, compact panes, account-aware model choices and reliability fixes across browser access, CLI, workflows and extensions. |
 | [v1.94.1](v1.94.1.md) | Improves Ollama setup checks and recovery, clarifies Unlimited and Set a limit controls, and stops Biorouter Copilot status checks on Windows from launching hostname processes. |
 | [v1.94.0](v1.94.0.md) | Adds explicit approval for folder access outside the project, removes the old default limits from ordinary chats, improves interrupted-reply recovery, and updates Versa API Bedrock models. |
