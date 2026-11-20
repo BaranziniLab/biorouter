@@ -117,6 +117,7 @@ Configurable retry parameters for LLM providers.
 | `BEDROCK_INITIAL_RETRY_INTERVAL_MS` | How long to wait (in milliseconds) before the first retry | 2000 |
 | `BEDROCK_BACKOFF_MULTIPLIER` | The factor by which the retry interval increases after each attempt | 2 (doubles every time) |
 | `BEDROCK_MAX_RETRY_INTERVAL_MS` | The cap on the retry interval in milliseconds | 120000 |
+| `BEDROCK_PROMPT_CACHING` | Send Converse prompt-caching checkpoints for the Claude models AWS lists for prompt caching, on both Amazon Bedrock and Versa Bedrock. `false` turns them off | true |
 
 #### Databricks
 

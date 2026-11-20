@@ -15,9 +15,10 @@ use aws_sdk_bedrockruntime::operation::converse_stream::ConverseStreamOutput as 
 use super::base::MessageStream;
 // Import the migrated helper functions from providers/formats/bedrock.rs
 use super::formats::bedrock::{
-    bedrock_blocking_inference_config, bedrock_inference_config, bedrock_message_stream,
-    classify_bedrock_converse_error, classify_bedrock_converse_stream_error, from_bedrock_message,
-    from_bedrock_usage, map_bedrock_stop_reason, to_bedrock_messages, to_bedrock_tool_config,
+    bedrock_blocking_inference_config, bedrock_cache_point_rejected, bedrock_inference_config,
+    bedrock_message_stream_watching_cache, bedrock_request_parts, classify_bedrock_converse_error,
+    classify_bedrock_converse_stream_error, from_bedrock_message, from_bedrock_usage,
+    map_bedrock_stop_reason, BedrockCacheWatch, BedrockPromptCaching, BedrockRequestParts,
 };
 
 pub const BEDROCK_DOC_LINK: &str =
@@ -87,6 +88,10 @@ pub struct BedrockProvider {
     retry_config: RetryConfig,
     #[serde(skip)]
     name: String,
+    /// Converse prompt caching (#527): which models get cache checkpoints,
+    /// and which ones this endpoint refused them for.
+    #[serde(skip)]
+    prompt_caching: BedrockPromptCaching,
 }
 
 impl BedrockProvider {
@@ -178,12 +183,14 @@ impl BedrockProvider {
 
         let client = Client::new(&sdk_config);
         let retry_config = Self::load_retry_config(config);
+        let prompt_caching = BedrockPromptCaching::from_config(config);
 
         Ok(Self {
             client,
             model,
             retry_config,
             name: Self::metadata().name,
+            prompt_caching,
         })
     }
 
@@ -233,23 +240,34 @@ impl BedrockProvider {
         tools: &[Tool],
     ) -> Result<(bedrock::Message, Option<bedrock::TokenUsage>, String), ProviderError> {
         let model_name = &model_config.model_name;
+        let request = |parts: BedrockRequestParts| {
+            self.client
+                .converse()
+                .set_system(Some(parts.system))
+                .model_id(model_name.to_string())
+                .inference_config(bedrock_blocking_inference_config(model_config))
+                .set_messages(Some(parts.messages))
+                .set_tool_config(parts.tool_config)
+                .send()
+        };
+        let cache = self.prompt_caching.applies_to(model_name);
+        let parts = bedrock_request_parts(model_name, system, messages, tools, cache)?;
+        let cached = parts.cache_points > 0;
 
-        let mut request = self
-            .client
-            .converse()
-            .system(bedrock::SystemContentBlock::Text(system.to_string()))
-            .model_id(model_name.to_string())
-            .inference_config(bedrock_blocking_inference_config(model_config))
-            .set_messages(Some(to_bedrock_messages(model_name, messages)?));
-
-        if !tools.is_empty() {
-            request = request.tool_config(to_bedrock_tool_config(tools)?);
-        }
-
-        let response = request
-            .send()
-            .await
-            .map_err(classify_bedrock_converse_error)?;
+        let response = match request(parts).await {
+            Ok(response) => response,
+            // #527: the endpoint refused the cache checkpoints and nothing
+            // else. Once, without them; the refusal is remembered for this
+            // model on both APIs.
+            Err(err) if cached && bedrock_cache_point_rejected(&err) => {
+                self.prompt_caching.refuse(model_name);
+                let parts = bedrock_request_parts(model_name, system, messages, tools, false)?;
+                request(parts)
+                    .await
+                    .map_err(classify_bedrock_converse_error)?
+            }
+            Err(err) => return Err(classify_bedrock_converse_error(err)),
+        };
 
         let finish_reason = map_bedrock_stop_reason(&response.stop_reason);
         match response.output {
@@ -271,26 +289,41 @@ impl BedrockProvider {
         system: &str,
         messages: &[Message],
         tools: &[Tool],
-    ) -> Result<ConverseStreamResponse, ProviderError> {
-        let mut request = self
-            .client
-            .converse_stream()
-            .system(bedrock::SystemContentBlock::Text(system.to_string()))
-            .model_id(model_config.model_name.clone())
-            .inference_config(bedrock_inference_config(model_config))
-            .set_messages(Some(to_bedrock_messages(
-                &model_config.model_name,
-                messages,
-            )?));
+    ) -> Result<(ConverseStreamResponse, Option<BedrockCacheWatch>), ProviderError> {
+        let model_name = &model_config.model_name;
+        let request = |parts: BedrockRequestParts| {
+            self.client
+                .converse_stream()
+                .set_system(Some(parts.system))
+                .model_id(model_name.clone())
+                .inference_config(bedrock_inference_config(model_config))
+                .set_messages(Some(parts.messages))
+                .set_tool_config(parts.tool_config)
+                .send()
+        };
+        let cache = self.prompt_caching.applies_to(model_name);
+        let parts = bedrock_request_parts(model_name, system, messages, tools, cache)?;
+        let cached = parts.cache_points > 0;
+        let watch = || {
+            cached.then(|| BedrockCacheWatch {
+                policy: self.prompt_caching.clone(),
+                model: model_name.clone(),
+            })
+        };
 
-        if !tools.is_empty() {
-            request = request.tool_config(to_bedrock_tool_config(tools)?);
+        match request(parts).await {
+            Ok(response) => Ok((response, watch())),
+            // #527: as in `converse`.
+            Err(err) if cached && bedrock_cache_point_rejected(&err) => {
+                self.prompt_caching.refuse(model_name);
+                let parts = bedrock_request_parts(model_name, system, messages, tools, false)?;
+                request(parts)
+                    .await
+                    .map(|response| (response, None))
+                    .map_err(classify_bedrock_converse_stream_error)
+            }
+            Err(err) => Err(classify_bedrock_converse_stream_error(err)),
         }
-
-        request
-            .send()
-            .await
-            .map_err(classify_bedrock_converse_stream_error)
     }
 }
 
@@ -400,14 +433,23 @@ impl Provider for BedrockProvider {
         });
         let mut log = RequestLog::start(&self.model, &debug_payload)?;
 
-        let response = self
+        let (response, cache_watch) = self
             .with_retry(|| self.converse_stream(&self.model, system, messages, tools))
             .await
             .inspect_err(|e| {
                 let _ = log.error(e);
             })?;
 
-        Ok(bedrock_message_stream(response, model_name, log))
+        Ok(bedrock_message_stream_watching_cache(
+            response,
+            model_name,
+            log,
+            cache_watch,
+        ))
+    }
+
+    async fn supports_cache_control(&self) -> bool {
+        self.prompt_caching.applies_to(&self.model.model_name)
     }
 
     fn supports_streaming(&self) -> bool {
@@ -461,6 +503,7 @@ mod tests {
                 model: ModelConfig::new_or_fail(SIGNED_REPLAY_MODEL),
                 retry_config: RetryConfig::new(0, 0, 1.0, 0),
                 name: "aws_bedrock".to_string(),
+                prompt_caching: BedrockPromptCaching::default(),
             },
             captured,
         )
@@ -1214,6 +1257,221 @@ mod tests {
             issue_527_cache_point_count(&issue_527_captured_json(captured)),
             0
         );
+    }
+
+    fn issue_527_actual_requests(
+        client: &aws_smithy_http_client::test_util::StaticReplayClient,
+    ) -> Vec<(String, serde_json::Value)> {
+        client
+            .actual_requests()
+            .map(|request| {
+                let uri = request.uri().to_string();
+                let body = request.body().bytes().expect("buffered SDK request");
+                (uri, serde_json::from_slice(body).expect("SDK JSON request"))
+            })
+            .collect()
+    }
+
+    /// The request with every `{"cachePoint": …}` block removed from the arrays
+    /// that hold it, which is all a cache-free resend may differ by.
+    fn issue_527_without_cache_points(value: &serde_json::Value) -> serde_json::Value {
+        match value {
+            serde_json::Value::Object(fields) => fields
+                .iter()
+                .map(|(key, value)| (key.clone(), issue_527_without_cache_points(value)))
+                .collect::<serde_json::Map<_, _>>()
+                .into(),
+            serde_json::Value::Array(items) => items
+                .iter()
+                .filter(|item| item.get("cachePoint").is_none())
+                .map(issue_527_without_cache_points)
+                .collect::<Vec<_>>()
+                .into(),
+            value => value.clone(),
+        }
+    }
+
+    async fn issue_527_call(
+        provider: &BedrockProvider,
+        streaming: bool,
+        config: &ModelConfig,
+    ) -> Result<(), ProviderError> {
+        let (system, messages, tools) = issue_527_fixture();
+        if streaming {
+            provider
+                .converse_stream(config, &system, &messages, &tools)
+                .await
+                .map(|_| ())
+        } else {
+            provider
+                .converse(config, &system, &messages, &tools)
+                .await
+                .map(|_| ())
+        }
+    }
+
+    #[tokio::test]
+    async fn issue_527_a_cache_refusal_resends_once_without_checkpoints_on_both_apis() {
+        for streaming_first in [false, true] {
+            for (error_type, body) in [
+                (
+                    Some("ValidationException"),
+                    r#"{"code":"ValidationException","message":"cachePoint is not supported"}"#,
+                ),
+                (None, r#"{"message":"cachePoint is not supported"}"#),
+            ] {
+                let label = format!("streaming_first={streaming_first}, body={body}");
+                let first_client = issue_527_guard_replay(vec![
+                    issue_527_guard_response(400, error_type, body),
+                    issue_527_guard_success(streaming_first),
+                ]);
+                let (provider, _) = capturing_provider().await;
+                let provider = provider.with_http_client(first_client.clone());
+                let config = ModelConfig::new_or_fail("us.anthropic.claude-opus-5-5")
+                    .with_max_tokens(Some(1234));
+                let first = issue_527_call(&provider, streaming_first, &config).await;
+                assert!(first.is_ok(), "{label}: {first:?}");
+                let requests = issue_527_actual_requests(&first_client);
+                assert_eq!(requests.len(), 2, "{label}: one marked call, one resend");
+                assert_eq!(issue_527_cache_point_count(&requests[0].1), 4, "{label}");
+                assert_eq!(issue_527_cache_point_count(&requests[1].1), 0, "{label}");
+                assert_eq!(
+                    issue_527_without_cache_points(&requests[0].1),
+                    requests[1].1,
+                    "{label}: the resend differs only by the checkpoints"
+                );
+                assert_eq!(requests[0].0, requests[1].0, "{label}: same route");
+
+                let next_client =
+                    issue_527_guard_replay(vec![issue_527_guard_success(!streaming_first)]);
+                let provider = provider.with_http_client(next_client.clone());
+                let next = issue_527_call(&provider, !streaming_first, &config).await;
+                assert!(next.is_ok(), "{label}: {next:?}");
+                let next_requests = issue_527_actual_requests(&next_client);
+                assert_eq!(next_requests.len(), 1, "{label}: remembered, not probed");
+                assert_eq!(issue_527_cache_point_count(&next_requests[0].1), 0);
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn issue_527_credentials_and_unrelated_validation_keep_the_checkpoints() {
+        for streaming_first in [false, true] {
+            for (status, code, body) in [
+                (
+                    401,
+                    Some("AccessDeniedException"),
+                    r#"{"code":"AccessDeniedException","message":"cachePoint is not supported"}"#,
+                ),
+                (
+                    403,
+                    Some("AccessDeniedException"),
+                    r#"{"code":"AccessDeniedException","message":"cachePoint is not supported"}"#,
+                ),
+                (
+                    400,
+                    Some("ValidationException"),
+                    r#"{"code":"ValidationException","message":"temperature is invalid; cachePoint is supported"}"#,
+                ),
+            ] {
+                let first_client = issue_527_guard_replay(vec![
+                    issue_527_guard_response(status, code, body),
+                    issue_527_guard_success(streaming_first),
+                ]);
+                let (provider, _) = capturing_provider().await;
+                let provider = provider.with_http_client(first_client.clone());
+                let config = ModelConfig::new_or_fail("us.anthropic.claude-opus-5-5");
+                let first = issue_527_call(&provider, streaming_first, &config).await;
+                assert!(first.is_err(), "{status}: the error must surface");
+                let requests = issue_527_actual_requests(&first_client);
+                assert_eq!(requests.len(), 1, "{status}: nothing is resent");
+                assert_eq!(issue_527_cache_point_count(&requests[0].1), 4);
+
+                let next_client =
+                    issue_527_guard_replay(vec![issue_527_guard_success(!streaming_first)]);
+                let provider = provider.with_http_client(next_client.clone());
+                let next = issue_527_call(&provider, !streaming_first, &config).await;
+                assert!(next.is_ok(), "{status}: {next:?}");
+                let next_requests = issue_527_actual_requests(&next_client);
+                assert_eq!(next_requests.len(), 1);
+                assert_eq!(issue_527_cache_point_count(&next_requests[0].1), 4);
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn issue_527_a_second_refusal_surfaces_and_only_that_model_goes_without() {
+        let body = r#"{"code":"ValidationException","message":"cachePoint is not supported"}"#;
+        for streaming_first in [false, true] {
+            let first_client = issue_527_guard_replay(vec![
+                issue_527_guard_response(400, Some("ValidationException"), body),
+                issue_527_guard_response(400, Some("ValidationException"), body),
+            ]);
+            let (provider, _) = capturing_provider().await;
+            let provider = provider.with_http_client(first_client.clone());
+            let config = ModelConfig::new_or_fail("us.anthropic.claude-opus-5-5");
+            let failed = issue_527_call(&provider, streaming_first, &config).await;
+            assert!(failed.is_err(), "a second refusal must surface");
+            let requests = issue_527_actual_requests(&first_client);
+            assert_eq!(requests.len(), 2, "one resend, never a third request");
+            assert_eq!(issue_527_cache_point_count(&requests[0].1), 4);
+            assert_eq!(issue_527_cache_point_count(&requests[1].1), 0);
+
+            let next_client =
+                issue_527_guard_replay(vec![issue_527_guard_success(!streaming_first)]);
+            let provider = provider.with_http_client(next_client.clone());
+            assert!(issue_527_call(&provider, !streaming_first, &config)
+                .await
+                .is_ok());
+            let next_requests = issue_527_actual_requests(&next_client);
+            assert_eq!(next_requests.len(), 1);
+            assert_eq!(issue_527_cache_point_count(&next_requests[0].1), 0);
+
+            let other = ModelConfig::new_or_fail("us.anthropic.claude-sonnet-5-5");
+            let other_client = issue_527_guard_replay(vec![issue_527_guard_success(false)]);
+            let provider = provider.with_http_client(other_client.clone());
+            assert!(issue_527_call(&provider, false, &other).await.is_ok());
+            let other_requests = issue_527_actual_requests(&other_client);
+            assert_eq!(issue_527_cache_point_count(&other_requests[0].1), 4);
+
+            let (fresh, _) = capturing_provider().await;
+            let fresh_client = issue_527_guard_replay(vec![issue_527_guard_success(false)]);
+            let fresh = fresh.with_http_client(fresh_client.clone());
+            assert!(issue_527_call(&fresh, false, &config).await.is_ok());
+            let fresh_requests = issue_527_actual_requests(&fresh_client);
+            assert_eq!(
+                issue_527_cache_point_count(&fresh_requests[0].1),
+                4,
+                "another instance has not been refused"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn issue_527_caching_turned_off_sends_no_checkpoints_on_either_api() {
+        let config = ModelConfig::new_or_fail("us.anthropic.claude-opus-5-5");
+        let (system, messages, tools) = issue_527_fixture();
+        for streaming in [false, true] {
+            let client = issue_527_guard_replay(vec![issue_527_guard_success(streaming)]);
+            let (provider, _) = capturing_provider().await;
+            let mut provider = provider.with_http_client(client.clone());
+            provider.prompt_caching = BedrockPromptCaching::new(false);
+            let result = if streaming {
+                provider
+                    .converse_stream(&config, &system, &messages, &tools)
+                    .await
+                    .map(|_| ())
+            } else {
+                provider
+                    .converse(&config, &system, &messages, &tools)
+                    .await
+                    .map(|_| ())
+            };
+            assert!(result.is_ok(), "{result:?}");
+            let requests = issue_527_actual_requests(&client);
+            assert_eq!(requests.len(), 1);
+            assert_eq!(issue_527_cache_point_count(&requests[0].1), 0);
+        }
     }
 
     #[tokio::test]
