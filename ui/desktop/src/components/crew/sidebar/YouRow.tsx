@@ -25,8 +25,12 @@ export function devProfileName(): string | null {
 }
 
 /**
- * The You row, the sidebar's pinned 48px footer (ui-redesign-spec, "The Crew sidebar"): who I
- * act as, and where, answered at rest.
+ * The You row, the sidebar's pinned footer (ui-redesign-spec, "The Crew sidebar"): who I act as,
+ * and where, answered at rest.
+ *
+ * On `/crew` it sits beside the app sidebar's Settings row, so it takes that footer's box: the
+ * same hairline at the same height and one centre line, 45px however many lines the row holds
+ * (`crew-sidebar.css`, "The You row"; measured side by side in `sidebarFooters.browser.test.tsx`).
  *
  * A 20px avatar, my name (the identity `header` context), and on a second line where I am: "on
  * lab-server", in the sans supporting style (Q4-50). The server is named the person's own way
@@ -35,9 +39,10 @@ export function devProfileName(): string | null {
  * @crew_carol" said the username a third time.
  *
  * Before a snapshot names me there is no person to show, and then the SSH login is the placeholder
- * (ui-redesign-spec, "The Crew sidebar"): its own monospace text node — the one the regression
- * tests find (`fixture`) — `crew_alice@lab-server` for a saved `crew_alice@52.33.141.141` whose
- * server their SSH configuration calls `lab-server`, else the login exactly as saved, beside an
+ * (ui-redesign-spec, "The Crew sidebar"): its own text node, in the sidebar's sans at the nav
+ * label's size — the one the regression tests find (`fixture`) — `crew_alice@lab-server` for a
+ * saved `crew_alice@52.33.141.141` whose server their SSH configuration calls `lab-server`, else
+ * the login exactly as saved, beside an
  * avatar with the username's initial when the login names one (a joiner's blank circle said
  * nothing, Q2-43). The last verified copy of the workspace still names me, so a refresh keeps
  * "on lab-server" rather than flipping to the login and back.

@@ -505,6 +505,12 @@ filled control placed in the column is right without a rule of its own.
   scrolls under it), the pane divider, and the compact overlay's edge and shadow (a floating
   surface). Closing, the overlay keeps its shadow until it has slid out, so its edge never goes
   flat while it still covers the page (vision V1-R2-9).
+- On `/crew` the footer meets Crew's You row as one band: one hairline at one height and one
+  centre line for Settings and the You row. With Settings alone the footer is 45px (its rule, 8px
+  padding and a 28px row), and Crew's footer takes that same box whatever its row holds
+  (`crew/sidebar/crew-sidebar.css`, "The You row"). While the footer also holds the update row or
+  the daemon notice it is taller, so its rule sits above Crew's; the two rows still share a centre
+  line. `crew/sidebar/sidebarFooters.browser.test.tsx` measures the two side by side.
 - View options stays pressed on `--background-fill-strong` while its menu is open.
 - Crew's unread badge is the neutral badge, whose fill is the strong step. A lit row (hovered,
   current or focused) is that same fill, so there the badge steps back to the page ground; a fill

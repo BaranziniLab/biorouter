@@ -590,6 +590,10 @@
 }
 
 /* ── Footer: a full-bleed hairline, then Update and Settings ────────────── */
+/* On `/crew`, Crew's You row (`.crew-sidebar-you`) stands beside this footer
+   and takes its box: this hairline, this 8px padding and one row of
+   `--row-height-nav`, so the two meet in one band. Change them together;
+   `crew/sidebar/sidebarFooters.browser.test.tsx` measures the pair. */
 .br-sidebar-footer {
   flex: none;
   display: flex;

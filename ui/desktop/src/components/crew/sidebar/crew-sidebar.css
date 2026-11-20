@@ -488,10 +488,33 @@
   opacity: 1;
 }
 
-/* ── The You row: the pinned 48px footer ────────────────────────────────── */
+/* ── The You row: the pinned footer, one band with the app sidebar's ──────
+   On `/crew` the app sidebar stands beside this column down to the window's
+   foot, so the two footers read as one band: Settings on the left, the You
+   row on the right. They used to disagree (owner, 2026-11-19): this footer
+   was 49px with one line and 53px with two, the app's is 45px, so Crew's
+   hairline sat 4 to 9px above the app's and the two rows had no common
+   centre line.
+
+   So this footer IS the app's footer box (`.br-sidebar-footer` in
+   `BioRouterSidebar/sidebar.css`): the same hairline, the same 8px padding,
+   and one row track of `--row-height-nav`, 45px in all, whatever the row
+   holds. The trigger reaches 4px into the padding above and below, so its
+   ground is 36px: room for my name over "on lab-server" (20px + 16px), and
+   centred on the Settings row's centre either way. The reach is scaled by
+   hand because the font-scale plugin leaves a negative length alone; the
+   padding and the track scale on their own, as the app footer's do.
+
+   The trigger's ground is inset 8px from the column like every row above
+   it, and with its 4px inline padding the avatar keeps x=12 and the text
+   x=40. `sidebarFooters.browser.test.tsx` measures the two footers side by
+   side at several widths, text sizes and both modes. */
 .crew-sidebar-you {
+  display: grid;
   flex: none;
-  padding: 4px;
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: var(--row-height-nav);
+  padding: 8px;
   border-block-start: 1px solid var(--sidebar-border);
 }
 
@@ -499,10 +522,9 @@
   display: flex;
   align-items: center;
   gap: 8px;
-  width: 100%;
   min-width: 0;
-  min-height: var(--row-height);
-  padding: 4px 8px;
+  margin-block: calc(-4px * var(--app-font-scale, 1));
+  padding: 0 4px;
   border-radius: var(--radius-element);
   text-align: start;
   transition: background-color var(--dur-fast-min) var(--ease-out);
@@ -518,11 +540,16 @@
   box-shadow: inset 0 0 0 2px var(--border-focus);
 }
 
+/* The name's line is the label role's 20px, not the 21px a 14px line takes
+   from the page's `line-height: 1.5`, so the two lines are exactly the 36px
+   the trigger's ground holds. The place and the login carry their own roles. */
 .crew-sidebar-you-text {
   display: flex;
   flex: 1 1 auto;
   flex-direction: column;
   min-width: 0;
+  font-size: var(--text-label);
+  line-height: var(--text-label--line-height);
 }
 
 .crew-sidebar-truncate {
