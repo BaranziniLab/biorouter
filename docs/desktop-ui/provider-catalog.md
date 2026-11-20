@@ -302,7 +302,7 @@ needs nothing. The extension dialogs and the Add skill and New schedule dialogs 
 ## The page band
 
 `ProviderSettingsPage.tsx` (`#/configure-providers`, and `#/welcome` on first run) is one 44px `PageHeader`
-band, as every other page is: Back as the band's 32px icon action, a 14px title ("Provider configuration",
+band, as every other page is: Back as the band's 28px icon action, a 14px title ("Provider configuration",
 or "Choose a provider" on first run) whose InfoTip says where keys are kept (first run adds "You can
 switch providers any time in Settings."), and Local, Institutional and Public on the title's line. The
 catalog draws its tabs into the band's slot (`ProviderCatalog`'s `tabsHost`, a portal; omitted, the list
