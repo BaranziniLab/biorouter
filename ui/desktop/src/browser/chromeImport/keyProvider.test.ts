@@ -102,6 +102,9 @@ describe('the system key provider', () => {
     const refused = systemKeyProvider('linux', async () => ({ ok: false, reason: 'not-allowed' }));
     const partial = await refused(new Set(['v10', 'v11']));
     expect(partial.ok && Object.keys(partial.keys)).toEqual(['v10']);
+    // ...and says which key was missing and why, so the summary can tell the person (L5).
+    expect(partial.ok && partial.missing).toBe('not-allowed');
+    expect(both.ok && both.missing).toBeUndefined();
     expect(await refused(new Set(['v11']))).toEqual({ ok: false, reason: 'not-allowed' });
   });
 

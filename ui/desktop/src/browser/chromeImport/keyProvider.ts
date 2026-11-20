@@ -150,7 +150,9 @@ export function systemKeyProvider(
       if (needed.has('v10')) keys.v10 = deriveChromeKey(LINUX_V10_PASSWORD, LINUX_ITERATIONS);
       if (needed.has('v11')) {
         const result = await helper();
-        if (!result.ok) return needed.has('v10') ? { ok: true, keys } : result;
+        if (!result.ok) {
+          return needed.has('v10') ? { ok: true, keys, missing: result.reason } : result;
+        }
         keys.v11 = result.key;
       }
       return { ok: true, keys };

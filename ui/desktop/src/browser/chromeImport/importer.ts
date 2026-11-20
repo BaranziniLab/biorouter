@@ -70,6 +70,8 @@ export type LoginsOutcome =
 
 export type ImportReport = {
   logins: LoginsOutcome;
+  /** Logins imported, but one key version could not be read, so its cookies were skipped (L5). */
+  loginsMissingKey: KeyFailure | null;
   cookies: {
     imported: number;
     sites: number;
@@ -135,6 +137,7 @@ async function importCookies(
     const result = await keyProvider(needed);
     if (!result.ok) return result.reason;
     keys = result.keys;
+    report.loginsMissingKey = result.missing ?? null;
   }
 
   try {
@@ -214,6 +217,7 @@ export async function runChromeImport(options: {
   const files = chromeProfileFiles(profileDir);
   const report: ImportReport = {
     logins: 'not-chosen',
+    loginsMissingKey: null,
     cookies: { imported: 0, sites: 0, skipped: {}, failedBySite: {}, truncated: false },
     bookmarks: null,
     history: null,

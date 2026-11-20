@@ -102,6 +102,11 @@ export type ChromeImportSummary = {
   profileName: string;
   importedAt: number;
   logins: ChromeImportLogins;
+  /** Logins were imported, but one key could not be read, so some were skipped (L5). */
+  loginsMissingKey?: Exclude<
+    ChromeImportLogins,
+    'imported' | 'not-chosen' | 'none-found' | 'unreadable'
+  > | null;
   cookies: number;
   cookieSites: number;
   skipped: number;

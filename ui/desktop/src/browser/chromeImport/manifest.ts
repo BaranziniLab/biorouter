@@ -4,6 +4,7 @@ import type { BrowserPreferences } from '../preferences';
 import type { ChromeImportSummary } from '../types';
 import type { ImportedCookieKey } from './cookies';
 import type { AppliedSettings, LoginsOutcome } from './importer';
+import type { KeyFailure } from './keyProvider';
 
 /**
  * What each import brought, so **Settings > App > Browser** can say it and **Remove imported data**
@@ -20,6 +21,8 @@ export type ImportRecord = {
   profileName: string;
   importedAt: number;
   logins: LoginsOutcome;
+  /** Absent in imports recorded before it existed. */
+  loginsMissingKey?: KeyFailure | null;
   cookies: number;
   cookieSites: number;
   skipped: number;
@@ -107,6 +110,7 @@ export function summarize(record: ImportRecord): ChromeImportSummary {
     profileName: record.profileName,
     importedAt: record.importedAt,
     logins: record.logins,
+    loginsMissingKey: record.loginsMissingKey ?? null,
     cookies: record.cookies,
     cookieSites: record.cookieSites,
     skipped: record.skipped,

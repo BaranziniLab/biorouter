@@ -202,6 +202,38 @@ describe('the import dialog (BB-21)', () => {
     expect(summary.textContent).toContain('access was not allowed');
     expect(summary.textContent).not.toContain('Logins for');
   });
+
+  it('says how many cookies were left out or refused, and a key that was missing (L5)', async () => {
+    const bridge = installImport(status());
+    bridge.run.mockResolvedValueOnce({
+      ok: true,
+      summary: { ...SUMMARY, skipped: 8, failed: 1, loginsMissingKey: 'not-allowed' },
+    });
+    installElectron(bridge);
+    const { dialog } = await openDialog();
+    await userEvent.click(within(dialog).getByTestId('chrome-import-run'));
+    const summary = await screen.findByTestId('chrome-import-summary');
+    expect(summary.textContent).toContain('Logins for 3 sites');
+    expect(summary.textContent).toContain(
+      'Some logins were not imported because access to Chrome’s key for them was not allowed.'
+    );
+    expect(summary.textContent).toContain(
+      '8 cookies were left out: expired, partitioned or unreadable.'
+    );
+    expect(summary.textContent).toContain('1 cookie could not be set in the Biorouter Browser.');
+    // An import whose every cookie was left out says so, instead of "Nothing."
+    expect(
+      summaryDetails({
+        ...SUMMARY,
+        cookies: 0,
+        cookieSites: 0,
+        skipped: 2,
+        bookmarks: null,
+        history: null,
+        settings: null,
+      })
+    ).toBe('No logins were imported. 2 cookies were left out: expired, partitioned or unreadable.');
+  });
 });
 
 function stateAt(url: string): EmbeddedBrowserState {
@@ -342,7 +374,7 @@ describe('Settings > App > Browser (BB-25)', () => {
     expect(row.textContent).toContain(summaryLine(SUMMARY));
     expect(summaryLine(SUMMARY)).toBe('Imported from Chrome (Work) on Nov 19');
     expect(summaryDetails(SUMMARY)).toBe(
-      'Logins for 3 sites, 5 bookmarks, 91 history entries, search engine, languages, default zoom.'
+      'Logins for 3 sites, 5 bookmarks, 91 history entries, search engine, languages, default zoom. 8 cookies were left out: expired, partitioned or unreadable.'
     );
     expect(summaryDetails({ ...SUMMARY, logins: 'not-allowed', cookies: 0 })).toBe(
       '5 bookmarks, 91 history entries, search engine, languages, default zoom. Logins were not imported because access was not allowed.'

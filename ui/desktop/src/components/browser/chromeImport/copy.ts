@@ -84,10 +84,42 @@ export function summaryParts(summary: ChromeImportSummary): string[] {
   return parts;
 }
 
-/** Why logins are missing from a summary, or `null` when nothing needs saying. */
+/** Why one key could not be read, for "Some logins were not imported because …". */
+const MISSING_KEY_CLAUSE: Record<NonNullable<ChromeImportSummary['loginsMissingKey']>, string> = {
+  'not-allowed': 'access to Chrome’s key for them was not allowed',
+  'not-found': 'Chrome’s key for them was not found',
+  'key-store-off': 'the system key store is turned off',
+  unsupported: 'Chrome’s key for them cannot be read on this system',
+  'not-from-app': 'only an installed Biorouter app can read Chrome’s key for them',
+  failed: 'Chrome’s key for them could not be read',
+};
+
+/**
+ * What to say about logins beyond the count (L5): why none came, a key that could not be read
+ * for some of them, cookies left out on purpose, and cookies the browser would not take. `null`
+ * when nothing needs saying.
+ */
 export function loginsNote(summary: ChromeImportSummary): string | null {
-  if (summary.logins === 'imported' || summary.logins === 'not-chosen') return null;
-  return LOGINS_SENTENCE[summary.logins];
+  if (summary.logins === 'not-chosen') return null;
+  if (summary.logins !== 'imported') return LOGINS_SENTENCE[summary.logins];
+  const sentences: string[] = [];
+  if (summary.cookies === 0) sentences.push('No logins were imported.');
+  if (summary.loginsMissingKey) {
+    sentences.push(
+      `Some logins were not imported because ${MISSING_KEY_CLAUSE[summary.loginsMissingKey]}.`
+    );
+  }
+  if (summary.skipped > 0) {
+    sentences.push(
+      `${plural(summary.skipped, 'cookie was', 'cookies were')} left out: expired, partitioned or unreadable.`
+    );
+  }
+  if (summary.failed > 0) {
+    sentences.push(
+      `${plural(summary.failed, 'cookie', 'cookies')} could not be set in the Biorouter Browser.`
+    );
+  }
+  return sentences.length > 0 ? sentences.join(' ') : null;
 }
 
 /** "Imported from Chrome (Work) on Nov 19": the one line Settings shows for an import. */
@@ -105,8 +137,9 @@ export function summaryLine(summary: ChromeImportSummary): string {
  */
 export function summaryDetails(summary: ChromeImportSummary): string {
   const parts = summaryParts(summary);
+  const note = loginsNote(summary);
+  if (parts.length === 0 && note) return note;
   const brought = parts.length > 0 ? parts.join(', ') : 'nothing';
   const sentence = `${brought[0].toUpperCase()}${brought.slice(1)}.`;
-  const note = loginsNote(summary);
   return note ? `${sentence} ${note}` : sentence;
 }
