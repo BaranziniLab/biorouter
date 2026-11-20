@@ -17,7 +17,7 @@ const expectedDefaults = {
   knowledge: true,
   agent_drafter: true,
   chatrecall: false,
-  dictionary: false,
+  dictionary: true,
   workspace: true,
   crew: true,
   decisions: true,

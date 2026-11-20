@@ -101,7 +101,7 @@ pub fn msg_installed(id: &str, path: &Path) -> String {
 
 /// MSG-SUGGEST-KEPT: a later install given `--suggest-from-chats` or
 /// `--no-suggest-from-chats` keeps the choice the first install recorded (DD-56).
-pub const MSG_SUGGEST_KEPT: &str = "This install keeps your earlier choice about suggesting dictionary words from your chats; to change it, run `biorouter dictionary settings --suggest-from-chats` with on or off, or use Suggest dictionary words from my chats on the Dictionary page.";
+pub const MSG_SUGGEST_KEPT: &str = "This install keeps your earlier choice about suggesting dictionary words from your chats; to change it, run `biorouter dictionary settings --suggest-from-chats` with on or off, or use Suggest dictionary words from my chats in Settings.";
 
 /// MSG-CONFIRM-INSTALL.
 pub fn msg_confirm_install(id: &str) -> String {
@@ -1052,7 +1052,7 @@ fn install_gates(args: &InstallArgs) -> Result<(DictationPolicy, Roots, PathBuf)
     Ok((policy, roots, target))
 }
 
-/// Whether a verified install turns on suggesting dictionary words from chats (DD-56),
+/// Whether a verified install leaves suggesting dictionary words from chats on (DD-56),
 /// and whether a flag asked for a choice an earlier install already recorded.
 fn suggest_choice(
     policy: &DictationPolicy,
@@ -1082,11 +1082,17 @@ fn suggest_choice(
         }
         (_, Some(_)) => false,
         (Some(value), None) => value,
-        (None, None) if yes || chosen_before => false,
-        (None, None) if terminal => cliclack::confirm("Suggest dictionary words from your chats?")
-            .initial_value(true)
-            .interact()?,
-        (None, None) => false,
+        // A recorded choice stands; `activate_first_install` leaves it as it is.
+        (None, None) if chosen_before => false,
+        (None, None) if terminal && !yes => {
+            cliclack::confirm("Suggest dictionary words from your chats?")
+                .initial_value(true)
+                .interact()?
+        }
+        // No question was asked, so the configuration's own value stands: on in a fresh
+        // configuration (owner, 2026-11-19), off where the person saved it off. A script
+        // that passes `--yes` never shows the question, so it never turns the capability on.
+        (None, None) => biorouter::dictation::activation::suggest_from_chats(),
     };
     Ok((suggest_from_chats, flag_kept))
 }
@@ -1857,7 +1863,7 @@ mod tests {
             (msg_already_found("m", "user", p), "m is already installed (user, /m/x.bin)."),
             (msg_already_in("m", folder), "m is already installed in /m."),
             (msg_installed("m", p), "Installed m (/m/x.bin)."),
-            (MSG_SUGGEST_KEPT.into(), "This install keeps your earlier choice about suggesting dictionary words from your chats; to change it, run `biorouter dictionary settings --suggest-from-chats` with on or off, or use Suggest dictionary words from my chats on the Dictionary page."),
+            (MSG_SUGGEST_KEPT.into(), "This install keeps your earlier choice about suggesting dictionary words from your chats; to change it, run `biorouter dictionary settings --suggest-from-chats` with on or off, or use Suggest dictionary words from my chats in Settings."),
             (msg_confirm_install("m"), "Download and install m?"),
             (msg_confirm_terminal("install", "m"), "Installing a speech model needs your confirmation at a terminal. To install without one, run: biorouter dictation install --yes m"),
             (msg_confirm_terminal("remove", "m"), "Removing a speech model needs your confirmation at a terminal. To remove it without one, run: biorouter dictation remove --yes m"),

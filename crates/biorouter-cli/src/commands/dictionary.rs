@@ -71,7 +71,7 @@ const EXPORT_WITH_PRIVATE: &str = "Export with private terms";
 const EXPORT_PUBLIC_ONLY: &str = "Export public terms only";
 /// MSG-EMPTY.
 pub const MSG_EMPTY: &str =
-    "No terms yet. Add the words dictation should spell your way, such as UCSF or EPAS1.";
+    "No terms yet. Add the words dictation should spell your way, such as UCSF or Biorouter.";
 const MSG_NOTHING_CHANGED: &str = "Nothing was changed.";
 
 /// MSG-SPOKEN-ONE-TERM (exit 2).
@@ -2551,8 +2551,8 @@ mod tests {
         };
         let shown = go(&store, &piped(), set(None, None));
         assert_eq!(
-            shown.out,
-            "agent_writes: on_request\nsuggest_from_chats: off\nlearn_from_chats: off\n"
+            shown.out, "agent_writes: on_request\nsuggest_from_chats: on\nlearn_from_chats: on\n",
+            "a fresh configuration and a new store suggest words from chats (owner, 2026-11-19)"
         );
 
         let lowered = go(&store, &terminal(), set(Some(AgentWrites::Suggest), None));
@@ -2579,17 +2579,18 @@ mod tests {
             AgentWrites::Suggest
         );
 
-        let mut yes = Script {
-            confirms: VecDeque::from([true]),
-            ..Script::default()
-        };
-        run_with(&store, &terminal(), &mut yes, "", set(None, Some(true)));
-        assert!(store.view().unwrap().settings().learn_from_chats);
         go(&store, &terminal(), set(None, Some(false)));
         assert!(
             !store.view().unwrap().settings().learn_from_chats,
             "off asks nothing"
         );
+        let mut yes = Script {
+            confirms: VecDeque::from([true]),
+            ..Script::default()
+        };
+        run_with(&store, &terminal(), &mut yes, "", set(None, Some(true)));
+        assert_eq!(yes.asked, vec!["Change this setting?"]);
+        assert!(store.view().unwrap().settings().learn_from_chats);
 
         let reason = "Your organization's policy keeps the agent out of the dictionary.";
         let managed = Facts {
@@ -2608,7 +2609,8 @@ mod tests {
     /// value is refused before any question, and managed `dictionary_agent_writes: false`
     /// refuses turning it on. Both values go through `activation.rs`, which writes this
     /// process's one configuration file, so the test runs in a process of its own: the
-    /// test above reads the same switch as off.
+    /// test above reads the same switch as on. A fresh configuration has it on (owner,
+    /// 2026-11-19), so the test turns it off first, as a person who saved it off has it.
     #[test]
     fn settings_ask_before_turning_chat_suggestions_on_and_never_before_turning_them_off() {
         if !crate::test_sandbox::in_a_process_of_its_own() {
@@ -2623,13 +2625,15 @@ mod tests {
         };
         let printed = |suggest: &str| {
             format!(
-                "agent_writes: on_request\nsuggest_from_chats: {suggest}\nlearn_from_chats: off\n"
+                "agent_writes: on_request\nsuggest_from_chats: {suggest}\nlearn_from_chats: on\n"
             )
         };
         assert!(
-            !suggest_from_chats(),
-            "a fresh configuration has the capability off"
+            suggest_from_chats(),
+            "a fresh configuration has the capability on"
         );
+        biorouter::dictation::activation::activate(false).unwrap();
+        assert!(!suggest_from_chats(), "the person's saved off");
 
         let mut no = Script {
             confirms: VecDeque::from([false]),
@@ -3274,7 +3278,7 @@ mod tests {
             (MSG_PUBLICIZE_WARN.into(), "This term came from a private chat. Making it public lets it appear when you dictate into chats on public models."),
             (MSG_PUBLICIZE_WARN_NO_CHAT.into(), "This term is private. Making it public lets it appear when you dictate into chats on public models."),
             (MSG_EXPORT_PRIVATE.into(), "This file leaves Biorouter. It will include your private terms."),
-            (MSG_EMPTY.into(), "No terms yet. Add the words dictation should spell your way, such as UCSF or EPAS1."),
+            (MSG_EMPTY.into(), "No terms yet. Add the words dictation should spell your way, such as UCSF or Biorouter."),
             (MSG_SPOKEN_ONE_TERM.into(), "Use --spoken with one term at a time."),
             (MSG_IMPORT_FORMAT.into(), "Name the format with --format txt, csv, tsv or json."),
             (msg_no_term("EPAS1", None), "There is no term EPAS1 in the dictionary."),
@@ -3854,7 +3858,7 @@ mod tests {
         };
         let before = go(&store, &piped(), show.clone());
         assert!(
-            before.out.ends_with("learn_from_chats: off\n"),
+            before.out.ends_with("learn_from_chats: on\n"),
             "{}",
             before.out
         );
@@ -3877,7 +3881,7 @@ mod tests {
         let after = go(&store, &piped(), show);
         assert!(
             after.out.ends_with(
-                "learn_from_chats: off\nsuggestions: kept 1 of 2 recent; a word needs 2 chats\n"
+                "learn_from_chats: on\nsuggestions: kept 1 of 2 recent; a word needs 2 chats\n"
             ),
             "{}",
             after.out
@@ -4019,6 +4023,13 @@ mod tests {
             assert_eq!(run.result, Err(Failure::refused(sentence)));
             assert!(run.err.is_empty() && !scanner.called);
         }
+        // A new store has suggestions on (owner, 2026-11-19), so the person turned them off.
+        store
+            .write(|file| {
+                file.settings.learn_from_chats = false;
+                Ok(())
+            })
+            .unwrap();
         let off = format!("{}\n{MSG_SCAN_TURN_ON}", suggestion_scan::MSG_SCAN_OFF);
         let mut scanner = Canned::ending(ScanState::Finished, 0, 0, 0);
         let run = scan_with(&store, &terminal(), &mut scanner, false).await;

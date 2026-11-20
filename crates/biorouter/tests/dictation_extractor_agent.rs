@@ -16,6 +16,7 @@ mod dictation_extractor_support;
 use biorouter::conversation::message::{Message, MessageProvenance, ProvenanceKind};
 use biorouter::dictation::extractor::{admission_stamp, observations_in_flight};
 use biorouter::privacy::affiliation::InstitutionId;
+use biorouter::security::dictionary_store::open_store;
 use biorouter::security::dictionary_store::store::{EntrySource, EntryStatus, EntryTier};
 use biorouter::session::SessionType;
 use dictation_extractor_support::{
@@ -218,6 +219,52 @@ async fn the_persons_switch_needs_no_dictionary_capability_in_the_chat() {
         rows_named("NOCAPON24").len() == 1
     })
     .await;
+    learn_from_chats(false);
+}
+
+/// A person who never wrote to the dictionary has no `dictionary.json`, and its settings
+/// read as a new store's, with **Suggest words from my messages** on (owner, 2026-11-19).
+/// The live hooks follow the switch Settings shows: the first message with a term is read,
+/// and its write creates the file. Before, a store with no file admitted nothing, so the
+/// switch read on while nothing was learned until some other write created the file.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_dictionary_with_no_file_yet_learns_as_its_switch_shows() {
+    let _serial = SERIAL.lock().await;
+    let fx = Fixture::scratch();
+    let provider = CountingProvider::public();
+    let agent = fx.agent_without_the_capability();
+    let chat = fx.chat(SessionType::User).await;
+    agent
+        .update_provider(provider.clone(), &chat.id)
+        .await
+        .unwrap();
+
+    // The other tests here write the store; this one starts where a new person does.
+    let store = open_store();
+    match std::fs::remove_file(store.store_path()) {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => panic!("the store file could not be removed: {error}"),
+    }
+    assert!(
+        store.view().unwrap().settings().learn_from_chats,
+        "a store with no file reads as a new store, with suggestions on"
+    );
+    wait_for(
+        "the settings watcher to admit a store with no file, whose switch reads on",
+        || admission_stamp() == Some(0) && observations_in_flight() == 0,
+    )
+    .await;
+
+    say(&agent, &chat, "NOFILE24", &provider).await;
+    wait_for("the term to land in a dictionary that had no file", || {
+        rows_named("NOFILE24").len() == 1
+    })
+    .await;
+    assert!(
+        store.store_path().exists(),
+        "the observation created the file"
+    );
     learn_from_chats(false);
 }
 

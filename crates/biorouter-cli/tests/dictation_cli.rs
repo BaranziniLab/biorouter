@@ -21,7 +21,8 @@
 //! * `list --format json` rates every catalog model;
 //! * (PR-23, DD-56) `install --suggest-from-chats` and `--no-suggest-from-chats` decide the
 //!   `dictionary` capability at the first verified install, which writes the activation
-//!   marker whatever they say, and `--yes` alone leaves it off; a later install neither
+//!   marker whatever they say, and `--yes` alone keeps what the configuration holds: on in a
+//!   fresh configuration (owner, 2026-11-19), off where it was saved off; a later install neither
 //!   asks again nor changes the choice, and given either flag says the earlier choice
 //!   stands (MSG-SUGGEST-KEPT); under a managed `dictionary_agent_writes: false` the first
 //!   install's `--suggest-from-chats` is answered with the policy's sentence; without a
@@ -323,6 +324,19 @@ fn suggestions(root: &Path) -> String {
         .to_string()
 }
 
+/// A configuration under `root` that saved the `dictionary` capability off, as an existing
+/// person's choice does, with no activation marker yet.
+fn save_suggestions_off(root: &Path) {
+    let dir = root.join("config");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("config.yaml"),
+        "computer_use_capabilities_version: 2\nextensions:\n  dictionary:\n    enabled: false\n    type: platform\n    name: dictionary\n    description: Saved off\n    bundled: true\n    available_tools: []\n",
+    )
+    .unwrap();
+    assert_eq!(suggestions(root), "off", "the saved choice reads back");
+}
+
 /// The activation marker in `root`'s configuration file, or `None` when nothing wrote it.
 fn activation_marker(root: &Path) -> Option<u64> {
     let file = root.join("config").join("config.yaml");
@@ -370,28 +384,40 @@ fn install_detector_with(root: &Path, flags: &[&str]) -> Output {
 /// PR-23, DD-56: `--suggest-from-chats` and `--no-suggest-from-chats` answer the question
 /// `install` asks at a terminal, and that answer is what the first verified install hands
 /// to `activation.rs`. The marker is written whatever the answer; the `dictionary`
-/// capability is on only after `--suggest-from-chats`, and `--yes` without either flag
-/// leaves it off. The two flags cannot be given together.
+/// capability is off only after `--no-suggest-from-chats`, and `--yes` without either flag
+/// keeps what the configuration holds: on in a fresh configuration (owner, 2026-11-19), and
+/// off where the person saved it off, because a script never shows the question. The two
+/// flags cannot be given together.
 #[test]
 fn the_suggest_flags_decide_the_dictionary_capability_at_the_first_verified_install() {
     if !can_install() {
         return;
     }
-    for (flags, expected) in [
-        (&["--suggest-from-chats"][..], "on"),
-        (&["--no-suggest-from-chats"][..], "off"),
-        (&[][..], "off"),
+    for (saved_off, flags, expected) in [
+        (false, &["--suggest-from-chats"][..], "on"),
+        (false, &["--no-suggest-from-chats"][..], "off"),
+        (false, &[][..], "on"),
+        (true, &["--suggest-from-chats"][..], "on"),
+        (true, &[][..], "off"),
     ] {
         let root = sandbox();
-        assert_eq!(
-            suggestions(root.path()),
-            "off",
-            "a fresh configuration has it off"
-        );
+        if saved_off {
+            save_suggestions_off(root.path());
+        } else {
+            assert_eq!(
+                suggestions(root.path()),
+                "on",
+                "a fresh configuration has it on"
+            );
+        }
         assert_eq!(activation_marker(root.path()), None);
         install_detector_with(root.path(), flags);
-        assert_eq!(activation_marker(root.path()), Some(1), "{flags:?}");
-        assert_eq!(suggestions(root.path()), expected, "{flags:?}");
+        assert_eq!(
+            activation_marker(root.path()),
+            Some(1),
+            "{saved_off} {flags:?}"
+        );
+        assert_eq!(suggestions(root.path()), expected, "{saved_off} {flags:?}");
     }
 
     let root = sandbox();
@@ -477,7 +503,7 @@ fn a_managed_rule_against_agent_writes_keeps_the_capability_off_at_install() {
 }
 
 /// MSG-SUGGEST-KEPT.
-const MSG_SUGGEST_KEPT: &str = "This install keeps your earlier choice about suggesting dictionary words from your chats; to change it, run `biorouter dictionary settings --suggest-from-chats` with on or off, or use Suggest dictionary words from my chats on the Dictionary page.";
+const MSG_SUGGEST_KEPT: &str = "This install keeps your earlier choice about suggesting dictionary words from your chats; to change it, run `biorouter dictionary settings --suggest-from-chats` with on or off, or use Suggest dictionary words from my chats in Settings.";
 
 /// DD-56: a later verified install given either flag keeps the recorded choice and says
 /// so, naming the switch that changes it (MSG-SUGGEST-KEPT). The first install's flag and
@@ -513,11 +539,12 @@ fn a_later_install_given_a_flag_says_the_earlier_choice_stands() {
 
 /// PR-23: without a terminal `install` asks nothing, with or without a suggest flag, and
 /// stops for want of `--yes` before anything is installed; in an agent's shell it refuses
-/// before any question even with `--yes`. Neither writes the marker or turns the
-/// `dictionary` capability on.
+/// before any question even with `--yes`. Neither writes the marker or turns on the
+/// `dictionary` capability a person saved off.
 #[test]
 fn install_asks_nothing_about_suggestions_without_a_terminal_or_in_an_agent_shell() {
     let root = sandbox();
+    save_suggestions_off(root.path());
     let from = detector_fixture();
     let from = from.to_str().unwrap();
     for flags in [&[][..], &["--suggest-from-chats"][..]] {

@@ -1356,7 +1356,7 @@ enum DictationCommand {
         #[arg(long, conflicts_with = "no_suggest_from_chats")]
         suggest_from_chats: bool,
 
-        /// Leave chat suggestions off after this verified install
+        /// Turn chat suggestions off after this verified install
         #[arg(long, conflicts_with = "suggest_from_chats")]
         no_suggest_from_chats: bool,
     },
@@ -1468,7 +1468,7 @@ enum DictionaryCommand {
         status: String,
     },
 
-    /// Add words dictation should spell your way, such as UCSF or EPAS1
+    /// Add words dictation should spell your way, such as UCSF or Biorouter
     #[command(about = "Add terms to the dictionary")]
     Add {
         #[arg(value_name = "TERM", required = true)]

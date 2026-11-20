@@ -16,7 +16,8 @@
  * Labels (buttons, headings, menu items) are not sentences and are not in the
  * catalog.
  */
-import { fillMessage } from '../dictation/copy';
+import type { DictionaryAgentWrites } from '../../api';
+import { dictationMessage, fillMessage, SETUP_SUGGEST_LAST_SENTENCE } from '../dictation/copy';
 
 export const DICTIONARY_MESSAGES = {
   'MSG-PUBLICIZE-WARN':
@@ -29,7 +30,7 @@ export const DICTIONARY_MESSAGES = {
   'MSG-ROW-PRIVATE-LOCAL': 'Used only in private chats on local models',
   'MSG-EXPORT-PRIVATE': 'This file leaves Biorouter. It will include your private terms.',
   'MSG-EMPTY':
-    'No terms yet. Add the words dictation should spell your way, such as UCSF or EPAS1.',
+    'No terms yet. Add the words dictation should spell your way, such as UCSF or Biorouter.',
   'MSG-TERM-TOO-LONG': 'Use a term of at most 64 characters.',
   'MSG-TERM-WORDS': 'Use a term of at most six words.',
   'MSG-TERM-PLAIN': 'Use one line of plain text.',
@@ -49,7 +50,7 @@ export const DICTIONARY_MESSAGES = {
   'MSG-DICTIONARY-TOO-LARGE':
     'That list is larger than 1 MB or 5,000 rows. Split it and add each part.',
   'MSG-ADD-TERMS-HELP':
-    'Paste one term per line, such as UCSF or EPAS1 = epas one, or drop a .txt, .csv, .tsv or .json file. Terms you already have gain the new spoken forms; nothing is deleted.',
+    'Paste one term per line, such as UCSF or Biorouter = bio router, or drop a .txt, .csv, .tsv or .json file. Terms you already have gain the new spoken forms; nothing is deleted.',
   'MSG-IMPORT-PLAN': '<new> new · <existing> already in your dictionary · <skipped> skipped',
   'MSG-IMPORT-SKIPPED': 'Line <line>: <sentence>',
   'MSG-SPOKEN-FORMS-HELP':
@@ -60,6 +61,10 @@ export const DICTIONARY_MESSAGES = {
     'A kept word starts shaping dictation. A dismissed one is not suggested again.',
   'MSG-LEARN-FROM-CHATS-HELP':
     'Biorouter looks for terms such as EPAS1 or UCSF in the messages you type in chats on public models, on this computer, and suggests a word once it shows up in two chats. You keep or dismiss each one, and a dismissed word is not suggested again.',
+  'MSG-AGENT-WRITES-HELP':
+    'Whether a word the agent proposes waits for your review or goes into your dictionary at once. You can remove any word the agent added.',
+  'MSG-SCAN-HELP':
+    'Biorouter reads your recent chats on public models, on this computer, and suggests the words that show up in two or more of them.',
   'MSG-SCAN-PROGRESS': 'Reading chat <read> of <total>, <words> found so far',
   'MSG-SCAN-FINISHED': 'Read <chats>. <words> to review.',
   'MSG-SCAN-FINISHED-NONE': 'Read <chats>. No new words found.',
@@ -90,6 +95,18 @@ export function dictionaryMessage(
   values: Readonly<Record<string, string>> = {}
 ): string {
   return fillMessage(DICTIONARY_MESSAGES[id], values);
+}
+
+/**
+ * The InfoTip of **Suggest dictionary words from my chats**: MSG-SETUP-SUGGEST's first
+ * sentence, then the sentence for the person's `agent_writes` setting
+ * (`SETUP_SUGGEST_LAST_SENTENCE`). Two sentences, an InfoTip's limit (owner rule, 2026-11-13:
+ * no walls of text). The first install's choice and its row in Settings both read it.
+ */
+export function suggestFromChatsHelp(mode: DictionaryAgentWrites): string {
+  const base = dictationMessage('MSG-SETUP-SUGGEST');
+  const first = base.slice(0, base.lastIndexOf(' A term can go into your dictionary'));
+  return `${first} ${SETUP_SUGGEST_LAST_SENTENCE[mode]}`;
 }
 
 /**
@@ -158,17 +175,31 @@ export const DICTIONARY_LABELS = {
   // dictionary the agent started has rows that are not the person's yet.
   userGroupEmpty: 'Terms you add show here.',
   reviewAll: 'Review all…',
+  /**
+   * The dictionary's options, in **Settings > Models > Speech models** (owner, 2026-11-19:
+   * they left the Dictionary page). The `*Hint` lines are the select menu's muted second lines.
+   */
   agentSettings: {
     title: "Agent's terms",
     suggest: 'Wait for my review',
+    suggestHint: 'Every word the agent proposes waits for you',
     onRequest: 'Add when I ask, suggest otherwise',
+    onRequestHint: 'Words you ask for are added, the rest wait for you',
     add: 'Add without asking',
-    /** `learn_from_chats`, the chat extractor's switch (PR-24, DD-57); also its row in Settings. */
+    addHint: 'Words are added at once, and you can undo each one',
+    /** `learn_from_chats`, the chat extractor's switch (PR-24, DD-57). */
     learnFromChats: 'Suggest words from my messages',
   },
-  /** **Find words in my recent chats** (owner, 2026-11-13), under the chat extractor's switch. */
+  /** The page band's quiet icon that opens these options in Settings, its name and tooltip. */
+  settingsLink: 'Dictionary settings',
+  /**
+   * **Find words in my recent chats** (owner, 2026-11-13): the **Recent chats** row under the
+   * chat extractor's switch in Settings, whose button reads **Find words** and is named in full.
+   */
   scan: {
+    row: 'Recent chats',
     find: 'Find words in my recent chats',
+    findShort: 'Find words',
     stop: 'Stop',
     /** MSG-SCAN-PROGRESS's `<words>`: "1 word", "12 words". */
     words: (n: number) => (n === 1 ? '1 word' : `${n.toLocaleString('en-US')} words`),

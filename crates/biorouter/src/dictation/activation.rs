@@ -44,7 +44,7 @@ pub fn suggest_only_for_process() -> bool {
 
 pub const EXTENSION_KEY: &str = "dictionary";
 pub const ACTIVATION_VERSION_KEY: &str = "dictation_dictionary_activation_version";
-pub const ENABLE_REFUSAL: &str = "The Dictionary capability is turned on by you, with Suggest dictionary words from my chats on the Dictionary page.";
+pub const ENABLE_REFUSAL: &str = "The Dictionary capability is turned on by you, with Suggest dictionary words from my chats in Settings.";
 
 pub fn is_dictionary_name(name: &str) -> bool {
     crate::config::extensions::name_to_key(name) == EXTENSION_KEY
@@ -85,10 +85,10 @@ mod tests {
         }
     }
 
-    /// The capability is off in a fresh configuration; a first install with the box
-    /// ticked turns it on and writes the marker, and the box applies once: a later first
-    /// install with the box unticked, or one after the person turned it off, changes
-    /// nothing. The person's own switch turns it off and on.
+    /// The capability is on in a fresh configuration (owner, 2026-11-19, replacing DD-51's
+    /// off); a first install with the box ticked keeps it on and writes the marker, and the
+    /// box applies once: a later first install with the box unticked, or one after the
+    /// person turned it off, changes nothing. The person's own switch turns it off and on.
     ///
     /// In a process of its own, because `Config::global()` is that process's own fresh
     /// configuration, which nothing else in the run reads.
@@ -97,7 +97,7 @@ mod tests {
         if !crate::test_sandbox::in_a_process_of_its_own() {
             return;
         }
-        assert!(!suggest_from_chats(), "a fresh configuration has it off");
+        assert!(suggest_from_chats(), "a fresh configuration has it on");
         assert_eq!(stored_marker(), None);
 
         activate_first_install(true).unwrap();
@@ -123,14 +123,14 @@ mod tests {
         assert_eq!(stored_marker(), Some(1));
     }
 
-    /// An unticked box on the first install leaves the capability off and still writes the
+    /// An unticked box on the first install turns the capability off and still writes the
     /// marker, so a later ticked install does not turn it on; only the person's switch does.
     #[test]
     fn an_unticked_first_install_leaves_the_capability_off_for_good() {
         if !crate::test_sandbox::in_a_process_of_its_own() {
             return;
         }
-        assert!(!suggest_from_chats());
+        assert!(suggest_from_chats(), "a fresh configuration has it on");
         activate_first_install(false).unwrap();
         assert!(!suggest_from_chats());
         assert_eq!(stored_marker(), Some(1));

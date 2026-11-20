@@ -3,7 +3,7 @@ import { activateDictionary, readAllConfig, type DictionarySettings } from '../.
 import { toastError } from '../../toasts';
 import { userActionHeaders } from '../../utils/userAction';
 import type { DictationStatus } from '../dictation/dictationApi';
-import { dictationMessage, SETUP_SUGGEST_LAST_SENTENCE } from '../dictation/copy';
+import { suggestFromChatsHelp } from './copy';
 import { loadDictionarySettings, refreshDictionary } from './useDictionary';
 
 const ACTIVATION_KEY = 'dictation_dictionary_activation_version';
@@ -130,11 +130,7 @@ export function useDictionaryActivationChoice(status: DictationStatus | null) {
   const changeChecked = (value: boolean) => {
     if (pendingChoice === null) setChecked(value);
   };
-  const mode = settings?.agent_writes ?? 'on_request';
-  const base = dictationMessage('MSG-SETUP-SUGGEST');
-  const first = base.slice(0, base.lastIndexOf(' A term can go into your dictionary'));
-  // Two sentences, the InfoTip's limit (owner rule, 2026-11-13: no walls of text).
-  const help = `${first} ${SETUP_SUGGEST_LAST_SENTENCE[mode]}`;
+  const help = suggestFromChatsHelp(settings?.agent_writes ?? 'on_request');
   return {
     checked,
     setChecked: changeChecked,
