@@ -28,6 +28,8 @@ pub const MAX_OUTPUT_BYTES: usize = 16 * 1024 * 1024;
 /// Added to every command's own deadline before the wrapper ends it.
 pub const OUTER_GRACE: Duration = Duration::from_secs(5);
 /// Between `SIGTERM` and `SIGKILL` on Stop.
+// Windows has no graceful signal to give a grace to: there the wrapper lifts held buttons itself.
+#[cfg_attr(windows, allow(dead_code))]
 pub const RELEASE_GRACE: Duration = Duration::from_secs(1);
 
 /// One engine command, fully decided.
@@ -642,9 +644,12 @@ mod platform {
         };
         if let Some(cancelled) = stopped {
             // Windows has no graceful signal for a windowless console process: the job ends
-            // the whole tree at once.
+            // the whole tree at once, so the engine's release guard never runs.
             job.terminate();
             job.wait_empty().await;
+            if invocation.physical {
+                release_held_buttons();
+            }
             let _ = tokio::time::timeout(Duration::from_secs(5), child.wait()).await;
             reader.abort();
             return Err(if cancelled {
@@ -668,6 +673,43 @@ mod platform {
             job.terminate();
         }
         bytes
+    }
+
+    /// AD-15 on Windows: a physical command ended by the job never ran its release guard, so a
+    /// mouse button it pressed (a drag's) would stay down for every app on the desktop. Lift each
+    /// button the system still reports pressed. Only after a physical command was stopped or timed
+    /// out, so a button the person holds at any other moment is never touched.
+    fn release_held_buttons() {
+        use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
+            GetAsyncKeyState, SendInput, INPUT, INPUT_0, INPUT_MOUSE, MOUSEEVENTF_LEFTUP,
+            MOUSEEVENTF_MIDDLEUP, MOUSEEVENTF_RIGHTUP, MOUSEINPUT, VK_LBUTTON, VK_MBUTTON,
+            VK_RBUTTON,
+        };
+        for (key, flag) in [
+            (VK_LBUTTON, MOUSEEVENTF_LEFTUP),
+            (VK_RBUTTON, MOUSEEVENTF_RIGHTUP),
+            (VK_MBUTTON, MOUSEEVENTF_MIDDLEUP),
+        ] {
+            // SAFETY: GetAsyncKeyState reads one key's state; the high bit means pressed.
+            if unsafe { GetAsyncKeyState(i32::from(key)) } >= 0 {
+                continue;
+            }
+            let input = INPUT {
+                r#type: INPUT_MOUSE,
+                Anonymous: INPUT_0 {
+                    mi: MOUSEINPUT {
+                        dx: 0,
+                        dy: 0,
+                        mouseData: 0,
+                        dwFlags: flag,
+                        time: 0,
+                        dwExtraInfo: 0,
+                    },
+                },
+            };
+            // SAFETY: one fully initialised INPUT, with its size as the API requires.
+            unsafe { SendInput(1, &input, std::mem::size_of::<INPUT>() as i32) };
+        }
     }
 }
 

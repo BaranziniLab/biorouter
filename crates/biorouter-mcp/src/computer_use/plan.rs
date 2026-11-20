@@ -415,10 +415,13 @@ pub fn permissions(ctx: &Ctx) -> Invocation {
 
 /// How long the operating system's permission prompts may stay open. macOS's Automation prompt
 /// waits for the person's answer, so this is generous.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 pub const REQUEST_PERMISSIONS: Duration = Duration::from_secs(120);
 
 /// `permissions --request` (AD-04): the operating system asks the person to allow Biorouter
-/// Copilot. Built only for the setup button a person pressed, never from a tool call.
+/// Copilot. Built only for the setup button a person pressed, never from a tool call; only macOS
+/// has anything to request.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 pub fn request_permissions(ctx: &Ctx) -> Invocation {
     Builder::observe(ctx, "permissions", REQUEST_PERMISSIONS)
         .switch("request")

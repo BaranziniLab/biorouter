@@ -461,8 +461,9 @@ fn downscale_png(bytes: &[u8]) -> Result<(String, u32, u32), String> {
 }
 
 impl SessionRuntime {
-    /// A runtime with stand-in host probes, engine and state folder, for tests.
-    #[cfg(test)]
+    /// A runtime with stand-in host probes, engine and state folder, for tests (which run on
+    /// Unix: the stand-in engine is a shell script).
+    #[cfg(all(test, unix))]
     fn for_tests(
         probe: Arc<dyn HostProbe>,
         platform: Platform,

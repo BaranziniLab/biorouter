@@ -16,6 +16,7 @@ use windows_sys::Win32::System::Threading::{OpenThread, ResumeThread, THREAD_SUS
 pub(super) struct ProcessJob(OwnedHandle);
 
 impl ProcessJob {
+    #[cfg(test)]
     pub fn attach(child: &tokio::process::Child) -> Result<Self> {
         Self::attach_with(child, false)
     }
