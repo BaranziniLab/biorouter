@@ -130,7 +130,7 @@ Biorouter is licensed under [Apache 2.0](LICENSE). Its design was inspired by th
 - [OpenCode](https://opencode.ai/): an open source coding agent that supports multiple sessions and providers.
 - [ForgeCode](https://forgecode.dev/): a terminal coding assistant for planning tasks and generating code.
 
-Biorouter's packages also include components from other open source projects, among them [Open Computer Use](https://github.com/iFurySt/open-codex-computer-use), [llama.cpp](https://github.com/ggml-org/llama.cpp), and the visualization libraries listed in [NOTICE](NOTICE). See [acceptable use](ACCEPTABLE_USAGE.md) and [project governance](GOVERNANCE.md).
+Biorouter's packages also include components from other open source projects, among them [agent-desktop](https://github.com/vercel-labs/agent-desktop), [llama.cpp](https://github.com/ggml-org/llama.cpp), and the visualization libraries listed in [NOTICE](NOTICE). See [acceptable use](ACCEPTABLE_USAGE.md) and [project governance](GOVERNANCE.md).
 
 If you use Biorouter in your research, please cite:
 

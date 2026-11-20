@@ -37,8 +37,8 @@ sudo zypper install dpkg fakeroot rpm-build gcc gcc-c++ make pkg-config \
 - **Rust 1.92**: Install via [rustup](https://rustup.rs/) — the channel is pinned in `rust-toolchain.toml`, so rustup selects it automatically
 - **Node.js 24.x**: `ui/desktop/package.json` declares `engines: { "node": "^24.0.0" }`, and hermit pins 24.10.0. Newer majors break the Electron packaging step, so pin 24 rather than tracking latest (use [nvm](https://github.com/nvm-sh/nvm) for version management)
 - **npm**: Comes with Node.js
-- **Go 1.26.8**: Builds the native Biorouter Copilot helper (`.github/workflows/computer-use-native.yml` pins this version)
-- **Python 3**: Runs `scripts/computer-use-runtime.py`, the helper build driver
+- **Python 3**: Runs `scripts/computer-use-runtime.py`, the build driver of the Biorouter Copilot helper (agent-desktop)
+- **Docker**: Builds that helper in the pinned `rust:1.92-bullseye` image, so it holds the same glibc 2.31 floor as the release
 
 ### Runtime requirements
 
@@ -79,9 +79,9 @@ cp ../../target/release/biorouter src/bin/
 # Build the pinned Biorouter Copilot helper. This must come first: staging it is the
 # first thing prepare-platform-binaries.js does, and it aborts the whole build if
 # target/computer-use/linux-x64/manifest.json is absent. Nothing in the Justfile
-# produces it. Needs Go 1.26.8, Python 3 and git (the driver applies the patches
-# in vendor/computer-use/patches/ to a copy of the vendored source; no network).
-(cd ../.. && python3 scripts/computer-use-runtime.py build linux-x64)
+# produces it. Needs Docker and Python 3: it builds agent-desktop from
+# vendor/agent-desktop/source in the pinned rust:1.92-bullseye image.
+(cd ../.. && bash scripts/build-computer-use-helper-cross.sh linux-x64)
 
 # Stage the Biorouter Copilot helper, fetch the pinned llama-server sidecar, build the
 # browser interface bundle, then verify all required binaries, failing fast if

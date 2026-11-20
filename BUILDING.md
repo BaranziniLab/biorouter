@@ -35,10 +35,8 @@ Before building, ensure the following are installed and configured:
 | **npm** | bundled with Node.js |
 | **Docker Desktop** | https://www.docker.com/products/docker-desktop (required for Linux build) |
 | **Xcode Command Line Tools** | `xcode-select --install` |
-| **Go 1.26.8** | https://go.dev/dl. Builds the Biorouter Copilot helper for the Windows and Linux targets; this is the version `.github/workflows/computer-use-native.yml` pins |
-| **Swift 6.2+ / Xcode** | Required for the two macOS Biorouter Copilot helper targets; `computer-use-runtime.py` refuses to build them anywhere but macOS |
-| **Python 3** | Runs `scripts/computer-use-runtime.py`, the helper build driver |
-| **git** | The helper build stages the vendored source and applies its patches with `git apply` |
+| **Python 3** | Runs `scripts/computer-use-runtime.py`, the build driver of the Biorouter Copilot helper (agent-desktop, built with the same Rust 1.92 and the Xcode tools above for the two macOS targets) |
+| **Docker** | Also builds the Windows and Linux Biorouter Copilot helpers, in the pinned `rust:1.92-bullseye` image (`scripts/build-computer-use-helper-cross.sh`) |
 
 > **Node 24.x means 24.x, not "24 or newer."** Under Node 26 `electron-forge package` exits 0 having produced no `.app` — a silent no-op that looks like a build succeeding — and the `appdmg` / `macos-alias` native modules the DMG maker needs do not build at all.
 
@@ -80,10 +78,11 @@ file ui/desktop/src/bin/biorouter
 
 ### Build the Biorouter Copilot helper for the target you are packaging
 
-The helper's build paths, scripts and staged directories keep the `computer-use` spelling
-(`vendor/computer-use/`, `target/computer-use/`, `scripts/computer-use-runtime.py`,
-`stageComputerUse()`). Those are on-disk and provenance identifiers, not display names, so the
-rename to Biorouter Copilot left them alone deliberately.
+The helper is [agent-desktop](https://github.com/vercel-labs/agent-desktop), vendored at
+[`vendor/agent-desktop/`](vendor/agent-desktop/README.md). Its build paths, scripts and staged
+directories keep the `computer-use` spelling (`target/computer-use/`,
+`scripts/computer-use-runtime.py`, `stageComputerUse()`). Those are on-disk and provenance
+identifiers, not display names, so the rename to Biorouter Copilot left them alone deliberately.
 
 `stageComputerUse()` is the **first** statement of `prepare-platform-binaries.js`, so every packaging
 command below (Steps 2, 3, 4, 6 and 7, and any bare `npm run bundle:*`) dies before it copies a
@@ -96,13 +95,13 @@ skip it.
 
 ```bash
 # Run from the repo root, once per target you intend to package.
-python3 scripts/computer-use-runtime.py build darwin-arm64   # Step 2 and the arm64 DMG
-python3 scripts/computer-use-runtime.py build darwin-x64     # Step 3 and the Intel DMG
-python3 scripts/computer-use-runtime.py build linux-x64      # Step 4
-python3 scripts/computer-use-runtime.py build win32-x64      # Step 6
+python3 scripts/computer-use-runtime.py build darwin-arm64      # Step 2 and the arm64 DMG (macOS)
+python3 scripts/computer-use-runtime.py build darwin-x64        # Step 3 and the Intel DMG (macOS)
+bash scripts/build-computer-use-helper-cross.sh linux-x64       # Step 4 (Docker)
+bash scripts/build-computer-use-helper-cross.sh win32-x64       # Step 6 (Docker)
 ```
 
-The upstream source is vendored in full at [`vendor/computer-use/source/`](vendor/computer-use), at the commit pinned in [`pin.json`](vendor/computer-use/pin.json), so this step needs no network and no upstream change can affect it. The vendored tree stays pristine: the reviewed patches in `vendor/computer-use/patches/` are applied to a throwaway copy at build time, never to the tree itself. Pass `--source <clone>` to build against an external checkout instead, which is how you try a candidate upstream before vendoring it.
+The upstream source the build reads is vendored at [`vendor/agent-desktop/source/`](vendor/agent-desktop/README.md), at the release pinned in [`pin.json`](vendor/agent-desktop/pin.json), unmodified, and checked against its hash manifest before and after every build. Cargo fetches the locked dependencies from crates.io and checks them against `Cargo.lock`; `computer-use-runtime.py vendor-deps` downloads them once so a later `build --offline-deps target/agent-desktop-vendor` needs no network. The macOS payload is `Biorouter Copilot.app`, signed ad hoc unless `--signing-identity` is given, and declares macOS 13.0, its upstream's tested floor.
 
 ---
 
