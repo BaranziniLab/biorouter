@@ -5462,7 +5462,11 @@ if (late.listeners.click) throw new Error("bound twice");
         );
         assert_eq!(bash_config(&[]), fallback.display().to_string());
 
-        // And under this process's own environment, the real resolver.
+        // And under this process's own environment, the real resolver. Held under
+        // the process-wide env lock, changing nothing: other tests in this binary
+        // move `BIOROUTER_PATH_ROOT` under that lock, and without it the child can
+        // inherit one tempdir while `config_dir()` below reads another.
+        let env = env_lock::lock_env(Vec::<(&str, Option<&str>)>::new());
         let ambient = std::process::Command::new(find_usable_bash(dir.path()).unwrap())
             .arg("-c")
             .arg("set -euo pipefail\n. ./biorouter-launch.sh\nprintf '%s' \"$CFG\"")
@@ -5473,6 +5477,7 @@ if (late.listeners.click) throw new Error("bound twice");
             String::from_utf8_lossy(&ambient.stdout),
             crate::paths::config_dir().display().to_string()
         );
+        drop(env);
 
         // run.ps1: the override, then %APPDATA%\<author>\<app>\config.
         let strategy = &*crate::APP_STRATEGY;
