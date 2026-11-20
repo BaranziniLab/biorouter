@@ -153,7 +153,7 @@ describe('the import dialog (BB-21)', () => {
     const bridge = installImport(status());
     bridge.run.mockResolvedValueOnce({
       ok: false,
-      error: 'The import was cancelled.',
+      error: 'The import was canceled.',
       cancelled: true,
     } as never);
     installElectron(bridge);

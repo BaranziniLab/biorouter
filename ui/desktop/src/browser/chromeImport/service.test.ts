@@ -118,7 +118,7 @@ describe('the Chrome import service (BB-21 to BB-25)', () => {
     const before = preferences.get();
     const confirm = vi.fn(async () => false);
     const result = await svc.run({ ...everything, sites: ['site-a.test', 'site-b.test'] }, confirm);
-    expect(result).toEqual({ ok: false, error: 'The import was cancelled.', cancelled: true });
+    expect(result).toEqual({ ok: false, error: 'The import was canceled.', cancelled: true });
     expect(confirm).toHaveBeenCalledTimes(1);
     const [text] = confirm.mock.calls[0] as unknown as [{ message: string; detail: string }];
     expect(text.message).toBe('Import from Chrome (Work)?');

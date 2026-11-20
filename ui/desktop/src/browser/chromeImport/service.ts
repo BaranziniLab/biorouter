@@ -163,7 +163,7 @@ export function createChromeImportService(deps: ChromeImportServiceDeps) {
       if (!confirmed) {
         running = false;
         deps.log('cancelled', {});
-        return { ok: false, error: 'The import was cancelled.', cancelled: true };
+        return { ok: false, error: 'The import was canceled.', cancelled: true };
       }
       try {
         const manifest = readManifest(deps.stateDir);

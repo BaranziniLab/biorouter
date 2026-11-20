@@ -123,7 +123,7 @@ test('main asks the person itself before reading anything, and Cancel imports no
     },
     'cancel'
   );
-  expect(result).toEqual({ ok: false, error: 'The import was cancelled.', cancelled: true });
+  expect(result).toEqual({ ok: false, error: 'The import was canceled.', cancelled: true });
   const asked = await call('lastImportConfirmation');
   expect(asked.message).toBe('Import from Chrome (Work)?');
   expect(asked.detail).toContain('Logins (cookies) for every site');
