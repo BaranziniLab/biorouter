@@ -1178,6 +1178,142 @@ fn configured_tool_name(
     Ok(tool_name.to_owned())
 }
 
+/// Free text a bundled tool keeps as data and never opens as a path, which the
+/// dispatch-time secret scan therefore leaves out (issue #522).
+///
+/// The generic scan reads a slash path in any prose argument as a possible
+/// file access, because it cannot tell which tool it is reading: `code` under
+/// Compute is a program, and an external tool may name a path anything. Here
+/// the call has already been routed, so the tool is known. Only two shipped
+/// Platform extensions qualify, and only through [`Self::of`]:
+///
+/// - Todo, whose text fields are stored in the session's checklist and shown
+///   back to the model. Its handlers never touch the filesystem.
+/// - Code Execution's `execute_code`, whose source runs in a sandbox with no
+///   file or process access of its own. Every tool call the script makes is
+///   dispatched back through [`ExtensionManager::dispatch_tool_call`] and
+///   judged there with its evaluated arguments, which is also the only place a
+///   path the script assembles at run time can be seen.
+///
+/// Every other field of these calls, a field of the wrong JSON type, and every
+/// call to any other extension is scanned as before. The tool itself still
+/// receives the original arguments.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FreeTextFields {
+    /// `todo_write`'s `content`.
+    TodoChecklist,
+    /// `todo_add` and `todo_expand`: each `items` entry, a string or the text
+    /// of an object (`ITEM_TEXT_KEYS`).
+    TodoItems,
+    /// `todo_update`'s `text`, at the top level and in each `updates` entry.
+    TodoUpdate,
+    /// `plan_write`'s `plan`.
+    TodoPlan,
+    /// `execute_code`'s `code`, and the `description` of each `tool_graph`
+    /// node, which only labels the flow for the interface.
+    ExecuteCode,
+}
+
+impl FreeTextFields {
+    /// The free text of the tool `prefixed_name` names, when the extension it
+    /// resolved to under `key` is the shipped Todo or Code Execution.
+    ///
+    /// `trusted_bundled` is the entry's own record that it was built by the
+    /// shipped Platform registry (see [`Extension::trusted_bundled`]); a client
+    /// injected under the same name and config by `add_client` or
+    /// `add_inprocess_server` has no free text. The key, the config's name and
+    /// the tool must all agree, so a nested key (`todo__x`) or another
+    /// extension's tool with the same name gets nothing either. Read from the
+    /// same snapshot as the client the call is dispatched to.
+    fn of(
+        trusted_bundled: bool,
+        key: &str,
+        config: &ExtensionConfig,
+        prefixed_name: &str,
+    ) -> Option<Self> {
+        let ExtensionConfig::Platform { name, .. } = config else {
+            return None;
+        };
+        if !trusted_bundled || normalize(name) != key {
+            return None;
+        }
+        let tool = prefixed_name.strip_prefix(key)?.strip_prefix("__")?;
+        match (key, tool) {
+            ("todo", "todo_write") => Some(Self::TodoChecklist),
+            ("todo", "todo_add" | "todo_expand") => Some(Self::TodoItems),
+            ("todo", "todo_update") => Some(Self::TodoUpdate),
+            ("todo", "plan_write") => Some(Self::TodoPlan),
+            ("code_execution", "execute_code") => Some(Self::ExecuteCode),
+            _ => None,
+        }
+    }
+
+    /// A copy of `arguments` with these fields' strings emptied: what the scan
+    /// reads. Only a string in the expected place is emptied; anything else is
+    /// left for the scan to judge.
+    fn withheld_from(self, arguments: &rmcp::model::JsonObject) -> rmcp::model::JsonObject {
+        fn empty(value: Option<&mut Value>) {
+            if let Some(Value::String(text)) = value {
+                text.clear();
+            }
+        }
+        fn empty_in_each(value: Option<&mut Value>, keys: &[&str]) {
+            if let Some(Value::Array(entries)) = value {
+                for entry in entries {
+                    if let Value::Object(entry) = entry {
+                        for key in keys {
+                            empty(entry.get_mut(*key));
+                        }
+                    }
+                }
+            }
+        }
+        let mut scanned = arguments.clone();
+        match self {
+            Self::TodoChecklist => empty(scanned.get_mut("content")),
+            Self::TodoItems => {
+                if let Some(Value::Array(items)) = scanned.get_mut("items") {
+                    for item in items {
+                        match item {
+                            Value::String(text) => text.clear(),
+                            Value::Object(item) => {
+                                for key in crate::agents::todo_extension::ITEM_TEXT_KEYS {
+                                    empty(item.get_mut(*key));
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+            }
+            Self::TodoUpdate => {
+                empty(scanned.get_mut("text"));
+                empty_in_each(scanned.get_mut("updates"), &["text"]);
+            }
+            Self::TodoPlan => empty(scanned.get_mut("plan")),
+            Self::ExecuteCode => {
+                empty(scanned.get_mut("code"));
+                empty_in_each(scanned.get_mut("tool_graph"), &["description"]);
+            }
+        }
+        scanned
+    }
+}
+
+/// One call as the dispatch-time secret scan reads it: the call, and the free
+/// text it may leave out ([`FreeTextFields`]).
+#[derive(Clone, Copy)]
+struct ScannedCall<'a> {
+    call: &'a CallToolRequestParams,
+    free_text: Option<FreeTextFields>,
+}
+
+impl<'a> ScannedCall<'a> {
+    fn new(call: &'a CallToolRequestParams, free_text: Option<FreeTextFields>) -> Self {
+        Self { call, free_text }
+    }
+}
+
 /// Sanitizes a string by replacing invalid characters with underscores.
 /// Valid characters match [a-zA-Z0-9_-]
 pub fn normalize(input: &str) -> String {
@@ -3097,6 +3233,7 @@ impl ExtensionManager {
         ExtensionConfig,
         crate::privacy::ExtensionClassification,
         ExtensionOrigin,
+        Option<FreeTextFields>,
     )> {
         // Issue #56 Task 16: the SAME resolver Gate E filters with. A `find` over
         // a `HashMap` returned whichever of two overlapping keys the
@@ -3112,6 +3249,14 @@ impl ExtensionManager {
             extension.config.clone(),
             crate::privacy::resolve_extension(name, Some(&extension.config)),
             extension.origin,
+            // Issue #522: from this snapshot too, so the free text the scan
+            // leaves out belongs to the client the call is dispatched to.
+            FreeTextFields::of(
+                extension.trusted_bundled,
+                name,
+                &extension.config,
+                prefixed_name,
+            ),
         ))
     }
 
@@ -3139,8 +3284,13 @@ impl ExtensionManager {
     /// `cat /Users/…/.aws/credentials` was refused. See
     /// `SecretGuard::find_denied_access`. What a text scan cannot see is
     /// covered on the way back out by [`call_tool_withholding_secrets`].
-    async fn secret_guard_denial(&self, tool_call: &CallToolRequestParams) -> Option<ErrorData> {
-        let args = tool_call.arguments.as_ref()?;
+    ///
+    /// Issue #522: the free text of the shipped Todo tools and of
+    /// `execute_code`'s source is left out of the scan ([`FreeTextFields`]).
+    async fn secret_guard_denial(&self, scanned: ScannedCall<'_>) -> Option<ErrorData> {
+        let args = scanned.call.arguments.as_ref()?;
+        let withheld = scanned.free_text.map(|fields| fields.withheld_from(args));
+        let args = withheld.as_ref().unwrap_or(args);
         let cwd = self.resolve_working_dir().await;
         let secret_guard_phase =
             crate::agents::phase_timing::Phase::start("mcp.secret_guard_for_dir");
@@ -3816,7 +3966,7 @@ impl ExtensionManager {
         // Dispatch tool call based on the prefix naming convention. The client
         // and the config that authorizes it come out of ONE snapshot — see
         // `get_client_for_tool`.
-        let (client_name, client, client_config, ext_class, extension_origin) = self
+        let (client_name, client, client_config, ext_class, extension_origin, free_text) = self
             .get_client_for_tool(&prefixed_name)
             .await
             .ok_or_else(|| unroutable_tool_error(&prefixed_name, tool_call.name.as_ref()))?;
@@ -3846,7 +3996,8 @@ impl ExtensionManager {
             )
             .await?;
 
-        self.authorize_dispatch_boundaries(session_id, &client_name, &ext_class, cap, &tool_call)
+        let scanned = ScannedCall::new(&tool_call, free_text);
+        self.authorize_dispatch_boundaries(session_id, &client_name, &ext_class, cap, scanned)
             .await?;
 
         let file_admission = self
@@ -3971,7 +4122,7 @@ impl ExtensionManager {
         client_name: &str,
         ext_class: &crate::privacy::ExtensionClassification,
         cap: crate::privacy::CallCapability,
-        tool_call: &CallToolRequestParams,
+        scanned: ScannedCall<'_>,
     ) -> Result<()> {
         // Issue #56 Gate C, beside BR-23's SecretGuard block below for the
         // reason that block's own comment states: this is the single choke
@@ -4054,7 +4205,7 @@ impl ExtensionManager {
         // BR-23: the central secret-redaction boundary — see
         // [`Self::secret_guard_denial`], which is where the whole rationale
         // lives.
-        if let Some(err) = self.secret_guard_denial(tool_call).await {
+        if let Some(err) = self.secret_guard_denial(scanned).await {
             return Err(err.into());
         }
 
@@ -5774,7 +5925,7 @@ mod tests {
             )
             .await;
 
-        let (name, _client, config, class, _origin) = extension_manager
+        let (name, _client, config, class, _origin, _free_text) = extension_manager
             .get_client_for_tool("guarded__forbidden")
             .await
             .expect("the extension resolves");
@@ -11009,6 +11160,12 @@ mod tests {
     /// DR-33: the read ratchets and Gate C's decision-model sentence.
     mod private_read_tests {
         include!("extension_manager_private_read_tests.rs");
+    }
+
+    /// Issue #522: the free text the dispatch-time secret scan leaves out, and
+    /// nothing else.
+    mod free_text_tests {
+        include!("extension_manager_free_text_tests.rs");
     }
 }
 
