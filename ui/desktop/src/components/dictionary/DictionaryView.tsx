@@ -6,11 +6,11 @@ import { savedFileParts } from '../../utils/exportConversation';
 import { isBrowserSurface } from '../../utils/surface';
 import { ModalShell } from '../ModalShell';
 import { MainPanelLayout } from '../Layout/MainPanelLayout';
-import { PageHeader, PageHeaderMenu } from '../Layout/PageHeader';
+import { PageHeader, PageHeaderAction, PageHeaderMenu } from '../Layout/PageHeader';
 import { ReadableContent } from '../Layout/ReadableContent';
 import { dictationMessage } from '../dictation/copy';
 import { noteDictationInterest, useDictationStatus } from '../dictation/dictationStore';
-import { Plus } from '../icons/app-icons';
+import { Plus, Settings } from '../icons/app-icons';
 import { ENTITY_ICONS } from '../icons/entity-icons';
 import { Button } from '../ui/button';
 import { ConfirmationModal } from '../ui/ConfirmationModal';
@@ -86,8 +86,8 @@ async function copyTerm(entry: DictionaryEntryView): Promise<void> {
  * only, with **Export…** and deleting still allowed. The page holds the words alone (owner,
  * 2026-11-19): how they are found (**Agent's terms**, **Suggest dictionary words from my
  * chats**, **Suggest words from my messages** and **Find words in my recent chats**) is in
- * **Settings > Models > Speech models** (`DictionarySettingsRows`), which the `⋯` menu's
- * **Dictionary settings** opens. When the person's own Keep and Dismiss counts show most
+ * **Settings > Models > Speech models** (`DictionarySettingsRows`), which the band's quiet
+ * **Dictionary settings** icon opens. When the person's own Keep and Dismiss counts show most
  * suggestions were dismissed, one note at the top of the list offers to turn suggestions off.
  */
 export default function DictionaryView() {
@@ -317,24 +317,21 @@ export default function DictionaryView() {
               >
                 {DICTIONARY_LABELS.export}
               </Button>
+              {/* The one way from here to the dictionary's options in Settings, a quiet icon
+                  in the band, shown where Settings shows them: not under managed policy, not
+                  on a backend without the dictionary. */}
+              {dictionary.absent || policyOff ? null : (
+                <PageHeaderAction
+                  icon={Settings}
+                  label={DICTIONARY_LABELS.settingsLink}
+                  onClick={() => navigate('/settings', { state: { section: 'dictionary' } })}
+                  data-testid="dictionary-settings-link"
+                />
+              )}
               {addMenu('default')}
               <PageHeaderMenu
                 label={DICTIONARY_LABELS.pageMenu}
                 items={[
-                  // The one way from here to the dictionary's options in Settings, where
-                  // Settings shows them: not under managed policy, not on a backend without
-                  // the dictionary.
-                  ...(dictionary.absent || policyOff
-                    ? []
-                    : [
-                        {
-                          label: DICTIONARY_LABELS.settingsLink,
-                          onSelect: () =>
-                            navigate('/settings', { state: { section: 'dictionary' } }),
-                          testId: 'dictionary-settings-link',
-                        },
-                        { kind: 'separator' as const },
-                      ]),
                   {
                     label: DICTIONARY_LABELS.deleteAll,
                     onSelect: () => setDeleteAllOpen(true),

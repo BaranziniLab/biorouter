@@ -41,7 +41,7 @@ export const SETTINGS_SECTIONS = {
   // Speech models (DD-66): the setup popover's More in Settings lands here, by this key.
   dictation: { id: 'settings-dictation', tab: 'models' },
   // The dictionary's rows at the end of Speech models (owner, 2026-11-19): the Dictionary
-  // page's ⋯ > Dictionary settings lands on them, by this key.
+  // page band's Dictionary settings icon lands on them, by this key.
   dictionary: { id: 'settings-dictionary', tab: 'models' },
   modelsDangerZone: { id: 'settings-models-danger-zone', tab: 'models' },
   // Chat tab

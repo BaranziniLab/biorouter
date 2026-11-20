@@ -189,7 +189,7 @@ export const DICTIONARY_LABELS = {
     /** `learn_from_chats`, the chat extractor's switch (PR-24, DD-57). */
     learnFromChats: 'Suggest words from my messages',
   },
-  /** The page's `⋯` item that opens these options in Settings. */
+  /** The page band's quiet icon that opens these options in Settings, its name and tooltip. */
   settingsLink: 'Dictionary settings',
   /**
    * **Find words in my recent chats** (owner, 2026-11-13): the **Recent chats** row under the

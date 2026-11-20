@@ -804,12 +804,16 @@ describe('the page holds the words alone', () => {
     expect(api.getDictionarySuggestionScan).not.toHaveBeenCalled();
   });
 
-  it('opens the dictionary rows in Settings from the ⋯ menu, its one link there', async () => {
+  it('opens the dictionary rows in Settings from the band, its one link there', async () => {
     renderWithSettings();
     await screen.findByText(DICTIONARY_MESSAGES['MSG-EMPTY']);
-    await userEvent.click(screen.getByRole('button', { name: DICTIONARY_LABELS.pageMenu }));
-    const link = await screen.findByRole('menuitem', { name: DICTIONARY_LABELS.settingsLink });
+    const link = screen.getByRole('button', { name: DICTIONARY_LABELS.settingsLink });
     expect(link).toHaveAttribute('data-testid', 'dictionary-settings-link');
+    // One link: the ⋯ menu no longer repeats it.
+    await userEvent.click(screen.getByRole('button', { name: DICTIONARY_LABELS.pageMenu }));
+    expect(await screen.findByTestId('dictionary-delete-all')).toBeInTheDocument();
+    expect(screen.queryByRole('menuitem', { name: DICTIONARY_LABELS.settingsLink })).toBeNull();
+    await userEvent.keyboard('{Escape}');
     await userEvent.click(link);
     expect(await screen.findByTestId('settings-probe')).toHaveTextContent(
       JSON.stringify({ section: 'dictionary' })
