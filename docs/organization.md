@@ -100,6 +100,7 @@ Current top-level areas:
 | `design/` | visual and interaction design, including HTML studios |
 | `research/` | studies of systems **outside** this repo; a document here links no BioRouter code (`tree/research-cites-repo` in `scripts/docs-lint.py`) |
 | `testing/` | the properties tests must hold, and the shared state they must not inherit |
+| `benchmarking/` | how Biorouter is configured and compared with other agent harnesses on external benchmarks such as BioRouterBench, and the results of those runs |
 | `contributing/` | how to work on the documentation itself |
 | `history/` | records of completed work (see [§3](#3-history-records-of-work-that-was-done)) |
 
