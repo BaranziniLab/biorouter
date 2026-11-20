@@ -61,14 +61,16 @@ describe('BrowserControl (BB-17, BB-18)', () => {
       ...base,
       requested: 'act' as const,
       observe: true,
-      disclosure: 'Let Biorouter click, type and submit forms…',
+      disclosure:
+        'Let Biorouter click, type and submit forms… Stop cannot undo changes already made.',
     };
     mocks.status.mockResolvedValue(acting);
     render(<BrowserControl sessionId="chat-a" />);
     expect(
       await screen.findByText('Biorouter Browser wants to act on a website')
     ).toBeInTheDocument();
-    expect(screen.getByText('Stop cannot undo changes already made.')).toBeInTheDocument();
+    // The consequence is part of the consent text, shown once and in full.
+    expect(screen.getAllByText(/Stop cannot undo changes already made\./)).toHaveLength(1);
     fireEvent.click(screen.getByRole('button', { name: 'Allow for this chat' }));
     await waitFor(() => expect(mocks.allow).toHaveBeenCalledWith(acting, 'act', 'chat'));
   });

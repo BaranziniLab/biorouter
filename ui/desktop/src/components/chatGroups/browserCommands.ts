@@ -31,7 +31,7 @@ export async function runBrowserCommand(
   const agent = window.electron?.browserAgent;
   if (cmd.cmd === 'browser_cancel') {
     if (agent && cmd.cancel_request_id) await agent.cancel(cmd.cancel_request_id);
-    return { ok: true, detail: 'cancelled' };
+    return { ok: true, detail: 'canceled' };
   }
   if (!agent) {
     return { ok: false, detail: BROWSER_NO_DESKTOP, data: { error_kind: 'no_desktop' } };

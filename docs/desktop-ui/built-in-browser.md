@@ -5,8 +5,8 @@
 > beside Biorouter Copilot without overlapping it, and that can take a person's logins, bookmarks
 > and history from Google Chrome when they ask.
 > **Status:** Current. Accepted design of 2026-11-19; implementation is in progress on branch
-> `br1946/browser`, where phase 1 is built (see "Phase 1 as built"). Until that branch merges, the
-> shipping behaviour is the one recorded in the
+> `br1946/browser`, where phases 1 and 2 are built (see "Phase 1 as built" and "Phase 2 as
+> built"). Until that branch merges, the shipping behaviour is the one recorded in the
 > [preview panel implementation record](preview-panel/implementation-record.md), and the open work is
 > listed under "Phases" below.
 > **Audience:** developers working on the desktop app, the agent loop, privacy and security, and
@@ -1148,6 +1148,85 @@ Tests: Vitest suites under `src/browser/`, `WebPagePreview.navigation.test.tsx`,
 `ArtifactViewer.biorouterBrowser.test.tsx` and the updated `embeddedBrowser*.test.ts`; and the
 Electron spec `tests/e2e/biorouter-browser.spec.ts` against the fixture site in
 `tests/e2e/fixtures/biorouter-browser/site.cjs`, which `node` can also run by hand for a live check.
+
+### Phase 2 as built
+
+Phase 2 is on branch `br1946/browser`. The agent drives the browser through the daemon, the
+workspace socket and Electron main, as the architecture diagram above draws it.
+
+| Area | Where | What it does |
+|---|---|---|
+| Tools (BB-09) | `crates/biorouter/src/agents/browser_extension.rs` | The platform extension `browser` (name `Browser`, title Biorouter Browser) with the fifteen tools, its 2,800 character instructions, argument checks, secret refusal for typed text, the deadline per operation, the `needs_act_grant` retry and the `<browser-page>` frame. Withheld unless `BIOROUTER_DESKTOP_BROWSER=1`, which `biorouterd.ts` sets; refused to subagents. |
+| Grants (BB-17) | `crates/biorouter/src/security/browser_use.rs`, `ExtensionManager::admit_browser` | Observe for the chat, act for the request or the chat; challenge, 900 s wait, revoke on Stop, model change and Chat mode, a task guard that ends a request lifetime act grant. `admit_browser` reserves the `browser__browser_` names and the `browser` key, checks the sampled tier against the scope and puts the permit on `McpMeta`. The permission inspector allows browser tools without the ordinary card, as it does Copilot's. |
+| Routes | `crates/biorouter-server/src/routes/browser_use.rs` | `GET /agent/browser/status`, `POST /agent/browser/consent` (user-action proof), `POST /agent/browser/revoke`. Both revoke routes, this one and Copilot's, call one `stop_agent_capabilities`. |
+| Channel (BB-10) | `WorkspaceServices::gui_browser_request`, `workspace/services.rs` `browser_request_on`, `WorkspaceBridge::emit_and_wait_cancellable` | Strict routing to `bridge_for_session` with no fallback, the operation's deadline plus 2 s, cancellation by the turn or the grant, a `browser_cancel` frame on a timeout or cancel, and typed failures. |
+| Renderer | `components/chatGroups/browserCommands.ts`, `workspaceCommandRegistry.ts`, `ChatGroupsContext.tsx`, `BaseChat.tsx`, `ArtifactViewer.tsx`, `WebPagePreview.tsx` | A `browser` frame runs only for the active tab of a group in this window and is never queued. Main's `show-tab` opens the agent tab in the chat's panel (`openedBy: 'agent'`, live at once, the Compass glyph on its tab). The bar shows "Biorouter is browsing" and **Stop Biorouter** while an operation runs, with an accent edge round the slot. |
+| Consent card | `components/browser/BrowserControl.tsx` | The approval card and Stop above the composer, beside Copilot's panel. |
+| Driver (BB-11 to BB-15) | `ui/desktop/src/browser/agent/` (`driver.ts`, `cdp.ts`, `snapshot.ts`, `refs.ts`, `actionability.ts`, `keys.ts`, `readPage.ts`) | `webContents.debugger` with flattened auto attach for cross-site frames, references by `backendNodeId`, the checks before every action, isolated worlds for every function run in the page, downloads by grant, the private network rule for public chats. |
+| Routing text (BB-19) | `computercontroller/mod.rs`, `computer_use/contract.rs`, `prompts/system.md`, `about-biorouter` skill, `webdocuments/mod.rs`, `capabilities.ts`, `built-in-extensions.json`, `bundled-extensions.json` | The routing sentence in both tool sets, the decline sentence, the Web & Documents description. |
+
+What the build measured on Electron 39.8.10:
+
+- A web contents that has never loaded has no renderer, and CDP commands to it wait for one, so a
+  new agent tab loads `about:blank` before the debugger attaches, and the attach is inside the
+  operation's deadline.
+- `DOM.getNodeForLocation` takes document coordinates while `DOM.getContentQuads` and
+  `Input.dispatchMouseEvent` use viewport coordinates, so the hit test adds the frame's scroll
+  offset. Without it, a click on a scrolled page was reported as covered by the element one screen
+  above.
+- `webContents.executeJavaScript` waits for a load in progress, so the driver reads
+  `document.readyState` through CDP.
+- Cross-site frames attach as flattened `iframe` sessions; their nodes are hit tested in their own
+  session and clicked at their coordinates plus the frame's content box in the page.
+- A date input is the role `Date` in the tree, with its month, day and year fields as children;
+  roles are compared in lower case and those parts are left out of the snapshot.
+- **JavaScript dialogs.** The embedder answers `alert` and `confirm` from a browser tab at once
+  (`alert` returns, `confirm` reads as declined) and CDP reports no dialog, for the person and
+  the agent alike, so a dialog can never hang the agent. `browser_dialog` answers a dialog only
+  when Chromium reports one, and otherwise says that none is open.
+
+Where the build differs from the text above, and why:
+
+- **Two panels, one Stop.** The browser's card sits beside Copilot's panel in the same slot and
+  shell rather than in one generalized control; both Stops call the same revoke, which ends both
+  capabilities' grants and cancels a browser operation in flight.
+- **The agent sees only its own tabs.** A tab the person opened and shared with **Share with
+  agent** is still read through `workspace_read_panel`; driving a shared tab with the browser
+  tools is not built.
+- **No numbered labels on screenshots.** `browser_screenshot` captures the viewport (long side at
+  most 1,568 px), the full page (up to 8,000 CSS px, at most 1,200 px wide) or one element.
+- **The composer's stop cancels the turn and the operation, not the grants.** Only the agent
+  control's Stop and the bar's Stop revoke.
+- **The coding agent bridge** carries every browser tool (`CODING_AGENT_BRIDGE_POLICIES`); each
+  call still passes `admit_browser`.
+- **No vendor patch change.** Copilot's tool descriptions and instructions that the model reads
+  come from `computer_use/contract.rs` and `computercontroller/mod.rs`, so
+  `vendor/computer-use/patches/0004-copilot-prompts.patch` (the helper's own text, which no
+  model sees) is unchanged.
+
+- **An agent tab outlives the panel's teardown.** Measured in the dev app: the panel's first mount
+  ran its unmount cleanup once and destroyed the tab the agent had just opened, so the first
+  `browser_open` failed with "the browser tab was closed". The panel now hides an agent tab when it
+  unmounts instead of ending it; the person closing its panel tab still ends it.
+- **Tool rows** name the action and its page or element: "Opened en.wikipedia.org/wiki/Electron",
+  "Took a snapshot of the page", "Clicked @e12", "Filled @e3"; a typed value never reaches the row.
+
+The live check of 2026-11-20 in the dev app (screenshots in the lane's `reports/browser/part2/`),
+with the sandbox's configured cloud model (a private tier deployment): asked to fill and submit
+the fixture form, the agent opened it after the reading card, filled four fields, chose a country,
+ticked a box and a radio button after the acting card, submitted, and reported the result table
+exactly; asked to summarize the first paragraph of Wikipedia's Electron article, it opened and read
+the page under one reading card; after Stop, the next request asked again, and the reading grant
+alone followed a plain link to the Positron article. While an operation ran, the bar read
+"Biorouter is browsing" with Stop and the slot carried the accent edge. A desktop task in another
+chat ("which apps are running?") went to Biorouter Copilot's card, and declining it ended the task
+without a browser call.
+
+Tests: `cargo test -p biorouter --lib -- browser_use browser_extension`, the browser tests in
+`extension_manager` and `extension`, `cargo test -p biorouter-server --lib -- workspace::services
+routes::browser_use`; Vitest `src/browser/agent`, `components/browser`,
+`components/chatGroups/browserCommands.test.ts`; and the Electron spec
+`tests/e2e/biorouter-browser-agent.spec.ts` (15 tests) against the fixture site's `/agent/*` pages.
 
 ## Open questions and things to measure first
 

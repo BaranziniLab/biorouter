@@ -577,7 +577,7 @@ impl BrowserUseConsent {
                         state.requested = None;
                         drop(state);
                         self.changed.notify_waiters();
-                        bail!("The Biorouter Browser was cancelled while waiting for approval")
+                        bail!("The Biorouter Browser was canceled while waiting for approval")
                     },
                     _ = &mut notified => {}
                 }

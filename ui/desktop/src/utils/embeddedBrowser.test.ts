@@ -260,8 +260,11 @@ describe('the panel keeps the native view honest', () => {
       main.indexOf('function isViewId'),
       main.indexOf("ipcMain.handle('read-artifact-file'")
     );
-    const channels = handlers.match(/ipcMain\.handle\(\s*'embedded-browser:[a-z-]+'/g) ?? [];
-    expect(channels.length).toBeGreaterThanOrEqual(20);
+    // The agent's two channels (BB-10) answer to the same rule as the bar's.
+    const channels =
+      handlers.match(/ipcMain\.handle\(\s*'(?:embedded-browser|biorouter-browser):[a-z-]+'/g) ?? [];
+    expect(channels.length).toBeGreaterThanOrEqual(22);
+    expect(channels).toContain("ipcMain.handle('biorouter-browser:agent'");
     expect(handlers.match(/browserOwnerWindow\(event\)/g)?.length).toBe(channels.length);
     expect(source).toContain('views.get(viewKey(window, viewId))');
   });

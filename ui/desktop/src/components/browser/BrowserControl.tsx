@@ -28,7 +28,6 @@ import {
 const PANEL_SHELL =
   'br-fill-surface mx-3 mb-2 rounded-container border border-transparent bg-background-fill px-3 py-2.5 text-supporting';
 
-const STOP_CONSEQUENCE = 'Stop cannot undo changes already made.';
 const ACT_HELP =
   'Acting covers clicking anything other than a plain link, filling and submitting forms, pressing keys, choosing options, answering dialogs and downloading.';
 const READ_HELP =
@@ -150,7 +149,6 @@ export function BrowserControl({ sessionId }: { sessionId: string }) {
         <p className="break-words">Data destination: {status.destination}</p>
         {/* The consent stays whole and in view: it is what the person agrees to. */}
         <p className="whitespace-pre-line">{status.disclosure}</p>
-        {acting && <p className="text-text-muted">{STOP_CONSEQUENCE}</p>}
         <div className="flex flex-wrap gap-2">
           <Button
             size="sm"

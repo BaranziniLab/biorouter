@@ -367,7 +367,7 @@ test('waits for text, gives up at its timeout, and a cancel stops a slow load', 
   expect(await call<boolean>('agentCancel', 'slow-1')).toBe(true);
   const cancelled = await slow;
   expect(cancelled.ok).toBe(false);
-  expect(cancelled.detail).toContain('cancelled');
+  expect(cancelled.detail).toContain('canceled');
 });
 
 test('opens a private network page only for a private chat (BB-06, BB-20)', async () => {

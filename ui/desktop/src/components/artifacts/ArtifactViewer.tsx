@@ -1258,12 +1258,23 @@ export default function ArtifactViewer({
 
   // The browser tabs end with the panel: hiding a panel tab keeps its page (BB-01), but an
   // unmounted panel has nothing left to show them in.
+  //
+  // ⚠ Except a tab the agent opened (BB-15). Main owns it for the chat's agent, which may be in
+  // the middle of an operation on it, and the panel is only its viewport: measured in the dev app,
+  // the panel's first mount ran this cleanup once (StrictMode) and destroyed the tab the agent had
+  // just opened, so its `browser_open` failed with "the browser tab was closed". It is hidden
+  // instead; the next operation shows it again, and the window's own teardown ends it.
   useEffect(
     () => () => {
       const browser = window.electron?.embeddedBrowser;
       for (const tab of tabsRef.current) {
         const viewId = browserViewIdFor(tab);
-        if (viewId && typeof browser?.destroy === 'function') void browser.destroy(viewId);
+        if (!viewId) continue;
+        if (tab.artifact.kind === 'externalUrl' && tab.artifact.openedBy === 'agent') {
+          if (typeof browser?.release === 'function') void browser.release(viewId);
+        } else if (typeof browser?.destroy === 'function') {
+          void browser.destroy(viewId);
+        }
       }
     },
     []

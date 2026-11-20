@@ -693,7 +693,7 @@ export default function WebPagePreview({
             <span
               role="status"
               data-testid="browser-agent-active"
-              className="flex-none whitespace-nowrap text-xs text-text-muted"
+              className="flex-none whitespace-nowrap text-supporting text-text-muted"
             >
               {BROWSER_COPY.agentBrowsing}
             </span>

@@ -1647,7 +1647,7 @@ export async function runAgentBrowserOperation(
         const reason = controller.signal.aborted
           ? String(controller.signal.reason?.message ?? controller.signal.reason) === 'timeout'
             ? `The operation timed out after ${Math.round(deadlineMs / 1000)} s. The page may have changed: take a browser_snapshot before acting again, and never repeat a click, fill or submit blindly.`
-            : 'The operation was cancelled.'
+            : 'The operation was canceled.'
           : failure
             ? failure.message
             : `The browser could not do that: ${error instanceof Error ? error.message : String(error)}`;
@@ -1672,7 +1672,7 @@ export async function runAgentBrowserOperation(
       detail: failure
         ? failure.message
         : controller.signal.aborted
-          ? 'The operation was cancelled.'
+          ? 'The operation was canceled.'
           : `The browser could not do that: ${error instanceof Error ? error.message : String(error)}`,
       data: {
         ...(info ? { tab: info.label, url: info.url, title: info.title } : {}),

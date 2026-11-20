@@ -245,7 +245,7 @@ impl std::fmt::Display for BrowserChannelError {
                  take a browser_snapshot to see the page before acting again, and never repeat a \
                  click, fill or submit blindly."
             }
-            Self::Cancelled => "The browser operation was cancelled.",
+            Self::Cancelled => "The browser operation was canceled.",
         })
     }
 }

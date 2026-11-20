@@ -223,3 +223,24 @@ describe('tabs a page opens (BB-04) and the tabs’ lives (BB-01)', () => {
     expect(browser.destroy).toHaveBeenCalledWith(opener);
   });
 });
+
+describe('tabs the agent opened (BB-15)', () => {
+  it('shows an agent tab live, with no Open here card, and keeps it when the panel goes', async () => {
+    const { browser } = installBrowser();
+    const { unmount } = renderViewer({
+      kind: 'externalUrl',
+      title: 'Biorouter Browser',
+      url: 'https://example.com/agent',
+      viewId: 'agent-tab-1',
+      openedBy: 'agent',
+    });
+    await waitFor(() =>
+      expect(browser.create).toHaveBeenCalledWith('agent-tab-1', 'https://example.com/agent')
+    );
+    expect(screen.queryByTestId('artifact-open-here')).not.toBeInTheDocument();
+    unmount();
+    // Main owns the agent's tab, which may be mid-operation: the panel only hides it.
+    expect(browser.destroy).not.toHaveBeenCalledWith('agent-tab-1');
+    expect(browser.release).toHaveBeenCalledWith('agent-tab-1');
+  });
+});

@@ -43,7 +43,7 @@ directly. Sessions are persisted in the **data** directory, not the config one:
 
 ### Capabilities and extensions
 
-Capabilities are the tools compiled into Biorouter. **Developer**, **Biorouter Copilot**, **Web & Documents**, **Auto Visualiser**, **Code Execution**, **Extension Manager**,
+Capabilities are the tools compiled into Biorouter. **Developer**, **Biorouter Copilot**, **Biorouter Browser** (desktop app only), **Web & Documents**, **Auto Visualiser**, **Code Execution**, **Extension Manager**,
 **Skills**, **Todo**, **Memory**, **Knowledge**, **Workspace Control**, and
 **Agent Drafter** are enabled by default. **Chat Recall** is disabled by default.
 Manage them in **Settings → Chat → Capabilities**.
