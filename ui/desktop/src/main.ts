@@ -301,6 +301,7 @@ import {
 import { IMAGE_BLOB_URL_THRESHOLD_BYTES, IMAGE_MIME_TYPES } from './utils/imageFormats';
 import { recordExtensionProvenance } from './utils/extensionProvenance';
 import {
+  agentCaptureDir,
   biorouterConfigDir,
   biorouterExtensionsDir,
   unsandboxedConfigDirCandidates,
@@ -848,6 +849,32 @@ async function ensureTempDirExists(): Promise<string> {
     throw error; // Propagate error
   }
   return biorouterTempDir;
+}
+
+/**
+ * The folder the daemon reads an agent's captures from (M1): `browser_screenshot` and a
+ * `workspace_read_panel` capture. It is Biorouter's state folder, resolved as the daemon resolves
+ * it, never Electron's temporary folder, which a profile (`--user-data-dir`, a development
+ * profile) moves while the daemon's stays. Private to this user; the daemon deletes each file
+ * once it has read it, and anything older than a day is swept here.
+ */
+async function ensureAgentCaptureDir(): Promise<string> {
+  const dir = agentCaptureDir();
+  await fs.mkdir(dir, { recursive: true, mode: 0o700 });
+  const stats = await fs.lstat(dir);
+  if (!stats.isDirectory() || stats.isSymbolicLink()) {
+    throw new Error(`The capture folder is not a plain directory: ${dir}`);
+  }
+  await fs.chmod(dir, 0o700);
+  const now = Date.now();
+  for (const name of await fs.readdir(dir).catch(() => [] as string[])) {
+    const file = path.join(dir, name);
+    const entry = await fs.lstat(file).catch(() => null);
+    if (entry && (entry.isSymbolicLink() || now - entry.mtime.getTime() > 24 * 60 * 60 * 1000)) {
+      await fs.unlink(file).catch(() => {});
+    }
+  }
+  return dir;
 }
 
 async function configureProxy() {
@@ -5012,11 +5039,14 @@ ipcMain.on('delete-temp-file', async (_event, filePath: string) => {
     return;
   }
 
-  // Ensure the path is within the designated temp directory
+  // Ensure the path is within the designated temp directory, or the agent capture folder (a
+  // panel capture the renderer drops because the panel changed while it was taken).
   const resolvedPath = path.resolve(filePath);
-  const resolvedTempDir = path.resolve(biorouterTempDir);
+  const tempRoot = [biorouterTempDir, agentCaptureDir()].find((root) =>
+    resolvedPath.startsWith(path.resolve(root) + path.sep)
+  );
 
-  if (!resolvedPath.startsWith(resolvedTempDir + path.sep)) {
+  if (!tempRoot) {
     console.warn(`[Main] Attempted to delete file outside designated temp directory: ${filePath}`);
     return;
   }
@@ -5033,7 +5063,7 @@ ipcMain.on('delete-temp-file', async (_event, filePath: string) => {
     let actualPath = filePath;
 
     try {
-      const realTempDir = await fs.realpath(biorouterTempDir);
+      const realTempDir = await fs.realpath(tempRoot);
       const realPath = await fs.realpath(filePath);
 
       // Double-check that the real path is still within our real temp directory
@@ -5288,7 +5318,10 @@ ipcMain.handle(
     // reject, so the empty case has to be checked rather than assumed.
     if (image.isEmpty()) return null;
 
-    const dir = await ensureTempDirExists();
+    // A capture of the panel for the agent goes where the daemon reads it; anything else (an
+    // annotation the person sends with a message) is a pasted image like any other.
+    const dir =
+      payload.label === 'panel' ? await ensureAgentCaptureDir() : await ensureTempDirExists();
     const safeLabel = (payload.label ?? 'region').replace(/[^a-zA-Z0-9-]/g, '').slice(0, 24);
     const filePath = path.join(
       dir,
@@ -5372,7 +5405,7 @@ function agentBrowserRequest(payload: unknown): BrowserAgentRequest | null {
 
 /** A screenshot goes where the daemon's capture reader accepts it (PP-07, pixels out of band). */
 async function writeAgentScreenshot(png: Buffer): Promise<string> {
-  const dir = await ensureTempDirExists();
+  const dir = await ensureAgentCaptureDir();
   const filePath = path.join(dir, `browser-shot-${crypto.randomBytes(6).toString('hex')}.png`);
   await fs.writeFile(filePath, png, { mode: 0o600 });
   return filePath;
@@ -5515,7 +5548,8 @@ ipcMain.handle('embedded-browser:capture', async (event, payload: { viewId: stri
   if (!window || !isViewId(payload?.viewId)) return null;
   const shot = await captureEmbeddedBrowser(window, payload.viewId);
   if (!shot) return null;
-  const dir = await ensureTempDirExists();
+  // Only `workspace_read_panel` asks for this, so it goes where the daemon reads it.
+  const dir = await ensureAgentCaptureDir();
   const filePath = path.join(dir, `capture-page-${crypto.randomBytes(6).toString('hex')}.png`);
   await fs.writeFile(filePath, shot.png, { mode: 0o600 });
   return {
