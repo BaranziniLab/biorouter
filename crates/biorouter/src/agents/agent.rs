@@ -10862,6 +10862,11 @@ impl Agent {
         // is, so recovering one from it would offer a subagent or an app's chat a person tool
         // that dispatch then refuses.
         registry_tools.retain(|tool| !crate::agents::crew_extension::is_crew_tool(&tool.name));
+        // The same for the tools only a person's own chat is offered (the browser's and the
+        // Dictionary's): `tools` already went without them, and the registry would bring them
+        // back.
+        self.withhold_tools_only_a_persons_chat_is_offered(session_id, &mut registry_tools)
+            .await;
         let extension_targets = self
             .enabled_coding_agent_bridge_extension_targets(&registry_tools)
             .await;
@@ -12273,6 +12278,27 @@ impl Agent {
         }
     }
 
+    /// Both filters above, after one read of the chat's kind. The model's list asks it, and so
+    /// does the coding-agent bridge for the capability tools it recovers from the registry,
+    /// which no roster filter has narrowed: without it a Claude Code or Codex subagent or
+    /// scheduled run was offered every browser tool again, each refused at dispatch.
+    async fn withhold_tools_only_a_persons_chat_is_offered(
+        &self,
+        session_id: &str,
+        tools: &mut Vec<Tool>,
+    ) {
+        let session_type = self
+            .config
+            .session_manager
+            .get_session(session_id, false)
+            .await
+            .ok()
+            .map(|session| session.session_type);
+        self.withhold_dictionary_tools_where_unavailable(session_id, session_type.as_ref(), tools)
+            .await;
+        Self::withhold_browser_tools_where_unattended(session_type.as_ref(), tools);
+    }
+
     async fn list_tools_for(
         &self,
         session_id: &str,
@@ -12318,25 +12344,8 @@ impl Agent {
         .unwrap_or_default();
 
         if matches!(audience, ToolAudience::Model) {
-            // One read of the chat's kind, for both capabilities that only a person's own
-            // chat is offered.
-            let session_type = self
-                .config
-                .session_manager
-                .get_session(session_id, false)
-                .await
-                .ok()
-                .map(|session| session.session_type);
-            self.withhold_dictionary_tools_where_unavailable(
-                session_id,
-                session_type.as_ref(),
-                &mut prefixed_tools,
-            )
-            .await;
-            Self::withhold_browser_tools_where_unattended(
-                session_type.as_ref(),
-                &mut prefixed_tools,
-            );
+            self.withhold_tools_only_a_persons_chat_is_offered(session_id, &mut prefixed_tools)
+                .await;
         }
 
         // Revoking the injection is necessary but not sufficient. `subagent` is
@@ -27417,6 +27426,20 @@ mod tests {
                         .await
                 ),
                 "the permission editor still lists the browser's tools for a {kind} session"
+            );
+
+            // A Claude Code or Codex chat gets its tools through the bridge, which also
+            // recovers capability tools from the registry. That recovery must not bring the
+            // browser back where the model's list went without it.
+            let codex: Arc<dyn Provider> = Arc::new(BridgedChildProvider { name: "codex" });
+            let plan = agent
+                .prepare_coding_agent_bridge_plan(&session.id, &codex, &model)
+                .await
+                .expect("Codex needs a bridge plan");
+            assert_eq!(
+                offers_browser(&plan.tools),
+                kind == SessionType::User,
+                "a bridged {kind} session's browser tools must match the model's list"
             );
         }
     }
