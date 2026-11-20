@@ -349,6 +349,19 @@ class PayloadTests(unittest.TestCase):
 
 
 class WindowsPayloadTests(unittest.TestCase):
+    def test_file_order_does_not_depend_on_the_verifying_os(self):
+        """A WindowsPath sorts case-insensitively; the payload is built on Linux and
+        verified on Windows, so the list must not depend on Path ordering."""
+        with tempfile.TemporaryDirectory() as temp:
+            stage_payload(temp, "win32-x64", pe(3, ("KERNEL32.dll",)))
+            names = [entry["path"] for entry in runtime.payload_files(temp)]
+            self.assertEqual(names, sorted(names))
+            self.assertEqual(names[-1], "agent-desktop.exe")
+            manifest = json.loads((Path(temp) / "manifest.json").read_text())
+            manifest["files"].reverse()
+            (Path(temp) / "manifest.json").write_text(json.dumps(manifest))
+            runtime.verify(temp, "win32-x64")
+
     def test_windows_payload_round_trip(self):
         with tempfile.TemporaryDirectory() as temp:
             stage_payload(temp, "win32-x64", pe(3, ("KERNEL32.dll", "bcryptprimitives.dll")))

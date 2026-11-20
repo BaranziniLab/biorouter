@@ -113,13 +113,20 @@ def minimum_os(target):
 
 
 def payload_files(directory):
+    """Every payload file but the manifest, sorted by its `/`-separated path.
+
+    ⚠ Sorted by the path STRING, not by Path objects: a WindowsPath compares
+    case-insensitively, so a payload built on Linux (`DEPENDENCIES…`, `LICENSE…`,
+    `agent-desktop.exe`) would list in another order when verified on Windows.
+    """
+    directory = Path(directory)
     result = []
-    for path in sorted(Path(directory).rglob("*")):
+    for path in directory.rglob("*"):
         if path.is_symlink():
             raise ValueError(f"Unexpected symlink in helper payload: {path}")
-        if path.is_file() and path != Path(directory) / "manifest.json":
+        if path.is_file() and path != directory / "manifest.json":
             result.append({"path": path.relative_to(directory).as_posix(), "sha256": digest(path)})
-    return result
+    return sorted(result, key=lambda entry: entry["path"])
 
 
 # ── binary inspection, pure Python so a macOS host can check a Linux or Windows payload ──
@@ -331,7 +338,8 @@ def verify(directory, target, signed=False):
     if manifest.get("minimum_os") != minimum_os(target):
         raise ValueError("Helper payload records an unexpected minimum OS")
     files = payload_files(directory)
-    if manifest.get("files") != files:
+    recorded = manifest.get("files")
+    if not isinstance(recorded, list) or sorted(recorded, key=lambda entry: str(entry.get("path"))) != files:
         raise ValueError("Helper payload was modified, incomplete, or contains unrecorded files")
     names = {entry["path"] for entry in files}
     for required in (executable(target), LICENSE_FILE, DEPENDENCIES_FILE):
