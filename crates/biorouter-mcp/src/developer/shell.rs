@@ -493,6 +493,7 @@ pub fn shell_sandbox_status_line(working_dir: Option<&std::path::Path>) -> Optio
 /// local copy; keep the two lists in sync by hand (cross-reference comment on
 /// both sides).
 fn standard_user_tool_dirs() -> Vec<std::path::PathBuf> {
+    #[cfg_attr(not(unix), allow(unused_mut))]
     let mut dirs = Vec::new();
     #[cfg(unix)]
     {

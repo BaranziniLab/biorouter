@@ -234,8 +234,11 @@ jobs:
       - name: Drive the fixture through Copilot's tools, drag and drop included
         timeout-minutes: 10
         shell: powershell
+        # Windows PowerShell 5.1 turns a native program's redirected stderr (cargo's warnings)
+        # into error records, and this shell stops on the first one; the exit code decides.
         run: |
-          powershell -NoProfile -ExecutionPolicy Bypass -File scripts/test-copilot-fixture-windows.ps1 target/computer-use/win32-x64 *>&1 | Tee-Object -FilePath target/copilot-fixture-windows.log
+          $ErrorActionPreference = 'Continue'
+          powershell -NoProfile -ExecutionPolicy Bypass -File scripts/test-copilot-fixture-windows.ps1 target/computer-use/win32-x64 2>&1 | ForEach-Object { "$_" } | Tee-Object -FilePath target/copilot-fixture-windows.log
           exit $LASTEXITCODE
       - uses: actions/upload-artifact@v4
         if: always()

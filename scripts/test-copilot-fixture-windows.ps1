@@ -30,5 +30,8 @@ Add-Type -OutputType WindowsApplication -OutputAssembly $exe `
 
 $env:BIOROUTER_COMPUTER_USE_DIR = (Resolve-Path $Payload).Path
 $env:BIOROUTER_COPILOT_FIXTURE = (ConvertTo-Json -Compress @($exe))
+# cargo writes its progress and warnings to stderr; under 'Stop' a redirected stderr line would
+# end the script, so the exit code alone decides.
+$ErrorActionPreference = 'Continue'
 cargo test --locked -p biorouter-mcp --test computer_use_fixture -- --ignored --nocapture --test-threads=1
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
