@@ -200,9 +200,9 @@ These paths are prepended to the system `PATH` when extensions execute commands,
 
 | Variable | Purpose | Values | Default |
 |----------|---------|---------|---------|
-| `BIOROUTER_SHELL_FOREGROUND_TIMEOUT_SECS` | Wall-clock budget for a **foreground** Developer `shell` command. When it expires the command's whole process group is killed and the call fails with an error naming the command, its elapsed time, and the `background=true` alternative. | Whole seconds; `0` disables the watchdog | `240` |
+| `BIOROUTER_SHELL_FOREGROUND_TIMEOUT_SECS` | Wall-clock budget for a **foreground** Developer `shell` command. When it expires the command's whole process group is killed and the call fails with an error naming the command, its elapsed time, the `background=true` alternative and the last lines it printed. The error is marked not retryable. | Whole seconds; `0` disables the watchdog | `240` |
 
-This is deliberately shorter than the generic 300-second per-extension MCP timeout, so the shell's own error — which the model can act on — is what fires rather than an opaque transport timeout. It only applies to foreground commands: work started with `background=true` is unbounded and managed with `shell_wait` / `shell_output` / `shell_kill`. Raise it if your agents legitimately run long foreground builds; see [the Developer capability guide](../extensions/built-in/developer.md#foreground-and-background-commands).
+This is deliberately shorter than the generic 300-second per-extension MCP timeout, so the shell's own error — which the model can act on — is what fires rather than an opaque transport timeout. It only applies to foreground commands: work started with `background=true` is unbounded and managed with `shell_status` / `shell_kill`. Raise it if your agents legitimately run long foreground builds; see [the Developer capability guide](../extensions/built-in/developer.md#foreground-and-background-commands).
 
 ### Enhanced code editing
 

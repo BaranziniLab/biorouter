@@ -755,6 +755,14 @@ pub fn first_line(command: &str) -> String {
 /// how long it actually ran, the budget it broke, the knob that changes the
 /// budget, and the workflow this server already provides for work of that size.
 /// The opaque generic-extension timeout it replaces told the model none of that.
+///
+/// Issue #537: the remedy has to work with any tool roster. A roster may grant
+/// `shell` without `shell_status`, and this server is never told which tools
+/// were granted, so the route the shell alone offers (a file the command writes
+/// to, read with short commands) comes first and `shell_status` is named only
+/// as an option. It also says that the same command is killed again, and asks
+/// for a margin under the limit, because models sized polls to exactly the
+/// limit (`sleep 240; tail log`) and the kill always landed inside the sleep.
 pub fn foreground_timeout_message(
     command: &str,
     elapsed: std::time::Duration,
@@ -763,15 +771,19 @@ pub fn foreground_timeout_message(
     format!(
         "The foreground shell command was killed after {} because it exceeded the {}s \
          foreground limit: {}\n\
-         Its whole process group was terminated, so nothing is left running.\n\
-         If this command legitimately takes that long, re-run it with background=true, whose \
-         reply names a log file that receives its output and exit status (read it with `tail`); \
-         shell_status / shell_kill also watch it if you have them. Otherwise narrow it (a \
-         smaller search root, a more specific pattern) and try again. Operators can change \
-         the limit with {} (seconds; 0 disables it).",
+         Its whole process group was terminated, so nothing is left running, and the same \
+         command will be killed again.\n\
+         If it legitimately takes that long, start it with background=true, whose reply names \
+         a log file that receives its output and exit status, or with its output in a file \
+         (`cmd > log 2>&1 &`), and read the file with short commands such as `tail`; \
+         shell_status / shell_kill can also wait on and stop a background job if you have them. \
+         Otherwise narrow it (a smaller search root, a more specific pattern). Keep each \
+         foreground command, any sleep included, well under {}s. Operators can change the \
+         limit with {} (seconds; 0 disables it).",
         humanize_secs(elapsed),
         limit.as_secs(),
         first_line(command),
+        limit.as_secs(),
         FOREGROUND_TIMEOUT_ENV,
     )
 }
@@ -1415,6 +1427,16 @@ mod tests {
         assert!(
             message.contains("process group"),
             "and the reassurance that nothing was left running: {message}"
+        );
+        // Issue #537: an identical retry is killed again, and the remedy that
+        // works with any roster comes before a tool the roster may not grant.
+        assert!(message.contains("killed again"), "{message}");
+        let redirect = message.find("cmd > log 2>&1 &").expect("{message}");
+        let status = message.find("shell_status").expect("{message}");
+        assert!(redirect < status, "{message}");
+        assert!(
+            message.contains("any sleep included"),
+            "a poll sized to the limit is killed inside its sleep: {message}"
         );
     }
 
