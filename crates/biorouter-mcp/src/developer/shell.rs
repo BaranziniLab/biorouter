@@ -788,6 +788,72 @@ pub fn foreground_timeout_message(
     )
 }
 
+/// The seconds a command sleeps before anything else in it runs, when its first
+/// simple command is a plain `sleep N` that the shell waits for: `sleep 240`,
+/// `sleep 240; tail log`, `sleep 4m && ls`. `None` for anything else, including
+/// `sleep 300 &`, which does not block, a pipe, `cd x && sleep 300`,
+/// `sleep $DELAY`, and `sleep 1 2`, which this does not try to add up.
+///
+/// Issue #537: models sized polls to the advertised budget (`sleep 240; tail
+/// log`), and the kill always landed during the sleep, so the call spent the
+/// whole budget to report nothing. Such a command can be refused before it
+/// runs.
+pub(crate) fn leading_sleep_secs(command: &str) -> Option<f64> {
+    let rest = command.trim_start().strip_prefix("sleep")?;
+    if !rest.starts_with([' ', '\t']) {
+        return None;
+    }
+    let rest = rest.trim_start_matches([' ', '\t']);
+    let end = rest
+        .find(|c: char| c.is_whitespace() || matches!(c, ';' | '&' | '|' | '<' | '>' | '(' | ')'))
+        .unwrap_or(rest.len());
+    let (arg, after) = rest.split_at(end);
+    let secs = parse_sleep_duration(arg)?;
+    let after = after.trim_start_matches([' ', '\t']);
+    let waited_for = after.is_empty()
+        || after.starts_with([';', '\n', '\r'])
+        || after.starts_with("&&")
+        || after.starts_with("||");
+    waited_for.then_some(secs)
+}
+
+/// One `sleep` operand in seconds: a number with an optional `s`, `m`, `h` or
+/// `d` suffix, as GNU sleep reads it. `infinity` counts.
+fn parse_sleep_duration(arg: &str) -> Option<f64> {
+    const UNITS: [(char, f64); 4] = [('s', 1.0), ('m', 60.0), ('h', 3600.0), ('d', 86_400.0)];
+    if arg == "infinity" || arg == "inf" {
+        return Some(f64::INFINITY);
+    }
+    let (number, unit) = UNITS
+        .iter()
+        .find_map(|&(suffix, unit)| arg.strip_suffix(suffix).map(|number| (number, unit)))
+        .unwrap_or((arg, 1.0));
+    if number.is_empty() || !number.chars().all(|c| c.is_ascii_digit() || c == '.') {
+        return None;
+    }
+    let value: f64 = number.parse().ok()?;
+    Some(value * unit)
+}
+
+/// Why a foreground command that opens with a sleep at least as long as the
+/// budget is refused without running (see [`leading_sleep_secs`]).
+pub fn sleep_over_budget_message(secs: f64, limit: std::time::Duration) -> String {
+    let limit = limit.as_secs();
+    let suggested = (limit / 4).max(1);
+    let length = if secs.is_finite() {
+        format!("{secs}s")
+    } else {
+        "unbounded length".to_string()
+    };
+    format!(
+        "Not run: this command starts with a sleep of {length}, and a foreground command is \
+         killed at the {limit}s foreground limit, so it would be killed before anything after \
+         the sleep ran. To wait for work in progress, sleep for well under {limit}s and then \
+         check (for example `sleep {suggested}; tail -n 20 log`), repeating as needed, or start \
+         the work with background=true."
+    )
+}
+
 /// Kill a process and all its child processes using platform-specific approaches.
 ///
 /// On Unix systems, kills the entire process group.
@@ -1437,6 +1503,53 @@ mod tests {
         assert!(
             message.contains("any sleep included"),
             "a poll sized to the limit is killed inside its sleep: {message}"
+        );
+    }
+
+    #[test]
+    fn a_leading_sleep_is_read_only_when_the_shell_waits_for_it() {
+        assert_eq!(leading_sleep_secs("sleep 240"), Some(240.0));
+        assert_eq!(leading_sleep_secs("  sleep 240; tail -2 log"), Some(240.0));
+        assert_eq!(leading_sleep_secs("sleep 240 && ls"), Some(240.0));
+        assert_eq!(leading_sleep_secs("sleep 240 || true"), Some(240.0));
+        assert_eq!(leading_sleep_secs("sleep 240\ntail log"), Some(240.0));
+        assert_eq!(leading_sleep_secs("sleep\t300;ls"), Some(300.0));
+        assert_eq!(leading_sleep_secs("sleep 4m; ls"), Some(240.0));
+        assert_eq!(leading_sleep_secs("sleep 1.5"), Some(1.5));
+        assert_eq!(leading_sleep_secs("sleep 1h"), Some(3600.0));
+        assert_eq!(leading_sleep_secs("sleep infinity"), Some(f64::INFINITY));
+
+        // Backgrounded, so the shell does not wait for it.
+        assert_eq!(leading_sleep_secs("sleep 300 &"), None);
+        assert_eq!(leading_sleep_secs("sleep 300 & echo started"), None);
+        assert_eq!(leading_sleep_secs("sleep 300&"), None);
+        // Not a plain leading sleep.
+        assert_eq!(leading_sleep_secs("cd /app && sleep 300"), None);
+        assert_eq!(leading_sleep_secs("sleeping 300"), None);
+        assert_eq!(leading_sleep_secs("sleep"), None);
+        assert_eq!(leading_sleep_secs("sleep $DELAY; ls"), None);
+        assert_eq!(leading_sleep_secs("sleep 1 2"), None);
+        assert_eq!(leading_sleep_secs("sleep nan"), None);
+        assert_eq!(leading_sleep_secs("sleep -5"), None);
+        assert_eq!(leading_sleep_secs("sleep 300 | cat"), None);
+        assert_eq!(leading_sleep_secs("sleep 300 > /dev/null"), None);
+        assert_eq!(leading_sleep_secs("timeout 10 sleep 300"), None);
+        assert_eq!(leading_sleep_secs("(sleep 300)"), None);
+    }
+
+    #[test]
+    fn the_sleep_refusal_says_what_to_do_instead() {
+        let message = sleep_over_budget_message(240.0, std::time::Duration::from_secs(240));
+        assert!(message.starts_with("Not run"), "{message}");
+        assert!(message.contains("sleep of 240s"), "{message}");
+        assert!(message.contains("240s foreground limit"), "{message}");
+        assert!(message.contains("sleep 60; tail -n 20 log"), "{message}");
+        assert!(message.contains("background=true"), "{message}");
+        let unbounded =
+            sleep_over_budget_message(f64::INFINITY, std::time::Duration::from_secs(240));
+        assert!(
+            unbounded.contains("sleep of unbounded length"),
+            "{unbounded}"
         );
     }
 
