@@ -65,6 +65,27 @@ describe('the setup popover', () => {
     ).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Retry' }));
     expect(activation.retryActivation).toHaveBeenCalledTimes(1);
+    // Inline in the sentence's own size, so its line is not taller than the others.
+    expect(screen.getByRole('button', { name: 'Retry' })).toHaveClass('h-auto', 'text-supporting');
+  });
+  it('draws the command in an install refusal as code', () => {
+    const status = speechStatus(
+      {
+        active_model: null,
+        install: {
+          allowed: false,
+          reason:
+            'Dictation is not set up on this server. Ask the person who runs it to run `biorouter dictation install`.',
+        },
+      },
+      turbo
+    );
+    render(
+      <SetupPopover status={status} progress={null} onNotNow={vi.fn()} onMoreInSettings={vi.fn()} />
+    );
+    const line = screen.getByText(/Dictation is not set up on this server/);
+    expect(line.textContent).not.toContain('`');
+    expect(line.querySelector('code')).toHaveTextContent('biorouter dictation install');
   });
   it('shows when the server kept a different saved choice', () => {
     activation.savedChoiceDiffered = true;
@@ -109,11 +130,71 @@ describe('the setup popover', () => {
       <SetupPopover status={status} progress={null} onNotNow={vi.fn()} onMoreInSettings={vi.fn()} />
     );
     expect(screen.getByTestId('dictation-setup')).toHaveTextContent(
-      "Dictation turns your speech into text on this computer. It needs a speech model: Whisper large-v3 turbo (574 MB), downloaded once from the Baranzini Lab's model repository on GitHub into /Users/wgu/.local/share/biorouter/dictation/models. Audio is not saved."
+      "Dictation turns your speech into text on this computer. It needs a 574 MB speech model, Whisper large-v3 turbo, downloaded once from the Baranzini Lab's model repository on GitHub into /Users/wgu/.local/share/biorouter/dictation/models."
     );
     expect(screen.getByTestId('dictation-setup-privacy')).toHaveTextContent(
       'Speech is transcribed by Biorouter on this computer. Audio is not saved.'
     );
+    // The privacy line says it once; MSG-SETUP no longer repeats it two lines above.
+    const text = screen.getByTestId('dictation-setup').textContent ?? '';
+    expect(text.split('Audio is not saved.').length - 1).toBe(1);
+    // A display name that carries its own parentheses gets no second pair for the size.
+    expect(text).not.toMatch(/\) \(/);
+    // The name is drawn whole, so it never breaks at a hyphen of "large-v3-turbo".
+    expect(screen.getByText('Whisper large-v3 turbo')).toHaveClass('br-dictation-setup__name');
+  });
+
+  it('draws a command in a failure as code, never with its backticks', () => {
+    const offline =
+      "This computer cannot reach Biorouter's model repository. On a computer that can, run `biorouter dictation urls` and download the files it lists.";
+    const status = speechStatus(
+      {
+        active_model: null,
+        install_job: {
+          model: turbo.id,
+          bytes_done: 0,
+          bytes_total: turbo.bytes,
+          bytes_per_second: 0,
+          phase: 'failed',
+          error: offline,
+        },
+      },
+      turbo
+    );
+    render(
+      <SetupPopover status={status} progress={null} onNotNow={vi.fn()} onMoreInSettings={vi.fn()} />
+    );
+    const alert = screen.getByRole('alert');
+    expect(alert).toHaveTextContent('run biorouter dictation urls and download');
+    expect(alert.textContent).not.toContain('`');
+    expect(alert.querySelector('code')).toHaveTextContent('biorouter dictation urls');
+    expect(alert).toHaveClass('br-dictation-setup__warning');
+  });
+
+  it('says a cancelled install as a record in the muted line, not as a failure', () => {
+    const status = speechStatus(
+      {
+        active_model: null,
+        install_job: {
+          model: turbo.id,
+          bytes_done: 16_000_000,
+          bytes_total: turbo.bytes,
+          bytes_per_second: 0,
+          phase: 'failed',
+          error: 'The install was cancelled.',
+        },
+      },
+      turbo
+    );
+    render(
+      <SetupPopover status={status} progress={null} onNotNow={vi.fn()} onMoreInSettings={vi.fn()} />
+    );
+    expect(screen.queryByRole('alert')).toBeNull();
+    const note = screen.getByText('The install was cancelled.');
+    expect(note).toHaveAttribute('role', 'status');
+    expect(note).toHaveClass('br-dictation-setup__note');
+    // Install is still offered, so the person can pick up where the partial stopped.
+    expect(screen.getByRole('button', { name: 'Install' })).toBeEnabled();
   });
 
   it('installs only from Install, and Not now and More in Settings do what they say', () => {
@@ -146,6 +227,8 @@ describe('the setup popover', () => {
       'Downloading speech model… 42%'
     );
     expect(screen.queryByRole('button', { name: 'Install' })).toBeNull();
+    // The thin 4px bar Settings draws for the same install.
+    expect(screen.getByRole('progressbar')).toHaveAttribute('data-size', 'thin');
   });
 
   it('never says this computer when the daemon is elsewhere', () => {

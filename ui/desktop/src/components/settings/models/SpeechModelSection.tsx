@@ -45,6 +45,7 @@ import {
   setLearnFromChats,
   useDictionarySettings,
 } from '../../dictionary/useDictionary';
+import { InlineCodeText } from '../providers/subcomponents/InlineCodeText';
 import { SettingSelect } from '../SettingSelect';
 import { SETTINGS_SECTION_IDS } from '../settingsSections';
 import { speechModelsCopy as copy } from './copy';
@@ -56,6 +57,7 @@ import {
   installPercent,
   installQuestion,
   installSpeechModel,
+  isCancelledInstall,
   jobRunning,
   languageOptions,
   removeQuestion,
@@ -218,14 +220,21 @@ function SpeechModelRows({ status }: { status: DictationStatus }) {
       {(!hasUsableModel(status) || activation.needsSave) &&
       status.policy.dictionary.allowed !== false &&
       activation.showChoice ? (
-        <div className="flex items-center gap-1 text-label" data-testid="speech-suggest-from-chats">
-          <label>
+        // `px-2`: the square (4px inside its 24px target) sits on the rows' label column, 12px in;
+        // the words take the rows' label ink rather than the section's muted one, and the
+        // InfoTip's glyph sits 4px after them (its own 24px target holds the rest).
+        <div
+          className="flex items-center px-2 text-label text-text-default"
+          data-testid="speech-suggest-from-chats"
+        >
+          {/* The label sits 8px from the square: the hit target's 4px inset and this 4px gap. */}
+          <label className="inline-flex cursor-pointer items-center gap-1">
             <Checkbox
               checked={activation.checked}
               disabled={activation.disabled}
               onChange={(event) => activation.setChecked(event.target.checked)}
             />
-            {DICTATION_ACTIONS.suggestFromChats}
+            <span>{DICTATION_ACTIONS.suggestFromChats}</span>
           </label>
           <InfoTip label={DICTATION_ACTIONS.suggestFromChats} help={activation.help} />
         </div>
@@ -252,7 +261,7 @@ function SpeechModelRows({ status }: { status: DictationStatus }) {
       ) : null}
       {sectionRefusal ? (
         <Note tone="warning" icon={AlertTriangle} testId="speech-install-refusal" className="mb-2">
-          {sectionRefusal}
+          <InlineCodeText text={sectionRefusal} />
         </Note>
       ) : null}
 
@@ -389,6 +398,7 @@ function SpeechModelRowView({
             ? copy.switching
             : progressText;
   const problem = row.error ?? row.failure;
+  const cancelled = !row.error && isCancelledInstall(row.failure);
   const { facts, warning } = factsOf(row);
 
   let control: React.ReactNode = null;
@@ -475,9 +485,19 @@ function SpeechModelRowView({
             <Spinner size={14} />
             <span className="min-w-0 [overflow-wrap:anywhere]">{busy}</span>
           </span>
-        ) : problem ? (
-          <span role="alert" className="text-supporting text-text-warning [overflow-wrap:anywhere]">
+        ) : problem && cancelled ? (
+          // A cancel the person made is a record, in the facts line's muted ink.
+          <span role="status" className="text-supporting text-text-muted">
             {problem}
+          </span>
+        ) : problem ? (
+          // A failure is said in ink, not in a status hue (design.md 9.14), with a command in it
+          // (MSG-OFFLINE) drawn as code rather than with its backticks.
+          <span
+            role="alert"
+            className="br-speech-problem text-supporting text-text-default [overflow-wrap:anywhere]"
+          >
+            <InlineCodeText text={problem} />
           </span>
         ) : (
           <span className="text-supporting text-text-muted">
