@@ -69,7 +69,7 @@ test.describe('SPOKEAgent .brxt — skills integration & propagation', () => {
   }
 
   async function openBrxtModal(): Promise<void> {
-    const addBtn = page.getByRole('button', { name: 'Add', exact: true });
+    const addBtn = page.getByRole('button', { name: 'Add extension', exact: true });
     await addBtn.waitFor({ timeout: 10000, state: 'visible' });
     await addBtn.click();
     await page.getByRole('menuitem', { name: 'Install from file (.brxt)' }).click();
@@ -135,8 +135,8 @@ test.describe('SPOKEAgent .brxt — skills integration & propagation', () => {
     await goToSkills();
     await page.screenshot({ path: 'test-results/spoke-03-skills-settings.png' });
 
-    // The band's one "Add" menu is always present
-    await expect(page.getByRole('button', { name: 'Add', exact: true })).toBeVisible({
+    // The band's one "Add skill" menu is always present
+    await expect(page.getByRole('button', { name: 'Add skill', exact: true })).toBeVisible({
       timeout: 5000,
     });
 

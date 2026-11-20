@@ -12,7 +12,8 @@ export const SKILLS_COPY = {
   /** The band filter's name and the start of its tooltip ("Filter skills · ⌘F"). */
   filterLabel: 'Filter skills',
 
-  add: 'Add',
+  /** The band's one primary: "Add <thing>", like Extensions' (`extensions/copy.ts`). */
+  add: 'Add skill',
   browse: 'Browse marketplace',
   fromSource: 'From a repository or .zip…',
   write: 'Write a skill…',

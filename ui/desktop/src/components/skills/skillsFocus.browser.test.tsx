@@ -271,7 +271,9 @@ describe(
      * the document, so a read taken the instant the dialog detaches can still see the page body.
      */
     const expectFocusOnAdd = (tab: Page) =>
-      expect.poll(() => holder(tab), { timeout: 5_000 }).toMatch(/^button(#[^:]*)?:Add$/);
+      expect
+        .poll(() => holder(tab), { timeout: 5_000 })
+        .toMatch(new RegExp(`^button(#[^:]*)?:${SKILLS_COPY.add}$`));
 
     /** Nothing is given back. Read after the same tick plus a margin, so a late return would show. */
     const settledHolder = async (tab: Page) => {

@@ -169,8 +169,13 @@ describe('ExtensionsView — the band', () => {
     ) as HTMLElement;
     expect(actions).not.toBeNull();
     const add = within(actions).getByRole('button', { name: EXTENSIONS_COPY.add });
-    // The three old labelled buttons are gone; their jobs are the menu's items.
-    for (const gone of ['Add extension', 'Browse extensions', 'Add custom extension']) {
+    // The three old labelled buttons are gone; their jobs are the menu's items. "Add extension"
+    // now names the menu itself (every band primary is a verb and its object,
+    // `Layout/pageBandLabels.test.ts`), so the old button of that name is gone when the only
+    // button so named is the menu's trigger.
+    expect(screen.getAllByRole('button', { name: 'Add extension' })).toEqual([add]);
+    expect(add).toHaveAttribute('aria-haspopup', 'menu');
+    for (const gone of ['Browse extensions', 'Add custom extension']) {
       expect(screen.queryByRole('button', { name: gone })).toBeNull();
     }
 

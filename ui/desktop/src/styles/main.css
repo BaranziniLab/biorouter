@@ -4184,12 +4184,42 @@ body:has(.biorouter-modal-surface [data-slot='select-content'][data-state='open'
   height: auto;
 }
 
+/* 8px between the band's controls, the bar's own gap. It was 4px while the icon buttons were 32px,
+   which put a glyph every 36px; at 28px the 8px keeps that rhythm, and a filled field and a filled
+   button side by side (Extensions' filter and "Add extension") read as two controls, not one. */
 .biorouter-page-header-actions {
   display: flex;
   flex-shrink: 0;
   align-items: center;
-  gap: 4px;
+  gap: 8px;
   margin-left: auto;
+}
+
+/* EVERY CONTROL IN THE BAND IS 28px, THE `sm` RUNG (owner, 2026-11-19). The primary ("New
+   schedule", "Add skill"), a secondary or ghost text button (Dictionary's "Export…"), an icon
+   button (`PageHeaderAction`, `PageHeaderMenu`, the drill-in's Back, a chat's Resume), the
+   Knowledge base switcher and the filter field are one height, one 8px radius, 12px of side
+   padding on a labelled button, a 16px glyph and a 6px glyph-to-label gap, on every page. The
+   primaries and icon buttons used to take the default 32px `md` rung beside the 28px filter, so
+   a cluster held two heights and the coral button nearly filled the band; 28px is the filter's
+   height, the titlebar controls' (which sit in this band's left end with the sidebar collapsed)
+   and the sidebar row's, and it leaves 7.5px of air above and below in the 43px bar.
+
+   Said ONCE, here, by pointing the `md` rung at `sm` for the band's own descendants: a Button,
+   an icon button, an Input or a trigger at the default size reads `--control-md` (`h-control-md`,
+   `w-control-md` are `var(--control-md)` through `@theme inline`), so it draws 28px in the band
+   and 32px everywhere else, and no view passes a size. A menu, popover or tooltip a band control
+   opens is portalled out of the bar, so it keeps the 32px rows. The Text size preference still
+   applies: `--control-sm` is scaled where it is declared. The gap is the `sm` rung's own
+   (`gap-1.5`), so a band button and a `size="sm"` button elsewhere are the same object. Unlayered,
+   so it beats the layered `gap-2` utility. Measured in Chromium, page by page, by
+   `Layout/pageBandGeometry.browser.test.tsx`. */
+.biorouter-page-header-bar {
+  --control-md: var(--control-sm);
+}
+
+.biorouter-page-header-bar [data-slot='button'] {
+  column-gap: 6px;
 }
 
 /* The deprecated `children` row under the band (Chat history's filter, until

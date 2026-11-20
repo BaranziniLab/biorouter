@@ -129,8 +129,10 @@ test.describe('BiorOffice .brxt — real install + agent usage', () => {
   });
 
   test('2. Open the install-from-file dialog and load bioroffice.brxt', async () => {
-    // The band's one Add menu (spec 3.11); the file route is its second item.
-    await mainWindow.getByRole('button', { name: 'Add', exact: true }).click({ timeout: 5000 });
+    // The band's one "Add extension" menu (spec 3.11); the file route is its second item.
+    await mainWindow
+      .getByRole('button', { name: 'Add extension', exact: true })
+      .click({ timeout: 5000 });
     await mainWindow.getByRole('menuitem', { name: 'Install from file (.brxt)' }).click();
     await expect(mainWindow.locator('[role="dialog"]')).toBeVisible({ timeout: 5000 });
     // PLAYWRIGHT_BRXT_FILE hook returns our path without a native dialog

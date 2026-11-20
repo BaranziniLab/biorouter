@@ -137,7 +137,8 @@ export const DICTIONARY_LABELS = {
   title: 'Dictionary',
   filter: 'Filter terms',
   export: 'Export…',
-  add: 'Add',
+  /** The band's one primary: "Add <thing>", like Extensions' (`extensions/copy.ts`). */
+  add: 'Add terms',
   addTerm: 'Add a term…',
   pasteList: 'Paste a list…',
   importFile: 'Import a file…',

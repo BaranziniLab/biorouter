@@ -162,8 +162,8 @@ test.describe('Biorouter App', () => {
 
       await removeExtensionIfPresent(mainWindow, MCP_EXTENSION_NAME);
 
-      // One Add menu in the band (spec 3.11); "Custom extension…" is its third item.
-      await mainWindow.getByRole('button', { name: 'Add', exact: true }).click();
+      // One "Add extension" menu in the band (spec 3.11); "Custom extension…" is its third item.
+      await mainWindow.getByRole('button', { name: 'Add extension', exact: true }).click();
       await mainWindow.getByRole('menuitem', { name: 'Custom extension…' }).click();
       const dialog = mainWindow.locator('[role="dialog"]');
       await expect(dialog).toBeVisible({ timeout: 10_000 });
