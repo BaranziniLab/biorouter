@@ -100,7 +100,13 @@ names and no values. Since issue #522 the floor reopens them by exact name
 `.env.dist`, `.env.tpl`, `.env.defaults` and `.env.<anything>.example`, at any depth. Both guard
 constructors add these negations right after the floor and before any `.biorouterignore`, so a
 project or the global file can deny a template again with an ordinary pattern
-(`issue522_explicit_project_policy_can_still_deny_a_template`). What stays refused:
+(`issue522_explicit_project_policy_can_still_deny_a_template`). A template is read in any case:
+`.env.Example` and `.ENV.EXAMPLE` both open the template on APFS and NTFS. The floor's patterns are
+case-sensitive, so `.env.Example` matched `**/.env.*` and missed the lowercase exceptions, and was
+refused until `SecretGuard::is_denied` reopened it. It reopens such a name only when the floor's
+own `**/.env.*` line is the only one that denied it, and the whole path in lowercase is not denied,
+so a `.biorouterignore` line that names the template in either case still holds
+(`a_template_spelled_in_another_case_is_readable_and_nothing_else_is`). What stays refused:
 
 - every other `.env` name, including `.env.local`, `.env.production` and `.env.example.bak`;
 - a template that is a symlink, which is judged as the file it reaches, so a link from
@@ -108,8 +114,8 @@ project or the global file can deny a template again with an ordinary pattern
 - a glob that could reach a secret beside the template: with `.env.local` in the folder,
   `cat config/.e*` is refused, while `cat config/.[e]nv.example` is not;
 - the destination of `cp config/.env.example config/.env`, which the refusal names on its own;
-- a spelling the matcher does not fold to a template, such as `.env.Example`, which stays
-  refused (`.ENV.EXAMPLE` folds to `.env.example` and is read like it).
+- a real `.env` name in another case, such as `.Env.local` or `.env.Production`, which folds to a
+  name that is no template.
 
 ## Where it runs
 
