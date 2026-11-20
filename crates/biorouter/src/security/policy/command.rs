@@ -225,6 +225,9 @@ fn split_operators(text: &str, dialect: Dialect) -> Vec<(String, Sep)> {
                 in_double = true;
                 cur.push(c);
             }
+            // #543: `>|` is the noclobber redirect, not a pipe; split there and
+            // the write target became a command of its own, out of sight.
+            '|' if dialect == Dialect::Posix && cur.ends_with('>') => cur.push(c),
             '|' => {
                 if chars.get(i + 1) == Some(&'|') {
                     out.push((std::mem::take(&mut cur), Sep::Other));
@@ -597,7 +600,20 @@ fn blast_rank(b: Blast) -> u8 {
     }
 }
 
-/// Capture `>` / `>>` (and `1>`, `2>`, `&>`) redirect targets from a raw stage.
+/// Capture `>` / `>>` / `>|` (and `1>`, `2>`, `&>`, `>&file`) redirect targets
+/// from a raw stage, each as the word the shell would write to.
+///
+/// #543: a target ends where the shell ends the word: unquoted whitespace, `;`,
+/// `|`, `&`, `)`, `<` or `>`. It used to end only at whitespace or `;`, so the
+/// `2>/dev/null)` of `x=$(ls 2>/dev/null)` was the path `/dev/null)`, not a
+/// benign device, and the call was asked about as a write under `/dev`.
+///
+/// ⚠ A terminator inside quotes, after a backslash, or inside a `$(...)` /
+/// `${...}` in the word does NOT end it: cutting `> "/tmp/x)/../../etc/passwd"`
+/// at the `)` would leave `/tmp/x`, a temp path, and hide a write to
+/// `/etc/passwd`. Quotes are removed from the word; a backslash is dropped only
+/// before a character the shell would otherwise read as syntax, so a Windows
+/// path keeps its separators.
 pub(crate) fn redirect_targets(stage: &str) -> Vec<String> {
     let mut out = Vec::new();
     let bytes: Vec<char> = stage.chars().collect();
@@ -622,21 +638,32 @@ pub(crate) fn redirect_targets(stage: &str) -> Vec<String> {
                     continue;
                 }
                 let mut j = i + 1;
-                if bytes.get(j) == Some(&'>') {
+                // `>>` appends; `>|`, the noclobber override, is still a write.
+                if matches!(bytes.get(j), Some('>' | '|')) {
                     j += 1;
+                }
+                // `>&word`: a duplicated descriptor (`2>&1`, `>&-`) is no file,
+                // any other word is one.
+                let duplicates = bytes.get(j) == Some(&'&');
+                if duplicates {
+                    j += 1;
+                }
+                // `>(cmd)` is process substitution, not a file; the scan goes on
+                // inside it, so a redirect within is still seen.
+                if bytes.get(j) == Some(&'(') {
+                    i = j;
+                    continue;
                 }
                 while j < bytes.len() && bytes[j].is_whitespace() {
                     j += 1;
                 }
-                let mut target = String::new();
-                while j < bytes.len() && !bytes[j].is_whitespace() && bytes[j] != ';' {
-                    target.push(bytes[j]);
-                    j += 1;
-                }
-                if !target.is_empty() && target != "&1" && target != "&2" {
+                let (target, end) = redirect_word(&bytes, j);
+                let descriptor =
+                    duplicates && (target == "-" || target.chars().all(|ch| ch.is_ascii_digit()));
+                if !target.is_empty() && !descriptor {
                     out.push(target);
                 }
-                i = j;
+                i = end;
                 continue;
             }
             _ => {}
@@ -644,6 +671,76 @@ pub(crate) fn redirect_targets(stage: &str) -> Vec<String> {
         i += 1;
     }
     out
+}
+
+/// The redirect target word starting at `start`, quotes removed, and the index
+/// just past it. See [`redirect_targets`] for where a word ends.
+fn redirect_word(chars: &[char], start: usize) -> (String, usize) {
+    let mut word = String::new();
+    let mut j = start;
+    let mut quote: Option<char> = None;
+    // Open `$(` / `${` (and their nested parens or braces) inside the word.
+    let mut depth = 0usize;
+    while j < chars.len() {
+        let c = chars[j];
+        if let Some(open) = quote {
+            if c == open {
+                quote = None;
+            } else if open == '"' && c == '\\' && matches!(chars.get(j + 1), Some('"' | '\\')) {
+                // `\"` stays inside the quotes; `\\` is kept as written and
+                // cannot escape the quote that follows it.
+                if chars[j + 1] == '"' {
+                    word.push('"');
+                } else {
+                    word.push_str("\\\\");
+                }
+                j += 1;
+            } else {
+                word.push(c);
+            }
+            j += 1;
+            continue;
+        }
+        if depth == 0 && (c.is_whitespace() || matches!(c, ';' | '|' | '&' | ')' | '<' | '>')) {
+            break;
+        }
+        match c {
+            '\'' | '"' => quote = Some(c),
+            '\\' => match chars.get(j + 1) {
+                Some(&next) => {
+                    // Escaped syntax is part of the word; any other escape is
+                    // kept as written (a Windows path's separator).
+                    if !(next.is_whitespace()
+                        || matches!(next, ';' | '|' | '&' | '(' | ')' | '<' | '>' | '\'' | '"'))
+                    {
+                        word.push('\\');
+                    }
+                    word.push(next);
+                    j += 1;
+                }
+                None => word.push(c),
+            },
+            // `$'...'` / `$"..."`: the quotes open, the `$` is not in the word.
+            '$' if matches!(chars.get(j + 1), Some('\'' | '"')) => {}
+            '$' if matches!(chars.get(j + 1), Some('(' | '{')) => {
+                word.push(c);
+                word.push(chars[j + 1]);
+                depth += 1;
+                j += 1;
+            }
+            '(' | '{' if depth > 0 => {
+                word.push(c);
+                depth += 1;
+            }
+            ')' | '}' if depth > 0 => {
+                word.push(c);
+                depth -= 1;
+            }
+            _ => word.push(c),
+        }
+        j += 1;
+    }
+    (word, j)
 }
 
 /// True when the `>` at `gt_index` closes a contiguous `<word>` angle-bracket

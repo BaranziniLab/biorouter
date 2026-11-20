@@ -117,6 +117,13 @@ Two things these approvals are guaranteed against, so that "put to you" means wh
 
 An administrator's [managed policy](managed-policy.md) can add further tools to this list.
 
+A write is judged by the path the shell would really write to. A redirect target ends where
+the shell ends the word, at an unquoted space, `;`, `|`, `&`, `)`, `<` or `>`, so the
+`2>/dev/null` inside `x=$(ls 2>/dev/null)` is the harmless `/dev/null` and does not ask. Quotes,
+backslashes and a `$(...)` inside the target keep it whole, so
+`> "/tmp/x)/../../etc/passwd"` is still a write to `/etc/passwd`. `>|`, the noclobber override,
+is a write like `>`.
+
 ## File tool scopes
 
 The developer text editor confines writes to the session's working directory,
