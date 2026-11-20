@@ -2467,6 +2467,10 @@ pub struct ToolCategorizeResult {
     /// several. Their requests are in `remaining_requests`; these join the
     /// inspection results so the denial path answers them and nothing runs.
     pub admission_denials: Vec<InspectionResult>,
+    /// #545: for a prefixed name nobody offered, by request id, the offered
+    /// names it may have meant. Added to the call's result only when dispatch
+    /// answers that the tool does not exist ([`Agent::integrate_tool_result`]).
+    pub unresolved_name_hints: HashMap<String, String>,
 }
 
 /// The per-batch lookup tables one round of tool calls needs, built in one
@@ -8731,14 +8735,20 @@ impl Agent {
         tools: &[rmcp::model::Tool],
     ) -> ToolCategorizeResult {
         // Categorize tool requests
-        let (frontend_requests, remaining_requests, filtered_response, admission_denials) =
-            self.categorize_tool_requests(response, tools).await;
+        let (
+            frontend_requests,
+            remaining_requests,
+            filtered_response,
+            admission_denials,
+            unresolved_name_hints,
+        ) = self.categorize_tool_requests(response, tools).await;
 
         ToolCategorizeResult {
             frontend_requests,
             remaining_requests,
             filtered_response,
             admission_denials,
+            unresolved_name_hints,
         }
     }
 
@@ -8991,6 +9001,7 @@ impl Agent {
         request_to_original_tool_call: &HashMap<String, CallToolRequestParams>,
         request_to_executed_tool_call: &HashMap<String, CallToolRequestParams>,
         request_metadata: &HashMap<String, Option<ProviderMetadata>>,
+        unresolved_name_hints: &HashMap<String, String>,
         catalog_changed: &mut bool,
         extension_state_changed: &mut bool,
         post_tool_results: &mut Vec<(String, Option<Value>, Option<String>)>,
@@ -8999,6 +9010,13 @@ impl Agent {
     ) {
         let _phase = super::phase_timing::Phase::start("agent.integrate_tool_result");
         let mut output = call_tool_result::validate(output);
+        // #545: a prefixed name nobody offered that dispatch could not route
+        // either gets the offered names, as a bare one does at admission.
+        if let (Err(error), Some(hint)) = (&mut output, unresolved_name_hints.get(&request_id)) {
+            if super::reply_parts::is_tool_not_found_error(&error.message) {
+                error.message = format!("{} {hint}", error.message).into();
+            }
+        }
         let diagnostics_receipt = output
             .as_mut()
             .ok()
@@ -16489,6 +16507,7 @@ impl Agent {
                                     mut remaining_requests,
                                     filtered_response,
                                     admission_denials,
+                                    unresolved_name_hints,
                                 } = self
                                     .categorize_tools(
                                         &response,
@@ -16831,6 +16850,7 @@ impl Agent {
                                                     &request_to_original_tool_call,
                                                     &request_to_executed_tool_call,
                                                     &request_metadata,
+                                                    &unresolved_name_hints,
                                                     &mut catalog_changed,
                                                     &mut extension_state_changed,
                                                     &mut post_tool_results,
@@ -20125,6 +20145,7 @@ mod tests {
                 &HashMap::from([(request_id.clone(), original)]),
                 &HashMap::from([(request_id.clone(), executed)]),
                 &HashMap::from([(request_id.clone(), None)]),
+                &HashMap::new(),
                 &mut install_ok,
                 &mut extension_state_changed,
                 &mut post_results,
