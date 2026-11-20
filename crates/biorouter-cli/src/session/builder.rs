@@ -1052,6 +1052,33 @@ fn should_restore_saved_provider(
     Ok(true)
 }
 
+/// How `BIOROUTER_SYSTEM_PROMPT_FILE_PATH` is applied (#544).
+#[derive(Debug, PartialEq, Eq)]
+enum SystemPromptFileMode {
+    /// The file stands in for the stock prompt, and Biorouter's core follows it.
+    Compose,
+    /// The file is the whole base prompt.
+    Replace,
+}
+
+/// Read `BIOROUTER_SYSTEM_PROMPT_OVERRIDE_MODE`. Unset means `compose`. An
+/// unknown value also composes, the direction that keeps the tool roster and
+/// the safety rules, and comes back with a warning to print.
+fn system_prompt_file_mode(setting: Option<&str>) -> (SystemPromptFileMode, Option<String>) {
+    let setting = setting.map(|value| value.trim().to_ascii_lowercase());
+    match setting.as_deref() {
+        None | Some("") | Some("compose") => (SystemPromptFileMode::Compose, None),
+        Some("replace") => (SystemPromptFileMode::Replace, None),
+        Some(other) => (
+            SystemPromptFileMode::Compose,
+            Some(format!(
+                "BIOROUTER_SYSTEM_PROMPT_OVERRIDE_MODE is {other:?}, not \"compose\" or \"replace\". \
+                 Using compose: the prompt file comes first and Biorouter's core follows it."
+            )),
+        ),
+    }
+}
+
 #[allow(clippy::too_many_lines)]
 pub async fn build_session(session_config: SessionBuilderConfig) -> CliSession {
     let config = Config::global();
@@ -1660,13 +1687,28 @@ pub async fn build_session(session_config: SessionBuilderConfig) -> CliSession {
         }
     }
 
-    // Only override system prompt if a system override exists
+    // A configured prompt file stands in for the base prompt. By default
+    // Biorouter's core follows it (#544); `replace` keeps the file alone.
     let system_prompt_file: Option<String> =
         config.get_param("BIOROUTER_SYSTEM_PROMPT_FILE_PATH").ok();
     if let Some(ref path) = system_prompt_file {
         let override_prompt =
             std::fs::read_to_string(path).expect("Failed to read system prompt file");
-        session.agent.override_system_prompt(override_prompt).await;
+        let mode_setting: Option<String> = config
+            .get_param("BIOROUTER_SYSTEM_PROMPT_OVERRIDE_MODE")
+            .ok();
+        let (mode, warning) = system_prompt_file_mode(mode_setting.as_deref());
+        if let Some(warning) = warning {
+            eprintln!("{}", style(format!("Warning: {warning}")).yellow());
+        }
+        match mode {
+            SystemPromptFileMode::Compose => {
+                session.agent.compose_system_prompt(override_prompt).await
+            }
+            SystemPromptFileMode::Replace => {
+                session.agent.override_system_prompt(override_prompt).await
+            }
+        }
     }
 
     if !session_config.quiet && session_config.output_format == "text" {
@@ -1773,6 +1815,29 @@ fn unknown_provider_advice(provider_name: &str, detail: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn issue_544_a_prompt_file_composes_unless_replace_is_asked_for() {
+        for setting in [None, Some(""), Some("compose"), Some(" Compose ")] {
+            assert_eq!(
+                system_prompt_file_mode(setting),
+                (SystemPromptFileMode::Compose, None),
+                "{setting:?}"
+            );
+        }
+        for setting in ["replace", "REPLACE", " replace\n"] {
+            assert_eq!(
+                system_prompt_file_mode(Some(setting)),
+                (SystemPromptFileMode::Replace, None),
+                "{setting:?}"
+            );
+        }
+        let (mode, warning) = system_prompt_file_mode(Some("replac"));
+        assert_eq!(mode, SystemPromptFileMode::Compose);
+        let warning = warning.expect("an unknown mode is reported");
+        assert!(warning.contains("\"replac\""), "{warning}");
+        assert!(warning.contains("Using compose"), "{warning}");
+    }
 
     mod start_decisions {
         use super::super::*;

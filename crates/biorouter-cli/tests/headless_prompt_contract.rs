@@ -241,3 +241,17 @@ async fn issue_544_invalid_override_template_does_not_remove_the_safety_core() {
     );
     assert_eq!(prompt.matches(SYSTEM_MARKER).count(), 1);
 }
+
+/// The narrowed Developer guidance keeps the environment facts the real
+/// Developer server reports, so a `shell`-only composed prompt still names the
+/// operating system and the working directory.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn issue_544_composed_shell_only_guidance_keeps_the_environment_facts() {
+    let prompt = capture_cli_prompt("json", Some("ISSUE_544_CUSTOM_PROMPT"), None).await;
+    assert!(prompt.contains("Use `shell` to run commands"), "{prompt}");
+    assert!(
+        prompt.contains(&format!("operating system: {}", std::env::consts::OS)),
+        "{prompt}"
+    );
+    assert!(prompt.contains("current directory: "), "{prompt}");
+}
