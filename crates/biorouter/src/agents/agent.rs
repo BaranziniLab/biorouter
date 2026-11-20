@@ -11625,7 +11625,19 @@ impl Agent {
         let session_extensions =
             EnabledExtensionsState::from_extension_data(&session.extension_data);
         let enabled_configs = match session_extensions {
-            Some(state) => state.extensions,
+            Some(state) => {
+                // L6: a default-on capability added after this chat's roster was saved (the
+                // Biorouter Browser) joins it now, unless the person has it off for every chat.
+                // Not persisted here, since opening a chat changes nothing in it; the roster
+                // records it, and marks it offered, the next time the roster is written.
+                let backfill = state.backfill(
+                    &crate::config::extensions::get_enabled_extensions(),
+                    session.session_type == crate::session::session_manager::SessionType::SubAgent,
+                );
+                let mut extensions = state.extensions;
+                extensions.extend(backfill);
+                extensions
+            }
             None => {
                 tracing::warn!(
                     "No extensions found in session {}. This is unexpected.",
