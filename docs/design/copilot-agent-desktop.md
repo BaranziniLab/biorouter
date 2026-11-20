@@ -1015,7 +1015,7 @@ Phases 3 and 5 and the first part of phase 6 landed on this branch on 2026-11-20
   `act`, so a client that predates the choice keeps its meaning. The card offers Allow, Only let it
   look and Cancel with what each allows in an InfoTip, and while active says what holds, as the
   browser's card does. Under Allow, what Stop cannot undo stays in view even when the card is
-  folded. The CLI and the TUI ask Allow, Only let it look or Deny, starting on Deny.
+  folded. The CLI and the TUI ask Allow, Only let it look or Deny (the TUI also offers Cancel, which cancels the response), starting on Deny.
 - **Asking macOS for access needs the engine's own request, and it asks one thing too many.**
   macOS lists the Copilot bundle in Accessibility only after it has asked, and with responsibility
   disclaimed only the bundle can ask. Setup's **Request access**

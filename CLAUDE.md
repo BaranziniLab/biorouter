@@ -2736,7 +2736,7 @@ with `LOOK_ONLY_REFUSAL` and no second card. Every surface asks the same way (AD
 desktop card (`components/copilot/CopilotControl.tsx`) offers Allow, Only let it look and Cancel,
 `ComputerUseStatus.grant` says what holds while active, `POST /agent/computer_use/consent` takes
 `grant` (⚠ absent means `act`, so an older client keeps its meaning), and the CLI and TUI ask
-Allow, Only let it look or Deny, starting on Deny. Setup's **Request access**
+Allow, Only let it look or Deny (the TUI also Cancel), starting on Deny. Setup's **Request access**
 (`POST /agent/computer_use/setup/request`, user-action proof only) runs the engine's
 `permissions --request` through the disclaimed spawn, so macOS's own prompts name Biorouter
 Copilot; ⚠ the engine also asks for Automation of System Events, which Copilot does not use, and
