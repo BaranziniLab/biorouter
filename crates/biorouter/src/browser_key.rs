@@ -575,4 +575,10 @@ mod tests {
             helper
         ));
     }
+
+    /// H2: the development Electron exception above is compiled only under
+    /// `debug_assertions`, so no shipped profile may turn them on.
+    mod shipped_profiles {
+        include!("browser_key_shipped_profiles_tests.rs");
+    }
 }
