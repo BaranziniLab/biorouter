@@ -16,9 +16,15 @@ MANIFEST = ROOT / "vendor/agent-desktop/source-manifest.json"
 PREFIX = "vendor/agent-desktop/source"
 
 
+# Files beside the tree that a byte comparison reads on every platform: the payload
+# check compares the shipped licence with this LICENSE, and the dependency list is
+# copied into every payload as it is.
+COMPANIONS = ["vendor/agent-desktop/LICENSE", "vendor/agent-desktop/DEPENDENCIES.txt"]
+
+
 def paths():
     manifest = json.loads(MANIFEST.read_text())
-    return [f"{PREFIX}/{entry['path']}" for entry in manifest["files"]]
+    return [f"{PREFIX}/{entry['path']}" for entry in manifest["files"]] + COMPANIONS
 
 
 def git(args, payload):

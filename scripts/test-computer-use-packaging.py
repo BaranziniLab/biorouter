@@ -625,7 +625,7 @@ class VendoredTreeGuardTests(unittest.TestCase):
 
     def test_the_tree_is_exempt_from_end_of_line_conversion(self):
         attributes = (runtime.ROOT / ".gitattributes").read_text()
-        self.assertIn("vendor/agent-desktop/source/** -text", attributes)
+        self.assertIn("vendor/agent-desktop/** -text", attributes)
 
 
 # ── packaged locations and Linux dependencies ──────────────────────────────

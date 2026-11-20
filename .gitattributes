@@ -61,9 +61,12 @@ vendor/computer-use/source/** -text
 
 # The vendored agent-desktop subset (Biorouter Copilot's engine) is hashed file by
 # file into `vendor/agent-desktop/source-manifest.json` for the same reason, and it
-# too holds extensionless files (`LICENSE`). `scripts/check-vendored-computer-use.py`
+# too holds extensionless files (`LICENSE`). The whole folder is pinned, not only
+# `source/`: the payload check compares the shipped `LICENSE.agent-desktop` with
+# `vendor/agent-desktop/LICENSE` byte for byte on a Windows runner, and that file
+# has no extension for the rules above to catch. `scripts/check-vendored-computer-use.py`
 # fails on every platform when a file under it is not `-text`.
-vendor/agent-desktop/source/** -text
+vendor/agent-desktop/** -text
 
 # The vendored whisper.cpp subset (the local dictation engine) is hashed file by file
 # into `vendor/whisper.cpp/source-manifest.json` for the same reason, and it also holds
