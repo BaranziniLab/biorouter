@@ -1041,6 +1041,12 @@ Phases 3 and 5 and the first part of phase 6 landed on this branch on 2026-11-20
   refuses to type into it (AD-12), so the WinForms fixture is compiled to its own executable by
   Windows PowerShell 5.1's compiler. It compiles as C# 5 (measured with mono); it has not run on
   Windows.
+- **On Windows, Stop has to lift the button itself.** A windowless console process gets no
+  graceful signal, so Stop ends the engine's job at once and its release guard never runs: a drag
+  stopped between press and release would leave the left button down for every app. After a
+  physical command is stopped or times out, the wrapper lifts each mouse button the system still
+  reports pressed. Checked with `cargo check` for windows-gnu; the Windows fixture's Stop case is
+  what will show it working.
 - **The retired engine's leftover is ended by path.** On macOS the daemon ends, once at start, a
   process whose executable is exactly `<this app>/Contents/Resources/computer-use/BioRouter
   Computer Use.app/Contents/MacOS/ocu` (`computer_use::retired`), so another installation's copy

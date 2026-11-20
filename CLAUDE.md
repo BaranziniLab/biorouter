@@ -2705,7 +2705,10 @@ command per operation, never `agent-desktop mcp`: `plan.rs` is the only place a 
 built (model strings only as `--flag=value` or after `--`, `--headed` only where the AD-11 table
 says, never `--cdp`/`--force`/`--trace`), `runner.rs` spawns it (cleared environment, the task's
 own `AGENT_DESKTOP_HOME`, text on stdin, 16 MiB cap, deadline + 5 s, Stop = SIGTERM, 1 s for
-the release guard, then SIGKILL of the group). ⚠ On macOS the spawn is `posix_spawn` with
+the release guard, then SIGKILL of the group). ⚠ Windows has no graceful signal for a windowless
+console process, so Stop ends the job at once and the release guard never runs; after a stopped
+or timed out physical command the wrapper lifts any mouse button the system still reports down
+(`release_held_buttons` in `runner.rs`), or a stopped drag would leave the button held. ⚠ On macOS the spawn is `posix_spawn` with
 `responsibility_spawnattrs_setdisclaim` (AD-04), so TCC grants belong to `Biorouter Copilot.app`
 and never to Biorouter itself; it fails closed rather than spawning normally. `guard.rs` holds
 the AD-12 refusals (Biorouter's own pids, ancestors, install folder and bundle ids; security
