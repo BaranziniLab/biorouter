@@ -1,6 +1,6 @@
 # Turn cancellation and process reaping
 
-> **What this is.** The contract that makes Stop actually stop things: how a cancelled turn reaches a running OS process, why every link in that chain is cooperative, and the two rules a change to any link must not break.
+> **What this is.** The contract that makes Stop actually stop things: how a cancelled turn reaches a running OS process, why every link in that chain is cooperative, and the three rules a change to any link must not break.
 > **Status:** Current. Describes the code as it ships — `routes/reply.rs`, `workspace/turn.rs`, `agents/stopped_turn.rs`, `agents/mcp_client.rs`, `agents/code_execution_extension.rs`, and `biorouter-mcp/src/developer/{shell,rmcp_developer}.rs`. Written up after [#72](https://github.com/BaranziniLab/biorouter/issues/72), where one link was severed and Stop left a filesystem scan running.
 > **Audience:** anyone touching the cancel path, the MCP client, or how the Developer capability spawns processes.
 
@@ -44,6 +44,19 @@ The guard is not a substitute for the token chain: an extension's request task i
 
 The reaper is **disarmed** the moment the child has been waited on or explicitly killed. After a reap the pid can be recycled, and a negative-pid signal would then land on a stranger's process group. Any new exit path from `execute_shell_command` has to keep that pairing.
 
+## Rule 3: the shell's exit ends the command, not its pipes
+
+`execute_shell_command` waits on the shell itself, never on end of file on its output pipes (issue #536). A process the shell started with `&` inherits those pipes and can hold them open for as long as it runs: under bash the subshell of `cd x && nohup job > log 2>&1 &` holds them, and under any shell `nohup job &` writes into them. The call used to wait for end of file first and for the shell second, so such a command blocked until the job ended or the foreground budget killed it together with the job. Waiting on the shell also keeps the budget over a shell that closes its own output and runs on.
+
+A `ForegroundReader` reads the pipes in its own task and keeps the lines in a capture the select arms share:
+
+- When the shell exits, the call waits `FOREGROUND_PIPE_GRACE` (2 s, the background supervisor's grace) for end of file. A normal command reaches it in milliseconds and returns its whole output, with every line streamed. Past the grace the call freezes the capture, returns what it holds and appends a note that does not name `shell_status`, because the leftover process is not a background job.
+- When the budget kills the group, the call waits the same bounded grace and returns the last 100 lines (at most 8,000 characters, cut between characters) in the error, with the envelope `{kind: timeout, retryable: false}` (issue #537). A descendant that left the group can hold the pipe with no end of file, so the wait is never unbounded.
+- After the call returns, the reader goes on reading and discards what it reads, so a late writer is not stopped by a closed pipe, until an absolute deadline `FOREGROUND_QUIET_DRAIN` (30 s) after the shell's exit or kill was observed. Then it closes the pipes. A writer that writes after that gets a broken pipe, and the note says so.
+- Every exit path, a dropped future included, releases the reader to the server's `ForegroundDrains`, which keeps at most `FOREGROUND_QUIET_DRAINS_MAX` (16) at once and aborts them all when the server is dropped. A call that would be one more closes its pipes at once and says so in the note.
+
+On Windows tokio reads a child's pipe on a blocking thread, and aborting the task does not cancel a read already in progress: the pipe stays open until that read returns, which is when the writer next writes or exits. This path has not been verified on native Windows.
+
 ## What a regression looks like
 
 An orphan is invisible from inside the process that created it: the turn ends, the UI goes idle, and the only trace is a running process and — as in the #72 report — a tool request in `logs/llm_request.*.jsonl` with no matching entry in `session.json`.
@@ -53,6 +66,7 @@ So the tests assert on the OS, not on the code. Each one runs a real command tha
 - `crates/biorouter/tests/nested_shell_cancellation.rs` — both dispatch paths and the teardown trigger, end to end through a real `ExtensionManager`.
 - `dropping_the_shell_future_reaps_the_whole_process_tree` (in `rmcp_developer.rs`) — the drop path, with no cancellation involved at all.
 - `a_foreground_command_is_killed_when_it_blows_its_budget` — the budget path.
+- The `issues536_538` and `foreground_pipes` modules in `rmcp_developer.rs`: a shell that exits while a job holds its pipe returns early and the job's late write survives, closed pipes do not suspend the budget, a killed command returns its output tail with a non-retryable envelope, and a released reader closes its pipe at its deadline.
 
 ## What a stopped turn leaves in the transcript
 

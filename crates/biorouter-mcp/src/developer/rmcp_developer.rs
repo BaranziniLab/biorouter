@@ -565,6 +565,18 @@ impl ForegroundReader {
         Ok(out)
     }
 
+    /// What a command printed before its group was killed at `killed`.
+    ///
+    /// The group is gone, so end of file normally follows at once, but a
+    /// descendant that left the group can hold the pipe with no end of file,
+    /// so the wait is bounded.
+    async fn finish_after_kill(&mut self, killed: tokio::time::Instant) -> String {
+        let _ = self.wait_for_eof(FOREGROUND_PIPE_GRACE).await;
+        let printed = self.freeze();
+        self.release(killed + FOREGROUND_QUIET_DRAIN);
+        printed
+    }
+
     /// Stop listening now, keeping nothing.
     fn abandon(&mut self) {
         self.freeze();
@@ -685,6 +697,69 @@ fn foreground_pipe_note(draining: bool) -> String {
          running. {closing} Start long work with background=true, or send its output to a file \
          (`cmd > log 2>&1 &`) and read the file.]"
     )
+}
+
+/// The error a foreground command gets when its budget kills it (issue #537):
+/// the actionable message, the tail of what the command printed before the
+/// kill, and an explicit error envelope.
+///
+/// The envelope matters because without one the agent's error taxonomy
+/// classified the kill from its text, found "timeout" inside the name of the
+/// budget's environment variable and called it `retryable=true`, with advice
+/// that one retry is reasonable. An identical retry is killed again.
+fn foreground_timeout_error(
+    command: &str,
+    elapsed: Duration,
+    limit: Duration,
+    printed: &str,
+) -> ErrorData {
+    let message = foreground_timeout_message(command, elapsed, limit);
+    let summary = message.lines().next().unwrap_or_default().to_string();
+    ErrorData::new(
+        ErrorCode::INTERNAL_ERROR,
+        format!("{message}\n{}", printed_before_kill(printed)),
+        Some(serde_json::json!({
+            "error": {
+                "kind": "timeout",
+                "retryable": false,
+                // Short on purpose: the taxonomy persists this message, and
+                // the model reads the full one.
+                "message": summary,
+            }
+        })),
+    )
+}
+
+/// The last lines a killed command printed, bounded the way a spilled
+/// foreground output's preview is: the last [`SHELL_INLINE_MAX_LINES`] lines,
+/// at most [`SHELL_PREVIEW_MAX_CHARS`] characters of them, cut between
+/// characters. A partial last line with no newline (a `\r` progress bar) never
+/// reached the capture.
+fn printed_before_kill(printed: &str) -> String {
+    let printed = printed.trim_end_matches(['\n', '\r']);
+    if printed.trim().is_empty() {
+        return "It printed nothing before it was killed.".to_string();
+    }
+    // From the end, so a long output is not split into lines in full.
+    let start = printed
+        .rmatch_indices('\n')
+        .nth(SHELL_INLINE_MAX_LINES - 1)
+        .map_or(0, |(newline, _)| newline + 1);
+    let (tail, clipped) = tail_chars(
+        printed.get(start..).unwrap_or_default(),
+        SHELL_PREVIEW_MAX_CHARS,
+    );
+    let shown = if clipped {
+        format!("the last {} characters", tail.chars().count())
+    } else if start > 0 {
+        format!(
+            "the last {SHELL_INLINE_MAX_LINES} of {} lines",
+            printed.split('\n').count()
+        )
+    } else {
+        "all of it".to_string()
+    };
+    format!("Output before the kill ({shown}):\n{tail}")
 }
 
 /// Parameters for the `shell_status` tool.
@@ -2147,16 +2222,17 @@ impl DeveloperServer {
                 );
                 let _ = kill_process_group(&mut child, pid).await;
                 reaper.disarm();
-                reader.abandon();
+                // Issue #537: what the command printed goes back with the
+                // error; it used to be dropped with the reader.
+                let printed = reader
+                    .finish_after_kill(tokio::time::Instant::now())
+                    .await;
 
-                Err(ErrorData::new(
-                    ErrorCode::INTERNAL_ERROR,
-                    foreground_timeout_message(
-                        &command_text,
-                        elapsed,
-                        budget.unwrap_or_default(),
-                    ),
-                    None,
+                Err(foreground_timeout_error(
+                    &command_text,
+                    elapsed,
+                    budget.unwrap_or_default(),
+                    &printed,
                 ))
             }
         }
@@ -6579,8 +6655,8 @@ mod tests {
         });
     }
 
-    /// Issue #536: how a foreground call ends when the shell exits while a
-    /// pipe is still held.
+    /// Issues #536 and #537: how a foreground call ends when the shell exits
+    /// while a pipe is still held, and what a killed call returns.
     mod foreground_pipes {
         use super::*;
 
@@ -6627,6 +6703,42 @@ mod tests {
                 tokio::time::sleep(Duration::from_millis(20)).await;
             }
             path.exists()
+        }
+
+        #[test]
+        fn a_kill_tail_says_how_much_of_the_output_it_shows() {
+            assert_eq!(
+                printed_before_kill(""),
+                "It printed nothing before it was killed."
+            );
+            assert_eq!(
+                printed_before_kill("one\ntwo\n"),
+                "Output before the kill (all of it):\none\ntwo"
+            );
+
+            let long: String = (1..=300).map(|i| format!("line-{i}\n")).collect();
+            let tail = printed_before_kill(&long);
+            assert!(
+                tail.starts_with("Output before the kill (the last 100 of 300 lines):\nline-201\n"),
+                "{tail}"
+            );
+            assert!(tail.ends_with("\nline-300"), "{tail}");
+            assert!(!tail.contains("line-200\n"), "{tail}");
+        }
+
+        /// The character bound cuts between characters, never inside one, and
+        /// keeps the end of the output.
+        #[test]
+        fn a_kill_tail_of_wide_characters_keeps_the_latest_whole_characters() {
+            let wide = format!("{}終端\n", "字".repeat(SHELL_PREVIEW_MAX_CHARS * 2));
+            let tail = printed_before_kill(&wide);
+            let (label, body) = tail.split_once('\n').unwrap();
+            assert_eq!(
+                label,
+                format!("Output before the kill (the last {SHELL_PREVIEW_MAX_CHARS} characters):")
+            );
+            assert_eq!(body.chars().count(), SHELL_PREVIEW_MAX_CHARS);
+            assert!(body.ends_with("字終端"), "{body}");
         }
 
         /// The drains a server keeps are bounded, and a server that goes away
@@ -6824,6 +6936,40 @@ mod tests {
                 let text = model_text(&result);
                 assert!(began.elapsed() < Duration::from_secs(2), "{text}");
                 assert_eq!(text, "quick\n");
+
+                cleanup_test_service(running_service, peer);
+            });
+        }
+
+        /// #537: a killed command's own output comes back with the error, and
+        /// the header the agent builds from it no longer advises a retry.
+        #[test]
+        #[serial]
+        #[cfg(unix)]
+        fn a_killed_command_returns_what_it_printed_and_is_not_retryable() {
+            run_shell_test(|| async {
+                let server =
+                    create_test_server().with_foreground_timeout(Some(Duration::from_secs(1)));
+                let running_service = serve_directly(server.clone(), create_test_transport(), None);
+                let peer = running_service.peer().clone();
+
+                let error = run_foreground(&server, &peer, 5371, "echo start; sleep 5".to_string())
+                    .await
+                    .expect_err("a command over its budget must fail");
+                let message = error.message.to_string();
+                assert!(message.contains("foreground limit"), "{message}");
+                assert!(
+                    message.ends_with("Output before the kill (all of it):\nstart"),
+                    "{message}"
+                );
+                let envelope = &error.data.as_ref().expect("an envelope")["error"];
+                assert_eq!(envelope["kind"], "timeout", "{envelope}");
+                assert_eq!(envelope["retryable"], false, "{envelope}");
+                assert_eq!(
+                    envelope["message"].as_str(),
+                    message.lines().next(),
+                    "the persisted summary is the first line only"
+                );
 
                 cleanup_test_service(running_service, peer);
             });
