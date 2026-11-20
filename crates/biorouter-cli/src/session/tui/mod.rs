@@ -1318,15 +1318,13 @@ async fn drive_response(
                 if let Ok(status) = session.agent.extension_manager.computer_use_status(session.session_id()).await {
                     if super::computer_use_needs_prompt(&status, computer_use_challenge.as_deref()) {
                         computer_use_challenge = Some(status.challenge_id.clone());
-                        match run_choice_modal(app, tui, rx, computer_use_modal(&status.disclosure)).await? {
-                            Some(index) => match super::COMPUTER_USE_CHOICES[index].0 {
-                                Some(level) => {
-                                    session.agent.extension_manager.approve_computer_use(session.session_id(), &status.challenge_id, level).await?;
-                                    app.push_note(&super::computer_use_allowed_note(level).replace("Ctrl-C", "Esc or Ctrl-C"));
-                                }
-                                None => session.agent.extension_manager.computer_use.revoke(),
-                            },
-                            // Esc or Ctrl-C at the card cancels the response, as it did before.
+                        match run_choice_modal(app, tui, rx, computer_use_modal(&status.disclosure)).await?.and_then(|index| super::COMPUTER_USE_CHOICES.get(index)) {
+                            Some((Some(level), _, _)) => {
+                                session.agent.extension_manager.approve_computer_use(session.session_id(), &status.challenge_id, *level).await?;
+                                app.push_note(&super::computer_use_allowed_note(*level).replace("Ctrl-C", "Esc or Ctrl-C"));
+                            }
+                            Some((None, _, _)) => session.agent.extension_manager.computer_use.revoke(),
+                            // Cancel, Esc or Ctrl-C at the card cancels the response, as it did before.
                             None => {
                                 session.agent.extension_manager.computer_use.revoke();
                                 stop.cancel(&cancel);
@@ -1701,16 +1699,19 @@ async fn run_choice_modal(
 const COMPACT_CHOICE: usize = 0;
 
 /// Biorouter Copilot's card in the TUI (AD-10): the disclosure, then Allow, Only let it look and
-/// Deny from [`super::COMPUTER_USE_CHOICES`], with Deny chosen to start. Esc cancels the response.
+/// Deny from [`super::COMPUTER_USE_CHOICES`], with Deny chosen to start, and Cancel, which cancels
+/// the response as Esc does.
 fn computer_use_modal(disclosure: &str) -> PermissionModal {
-    let options: Vec<_> = super::COMPUTER_USE_CHOICES
+    let mut options: Vec<_> = super::COMPUTER_USE_CHOICES
         .iter()
         .map(|(_, label, hint)| (*label, *hint))
         .collect();
+    let deny = options.len() - 1;
+    options.push(("Cancel", "cancel response"));
     PermissionModal {
         title: TOOL_APPROVAL_TITLE,
         prompt: Some(format!("Biorouter Copilot\n{disclosure}")),
-        selected: options.len() - 1,
+        selected: deny,
         options,
         scroll: 0,
     }
@@ -4194,8 +4195,11 @@ mod tests {
     fn the_copilot_card_offers_look_only_and_starts_on_deny() {
         let modal = computer_use_modal("disclosure");
         let labels: Vec<_> = modal.options.iter().map(|(label, _)| *label).collect();
-        assert_eq!(labels, ["Allow", "Only let it look", "Deny"]);
+        assert_eq!(labels, ["Allow", "Only let it look", "Deny", "Cancel"]);
+        assert_eq!(modal.options[modal.selected].0, "Deny");
         assert_eq!(super::super::COMPUTER_USE_CHOICES[modal.selected].0, None);
+        // Cancel has no grant row, so it reads as Esc: the response is cancelled.
+        assert!(super::super::COMPUTER_USE_CHOICES.get(3).is_none());
         assert!(modal.prompt.unwrap().ends_with("disclosure"));
     }
 
