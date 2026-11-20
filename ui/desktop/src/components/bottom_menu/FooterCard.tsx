@@ -82,10 +82,11 @@ type TriggerProps = Omit<
 };
 
 /**
- * A footer item's trigger: a real button on the line's item recipe (`.br-footline__item`), named
- * by its own `aria-label`, whose hover, focus and click are the card's (`footerCardTriggerProps`).
+ * A readout's trigger: a real button on the line's item recipe (`.br-footline__item`), named by
+ * its own `aria-label`, whose hover, focus and click are the card's (`footerCardTriggerProps`).
  * An `onClick` given here runs first; calling `event.preventDefault()` in it keeps the click from
- * pinning (the folder chip's Cmd or Ctrl-click, which opens the folder instead).
+ * pinning. The folder chip draws its own button on the same recipe, inside its label tooltip
+ * (`DirSwitcher`).
  */
 export function FooterCardTrigger({
   card,

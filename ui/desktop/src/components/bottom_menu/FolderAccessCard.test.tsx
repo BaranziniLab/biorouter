@@ -5,17 +5,19 @@ import type { ComponentProps } from 'react';
 
 /**
  * The working folder's card, driven through the real chip (`DirSwitcher`), which owns the
- * Popover root and its anchor. When a footer card opens and closes is pinned once for all three
- * items, in one table, in `footerCards.contract.test.tsx` (the primitive's own corners are
- * `useFooterCard.test.tsx`'s); this file pins what is the folder's own: the chip's click pins the
- * card in EVERY state (the contract renders a chat with messages only), Choose folder… is the only
- * way to the chooser and only while the chat is empty (#44), the card stays shut while the chooser
- * is open (#50), Cmd-click on macOS and Ctrl-click elsewhere, how a folder is written (`~`,
- * isolated names), and the grants. It replaced the footer's "Folder access"
- * button and dialog, so every behaviour `FolderAccess.test.tsx` pinned lives here now: grants load
- * only when the card opens, Revoke acts on the selected grant in its own chat with the proof
- * header, a refused revoke stays visible, and the browser's approval key is labelled, described,
- * sent only as `X-Folder-Access-Key` and cleared after every attempt.
+ * Popover root and its anchor. The chip is a control (owner, 2026-11-19): a hover shows its label
+ * tooltip and never this card; a click opens the folder chooser while the chat is empty and its
+ * folder known, and this card otherwise (a chat with messages, #44, or a folder not known yet).
+ * When the ring's and the cost's cards open and close is pinned in one table in
+ * `footerCards.contract.test.tsx` (the primitive's own corners are `useFooterCard.test.tsx`'s), and
+ * the chip's tooltip and chooser in `DirSwitcher.test.tsx`; this file pins the card: the chip's
+ * click keeps it wherever the folder cannot be chosen, the card offers no chooser in any state,
+ * nothing opens it while the chooser is open (#50), Cmd-click on macOS and Ctrl-click elsewhere,
+ * how a folder is written (`~`, isolated names), and the grants. It replaced the footer's "Folder
+ * access" button and dialog, so every behaviour `FolderAccess.test.tsx` pinned lives here now:
+ * grants load only when the card opens, Revoke acts on the selected grant in its own chat with
+ * the proof header, a refused revoke stays visible, and the browser's approval key is labelled,
+ * described, sent only as `X-Folder-Access-Key` and cleared after every attempt.
  */
 
 const mocks = vi.hoisted(() => ({
@@ -102,7 +104,8 @@ function Page(props: ChipProps) {
 const card = () => document.querySelector<HTMLElement>('[data-testid="folder-access-card"]');
 const isOpen = () => card()?.getAttribute('data-state') === 'open';
 const chip = () => screen.getByRole('button', { name: /^Working folder/ });
-const chooseButton = () => screen.queryByRole('button', { name: FOLDER_ACCESS_COPY.chooseFolder });
+/** Any control that would choose a folder: the card has none, in any state. */
+const chooseButton = () => screen.queryByRole('button', { name: /choose/i });
 
 /** Let the grant read (a resolved mock) land inside act. */
 const flush = () => act(async () => {});
@@ -160,10 +163,8 @@ function holdChooser() {
   return (value: { canceled: boolean; filePaths: string[] }) => act(async () => answer?.(value));
 }
 
-describe('the chip pins its card in every state', () => {
+describe('the chip keeps its card wherever the folder cannot be chosen', () => {
   it.each([
-    ['on Home', { sessionId: undefined, locked: false }, 'dir-switcher'],
-    ['in an empty chat', { locked: false }, 'dir-switcher'],
     ['in a chat with messages (#44)', { locked: true }, 'dir-switcher-locked'],
     ['while the folder is not known yet', { workingDir: null }, 'dir-switcher-unknown'],
     [
@@ -172,7 +173,7 @@ describe('the chip pins its card in every state', () => {
       'dir-switcher-unknown',
     ],
   ] as const)(
-    'pins on a click %s, and a second click closes it, choosing nothing',
+    'opens it on a click %s, and a second click closes it, choosing nothing',
     async (_state, props, testId) => {
       const onWorkingDirChange = vi.fn();
       const user = userEvent.setup();
@@ -189,8 +190,9 @@ describe('the chip pins its card in every state', () => {
       expect(isOpen()).toBe(true);
       expect(target).toHaveAttribute('aria-expanded', 'true');
       expect(target).toHaveAttribute('aria-controls', card()!.id);
+      expect(target).toHaveAttribute('data-pinned', 'true');
 
-      // Pinned: the pointer wandering off does not close it.
+      // Kept: the pointer wandering off does not close it.
       await user.unhover(target);
       await act(
         () => new Promise((resolve) => setTimeout(resolve, FOOTER_CARD_CLOSE_GRACE_MS * 2))
@@ -204,25 +206,46 @@ describe('the chip pins its card in every state', () => {
       expect(onWorkingDirChange).not.toHaveBeenCalled();
     }
   );
+
+  it.each([
+    ['on Home', { sessionId: undefined, locked: false }],
+    ['in an empty chat', { locked: false }],
+  ] as const)('never opens it %s, where the click opens the chooser', async (_state, props) => {
+    vi.useFakeTimers();
+    render(<Page {...props} />);
+    expect(chip()).not.toHaveAttribute('aria-haspopup');
+    // A hover past the footer cards' delay opens nothing and reads nothing.
+    hoverOpen(chip());
+    expect(isOpen()).toBe(false);
+    await act(async () => {
+      fireEvent.click(chip(), { detail: 1 });
+    });
+    expect(window.electron.directoryChooser).toHaveBeenCalledTimes(1);
+    expect(isOpen()).toBe(false);
+    expect(mocks.list).not.toHaveBeenCalled();
+  });
+
+  it('opens it on a click only: a hover over a chat with messages opens nothing and reads nothing', async () => {
+    vi.useFakeTimers();
+    render(<Page />);
+    hoverOpen(chip());
+    act(() => {
+      vi.advanceTimersByTime(FOOTER_CARD_OPEN_DELAY_MS * 3);
+    });
+    await flush();
+    expect(isOpen()).toBe(false);
+    expect(chip()).not.toHaveAttribute('data-pinned');
+    expect(mocks.list).not.toHaveBeenCalled();
+  });
 });
 
-describe('choosing a folder (only from the card, only while the chat is empty)', () => {
-  it('offers Choose folder… in an empty chat and on Home, and nowhere else', async () => {
+describe('choosing a folder (only by the chip’s click, only while the chat is empty)', () => {
+  it('offers no chooser in the card, in any state it opens in', async () => {
     const user = userEvent.setup();
-    const view = render(<Page locked={false} />);
-    await user.click(chip());
-    expect(chooseButton()).toBeInTheDocument();
-    expect(card()).not.toHaveTextContent(FOLDER_ACCESS_COPY.lockedNote);
-    await user.click(chip());
-
-    view.rerender(<Page locked={false} sessionId={undefined} />);
-    await user.click(chip());
-    expect(chooseButton()).toBeInTheDocument();
-    await user.click(chip());
-
+    const view = render(<Page locked />);
     // #44: once the chat has messages the card says the folder is fixed, and offers no chooser.
-    view.rerender(<Page locked />);
     await user.click(chip());
+    expect(isOpen()).toBe(true);
     expect(chooseButton()).toBeNull();
     expect(card()).toHaveTextContent(FOLDER_ACCESS_COPY.lockedNote);
     await user.click(chip());
@@ -230,6 +253,7 @@ describe('choosing a folder (only from the card, only while the chat is empty)',
     // No folder known: nothing to choose from, in either state.
     view.rerender(<Page locked={false} workingDir={null} />);
     await user.click(chip());
+    expect(isOpen()).toBe(true);
     expect(chooseButton()).toBeNull();
     expect(card()).not.toHaveTextContent(FOLDER_ACCESS_COPY.lockedNote);
     await user.click(chip());
@@ -241,60 +265,50 @@ describe('choosing a folder (only from the card, only while the chat is empty)',
     expect(window.electron.directoryChooser).not.toHaveBeenCalled();
   });
 
-  it('closes the card, opens the chooser, and keeps the card shut while the chooser is open (#50)', async () => {
+  it('opens nothing while the chooser is open, and nothing after it (#50)', async () => {
     vi.useFakeTimers();
     // macOS, so the Cmd-click below would reveal the folder were the chooser not open.
     window.electron.platform = 'darwin';
     const answer = holdChooser();
     render(<Page locked={false} sessionId={undefined} />);
     fireEvent.click(chip(), { detail: 1 });
-    expect(isOpen()).toBe(true);
-    fireEvent.click(chooseButton()!);
     expect(window.electron.directoryChooser).toHaveBeenCalledTimes(1);
     expect(isOpen()).toBe(false);
 
-    // The native chooser is up: a hover, a click or a focus must not bring the card back over it.
+    // The native chooser is up: a hover, a click or a Cmd-click must open nothing over it.
     hoverOpen(chip());
     expect(isOpen()).toBe(false);
     fireEvent.click(chip(), { detail: 1 });
+    expect(window.electron.directoryChooser).toHaveBeenCalledTimes(1);
     expect(isOpen()).toBe(false);
     fireEvent.click(chip(), { detail: 1, metaKey: true });
     expect(window.electron.openDirectoryInExplorer).not.toHaveBeenCalled();
+    expect(chip()).not.toHaveAttribute('data-pinned');
 
     await answer({ canceled: true, filePaths: [] });
-    // Nothing armed during the chooser opens the card now that it is gone, nor once any open
+    // Nothing armed during the chooser opens anything now that it is gone, nor once any open
     // delay has run out.
-    expect(isOpen()).toBe(false);
     act(() => {
       vi.advanceTimersByTime(FOOTER_CARD_OPEN_DELAY_MS * 2);
     });
     expect(isOpen()).toBe(false);
+    expect(window.electron.directoryChooser).toHaveBeenCalledTimes(1);
     expect(mocks.list).not.toHaveBeenCalled();
-
-    // A fresh hover once the chooser has closed opens it again.
-    fireEvent.pointerLeave(chip(), { pointerType: 'mouse' });
-    hoverOpen(chip());
-    expect(isOpen()).toBe(true);
+    expect(chip()).not.toHaveAttribute('data-pinned');
   });
 
-  it('hands focus back to the chip when Choose folder… is pressed from the keyboard', async () => {
+  it('keeps focus on the chip when Enter opens the chooser, and after it closes', async () => {
     const answer = holdChooser();
     const user = userEvent.setup();
     render(<Page locked={false} />);
     act(() => chip().focus());
-    await user.keyboard('{Enter}');
-    await waitFor(() => expect(card()).toHaveFocus());
-    // The Working folder label's InfoTip comes first, as it is drawn; then Choose folder….
-    await user.tab();
-    expect(workingFolderTip()).toHaveFocus();
-    await user.tab();
-    expect(chooseButton()).toHaveFocus();
     await user.keyboard('{Enter}');
     expect(window.electron.directoryChooser).toHaveBeenCalledTimes(1);
     expect(isOpen()).toBe(false);
     expect(chip()).toHaveFocus();
     await answer({ canceled: true, filePaths: [] });
     expect(isOpen()).toBe(false);
+    expect(chip()).toHaveFocus();
   });
 
   it('persists the choice for an empty chat, bracketed by the restart, with the proof header', async () => {
@@ -315,7 +329,6 @@ describe('choosing a folder (only from the card, only while the chat is empty)',
       />
     );
     await user.click(chip());
-    await user.click(chooseButton()!);
     await waitFor(() =>
       expect(mocks.update).toHaveBeenCalledWith({
         headers: PROOF,
@@ -326,6 +339,7 @@ describe('choosing a folder (only from the card, only while the chat is empty)',
     expect(onRestartStart).toHaveBeenCalledTimes(1);
     await waitFor(() => expect(onRestartEnd).toHaveBeenCalledTimes(1));
     expect(onWorkingDirChange).toHaveBeenCalledWith('/Users/wgu/Projects/other');
+    expect(isOpen()).toBe(false);
   });
 
   it('never reaches the chooser or updateWorkingDir from a locked chip, by any press (#44)', async () => {
@@ -340,7 +354,7 @@ describe('choosing a folder (only from the card, only while the chat is empty)',
     await user.keyboard(' ');
     await flush();
     for (const button of screen.queryAllByRole('button')) {
-      expect(button).not.toHaveAccessibleName(FOLDER_ACCESS_COPY.chooseFolder);
+      expect(button).not.toHaveAccessibleName(/choose/i);
     }
     expect(window.electron.directoryChooser).not.toHaveBeenCalled();
     expect(mocks.update).not.toHaveBeenCalled();
@@ -357,7 +371,7 @@ describe('Cmd-click on macOS, Ctrl-click elsewhere (an accelerator)', () => {
     ['an empty chat', { locked: false }],
     ['a chat with messages', { locked: true }],
   ] as const)(
-    'opens the folder of %s in the file manager on macOS by Cmd-click, and pins nothing',
+    'opens the folder of %s in the file manager on macOS by Cmd-click, and does nothing else',
     (_state, props) => {
       onPlatform('darwin');
       render(<Page {...props} />);
@@ -582,54 +596,44 @@ describe('what the card says', () => {
     expect(workingFolderTip()).toHaveAccessibleDescription(FOLDER_ACCESS_COPY.whoAsks);
   });
 
-  it('reads nothing on Home, lists no other folders there, and still says which tools ask', async () => {
-    vi.useFakeTimers();
-    render(<Page sessionId={undefined} locked={false} />);
-    hoverOpen(chip());
-    await flush();
-    expect(isOpen()).toBe(true);
-    expect(getPath(WORKING_DIR, card()!)).toHaveTextContent(WORKING_DIR);
-    expect(workingFolderTip()).toHaveAccessibleDescription(FOLDER_ACCESS_COPY.whoAsks);
-    expect(card()).not.toHaveTextContent(FOLDER_ACCESS_COPY.otherFolders);
-    expect(mocks.list).not.toHaveBeenCalled();
-  });
-
-  it('treats a new chat with no session yet like Home, then lists its grants once it has one', async () => {
+  it('treats a new chat with no session yet as holding no grant, then lists its grants once it has one', async () => {
     // A new chat (`#/pair` before its first message) reaches the chip with an EMPTY session id,
     // not `undefined`. Such a chat can hold no grant, so the card must not wait for a read that
-    // is never sent: it once said "Checking folder access…" for as long as it stayed open.
+    // is never sent: it once said "Checking folder access…" for as long as it stayed open. With
+    // its folder known its click opens the chooser, so the card is reached while the folder is
+    // not known yet.
     const user = userEvent.setup();
-    const view = render(<Page sessionId="" locked={false} />);
+    const view = render(<Page sessionId="" locked={false} workingDir={null} />);
     await user.click(chip());
     await flush();
     expect(isOpen()).toBe(true);
-    expect(getPath(WORKING_DIR, card()!)).toHaveTextContent(WORKING_DIR);
-    expect(chooseButton()).toBeInTheDocument();
+    expect(card()).toHaveTextContent(FOLDER_ACCESS_COPY.workingFolderUnknown);
+    expect(chooseButton()).toBeNull();
     expect(workingFolderTip()).toHaveAccessibleDescription(FOLDER_ACCESS_COPY.whoAsks);
     expect(card()).not.toHaveTextContent(FOLDER_ACCESS_COPY.loading);
     expect(card()).not.toHaveTextContent(FOLDER_ACCESS_COPY.otherFolders);
     expect(mocks.list).not.toHaveBeenCalled();
 
     // The chat gets its session while the card is open: the section appears and reads it.
-    view.rerender(<Page sessionId="chat-a" locked={false} />);
+    view.rerender(<Page sessionId="chat-a" locked={false} workingDir={null} />);
     expect(await findPath(RESULTS.folder, card()!)).toBeInTheDocument();
     expect(card()).toHaveTextContent(FOLDER_ACCESS_COPY.otherFolders);
     expect(mocks.list).toHaveBeenCalledTimes(1);
     expect(mocks.list).toHaveBeenCalledWith({ query: { session_id: 'chat-a' }, headers: PROOF });
   });
 
-  it('reads the grants only once the card opens, with the proof header', async () => {
+  it('reads the grants only once a click opens the card, with the proof header', async () => {
     vi.useFakeTimers();
     render(<Page />);
     expect(mocks.list).not.toHaveBeenCalled();
+    // A hover shows the tooltip and never the card, so it reads nothing.
     fireEvent.pointerEnter(chip(), { pointerType: 'mouse' });
     act(() => {
-      vi.advanceTimersByTime(FOOTER_CARD_OPEN_DELAY_MS - 10);
+      vi.advanceTimersByTime(FOOTER_CARD_OPEN_DELAY_MS * 2);
     });
+    await flush();
     expect(mocks.list).not.toHaveBeenCalled();
-    act(() => {
-      vi.advanceTimersByTime(20);
-    });
+    fireEvent.click(chip(), { detail: 1 });
     await flush();
     expect(mocks.list).toHaveBeenCalledTimes(1);
     expect(mocks.list).toHaveBeenCalledWith({

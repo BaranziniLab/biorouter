@@ -3,11 +3,11 @@ import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 /**
- * The composer footer's folder chip (spec 3.7) and the folder in its card: the folder's NAME on
- * the chip, in the footer's sans, and the whole location in the chip's card (`FolderAccessCard`,
- * which replaced the plain path tooltip), through the footer cards' one folder reading
- * (`FooterCardPath`, FooterCard.tsx). Both are written by the one rule in utils/folderPath.ts:
- * `~` for the home folder, the sidebar's word for the name.
+ * The composer footer's folder chip (spec 3.7), its label tooltip and the folder in its card: the
+ * folder's NAME on the chip, in the footer's sans; the whole location in the chip's label tooltip
+ * (the model chip's `Tooltip`, owner 2026-11-19) and in its folder access card (`FolderAccessCard`),
+ * through the footer cards' one folder reading (`FooterCardPath`, FooterCard.tsx). All are written
+ * by the one rule in utils/folderPath.ts: `~` for the home folder, the sidebar's word for the name.
  *
  * ⚠ **Asserted at the SOURCE, and it has to be.** jsdom has no layout engine, never runs Tailwind
  * and does not implement the bidi algorithm, so a component test that mounts the chip reads the
@@ -46,8 +46,10 @@ const NAME_RULE = /\.br-footline__name\s*\{([^}]*)\}/;
 describe('the folder chip in the composer footer', () => {
   it('prints the folder name, not the path, in every state', () => {
     expect(code).toContain('folderName(workingDir, homeFolder())');
-    // The chip never prints the path as text; it hands it to the card.
+    // The chip never prints the path as text; its tooltip writes it name by name, as the app
+    // writes a folder (`~` for home), and it hands it to the card.
     expect(code).not.toMatch(/>\{workingDir\}</);
+    expect(code).toMatch(/<PathSegments path=\{tildePath\(workingDir, homeFolder\(\)\)\} \/>/);
     expect(code).toMatch(/<FolderAccessCard[\s\S]*?workingDir=\{workingDir\}/);
     // The path itself reaches the screen only inside the card, through the one folder reading the
     // footer cards have, for the working folder and for every grant.
@@ -92,6 +94,21 @@ describe('the folder chip in the composer footer', () => {
     expect(PICKERS_CSS_CODE).not.toMatch(/word-break:\s*break-all/);
   });
 
+  it('wraps the tooltip’s folder like the card’s: after a separator, names kept whole', () => {
+    const rule = PICKERS_CSS_CODE.match(/\.br-folder-tip__path\s*\{([^}]*)\}/)?.[1];
+    expect(rule).toBeTruthy();
+    expect(rule).toMatch(/overflow-wrap:\s*anywhere/);
+    const piece = PICKERS_CSS_CODE.match(
+      /\.br-folder-tip__path \.br-path-piece\s*\{([^}]*)\}/
+    )?.[1];
+    expect(piece).toMatch(/display:\s*inline-block/);
+    expect(piece).toMatch(/max-width:\s*100%/);
+    expect(PICKERS_CSS_CODE).toMatch(
+      /\.br-folder-tip__path bdi\s*\{\s*white-space:\s*pre-wrap;\s*\}/
+    );
+    expect(code).toMatch(/<span dir="ltr" className="br-folder-tip__path">/);
+  });
+
   it('wraps a folder in authored CSS, inside a name only as the last resort', () => {
     const rule = PICKERS_CSS_CODE.match(/\.br-footer-card__path\s*\{([^}]*)\}/)?.[1];
     expect(rule).toBeTruthy();
@@ -130,11 +147,17 @@ describe('the folder chip in the composer footer', () => {
     expect(rule).toMatch(/min-width:\s*0/);
   });
 
-  it('is one trigger on the footer item recipe in every state', () => {
-    // One `FooterCardTrigger`, the same for every footer item, carries the
-    // recipe, so the chip's states (and the line's three items) cannot drift.
-    expect(code.match(/<FooterCardTrigger\b/g)).toHaveLength(1);
-    expect(code).not.toMatch(/<button\b/);
+  it('is one button on the footer item recipe in every state, inside the label tooltip', () => {
+    // One button, the same in every state, carries the line's item recipe and the app's label
+    // tooltip (the model chip's, through `useSurfaceTriggerHint`), so the chip's states cannot
+    // drift. It is no footer-card disclosure: a hover never opens its card.
+    expect(code.match(/<button\b/g)).toHaveLength(1);
+    expect(code).not.toMatch(/<FooterCardTrigger\b/);
+    expect(code).not.toMatch(/triggerHandlers/);
+    expect(code).toMatch(/className=\{cn\('br-footline__item', className\)\}/);
+    expect(code).toMatch(/<Tooltip \{\.\.\.hint\.tooltip\}>/);
+    expect(code).toMatch(/<TooltipTrigger asChild \{\.\.\.hint\.trigger\}>/);
+    expect(code).toMatch(/useSurfaceTriggerHint\(/);
     expect(surfaceCode).toMatch(/className=\{cn\('br-footline__item', className\)\}/);
     // The state names the chip for tests only; its behaviour is the same.
     expect(code).toMatch(

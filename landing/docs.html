@@ -109,7 +109,7 @@
 <h2 id="getstarted-first-chat">Start a chat</h2>
 <ol class="steps">
   <li><strong>Open a new chat</strong> Choose <strong>New chat</strong> in the sidebar, or press <kbd>Cmd+T</kbd> (<kbd>Ctrl+T</kbd> on Windows and Linux).</li>
-  <li><strong>Pick a working folder</strong> The folder on the line under the text box is where the agent reads and writes files. Choose it to see its full path, and <strong>Choose folder…</strong> to switch before you send the first message. After that the chat keeps it, and the same card lists any other folders the chat may use, each with <strong>Revoke</strong>.</li>
+  <li><strong>Pick a working folder</strong> The folder on the line under the text box is where the agent reads and writes files. Point at it to see its full path, and click it to switch before you send the first message. After that the chat keeps it, and clicking it shows any other folders the chat may use, each with <strong>Revoke</strong>.</li>
   <li><strong>Ask</strong> Type a request in plain language and press <kbd>Enter</kbd>, for example “List the files in this folder and summarize the README.” The agent answers and shows each tool it runs as one line.</li>
 </ol>
 <p>From a terminal, <code>biorouter session</code> opens an interactive chat, and <code>biorouter run -t "Summarize ./notes.md"</code> sends one request and exits.</p>
@@ -176,9 +176,9 @@
   <li><strong>Under the card.</strong> On the left, the working folder the agent reads and writes in. On the right, the model chip, then a ring that shows how much of the context window is left, then the estimated cost of the chat so far. A decision chat has no ring. On Home the line shows the folder and the model.</li>
   <li><strong>The model chip.</strong> It names the model this chat runs on. Its menu shows the provider and whether the model is private, sets <strong>Effort</strong> (Quick, Normal or Deep), which is how long the model thinks before it answers, and offers <strong>Change model…</strong>. See <a href="#app-models">Switching models</a>.</li>
 </ul>
-<p>Point at the folder, the ring or the cost to see a card about it, and click to keep the card open. <kbd>Esc</kbd> or a click elsewhere closes it.</p>
+<p>Point at the folder to see where it is. Point at the ring or the cost to see a card about it, and click to keep the card open. <kbd>Esc</kbd> or a click elsewhere closes it.</p>
 <ul>
-  <li><strong>Folder.</strong> The full path and, while the chat is empty, <strong>Choose folder…</strong>; once you send the first message the chat keeps its folder. Below it are the other folders the chat may use, each with <strong>Revoke</strong>. <kbd>Cmd</kbd>-click the folder to open it in Finder, or <kbd>Ctrl</kbd>-click on Windows and Linux; a <code>biorouter serve</code> browser cannot.</li>
+  <li><strong>Folder.</strong> Pointing at it shows the full path. While the chat is empty, clicking it opens the folder chooser; once you send the first message the chat keeps its folder, and clicking it opens a card with the other folders the chat may use, each with <strong>Revoke</strong>. <kbd>Cmd</kbd>-click the folder to open it in Finder, or <kbd>Ctrl</kbd>-click on Windows and Linux; a <code>biorouter serve</code> browser cannot.</li>
   <li><strong>Ring.</strong> How much is left and used, and a bar whose marker sets when Biorouter compacts the chat on its own. <strong>Compact chat</strong> compacts it now. When the chat can call more than 60 tools, <strong>Review extensions</strong> appears beside it.</li>
   <li><strong>Cost.</strong> What the chat used, and a limit for it in dollars or tokens. Until you set one, the default from <strong>Settings&nbsp;→&nbsp;App&nbsp;→&nbsp;Usage</strong> applies. The limit counts the chat and the subagents it starts, and a chat that reaches it pauses before its next model request. <strong>Settings&nbsp;→&nbsp;App&nbsp;→&nbsp;General&nbsp;→&nbsp;Show costs</strong> hides the dollar figures, not the limit.</li>
 </ul>
