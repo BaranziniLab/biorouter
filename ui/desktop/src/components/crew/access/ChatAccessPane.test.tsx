@@ -1033,13 +1033,16 @@ describe('chat access: focus when the consent opens', () => {
     const release = heldGrants();
     renderWithController(PaneLayout, '/crew?sessionId=chat-slow');
     fireEvent.click(await screen.findByRole('button', { name: 'Open access' }));
-    await waitFor(() => expect(heading()).toHaveFocus());
+    // On a loaded CI shard the pane opened after waitFor's 1 s default (PR #551, vitest 2/3,
+    // the heading was still absent). The assertions are unchanged; only the budget is, as in
+    // the sibling test below.
+    await waitFor(() => expect(heading()).toHaveFocus(), { timeout: 5000 });
     expect(screen.getByTestId('crew-chat-access-pane')).toHaveTextContent(accessCopy.noteChecking);
 
     await release();
-    const allow = await screen.findByRole('button', { name: accessCopy.allow });
-    await waitFor(() => expect(allow).toHaveFocus());
-  });
+    const allow = await screen.findByRole('button', { name: accessCopy.allow }, { timeout: 5000 });
+    await waitFor(() => expect(allow).toHaveFocus(), { timeout: 5000 });
+  }, 20_000);
 
   it('leaves focus where the person moved it before the consent appeared', async () => {
     const release = heldGrants();
