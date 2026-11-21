@@ -176,7 +176,7 @@ const mutants = [
   {
     name: 'a newly private registry extension the table never gained a row for',
     registry: (r) => {
-      const ext = r.extensions.find((candidate) => candidate.id === 'zoteroagent');
+      const ext = r.extensions.find((candidate) => candidate.id === 'ncbiagent');
       ext.privacy = 'private';
       return r;
     },

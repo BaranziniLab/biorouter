@@ -39,7 +39,7 @@
       result: 'Robot online, health OK.' }
   ];
 
-  var FALLBACK = { extensions: 38, skills: 129 };
+  var FALLBACK = { extensions: 27, skills: 129 };
 
   var FIRST_HOLD = 1400; // the opening frame is already a finished result
   var FADE = 150;        // the old result leaves before the highlight moves
