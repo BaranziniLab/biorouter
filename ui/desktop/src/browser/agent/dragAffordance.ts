@@ -1,6 +1,7 @@
 /**
- * Which elements of a page a person would drag (AD-17), so the snapshot gives them references
- * even when their role is plain structure: a card on a board, a row of a sortable list.
+ * Which elements of a page a person would drag, and where they would drop them (AD-17), so the
+ * snapshot gives them references even when their role is plain structure: a card on a board, a
+ * row of a sortable list, an empty box that takes a drop.
  *
  * An element is a drag item when:
  *
@@ -11,8 +12,16 @@
  *   that sets it counts, never the descendants that inherit it; and when that element is a
  *   container whose children share it (a `ul` with `cursor: move`), its children are the items.
  *
- * At most `max` items per frame, in document order, so a board with hundreds of cards cannot
- * flood the snapshot. Pure: the driver feeds it the DOM it already reads for the snapshot.
+ * An element that is not an item is a drop zone when it says so: an inline `ondrop`,
+ * `ondragover` or `ondragenter` handler (W3Schools' demo, and most hand-written pages), a
+ * `dropzone` attribute, an `aria-dropeffect` other than none, or the marks libraries put on their
+ * drop targets (`ui-droppable`, `data-rbd-droppable-id`, a `dropzone` or `droppable` class). A
+ * zone often has no role and no words, and without a reference an empty zone inside a frame
+ * could not be named at all: a selector looks only in the main document.
+ *
+ * At most `max` items and `zonesMax` zones per frame, in document order, so a board with
+ * hundreds of cards cannot flood the snapshot. Pure: the driver feeds it the DOM it already reads
+ * for the snapshot.
  */
 
 /** Cursors that say "drag me", as `getComputedStyle` spells them. */
@@ -39,9 +48,12 @@ export type DragMark = {
   text: string;
   /** For an item with no words of its own (a grip handle): the text of the row it sits in. */
   context?: string;
+  /** A place to drop on rather than a thing to drag, shown as `[dropzone]`. */
+  zone?: true;
 };
 
 export const DRAG_MARKS_MAX = 100;
+export const DROP_MARKS_MAX = 50;
 const TEXT_MAX = 80;
 const CONTEXT_MAX = 40;
 
@@ -59,6 +71,15 @@ const LIBRARY_ATTRIBUTES = [
   'data-rfd-drag-handle-draggable-id',
   'aria-grabbed',
 ];
+const DROP_ATTRIBUTES = [
+  'ondrop',
+  'ondragover',
+  'ondragenter',
+  'dropzone',
+  'data-rbd-droppable-id',
+  'data-rfd-droppable-id',
+];
+const DROP_CLASSES = new Set(['ui-droppable', 'dropzone', 'drop-zone', 'droppable', 'drop-target']);
 const LIST_TAGS = new Set(['ul', 'ol', 'tbody', 'thead', 'table', 'dl', 'menu']);
 const LIST_ROLES = new Set([
   'list',
@@ -79,6 +100,14 @@ function declaresDrag(node: DragDomNode): boolean {
   if (/\b(draggable|sortable)\b/i.test(a['aria-roledescription'] ?? '')) return true;
   if (LIBRARY_ATTRIBUTES.some((name) => name in a)) return true;
   return (a.class ?? '').split(/\s+/).some((token) => LIBRARY_CLASSES.has(token));
+}
+
+function declaresDrop(node: DragDomNode): boolean {
+  const a = node.attributes;
+  if (DROP_ATTRIBUTES.some((name) => name in a)) return true;
+  const effect = (a['aria-dropeffect'] ?? '').trim().toLowerCase();
+  if (effect && effect !== 'none') return true;
+  return (a.class ?? '').split(/\s+/).some((token) => DROP_CLASSES.has(token.toLowerCase()));
 }
 
 export function collapse(text: string, max: number): string {
@@ -133,15 +162,27 @@ function itemsOfContainer(nodes: Map<number, DragDomNode>, node: DragDomNode): n
   return children.filter((child) => signature(child) === top).map((child) => child.backendNodeId);
 }
 
+/** For a mark with no words of its own: the text of the nearest ancestor with words. */
+function contextOf(nodes: Map<number, DragDomNode>, id: number): string | undefined {
+  let at = nodes.get(id)?.parent;
+  for (let depth = 0; at !== undefined && depth < 3; depth += 1) {
+    const around = textOf(nodes, at, CONTEXT_MAX);
+    if (hasWords(around)) return around;
+    at = nodes.get(at)?.parent;
+  }
+  return undefined;
+}
+
 /**
- * Mark the drag items of one frame. `order` is every element in document order; `cursor` the
- * elements whose computed cursor is one of `DRAG_CURSORS`.
+ * Mark the drag items and drop zones of one frame. `order` is every element in document order;
+ * `cursor` the elements whose computed cursor is one of `DRAG_CURSORS`.
  */
 export function markDragAffordances(
   nodes: Map<number, DragDomNode>,
   order: readonly number[],
   cursor: ReadonlySet<number>,
-  max = DRAG_MARKS_MAX
+  max = DRAG_MARKS_MAX,
+  zonesMax = DROP_MARKS_MAX
 ): Map<number, DragMark> {
   const items = new Set<number>();
   const position = new Map(order.map((id, index) => [id, index]));
@@ -169,17 +210,25 @@ export function markDragAffordances(
     const mark: DragMark = { text: hasWords(text) ? text : '' };
     if (!mark.text) {
       // A grip handle: name it by its row, the nearest ancestor with words, a few levels up.
-      let at = nodes.get(id)?.parent;
-      for (let depth = 0; at !== undefined && depth < 3; depth += 1) {
-        const around = textOf(nodes, at, CONTEXT_MAX);
-        if (hasWords(around)) {
-          mark.context = around;
-          break;
-        }
-        at = nodes.get(at)?.parent;
-      }
+      const context = contextOf(nodes, id);
+      if (context) mark.context = context;
     }
     marks.set(id, mark);
+  }
+  // Drop zones: an item is already reachable, so only elements that are not items.
+  let zones = 0;
+  for (const id of order) {
+    if (zones >= zonesMax) break;
+    const node = nodes.get(id);
+    if (!node || NEVER_ITEMS.has(node.tag) || items.has(id) || !declaresDrop(node)) continue;
+    const text = textOf(nodes, id);
+    const mark: DragMark = { text: hasWords(text) ? text : '', zone: true };
+    if (!mark.text) {
+      const context = contextOf(nodes, id);
+      if (context) mark.context = context;
+    }
+    marks.set(id, mark);
+    zones += 1;
   }
   return marks;
 }

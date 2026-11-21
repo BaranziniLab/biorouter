@@ -20,7 +20,9 @@ import type { DragMark } from './dragAffordance';
  *
  * Something a person would drag (AD-17) gets a line and a reference too, even when its role is
  * plain structure: `@e9 [draggable] "Write the report"`, or `[listitem] "Item 1" [draggable]`
- * when its role says more. A grip with no words of its own is named by its row, `in:"…"`.
+ * when its role says more. A grip with no words of its own is named by its row, `in:"…"`. So
+ * does a place that declares it takes a drop: `@e10 [dropzone] id:"div1"`, or
+ * `[region] "Done" [dropzone]`; one with no words is named by its DOM hint, then its row.
  *
  * Pure: no Electron, so the Vitest suite feeds it recorded trees.
  */
@@ -52,7 +54,7 @@ export type DomFacts = {
   iconHint?: string;
   /** For a select element: its option labels. */
   options?: string[];
-  /** Something a person would drag (AD-17, `dragAffordance.ts`), with the words it shows. */
+  /** Something a person would drag or drop on (AD-17, `dragAffordance.ts`), with its words. */
   drag?: DragMark;
 };
 
@@ -283,7 +285,10 @@ type Item =
       facts: DomFacts | undefined;
       rowName: string | null;
       interactive: boolean;
-      /** A drag item (AD-17): its role is shown as `draggable` when the real one says nothing. */
+      /**
+       * A drag item or drop zone (AD-17): its role is shown as `draggable` or `dropzone` when the
+       * real one says nothing.
+       */
       drag?: DragMark;
     }
   | { kind: 'text'; depth: number; text: string }
@@ -370,7 +375,7 @@ export function buildSnapshot(
           depth: level,
           frameKey: frame.frameKey,
           node,
-          role: PLAIN_ROLES.has(role) || ignored ? 'draggable' : role,
+          role: PLAIN_ROLES.has(role) || ignored ? markRole(drag) : role,
           name: name || drag.text,
           facts,
           rowName: null,
@@ -484,6 +489,11 @@ export function buildSnapshot(
   };
 }
 
+/** The role a drag mark is shown with when the element's own role says nothing. */
+function markRole(mark: DragMark): string {
+  return mark.zone ? 'dropzone' : 'draggable';
+}
+
 function formatNode(
   item: Extract<Item, { kind: 'node' }>,
   unique: boolean,
@@ -495,10 +505,13 @@ function formatNode(
   if (item.interactive && (!name || !unique)) {
     const hint = hintFor(item.facts, item.rowName);
     if (hint) parts.push(`${hint.kind}:"${clean(hint.value, HINT_MAX)}"`);
-  } else if (item.drag && (!name || !unique) && item.drag.context) {
-    parts.push(`in:"${clean(item.drag.context, HINT_MAX)}"`);
+  } else if (item.drag && (!name || !unique)) {
+    // A zone is often an empty box known only by its id; a grip is known by its row.
+    const hint = item.drag.zone ? hintFor(item.facts, null) : null;
+    if (hint) parts.push(`${hint.kind}:"${clean(hint.value, HINT_MAX)}"`);
+    else if (item.drag.context) parts.push(`in:"${clean(item.drag.context, HINT_MAX)}"`);
   }
-  if (item.drag && item.role !== 'draggable') parts.push('[draggable]');
+  if (item.drag && item.role !== markRole(item.drag)) parts.push(`[${markRole(item.drag)}]`);
   const node = item.node;
   const protectedField = isProtectedField(item.facts);
   const valueRoles = new Set([

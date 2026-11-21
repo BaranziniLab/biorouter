@@ -121,6 +121,59 @@ describe('markDragAffordances', () => {
     ]);
   });
 
+  it('marks a place that declares it takes a drop, named by its words or its row', () => {
+    const page = tree({
+      tag: 'body',
+      children: [
+        { tag: 'p', children: ['Drag the image into the rectangle:'] },
+        // W3Schools' demo: an empty box whose only marks are its inline handlers.
+        { tag: 'div', attributes: { id: 'div1', ondrop: 'drop(event)', ondragover: 'a(event)' } },
+        { tag: 'div', attributes: { class: 'col dropzone' }, children: ['Done'] },
+        { tag: 'div', attributes: { 'data-rbd-droppable-id': 'later' }, children: ['Later'] },
+        { tag: 'div', attributes: { class: 'ui-droppable' }, children: ['Bin'] },
+        { tag: 'div', attributes: { 'aria-dropeffect': 'move' }, children: ['Aria'] },
+        { tag: 'div', attributes: { 'aria-dropeffect': 'none' }, children: ['Not this'] },
+        { tag: 'section', children: [{ tag: 'div', attributes: { ondragenter: 'x()' } }] },
+        // Both an item and a zone: it stays an item.
+        { tag: 'div', attributes: { draggable: 'true', ondragover: 'x()' }, children: ['Card'] },
+        { tag: 'img', attributes: { draggable: 'true', id: 'drag1' } },
+      ],
+    });
+    const marks = page.marks();
+    const zone = (id: string) => marks.get(page.ids.get(id) ?? -1);
+    expect(zone('div1')).toEqual({ text: '', zone: true });
+    expect([...marks.values()].filter((mark) => mark.zone).map((mark) => mark.text)).toEqual([
+      '',
+      'Done',
+      'Later',
+      'Bin',
+      'Aria',
+      '',
+    ]);
+    expect(page.textsOf().filter((text) => text === 'Card')).toHaveLength(1);
+    expect([...marks.values()].find((mark) => mark.text === 'Card')?.zone).toBeUndefined();
+    expect(page.textsOf()).not.toContain('Not this');
+  });
+
+  it('never takes the page itself as a drop zone, and caps zones apart from items', () => {
+    const whole = tree({ tag: 'body', attributes: { ondragover: 'x()' }, children: ['Hi'] });
+    expect(whole.marks().size).toBe(0);
+    const many = tree({
+      tag: 'body',
+      children: [
+        { tag: 'div', attributes: { draggable: 'true' }, children: ['Item'] },
+        ...Array.from({ length: 80 }, (_, i) => ({
+          tag: 'div',
+          attributes: { ondrop: 'x()' },
+          children: [`Z${i + 1}`],
+        })),
+      ],
+    });
+    const marks = [...many.marks().values()];
+    expect(marks.filter((mark) => mark.zone)).toHaveLength(50);
+    expect(marks.filter((mark) => !mark.zone).map((mark) => mark.text)).toEqual(['Item']);
+  });
+
   it('never marks the page itself, and caps a flood in document order', () => {
     const whole = tree({ tag: 'body', cursor: true, children: [{ tag: 'p', children: ['Hi'] }] });
     expect(whole.marks().size).toBe(0);
