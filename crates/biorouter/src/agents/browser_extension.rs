@@ -219,13 +219,15 @@ struct RefParams {
     reference: String,
 }
 
-// browser_drag (AD-17): from one reference to another reference, or to a point in the page.
+// browser_drag (AD-17): from one element to another element, or to a point in the page. An
+// element is an @e reference, a CSS selector, or `text=` and its visible words.
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 struct DragParams {
-    /// The @e reference to pick up, from the latest browser_snapshot.
+    /// What to pick up: an @e reference, a CSS selector, or text= and its visible words. Put a
+    /// CSS scope before the text with >>, as in "#list >> text=Item 1".
     from: String,
-    /// The @e reference to drop it on.
+    /// Where to drop it, named the same way.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     to: Option<String>,
     /// Or the point to drop it at, in CSS pixels of the visible page, with to_y.
@@ -233,7 +235,7 @@ struct DragParams {
     to_x: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     to_y: Option<f64>,
-    /// Pointer moves between the two ends, 1 to 50. Default 10.
+    /// Pointer moves on the way, 1 to 50. Default one per 20 CSS pixels, at least 10.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     steps: Option<u32>,
 }
@@ -538,12 +540,99 @@ fn hover_operation(arguments: Option<JsonObject>) -> Result<Operation, String> {
     })
 }
 
+const LOCATOR_TEXT_MAX: usize = 200;
+const LOCATOR_SELECTOR_MAX: usize = 512;
+
+/// `e12` with nothing else: a reference, not the CSS type selector it could also be.
+fn is_bare_reference(value: &str) -> bool {
+    value.strip_prefix('e').is_some_and(|digits| {
+        !digits.is_empty() && digits.len() <= 9 && digits.chars().all(|c| c.is_ascii_digit())
+    })
+}
+
+/// `"Item 1"` or `'Item 1'` without its quotes.
+fn unquote(text: &str) -> &str {
+    for quote in ['"', '\''] {
+        if let Some(inner) = text
+            .strip_prefix(quote)
+            .and_then(|rest| rest.strip_suffix(quote))
+        {
+            return inner;
+        }
+    }
+    text
+}
+
+/// One end of a drag (AD-17): an @e reference, a CSS selector, or `text=` and visible words,
+/// optionally after a CSS scope and `>>`. Selectors and words reach the page only as data,
+/// never as script, and the page resolves them to exactly one visible element of the main
+/// document or refuses with what it found.
+fn drag_locator(value: &str, end: &str) -> Result<Value, String> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return Err(format!(
+            "{end} is empty: pass an @e reference, a CSS selector, or text= and the visible words"
+        ));
+    }
+    if trimmed.starts_with('@') || is_bare_reference(trimmed) {
+        return Ok(json!({ "ref": reference(trimmed)? }));
+    }
+    let (scope, text) = match trimmed.split_once(">>") {
+        Some((scope, rest)) => {
+            let Some(text) = rest.trim().strip_prefix("text=") else {
+                return Err(format!(
+                    "after >> in {end}, pass text= and the visible words, as in \"#list >> text=Item 1\""
+                ));
+            };
+            let scope = scope.trim();
+            if scope.is_empty() {
+                return Err(format!(
+                    "before >> in {end}, pass a CSS selector, as in \"#list >> text=Item 1\""
+                ));
+            }
+            (Some(scope), Some(text))
+        }
+        None => (None, trimmed.strip_prefix("text=")),
+    };
+    if let Some(scope) = scope {
+        if scope.chars().count() > LOCATOR_SELECTOR_MAX {
+            return Err(format!(
+                "the CSS scope in {end} is longer than {LOCATOR_SELECTOR_MAX} characters"
+            ));
+        }
+    }
+    match text {
+        Some(text) => {
+            let text = unquote(text.trim()).trim();
+            if text.is_empty() {
+                return Err(format!(
+                    "text= in {end} needs the visible words to look for"
+                ));
+            }
+            if text.chars().count() > LOCATOR_TEXT_MAX {
+                return Err(format!(
+                    "the text in {end} is longer than {LOCATOR_TEXT_MAX} characters; use a shorter part of it"
+                ));
+            }
+            Ok(json!({ "text": text, "scope": scope }))
+        }
+        None if trimmed.chars().count() > LOCATOR_SELECTOR_MAX => Err(format!(
+            "the CSS selector in {end} is longer than {LOCATOR_SELECTOR_MAX} characters"
+        )),
+        None => Ok(json!({ "selector": trimmed })),
+    }
+}
+
 /// AD-17: page drag and drop with page events only (CDP mouse events, with Chromium's drag
 /// interception for a native HTML drag), never the system pointer and never a file from disk.
 fn drag_operation(arguments: Option<JsonObject>) -> Result<Operation, String> {
     let params: DragParams = parse(arguments)?;
-    let from = reference(&params.from)?;
-    let to = optional_reference(params.to)?;
+    let from = drag_locator(&params.from, "from")?;
+    let to = params
+        .to
+        .as_deref()
+        .map(|to| drag_locator(to, "to"))
+        .transpose()?;
     let point = match (params.to_x, params.to_y) {
         (Some(x), Some(y)) if x.is_finite() && y.is_finite() && x >= 0.0 && y >= 0.0 => {
             Some(json!({ "x": x, "y": y }))
@@ -552,7 +641,7 @@ fn drag_operation(arguments: Option<JsonObject>) -> Result<Operation, String> {
         _ => return Err("pass both to_x and to_y, as CSS pixels of the visible page".into()),
     };
     if to.is_some() == point.is_some() {
-        return Err("pass to (an @e reference) or to_x and to_y, not both".into());
+        return Err("pass to, or to_x and to_y, not both".into());
     }
     Ok(Operation {
         op: "drag",
@@ -560,7 +649,7 @@ fn drag_operation(arguments: Option<JsonObject>) -> Result<Operation, String> {
             "from": from,
             "to": to,
             "point": point,
-            "steps": params.steps.unwrap_or(10).clamp(1, 50),
+            "steps": params.steps.map(|n| n.clamp(1, 50)),
         }),
         deadline: ACTION_DEADLINE,
     })
@@ -985,7 +1074,7 @@ impl BrowserClient {
             Self::tool::<DialogParams>("browser_dialog", "Accept or dismiss the web page's open alert, confirm or prompt dialog.", false),
             Self::tool::<DragParams>(
                 "browser_drag",
-                "Drag an @e reference on the web page and drop it on another reference or a point: reorder a list, move a card, fill a drop zone. It never moves the person's pointer and never drops a file from disk. Needs the person's permission to act. For native apps use Biorouter Copilot's drag.",
+                "Drag something on the web page and drop it on another element or a point: reorder a list, move a card, fill a drop zone. Name each element by an @e reference, a CSS selector, or text= and its visible words; each must match exactly one visible element. It never moves the person's pointer and never drops a file from disk. Needs the person's permission to act. For native apps use Biorouter Copilot's drag.",
                 false,
             ),
         ]
@@ -1381,9 +1470,10 @@ mod tests {
         let to_ref =
             build_operation("browser_drag", args(json!({"from":"@e3","to":"e7"}))).unwrap();
         assert_eq!(to_ref.op, "drag");
-        assert_eq!(to_ref.args["from"], "@e3");
-        assert_eq!(to_ref.args["to"], "@e7");
-        assert_eq!(to_ref.args["steps"], 10);
+        assert_eq!(to_ref.args["from"], json!({"ref":"@e3"}));
+        assert_eq!(to_ref.args["to"], json!({"ref":"@e7"}));
+        // Main picks the number of moves from the distance unless the model asks.
+        assert_eq!(to_ref.args["steps"], Value::Null);
         let to_point = build_operation(
             "browser_drag",
             args(json!({"from":"@e3","to_x":120.5,"to_y":40,"steps":99})),
@@ -1396,7 +1486,8 @@ mod tests {
             json!({"from":"@e3","to":"@e4","to_x":1,"to_y":1}),
             json!({"from":"@e3","to_x":1}),
             json!({"from":"@e3","to_x":-1,"to_y":1}),
-            json!({"from":"button","to":"@e4"}),
+            json!({"from":"@e3x","to":"@e4"}),
+            json!({"from":"  ","to":"@e4"}),
             json!({"from":"@e3","to":"@e4","file":"/etc/passwd"}),
         ] {
             assert!(
@@ -1408,6 +1499,54 @@ mod tests {
             crate::security::browser_use::grant_for_call("browser_drag", None),
             crate::security::browser_use::BrowserGrant::Act
         );
+    }
+
+    #[test]
+    fn a_drag_end_is_a_reference_a_css_selector_or_visible_text() {
+        let end = |value: &str| drag_locator(value, "from");
+        assert_eq!(end(" @e12 ").unwrap(), json!({"ref":"@e12"}));
+        assert_eq!(end("e5").unwrap(), json!({"ref":"@e5"}));
+        assert_eq!(
+            end("#example1 > .list-group-item:nth-child(1)").unwrap(),
+            json!({"selector":"#example1 > .list-group-item:nth-child(1)"})
+        );
+        // `e5x` is not a reference; as CSS it is a type selector, and the page judges it.
+        assert_eq!(end("e5x").unwrap(), json!({"selector":"e5x"}));
+        assert_eq!(
+            end("text=Item 1").unwrap(),
+            json!({"text":"Item 1","scope":null})
+        );
+        assert_eq!(
+            end("text=\"Write the report\"").unwrap(),
+            json!({"text":"Write the report","scope":null})
+        );
+        assert_eq!(
+            end("#example1 >> text=Item 3").unwrap(),
+            json!({"text":"Item 3","scope":"#example1"})
+        );
+        for bad in [
+            "",
+            "@e",
+            "@button",
+            "text=",
+            "text=\"\"",
+            "#list >> .item",
+            ">> text=Item 1",
+        ] {
+            assert!(end(bad).is_err(), "{bad:?}");
+        }
+        assert!(end(&format!("text={}", "a".repeat(201))).is_err());
+        assert!(end(&"div ".repeat(200)).is_err());
+        let both = build_operation(
+            "browser_drag",
+            json!({"from":"text=Item 1","to":"#list >> text=Item 3","steps":4})
+                .as_object()
+                .cloned(),
+        )
+        .unwrap();
+        assert_eq!(both.args["from"], json!({"text":"Item 1","scope":null}));
+        assert_eq!(both.args["to"], json!({"text":"Item 3","scope":"#list"}));
+        assert_eq!(both.args["steps"], 4);
     }
 
     #[test]
