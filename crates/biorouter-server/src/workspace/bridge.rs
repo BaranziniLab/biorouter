@@ -1,5 +1,5 @@
 //! BR-71 §4.3: the daemon→GUI workspace command channel. One bridge per GUI
-//! WINDOW (Agent Drafter's `UiBridge` is per app session — same anatomy, one
+//! WINDOW (Application Drafter's `UiBridge` is per app session — same anatomy, one
 //! level up): generation-guarded attach/detach, a pending map for blocking
 //! round trips, cancel_all on disconnect, and the window's last layout echo.
 
@@ -35,6 +35,19 @@ struct BridgeInner {
     last_echo: Mutex<Option<Value>>,
     last_attach: Mutex<Option<Instant>>,
     request_seq: AtomicU64,
+}
+
+/// How a [`WorkspaceBridge::emit_and_wait_cancellable`] wait ended without an answer.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BrowserWait {
+    /// The window has no live connection.
+    NotAttached,
+    /// The window disconnected or reloaded while the request was parked.
+    Disconnected,
+    /// No answer in time; `request_id` names the operation to abandon.
+    Timeout { request_id: String },
+    /// The caller cancelled; `request_id` names the operation to abandon.
+    Cancelled { request_id: String },
 }
 
 /// Opaque proof of which connection generation a socket owns.
@@ -149,6 +162,44 @@ impl WorkspaceBridge {
                 lock(&self.inner.pending).remove(&request_id);
                 Err("timed out waiting for the GUI".into())
             }
+        }
+    }
+
+    /// [`Self::emit_and_wait`] for a Biorouter Browser operation (BB-10): the wait also races
+    /// `cancel`, and every way it can end is told apart, because the caller answers each one
+    /// differently (a timed out or cancelled operation is abandoned on the window and never
+    /// replayed).
+    pub async fn emit_and_wait_cancellable(
+        &self,
+        mut frame: Value,
+        timeout: Duration,
+        cancel: &tokio_util::sync::CancellationToken,
+    ) -> Result<Value, BrowserWait> {
+        let request_id = format!(
+            "wsreq-{}",
+            self.inner.request_seq.fetch_add(1, Ordering::Relaxed)
+        );
+        frame["request_id"] = Value::String(request_id.clone());
+        let (tx, rx) = oneshot::channel();
+        lock(&self.inner.pending).insert(request_id.clone(), tx);
+        if self.emit(frame).is_err() {
+            lock(&self.inner.pending).remove(&request_id);
+            return Err(BrowserWait::NotAttached);
+        }
+        tokio::select! {
+            biased;
+            _ = cancel.cancelled() => {
+                lock(&self.inner.pending).remove(&request_id);
+                Err(BrowserWait::Cancelled { request_id })
+            }
+            result = tokio::time::timeout(timeout, rx) => match result {
+                Ok(Ok(value)) => Ok(value),
+                Ok(Err(_)) => Err(BrowserWait::Disconnected),
+                Err(_) => {
+                    lock(&self.inner.pending).remove(&request_id);
+                    Err(BrowserWait::Timeout { request_id })
+                }
+            },
         }
     }
 

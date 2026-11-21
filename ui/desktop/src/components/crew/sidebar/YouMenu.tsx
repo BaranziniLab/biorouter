@@ -29,9 +29,17 @@ export const COPY_FEEDBACK_MS = MENU_COPY_FAILED_MS;
 /**
  * The line under my name, in the You row and the You menu's header (Q4-50): "on lab-server" once a
  * snapshot names me — where I am, in the sans supporting style, since the name above already says
- * who — and, before that, the SSH login as the placeholder, in monospace, as its own text node
+ * who — and, before that, the SSH login as the placeholder, as its own text node
  * (`crew_alice@lab-server`; the regression tests find `fixture`). The server is the person's own
  * name for it (D-ALIAS) either way.
+ *
+ * The login stands in for the name, so it is the line's only text: it takes the app sidebar's
+ * nav label role (`text-secondary`, muted), which "Settings" beside it on `/crew` also wears, so the
+ * two share a baseline. It is chrome that says who I am, not data to read character by character,
+ * so it is in the sans like every other line of the sidebar (design.md D-33; owner, 2026-11-19).
+ * It used to be the only monospace line in the column at rest, and it turned sans the moment a
+ * snapshot named me. The workspace menu's "Signed in as @alice" keeps its mono handle (an id to
+ * retype, D-42), as a joiner's `@username` does where a host compares it before letting them in.
  */
 export function YouPlace({
   me,
@@ -53,7 +61,7 @@ export function YouPlace({
   }
   return (
     <span
-      className="crew-sidebar-truncate font-mono text-supporting text-text-muted"
+      className="crew-sidebar-truncate text-secondary text-text-muted"
       translate="no"
       data-crew-you-login=""
     >

@@ -26,7 +26,7 @@ const ALL_KINDS: ChangeKind[] = ['ingest', 'link', 'flag', 'query', 'lint', 'res
 /**
  * An entry's time in the one compact form every list meta uses ("now", "5m", "3h", "4d", then
  * "Oct 7"), with the full date in its tooltip (V3-22). It is `rowTime`, shared with the
- * Workflows and Built apps rows; the drawer used to spell its own "11m ago".
+ * Workflows and Applications rows; the drawer used to spell its own "11m ago".
  */
 function entryTime(iso: string): ReactNode | undefined {
   const when = new Date(iso);

@@ -1318,13 +1318,17 @@ async fn drive_response(
                 if let Ok(status) = session.agent.extension_manager.computer_use_status(session.session_id()).await {
                     if super::computer_use_needs_prompt(&status, computer_use_challenge.as_deref()) {
                         computer_use_challenge = Some(status.challenge_id.clone());
-                        let permission = run_permission_modal(app, tui, rx, Some(format!("Biorouter Copilot task approval\n{}", status.disclosure))).await?;
-                        if permission == Permission::AllowOnce {
-                            session.agent.extension_manager.approve_computer_use(session.session_id(), &status.challenge_id).await?;
-                            app.push_note("Biorouter Copilot allowed for this task. Press Esc or Ctrl-C to stop.");
-                        } else {
-                            session.agent.extension_manager.computer_use.revoke();
-                            if permission == Permission::Cancel { stop.cancel(&cancel); }
+                        match run_choice_modal(app, tui, rx, computer_use_modal(&status.disclosure)).await?.and_then(|index| super::COMPUTER_USE_CHOICES.get(index)) {
+                            Some((Some(level), _, _)) => {
+                                session.agent.extension_manager.approve_computer_use(session.session_id(), &status.challenge_id, *level).await?;
+                                app.push_note(&super::computer_use_allowed_note(*level).replace("Ctrl-C", "Esc or Ctrl-C"));
+                            }
+                            Some((None, _, _)) => session.agent.extension_manager.computer_use.revoke(),
+                            // Cancel, Esc or Ctrl-C at the card cancels the response, as it did before.
+                            None => {
+                                session.agent.extension_manager.computer_use.revoke();
+                                stop.cancel(&cancel);
+                            }
                         }
                     }
                 }
@@ -1591,15 +1595,6 @@ async fn run_permission_modal(
 ) -> Result<Permission> {
     let options: Vec<(&'static str, &'static str)> = if prompt
         .as_deref()
-        .is_some_and(|text| text.starts_with("Biorouter Copilot task approval\n"))
-    {
-        vec![
-            ("Allow task", "view and control desktop for this task"),
-            ("Deny", "keep desktop control off"),
-            ("Cancel", "cancel response"),
-        ]
-    } else if prompt
-        .as_deref()
         .is_some_and(|text| text.starts_with("External folder access\n"))
     {
         vec![
@@ -1626,16 +1621,11 @@ async fn run_permission_modal(
         ]
     };
     let len = options.len();
-    let selected = usize::from(
-        options
-            .first()
-            .is_some_and(|(label, _)| *label == "Allow task"),
-    );
     app.modal = Some(PermissionModal {
         title: TOOL_APPROVAL_TITLE,
         prompt,
         options,
-        selected,
+        selected: 0,
         scroll: 0,
     });
 
@@ -1708,6 +1698,25 @@ async fn run_choice_modal(
 /// The option of [`compact_modal`] that compacts.
 const COMPACT_CHOICE: usize = 0;
 
+/// Biorouter Copilot's card in the TUI (AD-10): the disclosure, then Allow, Only let it look and
+/// Deny from [`super::COMPUTER_USE_CHOICES`], with Deny chosen to start, and Cancel, which cancels
+/// the response as Esc does.
+fn computer_use_modal(disclosure: &str) -> PermissionModal {
+    let mut options: Vec<_> = super::COMPUTER_USE_CHOICES
+        .iter()
+        .map(|(_, label, hint)| (*label, *hint))
+        .collect();
+    let deny = options.len() - 1;
+    options.push(("Cancel", "cancel response"));
+    PermissionModal {
+        title: TOOL_APPROVAL_TITLE,
+        prompt: Some(format!("Biorouter Copilot\n{disclosure}")),
+        selected: deny,
+        options,
+        scroll: 0,
+    }
+}
+
 /// What `/compact` asks first (W1-28): the classic REPL's question
 /// (`session::compact_confirmation`) in the TUI's modal, with Compact chosen
 /// as classic's Yes is. None in a decision chat, which asks nothing there
@@ -1728,7 +1737,7 @@ fn compact_modal(provider_name: &str) -> Option<PermissionModal> {
 
 fn label_to_permission(label: &str) -> Permission {
     match label {
-        "Allow" | "Allow task" => Permission::AllowOnce,
+        "Allow" => Permission::AllowOnce,
         "Always allow" | "Allow for this session" => Permission::AlwaysAllow,
         "Deny" => Permission::DenyOnce,
         _ => Permission::Cancel,
@@ -4166,23 +4175,32 @@ mod tests {
     #[test]
     fn long_task_disclosure_scrolls_while_choices_remain_visible() {
         let mut app = App::new(StatusInfo::default());
-        app.modal = Some(PermissionModal {
-            title: TOOL_APPROVAL_TITLE,
-            prompt: Some(format!(
-                "{}End of sensitive information disclosure",
-                "Biorouter Copilot on backend host\n".repeat(24)
-            )),
-            options: vec![("Allow task", "approve task"), ("Deny", "keep control off")],
-            selected: 1,
-            scroll: 0,
-        });
+        app.modal = Some(computer_use_modal(&format!(
+            "{}End of sensitive information disclosure",
+            "Biorouter Copilot on backend host\n".repeat(24)
+        )));
         let first = buffer_text(&mut app, 80, 24);
         assert!(first.contains("Biorouter Copilot on backend host"));
-        assert!(first.contains("Allow task"));
+        assert!(first.contains("Allow"));
+        assert!(first.contains("Only let it look"));
         app.modal.as_mut().unwrap().scroll = 24;
         let last = buffer_text(&mut app, 80, 24);
         assert!(last.contains("End of sensitive information disclosure"));
         assert!(last.contains("Deny"));
+    }
+
+    /// The TUI card offers look only beside Allow and starts on Deny (AD-10), so an Enter pressed
+    /// by habit never hands over the desktop.
+    #[test]
+    fn the_copilot_card_offers_look_only_and_starts_on_deny() {
+        let modal = computer_use_modal("disclosure");
+        let labels: Vec<_> = modal.options.iter().map(|(label, _)| *label).collect();
+        assert_eq!(labels, ["Allow", "Only let it look", "Deny", "Cancel"]);
+        assert_eq!(modal.options[modal.selected].0, "Deny");
+        assert_eq!(super::super::COMPUTER_USE_CHOICES[modal.selected].0, None);
+        // Cancel has no grant row, so it reads as Esc: the response is cancelled.
+        assert!(super::super::COMPUTER_USE_CHOICES.get(3).is_none());
+        assert!(modal.prompt.unwrap().ends_with("disclosure"));
     }
 
     #[test]
@@ -6413,6 +6431,13 @@ mod tests {
                  interrupted and produced no result. It may have partially completed. Do not \
                  assume it succeeded, and do not silently retry it.",
                 crate::session::output::PERSON_CANCELLED_MID_RUN,
+            ),
+            (
+                "This tool call was not run: it needs a person's approval, and nobody can be \
+                 asked in this unattended run, so the run's policy does not permit it. Nobody \
+                 declined it, and the tool itself still works: continue the task another way, \
+                 with a call that does not need approval. Do not retry the same call.",
+                crate::session::output::PERSON_UNATTENDED,
             ),
         ] {
             let mut app = App::new(StatusInfo::default());

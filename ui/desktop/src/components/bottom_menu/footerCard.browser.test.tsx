@@ -2,8 +2,9 @@
 /**
  * The footer cards under a real pointer and a real layout, in Chromium, for ALL THREE items on the
  * line (the working folder, the context ring and the cost):
- *   - each card opens on a hover after the delay, and a pointer that only passes over its trigger
- *     opens nothing;
+ *   - each readout's card opens on a hover after the delay, and a pointer that only passes over its
+ *     trigger opens nothing; the folder chip's hover shows its label tooltip and never its card,
+ *     which a click opens (owner, 2026-11-19), and the tooltip never comes back over that card;
  *   - each hangs ABOVE THE WHOLE COMPOSER card, never over the draft, `+` or Tools, nor over the
  *     trigger it came from, lined up with the folder chip's left edge or with a readout's right
  *     edge, and below the window-drag band even in a short window; everything it says, a long path
@@ -16,9 +17,9 @@
  *     shadow, and the same label, value and detail type; and a card holding keyboard focus shows
  *     it, each the same;
  *   - HOVER PEEKS, CLICK PINS on the three triggers alike: at rest, with the pointer on it, while
- *     a hover only previews its card (the rest look), and KEPT by a click (the strong fill, held
- *     with the pointer off it and back on it), which also draws an edge in forced colours; a kept
- *     ring keeps the circle of its track;
+ *     a hover only previews a readout's card (the rest look), and KEPT by a click (the strong fill,
+ *     held with the pointer off it and back on it), which also draws an edge in forced colours; a
+ *     kept ring keeps the circle of its track;
  *   - only one card is open at a time, and a hover opens nothing over a kept one.
  * The same rules' behaviour in jsdom, item by item, is `footerCards.contract.test.tsx`.
  *
@@ -255,6 +256,11 @@ interface Item {
   name: 'folder' | 'context' | 'cost';
   trigger: string;
   card: string;
+  /**
+   * Whether a hover previews the card. The readouts' do; the folder chip is a control (owner,
+   * 2026-11-19), whose hover shows its label tooltip and whose click alone opens its card.
+   */
+  hover: boolean;
   /** Which of the trigger's edges the card lines up with. */
   align: 'start' | 'end';
   /**
@@ -271,6 +277,7 @@ const ITEMS: Item[] = [
     name: 'folder',
     trigger: '[data-testid="dir-switcher-locked"]',
     card: '[data-testid="folder-access-card"]',
+    hover: false,
     align: 'start',
     // The Working folder label's InfoTip (which tools ask for folder approval) is drawn first.
     afterTab: { role: 'button', name: 'About the working folder', closes: false },
@@ -280,6 +287,7 @@ const ITEMS: Item[] = [
     name: 'context',
     trigger: '[data-testid="context-window-indicator"]',
     card: '[data-testid="context-card"]',
+    hover: true,
     align: 'end',
     afterTab: { role: 'slider', name: 'Auto-compact threshold', closes: false },
     presses: ['.br-footer-card__label', '.br-context-gauge__bar', '.br-context-gauge__marker'],
@@ -288,6 +296,7 @@ const ITEMS: Item[] = [
     name: 'cost',
     trigger: '[data-testid="chat-cost"]',
     card: '[data-testid="cost-card"]',
+    hover: true,
     align: 'end',
     afterTab: { role: 'button', name: 'After the line', closes: true },
     presses: ['.br-footer-card__label', '.br-footer-card__value'],
@@ -295,6 +304,8 @@ const ITEMS: Item[] = [
 ];
 
 const [FOLDER, CONTEXT, COST] = ITEMS;
+/** The two readouts, whose cards a hover previews. */
+const READOUTS = [CONTEXT, COST];
 const COMPOSER = '[data-testid="composer"]';
 const DRAFT = '[data-testid="draft"]';
 
@@ -448,7 +459,7 @@ describe('the footer cards under a real pointer', () => {
 
   for (const item of ITEMS) {
     describe(`the ${item.name} card`, () => {
-      it('opens on hover and hangs above the whole composer, covering neither the draft nor its trigger', async (ctx) => {
+      it(`opens ${item.hover ? 'on hover' : 'on a click'} and hangs above the whole composer, covering neither the draft nor its trigger`, async (ctx) => {
         if (!browser) return ctx.skip();
         const tab = await load();
         try {
@@ -459,8 +470,18 @@ describe('the footer cards under a real pointer', () => {
           // Not before the delay...
           await tab.waitForTimeout(FOOTER_CARD_OPEN_DELAY_MS / 2);
           expect(await cardState(tab, item)).toBe('absent');
-          // ...and open after it.
-          await waitOpen(tab, item);
+          if (item.hover) {
+            // ...and open after it.
+            await waitOpen(tab, item);
+          } else {
+            // ...nor after it: the folder chip's hover shows its label tooltip, and only a click
+            // opens its card.
+            await tab.waitForTimeout(FOOTER_CARD_OPEN_DELAY_MS * 2);
+            expect(await cardState(tab, item)).toBe('absent');
+            await tab.mouse.down();
+            await tab.mouse.up();
+            await waitOpen(tab, item);
+          }
 
           // Above the composer card, never over it, and on the trigger's own edge.
           const card = await box(tab, item.card);
@@ -567,6 +588,79 @@ describe('the footer cards under a real pointer', () => {
         }
       });
 
+      it('stays above the composer and below the drag band in a short window', async (ctx) => {
+        if (!browser) return ctx.skip();
+        const tab = await load({ width: 900, height: 330 });
+        try {
+          await tab.click(item.trigger);
+          await waitOpen(tab, item);
+          const card = await box(tab, item.card);
+          const composer = await box(tab, COMPOSER);
+          expect(card.top, 'clear of the window-drag band').toBeGreaterThanOrEqual(52 - 0.5);
+          expect(card.bottom, 'never flipped over the draft').toBeLessThanOrEqual(
+            composer.top + 0.5
+          );
+          // A card taller than the room scrolls inside it rather than spilling out of it: the
+          // folder card, with its two grants, is.
+          const overflow = await tab.evaluate((sel) => {
+            const node = document.querySelector(sel)!;
+            return {
+              scrolls: node.scrollHeight > node.clientHeight,
+              overflowY: getComputedStyle(node).overflowY,
+            };
+          }, item.card);
+          expect(overflow.overflowY).toBe('auto');
+          if (item === FOLDER) expect(overflow.scrolls, 'the card scrolls').toBe(true);
+        } finally {
+          await tab.close();
+        }
+      });
+
+      it('draws the focus edge on the card when a keyboard pin moves focus onto it', async (ctx) => {
+        if (!browser) return ctx.skip();
+        const tab = await load();
+        try {
+          await tab.focus(item.trigger);
+          await tab.keyboard.press('Enter');
+          await tab.waitForFunction(
+            (sel) => document.activeElement === document.querySelector(sel),
+            item.card,
+            { timeout: 2000 }
+          );
+          const style = await tab.evaluate((sel) => {
+            const computed = getComputedStyle(document.querySelector(sel)!);
+            return { border: computed.borderTopColor, shadow: computed.boxShadow };
+          }, item.card);
+          expect(style.border).toBe('rgb(85, 85, 85)');
+          expect(style.shadow, 'a 1px inset of the focus ink').toMatch(
+            /rgb\(85, 85, 85\) 0px 0px 0px 1px inset/
+          );
+          expect(style.shadow.split('inset')[1] ?? '', 'the popover shadow stays').toMatch(/px/);
+          if (item === FOLDER) await tab.waitForSelector(`${item.card} li`);
+          // A Tab from the surface reaches the card's first control. A card that holds none closes
+          // and the Tab carries on from its trigger to what follows it, rather than doing nothing.
+          await tab.keyboard.press('Tab');
+          const active = await tab.evaluate(() => ({
+            role: document.activeElement?.getAttribute('role') ?? document.activeElement?.tagName,
+            name:
+              document.activeElement?.getAttribute('aria-label') ??
+              document.activeElement?.textContent?.trim(),
+          }));
+          expect(active.role?.toLowerCase()).toBe(item.afterTab.role);
+          expect(active.name).toBe(item.afterTab.name);
+          if (item.afterTab.closes) await waitClosed(tab, item);
+          else expect(await cardState(tab, item)).toBe('open');
+        } finally {
+          await tab.close();
+        }
+      });
+    });
+  }
+
+  // What only a hover does: a preview, and the pointer's way between the trigger and the card.
+  // The folder chip's hover shows its label tooltip instead (below), so these are the readouts'.
+  for (const item of READOUTS) {
+    describe(`the ${item.name} card under a hover`, () => {
       it('stays open while the pointer travels up across the composer into the card, at a hand’s pace', async (ctx) => {
         if (!browser) return ctx.skip();
         const tab = await load();
@@ -782,73 +876,6 @@ describe('the footer cards under a real pointer', () => {
           await tab.mouse.move(trigger.right + 30, y - 200, { steps: 2 });
           await tab.waitForTimeout(FOOTER_CARD_OPEN_DELAY_MS * 2);
           expect(await cardState(tab, item)).toBe('absent');
-        } finally {
-          await tab.close();
-        }
-      });
-
-      it('stays above the composer and below the drag band in a short window', async (ctx) => {
-        if (!browser) return ctx.skip();
-        const tab = await load({ width: 900, height: 330 });
-        try {
-          await tab.click(item.trigger);
-          await waitOpen(tab, item);
-          const card = await box(tab, item.card);
-          const composer = await box(tab, COMPOSER);
-          expect(card.top, 'clear of the window-drag band').toBeGreaterThanOrEqual(52 - 0.5);
-          expect(card.bottom, 'never flipped over the draft').toBeLessThanOrEqual(
-            composer.top + 0.5
-          );
-          // A card taller than the room scrolls inside it rather than spilling out of it: the
-          // folder card, with its two grants, is.
-          const overflow = await tab.evaluate((sel) => {
-            const node = document.querySelector(sel)!;
-            return {
-              scrolls: node.scrollHeight > node.clientHeight,
-              overflowY: getComputedStyle(node).overflowY,
-            };
-          }, item.card);
-          expect(overflow.overflowY).toBe('auto');
-          if (item === FOLDER) expect(overflow.scrolls, 'the card scrolls').toBe(true);
-        } finally {
-          await tab.close();
-        }
-      });
-
-      it('draws the focus edge on the card when a keyboard pin moves focus onto it', async (ctx) => {
-        if (!browser) return ctx.skip();
-        const tab = await load();
-        try {
-          await tab.focus(item.trigger);
-          await tab.keyboard.press('Enter');
-          await tab.waitForFunction(
-            (sel) => document.activeElement === document.querySelector(sel),
-            item.card,
-            { timeout: 2000 }
-          );
-          const style = await tab.evaluate((sel) => {
-            const computed = getComputedStyle(document.querySelector(sel)!);
-            return { border: computed.borderTopColor, shadow: computed.boxShadow };
-          }, item.card);
-          expect(style.border).toBe('rgb(85, 85, 85)');
-          expect(style.shadow, 'a 1px inset of the focus ink').toMatch(
-            /rgb\(85, 85, 85\) 0px 0px 0px 1px inset/
-          );
-          expect(style.shadow.split('inset')[1] ?? '', 'the popover shadow stays').toMatch(/px/);
-          if (item === FOLDER) await tab.waitForSelector(`${item.card} li`);
-          // A Tab from the surface reaches the card's first control. A card that holds none closes
-          // and the Tab carries on from its trigger to what follows it, rather than doing nothing.
-          await tab.keyboard.press('Tab');
-          const active = await tab.evaluate(() => ({
-            role: document.activeElement?.getAttribute('role') ?? document.activeElement?.tagName,
-            name:
-              document.activeElement?.getAttribute('aria-label') ??
-              document.activeElement?.textContent?.trim(),
-          }));
-          expect(active.role?.toLowerCase()).toBe(item.afterTab.role);
-          expect(active.name).toBe(item.afterTab.name);
-          if (item.afterTab.closes) await waitClosed(tab, item);
-          else expect(await cardState(tab, item)).toBe('open');
         } finally {
           await tab.close();
         }
@@ -1493,14 +1520,16 @@ describe('the footer cards under a real pointer', () => {
    * HOVER PEEKS, CLICK PINS, as each trigger draws it. Only a click leaves a mark: the pointer on
    * a trigger washes it, a preview holds nothing (with the pointer in the card, the trigger is at
    * rest), and a KEPT card holds the strong fill on its trigger, with the pointer off it and back
-   * on it. Kept is a subtle step from hover (about 1.09:1); what it must be is different.
+   * on it. Kept is a subtle step from hover (about 1.09:1); what it must be is different. The
+   * folder chip has no preview (its hover shows its label tooltip), and draws every other state as
+   * the readouts do.
    */
-  it('draws rest, the pointer on it, a preview and a kept card the same way on all three triggers', async (ctx) => {
+  it('draws rest, the pointer on it, a preview and a kept card the same way on the two readouts', async (ctx) => {
     if (!browser) return ctx.skip();
     const tab = await load();
     try {
       const ladders = [];
-      for (const item of ITEMS) {
+      for (const item of READOUTS) {
         await tab.mouse.move(AWAY.x, AWAY.y);
         const rest = await paint(tab, item);
         const onTrigger = centre(await box(tab, item.trigger));
@@ -1527,40 +1556,119 @@ describe('the footer cards under a real pointer', () => {
         const closed = await paint(tab, item);
         ladders.push({ rest, pointerOn, pointerOnOpen, preview, kept, keptPointerOn, closed });
       }
-      const [folder, context, cost] = ladders;
-      expect(folder.rest).toEqual({
+      const [context, cost] = ladders;
+      expect(context.rest).toEqual({
         background: 'rgba(0, 0, 0, 0)',
         color: 'rgb(102, 102, 102)',
         expanded: 'false',
         pinned: false,
       });
-      expect(folder.pointerOn, 'the pointer on it').toEqual({
+      expect(context.pointerOn, 'the pointer on it').toEqual({
         background: 'rgba(0, 0, 0, 0.05)',
         color: 'rgb(17, 17, 17)',
         expanded: 'false',
         pinned: false,
       });
-      expect(folder.pointerOnOpen, 'the same wash once its card shows').toEqual({
-        ...folder.pointerOn,
+      expect(context.pointerOnOpen, 'the same wash once its card shows').toEqual({
+        ...context.pointerOn,
         expanded: 'true',
       });
-      expect(folder.preview, 'a preview, the pointer in the card: the rest look').toEqual({
-        ...folder.rest,
+      expect(context.preview, 'a preview, the pointer in the card: the rest look').toEqual({
+        ...context.rest,
         expanded: 'true',
       });
-      expect(folder.kept, 'kept, the pointer off it').toEqual({
+      expect(context.kept, 'kept, the pointer off it').toEqual({
         background: 'rgb(234, 234, 230)',
         color: 'rgb(17, 17, 17)',
         expanded: 'true',
         pinned: true,
       });
-      expect(folder.keptPointerOn, 'kept, the pointer back on it: still kept').toEqual(folder.kept);
-      expect(folder.kept.background, 'kept is not the hover wash').not.toBe(
-        folder.pointerOn.background
+      expect(context.keptPointerOn, 'kept, the pointer back on it: still kept').toEqual(
+        context.kept
       );
-      expect(folder.closed, 'closed: at rest again').toEqual(folder.rest);
-      expect(context, 'the ring draws the folder chip’s states').toEqual(folder);
-      expect(cost, 'the cost draws the folder chip’s states').toEqual(folder);
+      expect(context.kept.background, 'kept is not the hover wash').not.toBe(
+        context.pointerOn.background
+      );
+      expect(context.closed, 'closed: at rest again').toEqual(context.rest);
+      expect(cost, 'the cost draws the ring’s states').toEqual(context);
+    } finally {
+      await tab.close();
+    }
+  });
+
+  it('draws the folder chip at rest, under the pointer, kept and closed as the readouts are, with no preview', async (ctx) => {
+    if (!browser) return ctx.skip();
+    const tab = await load();
+    try {
+      const ladder = async (item: Item) => {
+        await tab.mouse.move(AWAY.x, AWAY.y);
+        const rest = await paint(tab, item);
+        const onTrigger = centre(await box(tab, item.trigger));
+        await tab.mouse.move(onTrigger.x, onTrigger.y);
+        const pointerOn = await paint(tab, item);
+        await tab.mouse.click(onTrigger.x, onTrigger.y);
+        await waitOpen(tab, item);
+        await tab.mouse.move(AWAY.x, AWAY.y);
+        const kept = await paint(tab, item);
+        await tab.mouse.move(onTrigger.x, onTrigger.y);
+        const keptPointerOn = await paint(tab, item);
+        await tab.mouse.click(AWAY.x, AWAY.y);
+        await waitClosed(tab, item);
+        await tab.mouse.move(AWAY.x, AWAY.y);
+        const closed = await paint(tab, item);
+        return { rest, pointerOn, kept, keptPointerOn, closed };
+      };
+      // A pointer resting on the chip past the cards' delay opens nothing and marks nothing.
+      const onChip = centre(await box(tab, FOLDER.trigger));
+      await tab.mouse.move(onChip.x, onChip.y);
+      await tab.waitForTimeout(FOOTER_CARD_OPEN_DELAY_MS * 3);
+      expect(await cardState(tab, FOLDER), 'a hover opens no card').toBe('absent');
+      expect(await paint(tab, FOLDER)).toMatchObject({ expanded: 'false', pinned: false });
+
+      const folder = await ladder(FOLDER);
+      const context = await ladder(CONTEXT);
+      expect(folder.kept).toEqual({
+        background: 'rgb(234, 234, 230)',
+        color: 'rgb(17, 17, 17)',
+        expanded: 'true',
+        pinned: true,
+      });
+      expect(folder.keptPointerOn).toEqual(folder.kept);
+      expect(folder.closed).toEqual(folder.rest);
+      expect(folder, 'the folder chip draws the ring’s states').toEqual(context);
+    } finally {
+      await tab.close();
+    }
+  });
+
+  /**
+   * The folder chip's label tooltip (the model chip's `Tooltip`, owner 2026-11-19): a hover shows
+   * the folder written from `~`, with one line of status, and once a click has opened the card the
+   * tooltip stays shut over it while the pointer comes back to the chip.
+   */
+  it('shows the folder chip’s label tooltip on a hover, and never over its open card', async (ctx) => {
+    if (!browser) return ctx.skip();
+    const tab = await load();
+    try {
+      const tips = () => tab.locator('[role="tooltip"]');
+      const onChip = centre(await box(tab, FOLDER.trigger));
+      await tab.mouse.move(AWAY.x, AWAY.y);
+      await tab.mouse.move(onChip.x, onChip.y, { steps: 4 });
+      await tab.waitForSelector('[role="tooltip"]', { timeout: 3000 });
+      expect(await tips().first().textContent()).toContain('Working folder:');
+      expect(await tips().first().textContent()).toContain('Projects/kdps');
+      expect(await tips().first().textContent()).toContain('Fixed for this chat');
+      expect(await cardState(tab, FOLDER)).toBe('absent');
+
+      await tab.mouse.down();
+      await tab.mouse.up();
+      await waitOpen(tab, FOLDER);
+      expect(await tips().count(), 'the press closes the tooltip').toBe(0);
+      await tab.mouse.move(AWAY.x, AWAY.y, { steps: 4 });
+      await tab.mouse.move(onChip.x, onChip.y, { steps: 4 });
+      await tab.waitForTimeout(900);
+      expect(await tips().count(), 'no tooltip over the open card').toBe(0);
+      expect(await cardState(tab, FOLDER)).toBe('open');
     } finally {
       await tab.close();
     }
@@ -1584,12 +1692,14 @@ describe('the footer cards under a real pointer', () => {
       for (const item of ITEMS) {
         await tab.mouse.move(AWAY.x, AWAY.y);
         expect((await edge(item)).style, `${item.name} at rest`).toBe('none');
-        const onTrigger = centre(await box(tab, item.trigger));
-        await tab.mouse.move(onTrigger.x, onTrigger.y);
-        await waitOpen(tab, item);
-        expect((await edge(item)).style, `${item.name} previewing`).toBe('none');
-        await tab.mouse.move(AWAY.x, AWAY.y, { steps: 6 });
-        await waitClosed(tab, item);
+        if (item.hover) {
+          const onTrigger = centre(await box(tab, item.trigger));
+          await tab.mouse.move(onTrigger.x, onTrigger.y);
+          await waitOpen(tab, item);
+          expect((await edge(item)).style, `${item.name} previewing`).toBe('none');
+          await tab.mouse.move(AWAY.x, AWAY.y, { steps: 6 });
+          await waitClosed(tab, item);
+        }
         await tab.click(item.trigger);
         await waitOpen(tab, item);
         await tab.mouse.move(AWAY.x, AWAY.y);
@@ -1667,7 +1777,7 @@ describe('the footer cards under a real pointer', () => {
     }
   });
 
-  it('keeps one card open at a time: a hover opens nothing over a kept card, a click replaces it, a hover replaces a preview', async (ctx) => {
+  it('keeps one card open at a time: a hover opens nothing over a kept card, a click replaces it, a hover on the folder chip opens none', async (ctx) => {
     if (!browser) return ctx.skip();
     const tab = await load();
     try {
@@ -1702,14 +1812,15 @@ describe('the footer cards under a real pointer', () => {
       await tab.mouse.move(AWAY.x, AWAY.y, { steps: 4 });
       await tab.mouse.click(AWAY.x, AWAY.y);
       await waitClosed(tab, COST);
-      // Then a hover preview of the ring: a hover on the folder chip replaces a preview.
+      // Then a hover preview of the ring, and the pointer on to the folder chip: the ring's
+      // preview goes as the pointer leaves it, and the chip's hover opens no card of its own.
       await tab.mouse.move(ring.x, ring.y, { steps: 4 });
       await waitOpen(tab, CONTEXT);
       const folder = centre(await box(tab, FOLDER.trigger));
       await tab.mouse.move(folder.x, folder.y, { steps: 4 });
-      await waitOpen(tab, FOLDER);
       await waitClosed(tab, CONTEXT);
-      expect(await open()).toEqual(['folder']);
+      await tab.waitForTimeout(FOOTER_CARD_OPEN_DELAY_MS * 2);
+      expect(await open()).toEqual([]);
     } finally {
       await tab.close();
     }

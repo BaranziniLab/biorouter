@@ -10,7 +10,6 @@ import { FOLDER_ACCESS_COPY } from './copy';
 import {
   FooterCard,
   FooterCardAction,
-  FooterCardActions,
   FooterCardDetail,
   FooterCardList,
   FooterCardNote,
@@ -22,10 +21,12 @@ import { FooterCardHelpSection } from './FooterCardHelpSection';
 import type { FooterCard as FooterCardState } from './useFooterCard';
 
 /**
- * The folder chip's card (spec 3.7), one of the footer's three `FooterCard`s: the folder this
- * chat works in (with Choose folder… while the chat is empty), then every other folder the chat
- * may use, each with Revoke. It opens from the footer's folder chip (`DirSwitcher`), which owns
- * the Popover root and its anchor; `useFooterCard` says when it opens.
+ * The folder chip's card (spec 3.7), one of the footer's `FooterCard`s: the folder this chat works
+ * in, then every other folder the chat may use, each with Revoke. A click on the footer's folder
+ * chip (`DirSwitcher`, which owns the Popover root and its anchor) opens it once the chat has
+ * messages or while its folder is not known yet; a hover never does, and an empty chat's click
+ * opens the folder chooser instead, because a chat that has not had a turn holds no grant
+ * (owner, 2026-11-19). `useFooterCard` keeps it open and closes it.
  *
  * Only the readings are drawn; what explains them waits in an InfoTip beside each label (owner,
  * 2026-11-13: one line up front, the detail on hover or on click). Which tools ask for folder
@@ -148,12 +149,6 @@ export interface FolderAccessCardProps {
   workingDir: string | null;
   /** #44: the folder is fixed once the chat has messages, and the card says so. */
   locked: boolean;
-  /**
-   * Opens the native folder chooser. Given only while the chat is empty and its folder is known
-   * (`DirSwitcher`, the one place that decides it): the card offers Choose folder… exactly when it
-   * is given. The locked chip never passes it (#44).
-   */
-  onChooseFolder?: () => void;
   /** The open state, refs and handlers from `useFooterCard`. */
   card: FooterCardState;
 }
@@ -163,7 +158,6 @@ export function FolderAccessCard({
   sessionId,
   workingDir,
   locked,
-  onChooseFolder,
   card,
 }: FolderAccessCardProps) {
   const labelId = useId();
@@ -216,15 +210,6 @@ export function FolderAccessCard({
           <FooterCardPath path={workingDir} />
         )}
         {locked && <FooterCardNote>{FOLDER_ACCESS_COPY.lockedNote}</FooterCardNote>}
-        {/* `DirSwitcher` alone decides whether the folder can be chosen (#44), so the card has
-            one rule to follow rather than a second copy of it that nothing could test. */}
-        {onChooseFolder && (
-          <FooterCardActions>
-            <FooterCardAction onClick={onChooseFolder}>
-              {FOLDER_ACCESS_COPY.chooseFolder}
-            </FooterCardAction>
-          </FooterCardActions>
-        )}
       </FooterCardHelpSection>
 
       {chatId !== undefined && (

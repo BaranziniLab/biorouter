@@ -109,11 +109,12 @@ const STUBS: Array<{ filter: RegExp; contents: string }> = [
     filter: /\/copilotApi$/,
     contents: `
       export const copilotSetup = async () => new Promise((resolve) => setTimeout(() => resolve({
-        status: 'os_permission_required', runtime_version: '0.3.5', target: 'darwin-arm64',
+        status: 'os_permission_required', runtime_version: '1.3.1', target: 'darwin-arm64',
         permissions: { accessibility: true, screen_recording: false },
-        executable: '/Applications/Biorouter.app/Contents/Resources/computer-use/ocu',
+        executable: '/Applications/Biorouter.app/Contents/Resources/computer-use/Biorouter Copilot.app/Contents/MacOS/agent-desktop',
         message: 'Screen Recording permission is required.',
       }), 120));
+      export const copilotRequestPermissions = async () => ({ status: 'ready', permissions: {} });
     `,
   },
   {
@@ -258,7 +259,7 @@ describe('the Chat tab rows in a real layout engine (spec 3.14, 5.7)', () => {
           (row) => row.getBoundingClientRect().height
         )
       );
-      expect(heights).toHaveLength(16);
+      expect(heights).toHaveLength(17);
       for (const height of heights) near(height, 40, 'capability row');
     } finally {
       await tab.close();

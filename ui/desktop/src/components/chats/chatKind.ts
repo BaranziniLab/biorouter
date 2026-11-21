@@ -183,7 +183,7 @@ interface KindGlyph {
 /**
  * One row per kind, so a new kind is a compile error until it has a glyph, a
  * private glyph and a name. A kind that is an entity draws that entity's glyph
- * (a scheduled run is the Scheduler's Clock, an app chat is Built apps'
+ * (a scheduled run is the Scheduler's Clock, an application's chat is Applications'
  * AppWindow, a workflow run is the Workflows mark).
  */
 const KIND_GLYPHS: Record<ChatKind, KindGlyph> = {
@@ -195,7 +195,7 @@ const KIND_GLYPHS: Record<ChatKind, KindGlyph> = {
     Private: withPrivateBadge(GitBranch, 'branch'),
   },
   subagent: { label: 'Sub-agent', Icon: Agent, Private: AgentPrivate },
-  app: { label: 'App', Icon: AppWindow, Private: withPrivateBadge(AppWindow, 'app') },
+  app: { label: 'Application', Icon: AppWindow, Private: withPrivateBadge(AppWindow, 'app') },
   scheduled: {
     label: 'Scheduled run',
     Icon: Clock,

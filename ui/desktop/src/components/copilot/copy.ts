@@ -14,6 +14,20 @@ export const copilotSetupCopy = {
   /** The re-check inside the result panel. */
   checkAgain: 'Check again',
   readFailed: 'Could not read Biorouter Copilot setup. Check the backend connection and try again.',
+  /**
+   * Who holds the macOS grants (AD-04): the Biorouter Copilot bundle, never Biorouter itself, so a
+   * command Biorouter's shell runs can never borrow them.
+   */
+  macGrantOwner:
+    'Allow Biorouter Copilot under Accessibility, and under Screen Recording for screenshots. Biorouter itself needs neither.',
+  macGrantHelp:
+    'If macOS asks you to quit and reopen it, do so, then use Check again. Checking permissions does not grant them.',
+  /** The one-press request for the system's prompts (macOS, local backend). */
+  request: 'Request access',
+  requesting: 'Requesting…',
+  requestHelp:
+    'macOS shows its own prompts for Biorouter Copilot. Allow Accessibility and Screen Recording. It may also ask about System Events, which Biorouter Copilot does not use, so you can refuse that one.',
+  requestFailed: 'Could not ask macOS for access. Open the settings below instead.',
   /** What the native runtime reports, in words. Keys are the daemon's `runtime.status`. */
   runtimeStates: {
     ready: 'Runtime ready',

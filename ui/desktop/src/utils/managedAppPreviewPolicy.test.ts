@@ -365,14 +365,14 @@ describe('managed app launch link', () => {
   ])('refuses the answer %s', async (path) => {
     const { launchable } = withSecret();
     await expect(managedAppLaunchUrl(launchable, answer({ path }))).rejects.toThrow(
-      'unexpected app address'
+      'unexpected application address'
     );
   });
 
   it('says when the app is gone or the backend refuses', async () => {
     const { launchable } = withSecret();
     await expect(managedAppLaunchUrl(launchable, answer('no such app', 404))).rejects.toThrow(
-      'This app no longer exists.'
+      'This application no longer exists.'
     );
     await expect(managedAppLaunchUrl(launchable, answer('', 401))).rejects.toThrow(
       "refused this window's connection"
@@ -399,7 +399,7 @@ describe('managed app launch link', () => {
     // A daemon that names another listener is not the one this preview was opened for.
     await expect(
       managedAppLaunchUrl(shared, answer({ path, url: `http://127.0.0.1:50000${path}` }))
-    ).rejects.toThrow('The app backend stopped');
+    ).rejects.toThrow('The application backend stopped');
   });
 
   it('asks nothing without a secret or once the backend is gone', async () => {

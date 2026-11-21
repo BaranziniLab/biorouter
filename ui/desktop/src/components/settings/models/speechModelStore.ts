@@ -55,7 +55,7 @@ export interface SpeechModelsSnapshot {
   /**
    * Per model, the failed install the daemon still reports after that model was installed some
    * other way (Rescan, the CLI) and then removed from this window. The daemon keeps its last job
-   * until the next install, so without this the row said "The install was cancelled." again after
+   * until the next install, so without this the row said "The install was canceled." again after
    * Remove, about a job that ended before the model was installed [M]. A key from {@link failureKey}.
    */
   retiredFailures: Readonly<Record<string, string>>;
@@ -192,6 +192,14 @@ export async function installSpeechModel(model: string): Promise<void> {
 export async function cancelSpeechModelInstall(model: string): Promise<void> {
   await forModel(model, 'cancel', () => api.cancel(model));
 }
+
+/**
+ * Whether an install's ending sentence is MSG-INSTALL-CANCELLED: a cancel the person made, which
+ * the popover and the row say in the muted ink, as a record, rather than in the ink a failure
+ * takes. The job carries only the daemon's sentence, so the sentence is what is compared.
+ */
+export const isCancelledInstall = (sentence: string | null | undefined): boolean =>
+  !!sentence && sentence === dictationMessage('MSG-INSTALL-CANCELLED');
 
 /** What tells one install job's ending from another's: the status gives a job no id. */
 export const failureKey = (job: InstallJob): string =>

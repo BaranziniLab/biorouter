@@ -1825,3 +1825,37 @@ save_workflow({ name: "x", is_global: true });"#,
         );
     }
 }
+
+#[cfg(test)]
+mod issue543_redirect_consumer_tests {
+    use super::*;
+
+    #[test]
+    fn issue543_store_redirects_cannot_hide_behind_operators_or_quotes() {
+        let forms = vec!["/issue543/private-store".to_string()];
+        for command in [
+            "echo x >/issue543/private-store",
+            "echo x >|/issue543/private-store",
+            "echo x >/issue543/private-store|head",
+            "echo x >/issue543/private-store&& echo ok",
+            r#"echo x >"/issue543/private-store""#,
+            r#"echo x >'/issue543/private-store'"#,
+            "echo x >>/issue543/private-store/child",
+        ] {
+            assert!(
+                shell_command_names_store(command, &forms),
+                "protected store redirect was lost: {command}"
+            );
+        }
+        for command in [
+            "ls 2>/dev/null)",
+            "echo x >/tmp/issue543-ordinary|head",
+            "printf 'documentation mentions /issue543/private-store'",
+        ] {
+            assert!(
+                !shell_command_names_store(command, &forms),
+                "unrelated command was misclassified: {command}"
+            );
+        }
+    }
+}

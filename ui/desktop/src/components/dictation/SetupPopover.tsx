@@ -17,8 +17,10 @@ import { speechModelsCopy } from '../settings/models/copy';
 import {
   installQuestion,
   installSpeechModel,
+  isCancelledInstall,
   useSpeechModels,
 } from '../settings/models/speechModelStore';
+import { InlineCodeText } from '../settings/providers/subcomponents/InlineCodeText';
 import { Button } from '../ui/button';
 import { Checkbox } from '../ui/Checkbox';
 import { InfoTip } from '../ui/info-tip';
@@ -83,6 +85,25 @@ export function DisclosureDetail({ place }: { place: DictationDaemonPlace }) {
   );
 }
 
+/** Stands in for the model's name while MSG-SETUP is filled, so the name can be drawn whole. */
+const NAME_SLOT = '\u0000name\u0000';
+
+/**
+ * MSG-SETUP with the model's name kept on one line: "Whisper large-v3-turbo (q5_0)" broke at its
+ * hyphen into "large-v3-" and "turbo (q5_0)". The folder may still wrap anywhere; it is a path.
+ */
+function SetupSentence({ sentence, name }: { sentence: string; name: string }) {
+  const [before, ...rest] = sentence.split(NAME_SLOT);
+  if (rest.length === 0) return <>{sentence}</>;
+  return (
+    <>
+      {before}
+      <span className="br-dictation-setup__name">{name}</span>
+      {rest.join(name)}
+    </>
+  );
+}
+
 export interface SetupPopoverProps {
   status: DictationStatus | null;
   /** 0 to 100 while a model installs; null otherwise. */
@@ -111,18 +132,24 @@ export function SetupPopover({ status, progress, onNotNow, onMoreInSettings }: S
     status?.install_job?.phase === 'failed' && status.install_job.model === model?.id
       ? status.install_job.error
       : null;
+  // A cancel is what the person did, said in the muted ink; a refusal or a failure is in ink.
+  const cancelled = !refusal && isCancelledInstall(failed);
+  const problem = refusal ?? failed;
 
   return (
     <div className="br-dictation-setup" data-testid="dictation-setup">
       <p className="br-dictation-setup__title">{DICTATION_LABELS.setUp}</p>
       {model && status ? (
         <p className="br-dictation-setup__text">
-          {dictationMessage('MSG-SETUP', {
-            where,
-            name: model.display_name,
-            size: speechModelsCopy.megabytes(model.bytes),
-            folder: status.models_dir,
-          })}
+          <SetupSentence
+            sentence={dictationMessage('MSG-SETUP', {
+              where,
+              name: NAME_SLOT,
+              size: speechModelsCopy.megabytes(model.bytes),
+              folder: status.models_dir,
+            })}
+            name={model.display_name}
+          />
         </p>
       ) : (
         <p className="br-dictation-setup__text">{dictationMessage('MSG-SETTINGS-UNREACHABLE')}</p>
@@ -132,20 +159,29 @@ export function SetupPopover({ status, progress, onNotNow, onMoreInSettings }: S
         <DisclosureDetail place={place} />
       </p>
       {caution && <p className="br-dictation-setup__warning">{caution.text}</p>}
-      {(refusal || failed) && (
-        <p className="br-dictation-setup__warning" role="alert">
-          {refusal ?? failed}
-        </p>
-      )}
+      {problem &&
+        (cancelled ? (
+          <p className="br-dictation-setup__text br-dictation-setup__note" role="status">
+            {problem}
+          </p>
+        ) : (
+          <p className="br-dictation-setup__warning" role="alert">
+            {/* MSG-OFFLINE names commands in backticks; they are drawn as code. */}
+            <InlineCodeText text={problem} />
+          </p>
+        ))}
       {activation.needsSave && !activation.saving ? (
         <p className="br-dictation-setup__warning" role="alert">
           {activation.activationFailed
             ? DICTATION_LABELS.activationSaveFailed
-            : DICTATION_LABELS.activationChoicePending}
+            : DICTATION_LABELS.activationChoicePending}{' '}
+          {/* Inline, in the sentence's own size, as the composer's notice actions are: the 14px
+              control rung made the line it sat on taller, or wrapped onto a line of its own. */}
           <Button
             type="button"
             size="xs"
             variant="link"
+            className="h-auto px-0 text-supporting"
             onClick={() => void activation.retryActivation()}
           >
             {activation.activationFailed ? DICTATION_ACTIONS.retry : DICTATION_ACTIONS.saveChoice}
@@ -159,27 +195,28 @@ export function SetupPopover({ status, progress, onNotNow, onMoreInSettings }: S
       ) : null}
       {status && !status.install.allowed && status.install.reason ? (
         <p className="br-dictation-setup__warning" role="status">
-          {status.install.reason}
+          <InlineCodeText text={status.install.reason} />
         </p>
       ) : null}
       {installing && (
         <div className="br-dictation-setup__progress" data-testid="dictation-setup-progress">
           <span className="text-supporting">{installingText}</span>
-          <Progress value={progress} label={installingText} />
+          {/* The 4px bar Settings draws for the same install, so the two surfaces match. */}
+          <Progress size="thin" value={progress} label={installingText} minVisiblePercent={2} />
         </div>
       )}
       {status &&
       (!hasUsableModel(status) || activation.needsSave) &&
       status.policy.dictionary.allowed !== false &&
       activation.showChoice ? (
-        <div className="flex items-center gap-1 text-label" data-testid="dictation-setup-suggest">
-          <label>
+        <div className="br-dictation-setup__choice" data-testid="dictation-setup-suggest">
+          <label className="br-dictation-setup__choice-label">
             <Checkbox
               checked={activation.checked}
               disabled={activation.disabled}
               onChange={(event) => activation.setChecked(event.target.checked)}
             />
-            {DICTATION_ACTIONS.suggestFromChats}
+            <span>{DICTATION_ACTIONS.suggestFromChats}</span>
           </label>
           <InfoTip label={DICTATION_ACTIONS.suggestFromChats} help={activation.help} />
         </div>

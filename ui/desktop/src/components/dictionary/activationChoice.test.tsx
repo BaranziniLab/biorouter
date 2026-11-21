@@ -74,6 +74,75 @@ describe('first dictionary activation choice', () => {
     await waitFor(() => expect(result.current.showChoice).toBe(false));
   });
 
+  it('saves the choice when Install is pressed again after a failed or cancelled install', async () => {
+    // Walking setup in the dev app (2026-11-19): an install that failed offline, then Install
+    // again and a finished download, left Settings asking "Finish setting up Dictionary for new
+    // chats" with Save choice. The status still held the first attempt's failed job when the
+    // second was armed, and that old failure disarmed it before the download even began.
+    api.readAllConfig.mockResolvedValue({ data: { config: {} } });
+    const job = (phase: 'failed' | 'downloading', bytes_done: number, error: string | null) => ({
+      model: modelId,
+      bytes_done,
+      bytes_total: 264_477_561,
+      bytes_per_second: 0,
+      phase,
+      error,
+    });
+    const offline = speechStatus(
+      { install_job: job('failed', 0, "This computer cannot reach Biorouter's model repository.") },
+      { installed: false }
+    );
+    const downloading = speechStatus(
+      { install_job: job('downloading', 1_000_000, null) },
+      { installed: false }
+    );
+    const { result, rerender } = renderHook(({ status }) => useDictionaryActivationChoice(status), {
+      initialProps: { status: offline },
+    });
+    await waitFor(() => expect(result.current.showChoice).toBe(true));
+    act(() => result.current.startInstall(modelId, true));
+    rerender({ status: offline });
+    rerender({ status: downloading });
+    rerender({ status: afterInstall });
+    await waitFor(() =>
+      expect(api.activateDictionary).toHaveBeenCalledWith(
+        expect.objectContaining({ body: { suggest_from_chats: true, first_install: true } })
+      )
+    );
+    await waitFor(() => expect(result.current.showChoice).toBe(false));
+  });
+
+  it('lets a new failure end the armed install, so a later model never saves the choice by surprise', async () => {
+    api.readAllConfig.mockResolvedValue({ data: { config: {} } });
+    const job = (phase: 'failed' | 'downloading', bytes_done: number, error: string | null) => ({
+      model: modelId,
+      bytes_done,
+      bytes_total: 264_477_561,
+      bytes_per_second: 0,
+      phase,
+      error,
+    });
+    const { result, rerender } = renderHook(({ status }) => useDictionaryActivationChoice(status), {
+      initialProps: { status: beforeInstall },
+    });
+    await waitFor(() => expect(result.current.showChoice).toBe(true));
+    act(() => result.current.startInstall(modelId, true));
+    rerender({
+      status: speechStatus({ install_job: job('downloading', 5, null) }, { installed: false }),
+    });
+    rerender({
+      status: speechStatus(
+        { install_job: job('failed', 9, 'The install was canceled.') },
+        { installed: false }
+      ),
+    });
+    rerender({ status: afterInstall });
+    // The choice was armed for an install that ended; a model that appears later (a Rescan, the
+    // CLI) leaves the choice to the person, as Save choice.
+    await waitFor(() => expect(result.current.needsSave).toBe(true));
+    expect(api.activateDictionary).not.toHaveBeenCalled();
+  });
+
   it('keeps a verified installation retryable when saving the activation choice fails', async () => {
     api.readAllConfig.mockResolvedValue({ data: { config: {} } });
     api.activateDictionary

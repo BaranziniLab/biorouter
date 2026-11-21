@@ -18,7 +18,7 @@ Layout (per app):
 
 An app's address opens only in a browser that followed the one-time link
 `biorouter apps open` (or the desktop app) hands it; the address alone answers
-"Open this app from Biorouter".
+"Open this application from Biorouter".
 
 ## Verify
 

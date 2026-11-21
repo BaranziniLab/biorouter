@@ -13,6 +13,8 @@
  *   (`settings/models/**`, `settings/reset_provider/**`).
  * - `dictation`: local dictation's Speech models (`settings/models/SpeechModelSection.tsx`,
  *   DD-66 in `docs/history/local-dictation-2026-11/implementation-plan.md`).
+ * - `dictionary`: the dictionary's rows inside Speech models
+ *   (`settings/models/DictionarySettingsRows.tsx`), a group of rows rather than a section.
  * - `memory`, `configuration`: WS-SETTINGS-B (`settings/memory/**`,
  *   `settings/config/**`).
  * - `usage`: WS-USAGE (`settings/usage/**`).
@@ -38,6 +40,9 @@ export const SETTINGS_SECTIONS = {
   localModels: { id: 'settings-local-models', tab: 'models' },
   // Speech models (DD-66): the setup popover's More in Settings lands here, by this key.
   dictation: { id: 'settings-dictation', tab: 'models' },
+  // The dictionary's rows at the end of Speech models (owner, 2026-11-19): the Dictionary
+  // page band's Dictionary settings icon lands on them, by this key.
+  dictionary: { id: 'settings-dictionary', tab: 'models' },
   modelsDangerZone: { id: 'settings-models-danger-zone', tab: 'models' },
   // Chat tab
   approvals: { id: 'settings-approvals', tab: 'chat' },
@@ -52,6 +57,8 @@ export const SETTINGS_SECTIONS = {
   privacy: { id: 'settings-privacy', tab: 'app' },
   general: { id: 'settings-general', tab: 'app' },
   appearance: { id: 'settings-appearance', tab: 'app' },
+  // The Biorouter Browser: what was imported from Chrome, and Import from Chrome (BB-25).
+  browser: { id: 'settings-browser', tab: 'app' },
   usage: { id: 'settings-usage', tab: 'app' },
   about: { id: 'settings-about', tab: 'app' },
   appDangerZone: { id: 'settings-app-danger-zone', tab: 'app' },

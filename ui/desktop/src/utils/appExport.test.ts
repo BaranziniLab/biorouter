@@ -284,11 +284,13 @@ describe('exportAppToFolder', () => {
   });
 
   it('reports a missing app in the daemon’s own words', async () => {
-    const fetch = vi.fn(async () => new Response("There is no app 'ghost'.", { status: 404 }));
+    const fetch = vi.fn(
+      async () => new Response("There is no application 'ghost'.", { status: 404 })
+    );
     const { deps: d } = deps({ fetch: fetch as unknown as typeof globalThis.fetch });
     expect(await exportAppToFolder('ghost', launcher, d)).toEqual({
       status: 'failed',
-      message: "There is no app 'ghost'.",
+      message: "There is no application 'ghost'.",
     });
     expect(await fs.readdir(picked)).toEqual([]);
   });

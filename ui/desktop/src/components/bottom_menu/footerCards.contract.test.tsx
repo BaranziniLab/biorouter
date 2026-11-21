@@ -4,12 +4,18 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } 
 import { useRef } from 'react';
 
 /**
- * THE FOOTER CARDS' CONTRACT: the three items on the composer's footer line (the working folder,
- * the context ring and the cost) answer a hover, a click, a tap, a key, a press, a scroll and a
- * window switch in exactly the same way, and only one of their cards is open at a time. The owner
- * asked for that consistency in so many words, so it is pinned here as ONE table of behaviour
- * run over all three items: a rule that holds for two of them and not the third fails here, on the
- * row that names the odd one out.
+ * THE FOOTER CARDS' CONTRACT: the two readouts on the composer's footer line (the context ring and
+ * the cost) answer a hover, a click, a tap, a key, a press, a scroll and a window switch in exactly
+ * the same way, and only one card on the line is open at a time. The owner asked for that
+ * consistency in so many words, so it is pinned here as ONE table of behaviour run over both
+ * readouts: a rule that holds for one of them and not the other fails here, on the row that names
+ * the odd one out.
+ *
+ * The working folder is no readout (owner, 2026-11-19): it is a control like the model chip, whose
+ * hover shows the app's label tooltip and whose click opens the folder chooser, or, once the chat
+ * has messages, its folder access card. That card is still one of the line's cards, so block 12
+ * pins how it sits among the readouts' (a click keeps it, a hover never opens it, and one card at
+ * a time holds across all three); the chip's tooltip and chooser are `DirSwitcher.test.tsx`'s.
  *
  * The blocks are numbered as the rules are in docs/desktop-ui/shared-controls.md ("Composer
  * footer cards"): 1 hover, 2 leaving and the pointer's way across (up from the trigger to the card,
@@ -21,10 +27,11 @@ import { useRef } from 'react';
  * focus was in the draft), 9 scroll, 10 the trigger's open state and its KEPT mark (hover peeks,
  * click pins: `data-pinned` on the trigger and the surface for a kept card, never for a preview,
  * gone on every close, and absent while the folder's chooser is open, #50), 11 the composer each
- * card hangs above; and, last, rule 3 where nothing tabbable follows the line (Home), so a Tab
- * moves into the card. The folder's own two rules (#50, #44) are `FolderAccessCard.test.tsx`'s. A
- * new rule goes into this table, so it holds for all three items at once; a new item on the line
- * goes into `ITEMS`. How each state LOOKS on the trigger is `footerCard.browser.test.tsx`'s.
+ * card hangs above, 12 the folder card among them; and rule 3 where nothing tabbable follows the
+ * line, so a Tab moves into the card. The folder's own two rules (#50, #44) are
+ * `FolderAccessCard.test.tsx`'s. A new rule goes into this table, so it holds for both readouts at
+ * once; a new readout on the line goes into `ITEMS`. How each state LOOKS on the trigger is
+ * `footerCard.browser.test.tsx`'s.
  *
  * The real `ComposerFooter` is rendered under a composer stand-in, with all three items present,
  * exactly as `ChatInput` wires it (the composer card passed as `composerRef`), and a button on
@@ -130,7 +137,7 @@ function Composer({
 }
 
 interface Item {
-  name: 'folder' | 'context' | 'cost';
+  name: 'context' | 'cost';
   /** The trigger's `data-testid` and accessible name. */
   trigger: string;
   triggerName: string;
@@ -185,23 +192,22 @@ function byPath(container: Element | Document, absolute: string): HTMLElement {
   return node;
 }
 
+/**
+ * The folder chip and its card, beside the readouts (block 12). Not an `Item`: its hover shows a
+ * label tooltip, never the card, and a click is the only way the card opens.
+ */
+const FOLDER = {
+  name: 'folder' as const,
+  trigger: 'dir-switcher-locked',
+  triggerName: FOOTER_COPY.folderLabel(WORKING_DIR),
+  card: 'folder-access-card',
+  cardName: FOLDER_ACCESS_COPY.cardLabel,
+};
+const folderChip = () => screen.getByTestId(FOLDER.trigger);
+const folderCard = () => document.querySelector<HTMLElement>(`[data-testid="${FOLDER.card}"]`);
+const folderOpen = () => folderCard()?.getAttribute('data-state') === 'open';
+
 const ITEMS: Item[] = [
-  {
-    name: 'folder',
-    trigger: 'dir-switcher-locked',
-    triggerName: FOOTER_COPY.folderLabel(WORKING_DIR),
-    card: 'folder-access-card',
-    cardName: FOLDER_ACCESS_COPY.cardLabel,
-    align: 'start',
-    // The Working folder label's InfoTip (which tools ask for folder approval), drawn first.
-    firstControl: () => screen.getByRole('button', { name: WORKING_FOLDER_TIP }),
-    pressTargets: [
-      LABEL,
-      { name: 'a granted folder’s path', get: (card) => byPath(card, GRANT.folder) },
-    ],
-    // The Working folder label's InfoTip is always there, in every state of the card.
-    withoutControls: null,
-  },
   {
     name: 'context',
     trigger: 'context-window-indicator',
@@ -236,8 +242,6 @@ const ITEMS: Item[] = [
     withoutControls: () => {},
   },
 ];
-
-const [FOLDER] = ITEMS;
 
 /** Every ordered pair of different items, for the one-at-a-time rule. */
 const PAIRS = ITEMS.flatMap((first) =>
@@ -298,15 +302,14 @@ const flush = () => act(async () => {});
 async function renderLine() {
   render(<Composer />);
   await flush();
+  expect(folderChip()).toBeInTheDocument();
   for (const item of ITEMS) expect(trigger(item)).toBeInTheDocument();
 }
 
-/** What a Tab onto the item comes from: the item before it on the line, or the button before it. */
+/** What a Tab onto the item comes from: the item before it on the line (the folder chip first). */
 function before(item: Item): HTMLElement {
   const index = ITEMS.indexOf(item);
-  return index === 0
-    ? screen.getByRole('button', { name: 'Before the line' })
-    : trigger(ITEMS[index - 1]);
+  return index === 0 ? folderChip() : trigger(ITEMS[index - 1]);
 }
 
 /**
@@ -1111,13 +1114,14 @@ describe('7. one card at a time on the line', () => {
     const user = userEvent.setup();
     render(<Composer props={{ ...PROPS, modelCostRows: undefined }} after={false} />);
     await flush();
-    const [folder, context] = ITEMS;
-    act(() => trigger(folder).focus());
+    const [context] = ITEMS;
+    act(() => folderChip().focus());
     await user.tab();
     expect(openCards(), 'a Tab previews the ring’s card').toEqual(['context']);
     expect(marks(context)).toEqual(UNMARKED);
-    // The pointer comes to rest on the folder chip while the ring's card is only a preview.
-    fireEvent.pointerEnter(trigger(folder), { pointerType: 'mouse' });
+    // The pointer comes to rest on the folder chip while the ring's card is only a preview. Its
+    // hover shows only its label tooltip, and must not disturb the ring's card either.
+    fireEvent.pointerEnter(folderChip(), { pointerType: 'mouse' });
     await wait(FOOTER_CARD_OPEN_DELAY_MS / 3);
     // Then the Tab into the ring's card: focus entering it keeps it.
     await user.tab();
@@ -1126,6 +1130,7 @@ describe('7. one card at a time on the line', () => {
     expect(marks(context)).toEqual(MARKED);
     await wait(FOOTER_CARD_OPEN_DELAY_MS * 2);
     expect(openCards(), 'the waiting hover opened nothing').toEqual(['context']);
+    expect(folderOpen()).toBe(false);
     expect(slider).toHaveFocus();
   });
 
@@ -1164,22 +1169,24 @@ describe('7. one card at a time on the line', () => {
       delete document.documentElement.dataset.biorouterSurface;
     });
 
-    it.each(ITEMS.filter((item) => item !== FOLDER))(
+    it.each(ITEMS)(
       'opens nothing on a hover over the $name trigger, and the key and its focus stay',
       async (then) => {
         const user = userEvent.setup();
         await renderLine();
-        await user.click(trigger(FOLDER));
+        await user.click(folderChip());
         const key = await screen.findByLabelText(FOLDER_ACCESS_COPY.approvalKey);
         await user.click(key);
         await user.keyboard('typed-approval-key');
         expect(key).toHaveValue('typed-approval-key');
         await user.hover(trigger(then));
         await wait(FOOTER_CARD_OPEN_DELAY_MS * 2);
-        expect(openCards()).toEqual(['folder']);
+        expect(folderOpen()).toBe(true);
+        expect(openCards()).toEqual([]);
         expect(key).toHaveFocus();
         expect(key).toHaveValue('typed-approval-key');
-        expect(marks(FOLDER)).toEqual(MARKED);
+        expect(folderChip()).toHaveAttribute('data-pinned', 'true');
+        expect(folderCard()).toHaveAttribute('data-pinned', 'true');
       }
     );
   });
@@ -1267,8 +1274,9 @@ describe('7. one card at a time on the line', () => {
 });
 
 /**
- * #50 for the mark: while the folder chip's native chooser is open the card is shut, so the chip
- * is not marked kept, and nothing a click or a hover did while the chooser was up marks it after.
+ * #50 for the mark: on Home the folder chip's click opens the native chooser itself, so nothing is
+ * kept and the chip is not marked, and nothing a click or a hover did while the chooser was up
+ * opens a card or marks the chip after it.
  */
 describe('10. the folder chip’s mark while its chooser is open (#50)', () => {
   const original = window.electron;
@@ -1276,7 +1284,7 @@ describe('10. the folder chip’s mark while its chooser is open (#50)', () => {
     window.electron = original;
   });
 
-  it('drops the mark while the chooser is up, and nothing done then marks the chip after', async () => {
+  it('marks nothing while the chooser is up, and nothing done then marks the chip after', async () => {
     let answer: ((value: { canceled: boolean; filePaths: string[] }) => void) | undefined;
     const electron = {
       platform: 'darwin',
@@ -1291,20 +1299,18 @@ describe('10. the folder chip’s mark while its chooser is open (#50)', () => {
     };
     window.electron = electron as unknown as typeof window.electron;
     const user = userEvent.setup();
-    // Home: the folder alone, unlocked and known, so its card offers Choose folder….
+    // Home: the folder alone, unlocked and known, so its click opens the chooser.
     render(<Composer props={{ ...PROPS, sessionId: null, workingDirLocked: false }} />);
     await flush();
     const chip = screen.getByTestId('dir-switcher');
     const card = () => document.querySelector<HTMLElement>('[data-testid="folder-access-card"]');
     await user.click(chip);
-    expect(chip).toHaveAttribute('data-pinned', 'true');
-    expect(card()).toHaveAttribute('data-pinned', 'true');
-    await user.click(screen.getByRole('button', { name: FOLDER_ACCESS_COPY.chooseFolder }));
     expect(electron.directoryChooser).toHaveBeenCalledTimes(1);
     expect(chip).not.toHaveAttribute('data-pinned');
-    expect(chip).toHaveAttribute('aria-expanded', 'false');
+    expect(chip).not.toHaveAttribute('aria-expanded');
     // While it is up: a click, a hover.
     await user.click(chip);
+    expect(electron.directoryChooser).toHaveBeenCalledTimes(1);
     expect(chip).not.toHaveAttribute('data-pinned');
     await user.hover(chip);
     await wait(FOOTER_CARD_OPEN_DELAY_MS * 2);
@@ -1315,28 +1321,19 @@ describe('10. the folder chip’s mark while its chooser is open (#50)', () => {
     await wait(FOOTER_CARD_OPEN_DELAY_MS * 2);
     expect(chip).not.toHaveAttribute('data-pinned');
     expect(card()?.getAttribute('data-state') ?? 'absent').not.toBe('open');
+    expect(electron.directoryChooser).toHaveBeenCalledTimes(1);
   });
 });
 
 /**
  * Rule 3 where nothing tabbable follows the line. The cards are portalled to the end of the page,
- * so on Home (the folder chip alone) and in a chat whose line ends with a readout, the Tab after
- * the last trigger is not "away": it lands in that trigger's card, which a Tab had opened UNPINNED.
+ * so in a chat whose line ends with a readout, the Tab after the last trigger is not "away": it
+ * lands in that trigger's card, which a Tab had opened UNPINNED.
  * Left unpinned, a pointer crossing the trigger closed it about 150ms later with focus inside,
  * dropping focus on the page; focus that enters a card pins it, as a press does.
  */
 describe('3. a Tab past the last item on the line, into its card', () => {
   const LAST = [
-    {
-      name: 'folder',
-      // Home: only the folder, unlocked and known, so its card offers Choose folder….
-      props: { ...PROPS, sessionId: null, workingDirLocked: false },
-      before: () => screen.getByRole('button', { name: 'Before the line' }),
-      trigger: 'dir-switcher',
-      card: 'folder-access-card',
-      // The Working folder label's InfoTip, drawn before Choose folder….
-      firstControl: () => screen.getByRole('button', { name: WORKING_FOLDER_TIP }),
-    },
     {
       name: 'context',
       // A chat with no cost to show: the ring ends the line.
@@ -1397,4 +1394,177 @@ describe('3. a Tab past the last item on the line, into its card', () => {
       expect(button).toHaveFocus();
     }
   );
+});
+
+/**
+ * 12. The folder card among the readouts' cards. The folder chip is a control: its hover shows its
+ * label tooltip and never its card, and in a chat with messages its click, Enter or Space opens
+ * the folder access card, KEPT from the start (it was never a preview). It is still one of the
+ * line's cards, so one card at a time holds across all three: opening it closes a readout's card,
+ * a hover on a readout opens nothing over it, and a click, Enter, Space or Tab onto a readout
+ * replaces it.
+ */
+describe('12. the folder card among the line’s cards', () => {
+  it('never opens on a hover over the chip, past every delay, and the chip stays at rest', async () => {
+    vi.useFakeTimers();
+    await renderLine();
+    fireEvent.pointerEnter(folderChip(), { pointerType: 'mouse' });
+    await advance(FOOTER_CARD_OPEN_DELAY_MS * 4);
+    expect(folderOpen()).toBe(false);
+    expect(folderChip()).toHaveAttribute('aria-expanded', 'false');
+    expect(folderChip()).not.toHaveAttribute('data-pinned');
+    expect(mocks.list).not.toHaveBeenCalled();
+  });
+
+  it('never opens on a Tab onto the chip: that shows its tooltip only', async () => {
+    const user = userEvent.setup();
+    await renderLine();
+    act(() => screen.getByRole('button', { name: 'Before the line' }).focus());
+    await user.tab();
+    expect(folderChip()).toHaveFocus();
+    await flush();
+    expect(folderOpen()).toBe(false);
+    expect(folderChip()).toHaveAttribute('aria-expanded', 'false');
+  });
+
+  it('opens kept on a click, marked on both ends, and a second click closes it', async () => {
+    const user = userEvent.setup();
+    await renderLine();
+    await user.click(folderChip());
+    await flush();
+    expect(folderOpen()).toBe(true);
+    expect(screen.getByRole('dialog', { name: FOLDER.cardName })).toBe(folderCard());
+    expect(folderChip()).toHaveAttribute('data-pinned', 'true');
+    expect(folderCard()).toHaveAttribute('data-pinned', 'true');
+    expect(folderCard()).toHaveAttribute('data-align', 'start');
+    await user.click(folderChip());
+    expect(folderOpen()).toBe(false);
+    expect(folderChip()).not.toHaveAttribute('data-pinned');
+  });
+
+  it.each(ITEMS)('closes the kept $name card when a click opens the folder card', async (item) => {
+    const user = userEvent.setup();
+    await renderLine();
+    await user.click(trigger(item));
+    expect(openCards()).toEqual([item.name]);
+    await user.click(folderChip());
+    await flush();
+    expect(folderOpen()).toBe(true);
+    expect(openCards()).toEqual([]);
+    expect(marks(item)).toEqual(UNMARKED);
+  });
+
+  it.each(ITEMS)(
+    'opens nothing on a hover over the $name trigger while the folder card is kept, which stays',
+    async (item) => {
+      vi.useFakeTimers();
+      await renderLine();
+      fireEvent.click(folderChip(), { detail: 1 });
+      await flush();
+      expect(folderOpen()).toBe(true);
+      fireEvent.pointerEnter(trigger(item), { pointerType: 'mouse' });
+      await advance(FOOTER_CARD_OPEN_DELAY_MS * 3);
+      expect(openCards()).toEqual([]);
+      expect(folderOpen()).toBe(true);
+      expect(folderChip()).toHaveAttribute('data-pinned', 'true');
+      fireEvent.pointerLeave(trigger(item), { pointerType: 'mouse' });
+      await advance(FOOTER_CARD_CLOSE_GRACE_MS * 4);
+      expect(folderOpen()).toBe(true);
+    }
+  );
+
+  it.each(ITEMS)('is replaced when a click keeps the $name card', async (item) => {
+    const user = userEvent.setup();
+    await renderLine();
+    await user.click(folderChip());
+    expect(folderOpen()).toBe(true);
+    await user.click(trigger(item));
+    expect(openCards()).toEqual([item.name]);
+    expect(marks(item)).toEqual(MARKED);
+    expect(folderOpen()).toBe(false);
+    expect(folderChip()).not.toHaveAttribute('data-pinned');
+  });
+
+  it.each(ITEMS.flatMap((item) => ['Enter', 'Space'].map((key) => ({ item, key }))))(
+    'is replaced when $key on the $item.name trigger keeps that card',
+    async ({ item, key }) => {
+      const user = userEvent.setup();
+      await renderLine();
+      await user.click(folderChip());
+      expect(folderOpen()).toBe(true);
+      act(() => trigger(item).focus());
+      await user.keyboard(key === 'Enter' ? '{Enter}' : ' ');
+      await waitFor(() => expect(surface(item)).toHaveFocus());
+      await flush();
+      expect(openCards()).toEqual([item.name]);
+      expect(folderOpen()).toBe(false);
+    }
+  );
+
+  it('is replaced by a preview when a Tab moves from the chip onto the ring beside it', async () => {
+    const user = userEvent.setup();
+    await renderLine();
+    await user.click(folderChip());
+    expect(folderOpen()).toBe(true);
+    act(() => folderChip().focus());
+    await user.tab();
+    const [context] = ITEMS;
+    expect(trigger(context)).toHaveFocus();
+    expect(openCards()).toEqual(['context']);
+    expect(marks(context)).toEqual(UNMARKED);
+    expect(folderOpen()).toBe(false);
+    await flush();
+  });
+
+  it('opens from the keyboard with focus moved onto it; Escape hands focus back to the chip', async () => {
+    const user = userEvent.setup();
+    await renderLine();
+    act(() => folderChip().focus());
+    await user.keyboard('{Enter}');
+    await waitFor(() => expect(folderCard()).toHaveFocus());
+    await flush();
+    // The next Tab reaches its first control, the Working folder label's InfoTip.
+    await user.tab();
+    expect(screen.getByRole('button', { name: WORKING_FOLDER_TIP })).toHaveFocus();
+    if (onInfoTip()) {
+      await user.keyboard('{Escape}');
+      expect(folderOpen(), 'the first Escape closes the InfoTip only').toBe(true);
+    }
+    await user.keyboard('{Escape}');
+    expect(folderOpen()).toBe(false);
+    expect(folderChip()).toHaveFocus();
+  });
+
+  it('survives a window switch, with focus on a granted folder it was pressed on', async () => {
+    const user = userEvent.setup();
+    await renderLine();
+    await user.click(folderChip());
+    const path = await waitFor(() => byPath(folderCard()!, GRANT.folder));
+    await user.pointer({ keys: '[MouseLeft]', target: path });
+    const focused = document.activeElement as HTMLElement;
+    expect(folderCard()!.contains(focused), 'focus is in the card').toBe(true);
+    act(() => {
+      focused.blur();
+      window.dispatchEvent(new FocusEvent('blur'));
+    });
+    await wait(20);
+    act(() => {
+      window.dispatchEvent(new FocusEvent('focus'));
+      focused.focus();
+    });
+    await wait(20);
+    expect(folderOpen(), 'the kept card survived the window switch').toBe(true);
+  });
+
+  it('closes on an outside press, and leaves focus where the press put it', async () => {
+    const user = userEvent.setup();
+    await renderLine();
+    await user.click(folderChip());
+    expect(folderOpen()).toBe(true);
+    const draft = screen.getByRole('textbox', { name: 'Draft' });
+    await user.click(draft);
+    expect(folderOpen()).toBe(false);
+    expect(draft).toHaveFocus();
+    expect(folderChip()).not.toHaveAttribute('data-pinned');
+  });
 });

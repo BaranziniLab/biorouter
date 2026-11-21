@@ -32,16 +32,16 @@ class InstalledDoctorTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.helper = Path(self.temp.name)
-        (self.helper / 'manifest.json').write_text(json.dumps({'executable': 'ocu', 'upstream_version': '0.3.5'}), encoding='utf-8')
+        (self.helper / 'manifest.json').write_text(json.dumps({'executable': 'agent-desktop', 'upstream_version': '1.3.1'}), encoding='utf-8')
         # The payload file has to exist on disk. `validate_doctor` compares
         # filesystem IDENTITY (`os.path.samefile`) rather than path spelling, so
         # a manifest naming a file that was never written cannot be matched --
         # and on macOS it fails in a way that reads as a path bug, because
         # `tempfile` hands out `/var/...` while `resolve()` reports the
         # `/private/var/...` the symlink points at.
-        (self.helper / 'ocu').write_bytes(b'not a real helper')
+        (self.helper / 'agent-desktop').write_bytes(b'not a real helper')
         self.report = {'computer_use': {'integrity': 'verified', 'development_override': False,
-            'executable': str(self.helper / 'ocu'), 'target': 'linux-x64', 'runtime_version': '0.3.5',
+            'executable': str(self.helper / 'agent-desktop'), 'target': 'linux-x64', 'runtime_version': '1.3.1',
             'status': 'ready', 'desktop_available': True, 'capture_available': True,
             'permissions': {'accessibility': True, 'screen_recording': True}}}
 
@@ -60,22 +60,22 @@ class InstalledDoctorTests(unittest.TestCase):
         # install this check exists to catch. Asserting on ValueError is what
         # makes the difference visible -- an OSError escapes as an unhandled
         # traceback naming a single path.
-        (self.helper / 'ocu').unlink()
+        (self.helper / 'agent-desktop').unlink()
         with self.assertRaises(ValueError) as caught:
             self.validate(self.report)
         self.assertIn('does not exist', str(caught.exception))
-        self.assertIn('ocu', str(caught.exception))
+        self.assertIn('agent-desktop', str(caught.exception))
 
     def test_a_symlinked_temp_root_is_still_the_same_payload(self):
         # macOS hands out `/var/folders/...` while `resolve()` reports the
         # `/private/var/...` it points at. Spelling differs, identity does not,
         # and a spelling comparison fails every macOS run.
         report = copy.deepcopy(self.report)
-        report['computer_use']['executable'] = str(self.helper / '.' / 'ocu')
+        report['computer_use']['executable'] = str(self.helper / '.' / 'agent-desktop')
         self.validate(report)
 
     def test_wrong_installation_and_unverified_bytes_fail(self):
-        for field, value in [('executable', '/another/install/ocu'), ('integrity', 'verified_on_start'),
+        for field, value in [('executable', '/another/install/agent-desktop'), ('integrity', 'verified_on_start'),
                              ('development_override', True), ('target', 'linux-arm64'), ('runtime_version', '0.3.4')]:
             with self.subTest(field=field), self.assertRaises(ValueError):
                 report = copy.deepcopy(self.report)
@@ -113,7 +113,7 @@ class MacCandidateSigningTests(unittest.TestCase):
             framework = app / 'Contents/Frameworks/Fixture.framework'
             framework_version = framework / 'Versions/A'
             helper = app / 'Contents/Resources/computer-use'
-            runtime_app = helper / 'BioRouter Computer Use.app'
+            runtime_app = helper / 'Biorouter Copilot.app'
             def executable_bundle(bundle, name):
                 contents = bundle / 'Contents'
                 (contents / 'MacOS').mkdir(parents=True)
@@ -123,7 +123,7 @@ class MacCandidateSigningTests(unittest.TestCase):
                 subprocess.run(['cc', '-x', 'c', '-', '-o', contents / 'MacOS' / name],
                     input='int main(void) { return 0; }', text=True, check=True, capture_output=True)
             executable_bundle(app, 'candidate')
-            executable_bundle(runtime_app, 'ocu')
+            executable_bundle(runtime_app, 'agent-desktop')
             subprocess.run(['codesign', '--force', '--sign', '-', runtime_app], check=True, capture_output=True)
             (helper / 'manifest.json').write_text('{"fixture": "preserve runtime bytes"}', encoding='utf-8')
             runtime_before = {p.relative_to(helper): p.read_bytes() for p in helper.rglob('*') if p.is_file()}
@@ -230,7 +230,7 @@ class OwnedCleanupTests(unittest.TestCase):
         with patch.object(installed, 'helper_processes', side_effect=lambda _: dict(state)), \
                 patch.object(installed.os, 'kill', side_effect=kill) as killed:
             with self.assertRaisesRegex(ValueError, 'probe failed'):
-                with installed.owned_app_agents(Path('/only/this/ocu')):
+                with installed.owned_app_agents(Path('/only/this/agent-desktop')):
                     state[22] = 'new-start'
                     raise ValueError('probe failed')
             killed.assert_called_once_with(22, signal.SIGTERM)
@@ -239,12 +239,12 @@ class OwnedCleanupTests(unittest.TestCase):
     def test_reused_pid_is_not_signalled(self):
         snapshots = [{11: 'existing'}, {11: 'existing', 22: 'new'}, {11: 'existing', 22: 'reused'}]
         with patch.object(installed, 'helper_processes', side_effect=snapshots), patch.object(installed.os, 'kill') as killed:
-            with installed.owned_app_agents(Path('/only/this/ocu')):
+            with installed.owned_app_agents(Path('/only/this/agent-desktop')):
                 pass
             killed.assert_not_called()
 
     def test_process_snapshot_matches_exact_executable_not_prefix(self):
-        executable = Path('/exact/ocu')
+        executable = Path('/exact/agent-desktop')
         result = subprocess.CompletedProcess([], 0, stdout=f' 11 Fri Sep 18 10:00:00 2026 {executable}\n 22 Fri Sep 18 10:00:00 2026 {executable}-other\n')
         with patch.object(installed.subprocess, 'run', return_value=result):
             self.assertEqual(installed.helper_processes(executable), {11: 'Fri Sep 18 10:00:00 2026'})
@@ -365,8 +365,8 @@ class NonAsciiInstallPathTests(unittest.TestCase):
         self.addCleanup(self.temp.cleanup)
         self.helper = Path(self.temp.name)
         (self.helper / 'manifest.json').write_text(
-            json.dumps({'executable': 'ocu', 'upstream_version': '0.3.5'}), encoding='utf-8')
-        (self.helper / 'ocu').write_bytes(b'not a real helper')
+            json.dumps({'executable': 'agent-desktop', 'upstream_version': '1.3.1'}), encoding='utf-8')
+        (self.helper / 'agent-desktop').write_bytes(b'not a real helper')
 
     def test_the_fixture_really_is_non_ascii(self):
         """Never let this suite pass because the premise quietly disappeared."""
@@ -377,8 +377,8 @@ class NonAsciiInstallPathTests(unittest.TestCase):
         """The real shape: Rust writes UTF-8, the harness reads it back."""
         document = {'computer_use': {
             'integrity': 'verified', 'development_override': False,
-            'executable': str(self.helper / 'ocu'), 'target': 'linux-x64',
-            'runtime_version': '0.3.5', 'status': 'ready',
+            'executable': str(self.helper / 'agent-desktop'), 'target': 'linux-x64',
+            'runtime_version': '1.3.1', 'status': 'ready',
             'desktop_available': True, 'capture_available': True,
             'permissions': {'accessibility': True, 'screen_recording': True}}}
         written = self.helper / 'doctor.json'
@@ -400,11 +400,11 @@ class NonAsciiInstallPathTests(unittest.TestCase):
         `validate_doctor` must reject it. On a UTF-8 locale this is a no-op,
         which is exactly why the bug never showed outside Windows.
         """
-        raw = json.dumps({'path': str(self.helper / 'ocu')}, ensure_ascii=False).encode('utf-8')
+        raw = json.dumps({'path': str(self.helper / 'agent-desktop')}, ensure_ascii=False).encode('utf-8')
         through_cp1252 = json.loads(raw.decode('cp1252'))['path']
         through_utf8 = json.loads(raw.decode('utf-8'))['path']
 
-        self.assertEqual(through_utf8, str(self.helper / 'ocu'))
+        self.assertEqual(through_utf8, str(self.helper / 'agent-desktop'))
         self.assertNotEqual(through_cp1252, through_utf8,
                             'cp1252 must mangle a UTF-8 non-ASCII path; if it does not, this fixture is not exercising the bug')
         self.assertIn('Ã', through_cp1252, 'the corruption signature is the UTF-8 lead byte surfacing as U+00C3')

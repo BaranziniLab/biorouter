@@ -263,6 +263,10 @@ pub const NOT_DESTINATION_CONFIG_KEYS: &[(&str, &str)] = &[
     ("BEDROCK_BACKOFF_MULTIPLIER", "retry policy"),
     ("BEDROCK_MAX_RETRY_INTERVAL_MS", "retry policy"),
     ("BEDROCK_OPERATION_TIMEOUT_SECS", "transport timeout"),
+    (
+        "BEDROCK_PROMPT_CACHING",
+        "prompt-caching checkpoints, sent to the same host",
+    ),
     ("DATABRICKS_MAX_RETRIES", "retry policy"),
     ("DATABRICKS_INITIAL_RETRY_INTERVAL_MS", "retry policy"),
     ("DATABRICKS_BACKOFF_MULTIPLIER", "retry policy"),
@@ -399,8 +403,9 @@ mod tests {
                 "CHILD_TOOL_CALL_TIMEOUT_CONFIG_KEY",
             ),
             ("coding_agent/mod.rs", "TURN_TIMEOUT_CONFIG_KEY"),
-            // Versa Bedrock's `read_key` closure; its calls are collected below.
-            ("versa_bedrock.rs", "name"),
+            // `read_provider_credential`'s own read (#521). The keys its
+            // callers pass are collected by `credential_call` below.
+            ("src/providers/mod.rs", "name"),
             // A custom provider's own key. Where it goes is the provider's
             // URL, which `PUT /config/custom-providers/{id}` gates.
             ("anthropic.rs", "&config.api_key_env"),
@@ -412,6 +417,18 @@ mod tests {
             ("readiness.rs", "&loaded_provider.config.api_key_env"),
             ("readiness.rs", "&configured_marker"),
         ];
+        // A call of the shared credential reader (#521):
+        // `read_provider_credential(<store>, <key>, <remedy>)`. Its key is read
+        // through the helper's `get_secret(name)` above, so every caller's key
+        // is collected here. The definition itself (`fn ...`) is skipped.
+        let credential_call = regex::Regex::new(
+            r#"(?P<def>fn\s+)?\bread_provider_credential\s*\(\s*(?P<store>[^,]+?)\s*,\s*(?P<key>[^,]+?)\s*,"#,
+        )
+        .unwrap();
+        // The callers whose key is an expression rather than a literal.
+        // Versa Bedrock's `read_key` closure; its calls are collected by
+        // `closure_arg`.
+        let known_computed_credential = [("versa_bedrock.rs", "name")];
         let closure_arg = regex::Regex::new(r#"\bread_key\(\s*"([^"]+)"\s*\)"#).unwrap();
         let (aws_routing, aws_credentials) = stored_aws_keys();
         let mut read: BTreeSet<String> = [
@@ -453,6 +470,34 @@ mod tests {
                     "{path} reads a config key the scan cannot see: {expr}. Name it with a \
                      literal, or add it here and classify its value."
                 );
+            }
+            for caps in credential_call.captures_iter(&code) {
+                if caps.name("def").is_some() {
+                    continue;
+                }
+                let store = &caps["store"];
+                let key = &caps["key"];
+                match key.strip_prefix('"').and_then(|k| k.strip_suffix('"')) {
+                    // A provider reads through the `Config` it names `config`,
+                    // as `plain_get` assumes.
+                    Some(key) if store == "config" => {
+                        read.insert(key.to_string());
+                    }
+                    // The helper's own tests read synthetic keys from a
+                    // temporary store; nothing else may use another store.
+                    Some(_) => assert!(
+                        path.ends_with("src/providers/mod.rs") && store == "&file",
+                        "{path} reads a credential through a store the scan does not know: \
+                         {store}. Read it through the provider's `config`."
+                    ),
+                    None => assert!(
+                        known_computed_credential
+                            .iter()
+                            .any(|(file, known)| path.ends_with(file) && key == *known),
+                        "{path} reads a credential the scan cannot see: {key}. Name it with a \
+                         literal, or add it here and classify its value."
+                    ),
+                }
             }
             if path.ends_with("versa_bedrock.rs") {
                 read.extend(

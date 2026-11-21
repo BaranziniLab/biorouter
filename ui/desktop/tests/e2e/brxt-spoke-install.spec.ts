@@ -130,8 +130,10 @@ test.describe('SPOKEAgent .brxt install flow', () => {
   });
 
   test('2. Add, then "Install from file (.brxt)" opens the modal', async () => {
-    // The Extensions band has one "Add" menu (Browse marketplace, Install from file, Custom extension…).
-    await mainWindow.getByRole('button', { name: 'Add', exact: true }).click({ timeout: 5000 });
+    // The Extensions band has one "Add extension" menu (Browse marketplace, Install from file, Custom extension…).
+    await mainWindow
+      .getByRole('button', { name: 'Add extension', exact: true })
+      .click({ timeout: 5000 });
     await mainWindow.getByRole('menuitem', { name: 'Install from file (.brxt)' }).click();
     // Verify the modal dialog is open (avoid strict-mode by targeting the dialog role)
     await expect(mainWindow.locator('[role="dialog"]')).toBeVisible({ timeout: 5000 });

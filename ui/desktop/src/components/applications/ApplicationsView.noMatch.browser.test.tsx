@@ -1,10 +1,10 @@
 // @vitest-environment node
 /**
- * Built apps: where the "No matching apps" tile sits, measured in a real layout engine
+ * Applications: where the "No matching applications" tile sits, measured in a real layout engine
  * (vision finding V3-R7-2, re-reported in round 8).
  *
- * The same state, a filter that matches nothing, put its tile at y=192 on Built apps and at y=100
- * on Workflows (y=108 on Skills): Built apps drew the FULL empty state, a box with
+ * The same state, a filter that matches nothing, put its tile at y=192 on Applications and at y=100
+ * on Workflows (y=108 on Skills): Applications drew the FULL empty state, a box with
  * `min-height: clamp(17rem, 48vh, 25rem)` that centres its tile, and the siblings draw the compact
  * one. jsdom lays nothing out, so `ApplicationsView.test.tsx` pins the branch and the class and
  * this file pins the pixels.
@@ -13,7 +13,7 @@
  * stub), `styles/main.css` is compiled by Tailwind with the classes that bundle uses, and
  * Chromium paints it. The reference is the Workflows recipe, built from the same primitives in the
  * same frame (`ReadableContent` + `ScrollArea`, `px-6 pt-2`, then the compact tile), so the case
- * reads "Built apps puts the tile where Workflows does" rather than a number that a token change
+ * reads "Applications puts the tile where Workflows does" rather than a number that a token change
  * would move.
  *
  * Set `VIEWS_A_SHOTS` to a directory to also write a screenshot of each state.
@@ -43,7 +43,7 @@ import { ScrollArea } from '../ui/scroll-area';
 import { EmptyState } from '../ui/empty-state';
 import { ENTITY_ICONS } from '../icons/entity-icons';
 
-/** Workflows' frame, with its no-match tile: the place Built apps has to match. */
+/** Workflows' frame, with its no-match tile: the place Applications has to match. */
 function Reference() {
   return (
     <MainPanelLayout removeTopPadding>
@@ -101,7 +101,7 @@ const launchChromium = async (): Promise<Browser | null> => {
   return null;
 };
 
-describe('Built apps, a filter with no match (V3-R7-2)', () => {
+describe('Applications, a filter with no match (V3-R7-2)', () => {
   let browser: Browser | null = null;
   let script = '';
   let css = '';
@@ -109,7 +109,7 @@ describe('Built apps, a filter with no match (V3-R7-2)', () => {
   beforeAll(async () => {
     browser = await launchChromium();
     if (!browser) {
-      console.warn('No Chromium found: skipping the Built apps no-match tests.');
+      console.warn('No Chromium found: skipping the Applications no-match tests.');
       return;
     }
     const bundle = await build({
@@ -201,7 +201,7 @@ describe('Built apps, a filter with no match (V3-R7-2)', () => {
   async function shot(tab: Page, name: string) {
     if (!SHOTS) return;
     mkdirSync(SHOTS, { recursive: true });
-    await tab.screenshot({ path: resolve(SHOTS, `built-apps-${name}.png`) });
+    await tab.screenshot({ path: resolve(SHOTS, `applications-${name}.png`) });
   }
 
   it('puts the no-match tile where Workflows puts its own, at two window sizes, light and dark', async (ctx) => {
@@ -218,11 +218,11 @@ describe('Built apps, a filter with no match (V3-R7-2)', () => {
           await view.waitForSelector('[data-testid="app-row"]');
           await filterFor(view, 'nothing');
           expect(await view.getByRole('heading', { level: 2 }).textContent()).toBe(
-            'No matching apps'
+            'No matching applications'
           );
           const reference = await tileBelowBand(sibling);
           // The compact tile is the scroll body's `pt-2` plus the section's `py-12`: 56 px under
-          // the band. Built apps drew 148 (round 8: tile at 192 under a band that ends at 44).
+          // the band. Applications drew 148 (round 8: tile at 192 under a band that ends at 44).
           expect(reference, `${label} reference`).toBeGreaterThan(40);
           expect(reference, `${label} reference`).toBeLessThan(80);
           expect(await tileBelowBand(view), `${label} the same place as Workflows`).toBeCloseTo(
@@ -249,7 +249,9 @@ describe('Built apps, a filter with no match (V3-R7-2)', () => {
     const tab = await open({ apps: [] });
     try {
       await tab.waitForSelector('.br-empty-tile');
-      expect(await tab.getByRole('heading', { level: 2 }).textContent()).toBe('No apps built yet');
+      expect(await tab.getByRole('heading', { level: 2 }).textContent()).toBe(
+        'No applications yet'
+      );
       const before = await tileBelowBand(tab);
       const full = await emptySection(tab);
       // The full state is the tall one: it keeps its 17rem floor and centres its tile in it.
@@ -259,7 +261,9 @@ describe('Built apps, a filter with no match (V3-R7-2)', () => {
 
       await filterFor(tab, 'nothing');
       // Nothing to miss, so nothing to say "no match" about: same words, same tile, same place.
-      expect(await tab.getByRole('heading', { level: 2 }).textContent()).toBe('No apps built yet');
+      expect(await tab.getByRole('heading', { level: 2 }).textContent()).toBe(
+        'No applications yet'
+      );
       expect(await tileBelowBand(tab)).toBe(before);
     } finally {
       await tab.close();

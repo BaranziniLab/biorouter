@@ -1249,7 +1249,11 @@ async fn start_new_chat(
     // starts with the Dictionary attached lets it learn from that chat, so a request that
     // names it, in the overrides or in a workflow's own extension list, is asked the same
     // person's-choice rule as `POST /agent/add_extension`, before any chat exists. The
-    // capabilities the person enabled machine-wide are theirs and are not asked again.
+    // capabilities the person enabled machine-wide are theirs and are not asked again: while
+    // the Dictionary is on for new chats (the default since the owner's request of
+    // 2026-11-19), a start that names it gets what a start naming nothing gets. The desktop's
+    // Home names every enabled extension in its overrides, so asking then would refuse every
+    // new chat on a daemon that cannot see the proof (`biorouter serve`).
     let names_dictionary = extension_overrides
         .iter()
         .flatten()
@@ -1261,7 +1265,7 @@ async fn start_new_chat(
                 .flatten(),
         )
         .any(|config| biorouter::dictation::activation::is_dictionary_name(&config.name()));
-    if names_dictionary {
+    if names_dictionary && !biorouter::dictation::activation::suggest_from_chats() {
         crate::routes::dictionary::admit_dictionary_attach(&headers)
             .await
             .map_err(|(status, message)| ErrorResponse { status, message })?;

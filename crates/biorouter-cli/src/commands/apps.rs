@@ -1,5 +1,5 @@
-//! `biorouter apps` subcommands — list, open, and serve the Biorouter apps
-//! authored by Agent Drafter (design §7, Apps SDK v2 Phase 6 "CLI parity").
+//! `biorouter apps` subcommands — list, open, and serve the Biorouter applications
+//! authored by Application Drafter (design §7, Apps SDK v2 Phase 6 "CLI parity").
 //!
 //! Apps live on disk under `~/.config/biorouter/agent_drafter/<id>/`, each a
 //! directory with a `manifest.json` plus its bundle. `biorouterd` serves them at
@@ -97,7 +97,7 @@ struct AppRow {
     updated_at: u64,
 }
 
-/// The Agent Drafter store root (`~/.config/biorouter/agent_drafter`). Reuses the
+/// The Application Drafter store root (`~/.config/biorouter/agent_drafter`). Reuses the
 /// same resolver the MCP server and `/apps` routes use so all three agree.
 fn store_root() -> PathBuf {
     biorouter_mcp::agent_drafter::default_root()
@@ -178,7 +178,7 @@ fn fmt_updated(secs: u64) -> String {
 /// styled header is printed separately by the handler.
 fn format_table(rows: &[AppRow]) -> String {
     if rows.is_empty() {
-        return "no apps installed".to_string();
+        return "no applications installed".to_string();
     }
     let id_w = rows
         .iter()
@@ -500,7 +500,7 @@ const LAUNCH_LINK_LIFETIME: &str = "five minutes";
 async fn launch_url(port: u16, id: &str, secret: &str) -> Result<String> {
     // The id goes into a request line, so it must be an app name and nothing else.
     biorouter_mcp::agent_drafter::store::validate_artifact_id(id)
-        .map_err(|_| anyhow!("'{id}' is not an app name"))?;
+        .map_err(|_| anyhow!("'{id}' is not an application name"))?;
     let answer = with_secret(port, "POST", &format!("/apps/{id}/launch"), secret).await;
     let path = match &answer {
         Some((200, body)) => serde_json::from_str::<serde_json::Value>(body)
@@ -513,7 +513,7 @@ async fn launch_url(port: u16, id: &str, secret: &str) -> Result<String> {
         _ => bail!(
             "the daemon on port {port} would not open '{id}'{}",
             match answer {
-                Some((404, _)) => ": it has no such app".to_string(),
+                Some((404, _)) => ": it has no such application".to_string(),
                 Some((status, _)) => format!(" (HTTP {status})"),
                 None => ": it did not answer".to_string(),
             }
@@ -845,7 +845,7 @@ fn require_app(id: &str) -> Result<()> {
     let manifest = store_root().join(id).join("manifest.json");
     if !manifest.exists() {
         bail!(
-            "no app '{id}' in the store ({}). Run `biorouter apps list` to see installed apps.",
+            "no application '{id}' in the store ({}). Run `biorouter apps list` to see installed applications.",
             store_root().display()
         );
     }
@@ -871,7 +871,8 @@ fn open_again_command(port: u16, id: &str) -> String {
 /// started and recorded, one it started and could not record, or one it reused
 /// with a key it already knew.
 fn serve_link_advice(port: u16, id: &str, started: Option<bool>) -> String {
-    let once = format!("the address below opens the app once, within {LAUNCH_LINK_LIFETIME}");
+    let once =
+        format!("the address below opens the application once, within {LAUNCH_LINK_LIFETIME}");
     match started {
         Some(true) => format!(
             "{once}. For another, run `{}` in another terminal while this one keeps serving.",
@@ -949,7 +950,7 @@ async fn launch_on_shared_daemon(
 ) -> Result<String> {
     // The id goes into a request line, so it must be an app name and nothing else.
     biorouter_mcp::agent_drafter::store::validate_artifact_id(id)
-        .map_err(|_| anyhow!("'{id}' is not an app name"))?;
+        .map_err(|_| anyhow!("'{id}' is not an application name"))?;
     // `request_text`, not `request`: the daemon refuses a missing app in plain
     // text, which `request` reports only as "not JSON".
     let answer = client
@@ -959,7 +960,7 @@ async fn launch_on_shared_daemon(
             |error| match error.downcast_ref::<crate::daemon_client::DaemonRefusal>() {
                 Some(refusal) if refusal.status == 404 => {
                     anyhow!(
-                        "this profile's Biorouter daemon would not open '{id}': it has no such app"
+                        "this profile's Biorouter daemon would not open '{id}': it has no such application"
                     )
                 }
                 _ => anyhow!("this profile's Biorouter daemon would not open '{id}': {error}"),
@@ -1091,7 +1092,7 @@ fn open_or_print(launch: &str) {
     let once = format!("it works once, within {LAUNCH_LINK_LIFETIME}");
     match open_launch_link(launch, &launch_pages_dir(), open_page_in_browser) {
         Ok(_) => println!(
-            "  {} if the app does not appear, open this address instead ({once}): {launch}",
+            "  {} if the application does not appear, open this address instead ({once}): {launch}",
             style("·").dim()
         ),
         Err(e) => {
@@ -1152,7 +1153,7 @@ pub async fn handle_apps_serve(id: String) -> Result<()> {
     // daemon this command did not start.
     if let Some(launch) = shared_daemon_launch(&id).await? {
         println!(
-            "  {} the address below opens the app once, within {LAUNCH_LINK_LIFETIME}. \
+            "  {} the address below opens the application once, within {LAUNCH_LINK_LIFETIME}. \
              Run this again for another.",
             style("·").dim()
         );
@@ -1251,7 +1252,7 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let rows = collect_apps(tmp.path());
         assert!(rows.is_empty());
-        assert_eq!(format_table(&rows), "no apps installed");
+        assert_eq!(format_table(&rows), "no applications installed");
         assert_eq!(format_json(&rows).unwrap(), "[]");
     }
 
@@ -1985,7 +1986,7 @@ mod tests {
             .await
             .unwrap_err()
             .to_string();
-        assert!(missing.contains("it has no such app"), "{missing}");
+        assert!(missing.contains("it has no such application"), "{missing}");
         forget_shared_daemon();
 
         // A daemon from before the answer named its listener: the listener its

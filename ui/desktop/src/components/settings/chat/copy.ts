@@ -55,6 +55,14 @@ export const displayCopy = {
     { key: 'detailed', label: 'Expanded' },
     { key: 'concise', label: 'Collapsed' },
   ],
+  /** BB-02: where a link clicked in a message opens. The keys are stored; never rename. */
+  openLinksIn: 'Open links in',
+  openLinksInHelp:
+    'Where a web link you click in a chat opens. Cmd or Ctrl click opens the other one.',
+  openLinksOptions: [
+    { key: 'biorouter', label: 'Biorouter Browser' },
+    { key: 'default', label: 'Default browser' },
+  ],
   spellcheck: 'Spellcheck',
   spellcheckHelp: 'Checks spelling in the chat input.',
   restartToApply: 'Restart to apply',
@@ -74,7 +82,7 @@ export const chatSectionsCopy = {
     'Skills that ship with Biorouter. Office instructions load only for the tasks that need them.',
   appSdk: 'App SDK',
   appSdkHelp:
-    'Opt-in safety frameworks for Agent Drafter apps. They are off by default and never apply to normal chat.',
+    'Opt-in safety frameworks for applications made with Application Drafter. They are off by default and never apply to normal chat.',
 } as const;
 
 export const projectCopy = {

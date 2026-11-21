@@ -926,7 +926,9 @@ export function ForceGraphCanvas({
       aria-describedby={hintId}
       onKeyDown={onKeyDown}
       onBlur={() => setKeyboardFocusId(null)}
-      className="relative h-full w-full overflow-hidden outline-none focus-visible:ring-2 focus-visible:ring-border-accent focus-visible:ring-inset"
+      // `br-knowledge-graph-surface` rounds this box on the canvas's own corner, so the inset
+      // focus ring follows the corner instead of being cut by the canvas's clip (`main.css`).
+      className="br-knowledge-graph-surface relative h-full w-full overflow-hidden outline-none focus-visible:ring-2 focus-visible:ring-border-accent focus-visible:ring-inset"
     >
       {/* ⚠ **NOT `aria-hidden`, unlike the four probes below.** This is the
           channel that replaced the node shape encoding: colour is now the only
@@ -961,10 +963,13 @@ export function ForceGraphCanvas({
         aria-hidden="true"
         className="pointer-events-none absolute h-0 w-0 overflow-hidden text-text-muted"
       />
+      {/* The colour only, never a `border` width: the reader takes `borderTopColor`, which
+          resolves at width 0. With `border` the 0×0 box was 2×2px of drawn edge (border-box
+          cannot shrink below its borders), a stray dot at the canvas's top-left corner. */}
       <span
         ref={borderProbe}
         aria-hidden="true"
-        className="pointer-events-none absolute h-0 w-0 overflow-hidden border border-border-subtle"
+        className="pointer-events-none absolute h-0 w-0 overflow-hidden border-border-subtle"
       />
 
       <ForceGraph2D

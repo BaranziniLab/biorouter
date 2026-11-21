@@ -1,9 +1,10 @@
 name: Biorouter Copilot installed packages
+# Release-format candidates on every platform, installed, with the installed
+# engine's manifest, identity, version and readiness probe checked without any
+# capture (AD-21 in docs/design/copilot-agent-desktop.md). It builds full
+# packages, so it runs on dispatch, as a release gate, not on every pull request.
 'on':
   workflow_dispatch: null
-  push:
-    branches:
-      - codex/computer-use-package-ci
 permissions:
   contents: read
 concurrency:
@@ -33,6 +34,13 @@ jobs:
           key: cross-${{ matrix.target }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', 'scripts/cross-env.sh') }}
           restore-keys: cross-${{ matrix.target }}-
       - run: bash scripts/build-computer-use-package-cross.sh ${{ matrix.target }}
+      # Biorouter Copilot's engine for the same platform, in the pinned bullseye
+      # container; the Windows runner below cannot run it, so both platforms take
+      # the payload as an artifact and only verify it.
+      - name: Build the Biorouter Copilot helper payload
+        env:
+          CROSS_REGISTRY_MOUNT: ${{ github.workspace }}/.cross-cache/copilot-registry
+        run: bash scripts/build-computer-use-helper-cross.sh ${{ matrix.target == 'x86_64-pc-windows-gnu' && 'win32-x64' || 'linux-x64' }}
       - name: Restore runner ownership of Docker build caches
         if: always()
         run: |
@@ -43,6 +51,12 @@ jobs:
         with:
           name: package-backends-${{ matrix.target }}
           path: target/${{ matrix.target }}/release/
+          if-no-files-found: error
+          retention-days: 7
+      - uses: actions/upload-artifact@v4
+        with:
+          name: package-copilot-helper-${{ matrix.target }}
+          path: target/computer-use/${{ matrix.target == 'x86_64-pc-windows-gnu' && 'win32-x64' || 'linux-x64' }}/
           if-no-files-found: error
           retention-days: 7
   packages:
@@ -67,18 +81,21 @@ jobs:
         with:
           name: package-backends-${{ matrix.triple }}
           path: target/${{ matrix.triple }}/release/
+      - uses: actions/download-artifact@v4
+        if: matrix.triple != ''
+        with:
+          name: package-copilot-helper-${{ matrix.triple }}
+          path: target/computer-use/${{ matrix.target }}/
       - name: Restore Unix executable modes after Actions artifact download
         if: runner.os == 'Linux'
-        run: chmod +x target/${{ matrix.triple }}/release/biorouter target/${{ matrix.triple }}/release/biorouterd
+        run: |
+          chmod +x target/${{ matrix.triple }}/release/biorouter target/${{ matrix.triple }}/release/biorouterd
+          chmod +x target/computer-use/${{ matrix.target }}/agent-desktop
       - uses: actions/setup-node@v4
         with:
           node-version: '24'
           cache: npm
           cache-dependency-path: ui/desktop/package-lock.json
-      - uses: actions/setup-go@v5
-        with:
-          go-version: 1.26.8
-          cache: false
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
@@ -133,10 +150,6 @@ jobs:
           node-version: '24'
           cache: npm
           cache-dependency-path: ui/desktop/package-lock.json
-      - uses: actions/setup-go@v5
-        with:
-          go-version: 1.26.8
-          cache: false
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'

@@ -141,6 +141,7 @@ biorouter-sandbox = { version = "1.93.4", path = "../biorouter-sandbox" }
 biorouter-dictation = { path = "../biorouter-dictation" }
 # `biorouter dictation status` names the account and the host the models belong to.
 whoami = { version = "1.6", default-features = false }
+ring = "0.17"
 
 [features]
 default = ["aws-providers"]
@@ -197,6 +198,9 @@ core-foundation-sys = "0.8"
 # `geteuid` to trust a root- or current-user-owned policy file.
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+dbus-secret-service = "4.1"
 
 [dev-dependencies]
 agent-client-protocol-schema = "0.10.5"

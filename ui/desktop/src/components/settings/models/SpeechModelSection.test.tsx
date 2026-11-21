@@ -17,9 +17,10 @@ import {
   resetDictationStoreForTests,
 } from '../../dictation/dictationStore';
 import { managedPolicySentences } from '../../privacy/ManagedPolicyNote';
-import { DICTIONARY_LABELS } from '../../dictionary/copy';
-import { answer, listing, settings } from '../../dictionary/dictionaryTestKit';
+import { DICTIONARY_LABELS, DICTIONARY_MESSAGES } from '../../dictionary/copy';
+import { answer, listing, scan, settings } from '../../dictionary/dictionaryTestKit';
 import { resetDictionaryStoreForTests } from '../../dictionary/useDictionary';
+import { resetSuggestionScanForTests } from '../../dictionary/useSuggestionScan';
 import { SETTINGS_SECTION_IDS } from '../settingsSections';
 import { speechModelsCopy as copy } from './copy';
 
@@ -41,14 +42,16 @@ vi.mock('../../dictionary/activationChoice', () => ({
   useDictionaryActivationChoice: () => activation,
 }));
 /**
- * The Dictionary routes the **Suggest words from my messages** row reads and writes, and the
- * host's provider a `serve` browser states with them (`userActionHeaders()`).
+ * The Dictionary routes the dictionary rows read and write, and the host's provider a `serve`
+ * browser states with them (`userActionHeaders()`). The scan's progress is read once the
+ * **Recent chats** row shows, while **Suggest words from my messages** is on.
  */
 const dictionaryApi = vi.hoisted(() => ({
   getDictionarySettings: vi.fn(),
   changeDictionarySettings: vi.fn(),
   listDictionaryEntries: vi.fn(),
   readConfig: vi.fn(),
+  getDictionarySuggestionScan: vi.fn(),
 }));
 vi.mock('../../../api', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../../api')>()),
@@ -254,10 +257,12 @@ beforeEach(() => {
   serve(status());
   models();
   resetDictionaryStoreForTests();
+  resetSuggestionScanForTests();
   dictionaryApi.getDictionarySettings.mockReset().mockResolvedValue(answer(200, settings()));
   dictionaryApi.changeDictionarySettings.mockReset().mockResolvedValue(answer(200, settings()));
   dictionaryApi.listDictionaryEntries.mockReset().mockResolvedValue(listing([]));
   dictionaryApi.readConfig.mockReset().mockResolvedValue({ data: null });
+  dictionaryApi.getDictionarySuggestionScan.mockReset().mockResolvedValue(answer(200, scan()));
 });
 
 afterEach(() => {
@@ -526,6 +531,49 @@ describe('the model rows', () => {
     expect(within(row(SMALL)).getByRole('alert')).toHaveTextContent(
       'Installing Whisper small.en (q8_0) needs 0.5 GB free on /; 0.1 GB is available.'
     );
+    expect(within(row(SMALL)).getByRole('button', { name: /^Install / })).toBeEnabled();
+  });
+
+  it('says a failure in ink with its command as code, and a cancel as a muted record', async () => {
+    serve(
+      status({
+        install_job: {
+          model: SMALL,
+          bytes_done: 0,
+          bytes_total: 2,
+          bytes_per_second: 0,
+          phase: 'failed',
+          error:
+            "This computer cannot reach Biorouter's model repository. On a computer that can, run `biorouter dictation urls` and download the files it lists.",
+        },
+      })
+    );
+    const { unmount } = await renderSection();
+    const failure = within(row(SMALL)).getByRole('alert');
+    // Red is rare (design.md 9.14): a failure's sentence is ink, not a paragraph in a status hue.
+    expect(failure).toHaveClass('text-text-default');
+    expect(failure).not.toHaveClass('text-text-warning');
+    expect(failure.textContent).not.toContain('`');
+    expect(failure.querySelector('code')).toHaveTextContent('biorouter dictation urls');
+    unmount();
+
+    serve(
+      status({
+        install_job: {
+          model: SMALL,
+          bytes_done: 1,
+          bytes_total: 2,
+          bytes_per_second: 0,
+          phase: 'failed',
+          error: 'The install was canceled.',
+        },
+      })
+    );
+    await renderSection();
+    expect(within(row(SMALL)).queryByRole('alert')).toBeNull();
+    const note = within(row(SMALL)).getByText('The install was canceled.');
+    expect(note).toHaveAttribute('role', 'status');
+    expect(note).toHaveClass('text-text-muted');
     expect(within(row(SMALL)).getByRole('button', { name: /^Install / })).toBeEnabled();
   });
 
@@ -916,20 +964,43 @@ describe('Suggest words from my messages', () => {
   const learnSwitch = () =>
     screen.findByRole('switch', { name: DICTIONARY_LABELS.agentSettings.learnFromChats });
 
-  it('sits right after the Dictionary row, off, with its one-line help', async () => {
+  it('sits with the dictionary rows at the section’s end, off, with its catalog help', async () => {
     await renderSection();
     const toggle = await learnSwitch();
     expect(DICTIONARY_LABELS.agentSettings.learnFromChats).toBe('Suggest words from my messages');
     expect(toggle).not.toBeChecked();
     expect(toggle).toBeEnabled();
-    expect(screen.getByTestId('speech-dictionary').nextElementSibling).toBe(
-      screen.getByTestId('speech-learn-from-chats')
-    );
+    // The dictionary's rows are one group after Speed, headed by the Dictionary row
+    // (`DictionarySettingsRows.test.tsx` has the group's own tests).
+    const group = screen.getByTestId('settings-dictionary');
+    expect(group.firstElementChild).toBe(screen.getByTestId('speech-dictionary'));
+    expect(group).toContainElement(screen.getByTestId('speech-learn-from-chats'));
+    expect(screen.getByTestId('speech-speed').nextElementSibling).toBe(group);
     expect(
       screen.getByRole('button', { name: 'About Suggest words from my messages' })
-    ).toHaveAccessibleDescription(
-      'Find terms you type in chats on public models and suggest them for your dictionary.'
-    );
+    ).toHaveAccessibleDescription(DICTIONARY_MESSAGES['MSG-LEARN-FROM-CHATS-HELP']);
+  });
+
+  it('leaves the capability to the first install’s choice beside Install, so it has one control', async () => {
+    await renderSection();
+    await learnSwitch();
+    expect(screen.getByTestId('speech-suggest-from-chats')).toBeInTheDocument();
+    expect(screen.queryByRole('switch', { name: DICTATION_ACTIONS.suggestFromChats })).toBeNull();
+  });
+
+  it('offers the capability as a switch once a model is in use and the choice is made', async () => {
+    serve(status({ models: both(), active_model: TURBO }));
+    activation.showChoice = false;
+    try {
+      await renderSection();
+      await learnSwitch();
+      expect(screen.queryByTestId('speech-suggest-from-chats')).toBeNull();
+      expect(
+        screen.getByRole('switch', { name: DICTATION_ACTIONS.suggestFromChats })
+      ).toBeInTheDocument();
+    } finally {
+      activation.showChoice = true;
+    }
   });
 
   it('turns on through the Dictionary page’s own settings write, so both views agree', async () => {
@@ -1075,6 +1146,22 @@ describe('Dictate into other apps', () => {
     serve(status({ models: both(), active_model: TURBO }));
   });
 
+  // The privacy line is the section's first line; the keyboard rows and this switch follow it.
+  it('sits below the section privacy line, as the keyboard row does', async () => {
+    Object.assign(window.electron, { platform: 'win32' });
+    bridge(anywhere());
+    await renderSection();
+    const privacy = screen.getByTestId('speech-privacy-line');
+    const control = await screen.findByRole('switch', {
+      name: DICTATION_ACTIONS.dictateIntoOtherApps,
+    });
+    const chord = screen.getByTestId('dictation-chord-row');
+    const follows = (node: Node) =>
+      Boolean(privacy.compareDocumentPosition(node) & Node.DOCUMENT_POSITION_FOLLOWING);
+    expect(follows(control)).toBe(true);
+    expect(follows(chord)).toBe(true);
+  });
+
   it('is a switch named by its row, not a checkbox', async () => {
     bridge(anywhere());
     await renderSection();
@@ -1140,6 +1227,36 @@ describe('Dictate into other apps', () => {
       })
     );
     await waitFor(() => expect(control).toHaveAttribute('aria-checked', 'false'));
+  });
+
+  // The shortcut used to be saved only when the menu bar icon was missing, while the field showed
+  // the suggestion as grey placeholder text: it read as set and was never registered, so
+  // Ctrl+Alt+Shift+D did nothing on Windows and Linux.
+  it('off macOS, turning on registers the suggested shortcut, and the field shows it as its value', async () => {
+    Object.assign(window.electron, { platform: 'win32' });
+    const { set } = bridge(anywhere({ disclosureShown: true }));
+    const user = userEvent.setup();
+    await renderSection();
+    await user.click(
+      await screen.findByRole('switch', { name: DICTATION_ACTIONS.dictateIntoOtherApps })
+    );
+    await waitFor(() =>
+      expect(set).toHaveBeenCalledWith({
+        enabled: true,
+        shortcut: 'CommandOrControl+Alt+Shift+D',
+        disclosureShown: true,
+      })
+    );
+    const field = await screen.findByRole('textbox', { name: 'Dictation shortcut' });
+    expect(field).toHaveValue('CommandOrControl+Alt+Shift+D');
+  });
+
+  it('an empty shortcut field says None rather than showing a shortcut that is not set', async () => {
+    bridge(anywhere({ enabled: true, disclosureShown: true }));
+    await renderSection();
+    const field = await screen.findByRole('textbox', { name: 'Dictation shortcut' });
+    expect(field).toHaveValue('');
+    expect(field).toHaveAttribute('placeholder', 'None');
   });
 
   it('is disabled while no speech model is ready', async () => {

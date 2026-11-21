@@ -79,7 +79,7 @@ cd ui/desktop && npm run lint:check
 ./scripts/check-openapi-schema.sh
 ./scripts/check-version-consistency.sh    # CLI/daemon/GUI/README versions agree
 ./scripts/check-brand-consistency.sh      # productName "Biorouter" + brand assets
-./scripts/check-computer-use-naming.sh    # the capability is "Biorouter Copilot" wherever a person reads it
+./scripts/check-computer-use-naming.sh    # the capability is "Biorouter Copilot" wherever a person reads it; its engine's name never is
 ./scripts/check-no-cross-drift.sh         # cross-compile recipes / glibc floor pin
 just check-registry                       # the BAAM registry generator still refuses what it must
 just check-privacy-registry               # the BAAM private set agrees in all three committed copies
@@ -104,6 +104,26 @@ Simplicity: Booleans should default to false, not be optional
 Errors: Don't add error context that doesn't add useful information (e.g., `.context("Failed to X")` when error already says it failed)
 Simplicity: Avoid overly defensive code - trust Rust's type system
 Logging: Clean up existing logs, don't add more unless for errors or security events
+
+## Development Resource Watchdogs
+
+Use the existing resource monitors and job supervisors for long builds, tests, packaging, and live verification. Do not launch an unbounded background job or add a duplicate monitoring framework.
+
+- Check CPU/load, memory pressure, current swap reads and writes, free disk, and thermal state before increasing concurrency and periodically while jobs run. Accumulated swap usage alone does not establish current paging pressure.
+- Track each job's PID/process group or container ID, working directory, start time, deadline, and progress. Detect stalled jobs, enforce bounded timeouts, and clean up only verified owned processes and containers. Never stop unrelated jobs by name.
+- Inspect application and VM memory footprints, including compressed memory; resident memory alone can hide a large idle Docker VM. When no active work depends on it, gracefully recycle an idle campaign runtime and verify recovery before resuming. Preserve its files and unrelated workloads.
+- Bound and rotate temporary development logs. Remove verified-unused compilation caches, temporary outputs, and expired transient logs as work proceeds. Retain active caches, source, user data, release artifacts, and the logs needed to diagnose failures or substantiate verification; archive that evidence before expiring it.
+- Keep the disk watchdog's protected/active paths current. Record before-and-after resource readings and cleanup results, and adjust concurrency to the live host state rather than allowing stale jobs or growing caches to stall development.
+
+## Pull Request Review Before Merge
+
+Apply the same review standard to every contributor PR, including later PRs from a contributor whose earlier work passed review:
+
+- Review security, correctness, style, architecture, and consistency with the codebase. Inspect the actual changes and affected callers; passing CI alone is insufficient.
+- Keep UI and UX loyal to Biorouter's existing colors, shapes, spacing, animations, components, and interactions. Reuse established patterns, keep flows minimal, and fold secondary details into existing helper text or expanders. Do not introduce a new aesthetic or interaction model for a fix.
+- Reproduce reported bugs, add meaningful failing-first regression coverage, and run the relevant checks. For UI or desktop behavior, also verify the affected interactions live and check the applicable themes and platforms.
+- Revise findings and retest affected behavior before merging. Record what was checked and any remaining limitations. Preserve failures rather than treating an unexplained successful rerun as proof that a failure was harmless.
+- Retain required human review for security-sensitive code, credential handling, MCP protocol changes, and async or concurrency logic. Complete the final integrated version's required CI and release checks before publication.
 
 ## Never
 

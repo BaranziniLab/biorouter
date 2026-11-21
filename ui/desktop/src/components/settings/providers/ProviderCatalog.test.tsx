@@ -24,6 +24,9 @@ const mocks = vi.hoisted(() => ({
   updateCustomProvider: vi.fn(),
   createCustomProvider: vi.fn(),
   removeCustomProvider: vi.fn(),
+  previewProviderSecret: vi.fn(),
+  removeConfig: vi.fn(),
+  readConfig: vi.fn(),
 }));
 
 vi.mock('../../../api', async (importOriginal) => ({
@@ -36,6 +39,9 @@ vi.mock('../../../api', async (importOriginal) => ({
   updateCustomProvider: mocks.updateCustomProvider,
   createCustomProvider: mocks.createCustomProvider,
   removeCustomProvider: mocks.removeCustomProvider,
+  previewProviderSecret: mocks.previewProviderSecret,
+  removeConfig: mocks.removeConfig,
+  readConfig: mocks.readConfig,
 }));
 // The configure modal asks which provider is bound before offering "Remove".
 vi.mock('../../ModelAndProviderContext', () => ({
@@ -1056,7 +1062,277 @@ describe('a declarative provider nobody has set up', () => {
  * provider's URL while keeping its saved key unless the request proves a person
  * made it, so the catalog's update carries that proof.
  */
+describe('provider configuration intent ownership', () => {
+  const customResult = (id: string, displayName: string) => ({
+    data: {
+      is_editable: true,
+      config: {
+        engine: 'openai',
+        display_name: displayName,
+        base_url: `https://${id}.example/v1`,
+        api_key_env: `${id.toUpperCase()}_API_KEY`,
+        models: [{ name: `${id}-model` }],
+        supports_streaming: true,
+      },
+    },
+  });
+
+  it('retains a same-provider draft, resets it on an identity switch, and isolates a stale save completion', async () => {
+    let releaseUpdate!: () => void;
+    const pendingUpdate = new Promise<void>((resolve) => {
+      releaseUpdate = resolve;
+    });
+    mocks.getCustomProvider.mockImplementation(async ({ path }: { path: { id: string } }) =>
+      path.id === 'custom_a'
+        ? customResult('custom_a', 'Alpha gateway')
+        : customResult('custom_b', 'Beta gateway')
+    );
+    mocks.updateCustomProvider.mockImplementationOnce(async () => {
+      await pendingUpdate;
+      return { data: 'updated' };
+    });
+    const refreshProviders = vi.fn();
+    const customA = {
+      ...provider('custom_a', { is_configured: true }, 'Alpha gateway'),
+      provider_type: 'Custom',
+    } as ProviderDetails;
+    const customB = {
+      ...provider('custom_b', { is_configured: true }, 'Beta gateway'),
+      provider_type: 'Custom',
+    } as ProviderDetails;
+    const view = render(
+      <ProviderCatalog
+        providers={[customA, customB]}
+        mode="settings"
+        refreshProviders={refreshProviders}
+        initialTab="public"
+      />
+    );
+
+    try {
+      fireEvent.click(await screen.findByTestId('provider-card-custom_a'));
+      let dialog = await screen.findByRole('dialog');
+      expect(await within(dialog).findByDisplayValue('••••••••')).toHaveAttribute('readonly');
+      expect(mocks.previewProviderSecret).not.toHaveBeenCalled();
+      fireEvent.click(within(dialog).getByRole('button', { name: 'Edit API key' }));
+      const alphaDraft = within(dialog).getByLabelText('API key');
+      expect(alphaDraft).toHaveValue('');
+      fireEvent.change(alphaDraft, { target: { value: 'synthetic-alpha-candidate' } });
+
+      view.rerender(
+        <ProviderCatalog
+          providers={[
+            { ...customA, metadata: { ...customA.metadata } },
+            { ...customB, metadata: { ...customB.metadata } },
+          ]}
+          mode="settings"
+          refreshProviders={refreshProviders}
+          initialTab="public"
+        />
+      );
+      dialog = screen.getByRole('dialog');
+      expect(within(dialog).getByLabelText('API key')).toHaveValue('synthetic-alpha-candidate');
+
+      fireEvent.click(within(dialog).getByRole('button', { name: customProviderCopy.update }));
+      await waitFor(() => expect(mocks.updateCustomProvider).toHaveBeenCalledOnce());
+      expect(mocks.updateCustomProvider.mock.calls[0][0]).toMatchObject({
+        path: { id: 'custom_a' },
+        body: expect.objectContaining({
+          api_url: 'https://custom_a.example/v1',
+          api_key: 'synthetic-alpha-candidate',
+        }),
+      });
+
+      fireEvent.click(screen.getByTestId('provider-card-custom_b'));
+      await waitFor(() =>
+        expect(screen.getByRole('dialog')).toHaveAccessibleName(
+          customProviderCopy.edit('Beta gateway')
+        )
+      );
+      dialog = screen.getByRole('dialog');
+      expect(within(dialog).getByDisplayValue('Beta gateway')).toBeInTheDocument();
+      expect(within(dialog).getByDisplayValue('https://custom_b.example/v1')).toBeInTheDocument();
+      expect(within(dialog).getByDisplayValue('custom_b-model')).toBeInTheDocument();
+      expect(within(dialog).getByDisplayValue('••••••••')).toHaveAttribute('readonly');
+      fireEvent.click(within(dialog).getByRole('button', { name: 'Edit API key' }));
+      const betaDraft = within(dialog).getByLabelText('API key');
+      expect(betaDraft).toHaveValue('');
+      // The key field's own Cancel, not the dialog footer's Cancel.
+      const betaKeyField = betaDraft.closest<HTMLElement>('[data-slot="field"]');
+      if (!betaKeyField) throw new Error('The API key must stay in its labelled Field.');
+      fireEvent.click(within(betaKeyField).getByRole('button', { name: /^Cancel$/ }));
+      expect(within(dialog).getByDisplayValue('••••••••')).toHaveAttribute('readonly');
+
+      const refreshesBeforeLateCompletion = refreshProviders.mock.calls.length;
+      await act(async () => releaseUpdate());
+      await waitFor(() => expect(screen.getAllByRole('dialog')).toHaveLength(1));
+      dialog = screen.getByRole('dialog');
+      expect(dialog).toHaveAccessibleName(customProviderCopy.edit('Beta gateway'));
+      expect(within(dialog).getByDisplayValue('https://custom_b.example/v1')).toBeInTheDocument();
+      expect(refreshProviders).toHaveBeenCalledTimes(refreshesBeforeLateCompletion);
+      expect(screen.queryByTestId('switch-model-modal')).toBeNull();
+      expect(mocks.updateCustomProvider).toHaveBeenCalledOnce();
+      expect(mocks.previewProviderSecret).not.toHaveBeenCalled();
+    } finally {
+      await act(async () => releaseUpdate());
+    }
+  });
+
+  it('keeps the latest built-in configure intent when an earlier custom lookup completes', async () => {
+    let releaseLookup!: (value: ReturnType<typeof customResult>) => void;
+    const pendingLookup = new Promise<ReturnType<typeof customResult>>((resolve) => {
+      releaseLookup = resolve;
+    });
+    mocks.getCustomProvider.mockImplementationOnce(async () => pendingLookup);
+    mocks.previewProviderSecret.mockResolvedValue({ data: 'forbidden-partial-preview' });
+    mocks.read.mockImplementation(async (_key: string, secret: boolean) =>
+      secret ? { maskedValue: '••••••••' } : null
+    );
+    const customA = {
+      ...provider('custom_a', { is_configured: true }, 'Alpha gateway'),
+      provider_type: 'Custom',
+    } as ProviderDetails;
+    const anthropic = {
+      ...provider('anthropic', { is_configured: true }, 'Anthropic'),
+      metadata: {
+        ...provider('anthropic', { is_configured: true }, 'Anthropic').metadata,
+        config_keys: [
+          {
+            name: 'ANTHROPIC_API_KEY',
+            required: true,
+            secret: true,
+            oauth_flow: false,
+            default: null,
+          },
+        ],
+      },
+    } as ProviderDetails;
+    render(
+      <ProviderCatalog
+        providers={[customA, anthropic]}
+        mode="settings"
+        refreshProviders={vi.fn()}
+        initialTab="public"
+      />
+    );
+
+    try {
+      fireEvent.click(await screen.findByTestId('provider-card-custom_a'));
+      await waitFor(() => expect(mocks.getCustomProvider).toHaveBeenCalledOnce());
+      fireEvent.click(screen.getByTestId('provider-card-anthropic'));
+      const builtInDialog = await screen.findByRole('dialog', { name: 'Configure Anthropic' });
+
+      await act(async () => releaseLookup(customResult('custom_a', 'Alpha gateway')));
+      await waitFor(() => expect(screen.getAllByRole('dialog')).toHaveLength(1));
+      expect(screen.getByRole('dialog')).toBe(builtInDialog);
+      expect(screen.getByRole('dialog')).toHaveAccessibleName('Configure Anthropic');
+      expect(
+        screen.queryByRole('dialog', { name: customProviderCopy.edit('Alpha gateway') })
+      ).toBeNull();
+
+      const key = await within(builtInDialog).findByDisplayValue('••••••••');
+      expect(key).toHaveAttribute('readonly');
+      expect(
+        within(builtInDialog).queryByRole('button', { name: 'Show Anthropic API key' })
+      ).toBeNull();
+      expect(mocks.previewProviderSecret).not.toHaveBeenCalled();
+      expect(mocks.upsert).not.toHaveBeenCalled();
+      expect(mocks.removeConfig).not.toHaveBeenCalled();
+      expect(mocks.updateCustomProvider).not.toHaveBeenCalled();
+    } finally {
+      await act(async () => releaseLookup(customResult('custom_a', 'Alpha gateway')));
+    }
+  });
+});
+
 describe('updating a custom provider', () => {
+  it('shows only the fixed mask for the selected custom provider without retrieval', async () => {
+    mocks.getCustomProvider.mockResolvedValue({
+      data: {
+        is_editable: true,
+        config: {
+          engine: 'openai',
+          display_name: 'Lab gateway',
+          base_url: 'https://lab.example/v1',
+          api_key_env: 'CUSTOM_LAB_API_KEY',
+          models: [{ name: 'lab-model' }],
+          supports_streaming: true,
+        },
+      },
+    });
+    const lab = {
+      ...provider('custom_lab', { is_configured: true }, 'Lab gateway'),
+      provider_type: 'Custom',
+    } as ProviderDetails;
+    render(
+      <ProviderCatalog
+        providers={[lab]}
+        mode="settings"
+        refreshProviders={vi.fn()}
+        initialTab="public"
+      />
+    );
+    fireEvent.click(await screen.findByTestId('provider-card-custom_lab'));
+    const dialog = await screen.findByRole('dialog');
+    const input = await within(dialog).findByDisplayValue('••••••••');
+    expect(input).toHaveAttribute('readonly');
+    expect(within(dialog).queryByRole('button', { name: 'Show API key' })).toBeNull();
+    expect(mocks.getCustomProvider).toHaveBeenCalledWith({
+      path: { id: 'custom_lab' },
+      throwOnError: true,
+    });
+    expect(mocks.previewProviderSecret).not.toHaveBeenCalled();
+  });
+
+  it('refreshes the catalog when closing after a custom provider key is removed', async () => {
+    mocks.getCustomProvider.mockResolvedValue({
+      data: {
+        is_editable: true,
+        config: {
+          engine: 'openai',
+          display_name: 'Lab gateway',
+          base_url: 'https://lab.example/v1',
+          api_key_env: 'CUSTOM_LAB_API_KEY',
+          models: [{ name: 'lab-model' }],
+          supports_streaming: true,
+        },
+      },
+    });
+    mocks.removeConfig.mockResolvedValue({ data: 'removed' });
+    mocks.readConfig.mockResolvedValue({ data: null });
+    const refreshProviders = vi.fn();
+    const lab = {
+      ...provider('custom_lab', { is_configured: true }, 'Lab gateway'),
+      provider_type: 'Custom',
+    } as ProviderDetails;
+    render(
+      <ProviderCatalog
+        providers={[lab]}
+        mode="settings"
+        refreshProviders={refreshProviders}
+        initialTab="public"
+      />
+    );
+    fireEvent.click(await screen.findByTestId('provider-card-custom_lab'));
+    const dialog = await screen.findByRole('dialog');
+    const savedKey = await within(dialog).findByDisplayValue('••••••••');
+    expect(savedKey).toHaveAttribute('readonly');
+    expect(within(dialog).queryByRole('button', { name: 'Show API key' })).toBeNull();
+    expect(mocks.getCustomProvider).toHaveBeenCalledWith({
+      path: { id: 'custom_lab' },
+      throwOnError: true,
+    });
+    expect(mocks.previewProviderSecret).not.toHaveBeenCalled();
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Remove API key' }));
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Remove API key' }));
+    await waitFor(() =>
+      expect(within(dialog).getByLabelText('API key')).toHaveAttribute('type', 'password')
+    );
+    const callsBeforeClose = refreshProviders.mock.calls.length;
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }));
+    expect(refreshProviders).toHaveBeenCalledTimes(callsBeforeClose + 1);
+  });
+
   it('sends the proof that the user made the change', async () => {
     mocks.getCustomProvider.mockResolvedValue({
       data: {

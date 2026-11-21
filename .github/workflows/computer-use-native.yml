@@ -1,13 +1,41 @@
 name: Biorouter Copilot native payloads
 
+# Builds Biorouter Copilot's engine (agent-desktop, vendored at vendor/agent-desktop)
+# for every target on the OS that builds it, verifies each payload's bytes and
+# identity, and runs the contract smoke: the binary reports the pinned release and
+# refuses a bare reference before delivering anything, with no desktop access
+# (AD-03, AD-05, AD-06 and AD-21 in docs/design/copilot-agent-desktop.md).
+#
+# The macOS payloads build on macOS runners (the Objective-C bridges need the
+# Xcode tools). The Linux and Windows payloads build in the pinned
+# rust:1.92-bullseye container through scripts/build-computer-use-helper-cross.sh,
+# the same recipe the release and the package workflows use; the Windows payload
+# is then checked on a Windows runner.
+#
+# The fixture jobs then drive a real app through Copilot's own tools
+# (crates/biorouter-mcp/tests/computer_use_fixture.rs): the GTK fixture under
+# Xvfb with the accessibility bridge on Ubuntu 24.04, and the WinForms fixture on
+# a Windows desktop. Each reads every outcome from the app's own state file:
+# typing, clicking, checking, look only and password refusals, a list reordered
+# by drag, text dragged into a second window, scrolling, and Stop in the middle
+# of a drag with no button left pressed. macOS hosted runners cannot grant
+# Accessibility to the Biorouter Copilot bundle, so there the fixture is built
+# and the drive is the owner's live gate (AD-22).
+
 on:
   pull_request:
     paths:
-      - "vendor/computer-use/**"
+      - "vendor/agent-desktop/**"
       - "crates/biorouter-mcp/src/computer_use/**"
       - "crates/biorouter-mcp/src/computercontroller/**"
       - "Dockerfile"
+      - ".dockerignore"
+      - "rust-toolchain.toml"
       - "scripts/*computer-use*"
+      - "scripts/*copilot-fixture*"
+      - "crates/biorouter-mcp/tests/computer_use_fixture.rs"
+      - "scripts/cross-env.sh"
+      - "scripts/check-macos-deployment.sh"
       - "ui/desktop/scripts/computer-use-resources.js"
       - "ui/desktop/scripts/prepare-platform-binaries.js"
       - "ui/desktop/forge.config.ts"
@@ -19,8 +47,9 @@ permissions:
   contents: read
 
 jobs:
-  native:
-    timeout-minutes: 30
+  macos:
+    name: Build ${{ matrix.target }}
+    timeout-minutes: 40
     strategy:
       fail-fast: false
       matrix:
@@ -29,84 +58,236 @@ jobs:
             runner: macos-26
           - target: darwin-x64
             runner: macos-26-intel
-          - target: linux-x64
-            runner: ubuntu-24.04
-          - target: win32-x64
-            runner: windows-latest
-          - target: linux-arm64
-            runner: ubuntu-24.04-arm
     runs-on: ${{ matrix.runner }}
     env:
-      BIOROUTER_BUILD_JOBS: "2"
+      BIOROUTER_BUILD_JOBS: "3"
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
-        with:
-          go-version: "1.26.8"
-          cache: false
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - name: Install Linux runtime dependencies
-        if: runner.os == 'Linux'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y python3 python3-gi gir1.2-atspi-2.0 gir1.2-gtk-3.0 at-spi2-core xvfb xauth dbus-x11 openbox
-          /usr/bin/python3 -c 'import gi; gi.require_version("Atspi", "2.0"); gi.require_version("Gdk", "3.0"); from gi.repository import Atspi, Gdk'
-      - name: Build pinned native payload
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.92"
+      - name: Vendored engine source matches its manifest
+        run: ./scripts/check-vendored-computer-use.sh
+      - name: Build the engine payload (ad hoc signed)
         run: python scripts/computer-use-runtime.py build ${{ matrix.target }}
-      - name: Test Windows native runtime regressions
-        if: runner.os == 'Windows'
-        working-directory: target/computer-use/source.noindex/apps/OpenComputerUseWindows
-        run: go test -p 2 ./...
-      - name: Measure the helper's PowerShell console with a visible control
-        if: runner.os == 'Windows'
-        run: python scripts/test-computer-use-windows-console.py target/computer-use/source.noindex target/computer-use/win32-x64/ocu.exe --report target/computer-use/windows-console.json
-      - name: Test Linux native runtime regressions
-        if: runner.os == 'Linux'
-        working-directory: target/computer-use/source.noindex/apps/OpenComputerUseLinux
-        run: go test -p 2 ./...
-      - name: Verify target, patch set and all payload bytes
+      - name: Verify payload bytes, bundle identity and signature
         run: python scripts/computer-use-runtime.py verify ${{ matrix.target }}
-      - name: Packaging regression checks
+      - name: Pinned minimum macOS and no newer strong import
+        run: |
+          floor=$(python -I -c 'import json; print(json.load(open("vendor/agent-desktop/pin.json"))["minimum_macos"])')
+          bundle=$(python -I -c 'import json; print(json.load(open("vendor/agent-desktop/pin.json"))["macos_bundle"])')
+          ./scripts/check-macos-deployment.sh --floor "$floor" --require-imports \
+            "target/computer-use/${{ matrix.target }}/$bundle/Contents/MacOS/agent-desktop"
+      - name: Contract smoke (no desktop access)
+        run: python scripts/computer-use-runtime.py contract ${{ matrix.target }}
+      - name: Packaging regression tests
         run: python scripts/test-computer-use-packaging.py
-      - name: Verify native stdio protocol and ten tools
-        run: python scripts/test-computer-use-protocol.py target/computer-use/${{ matrix.target }}
-      - name: Exercise GTK accessibility and native capture in X11
-        timeout-minutes: 5
-        if: runner.os == 'Linux'
-        run: xvfb-run -a dbus-run-session -- /usr/bin/python3 scripts/test-computer-use-linux-fixture.py target/computer-use/${{ matrix.target }} --report target/computer-use/linux-fixture.json
-      - uses: actions/upload-artifact@v4
-        if: runner.os == 'Linux' && always()
-        with:
-          name: computer-use-${{ matrix.target }}-fixture-evidence
-          path: target/computer-use/linux-fixture*
-          if-no-files-found: warn
-      - name: Exercise Windows UI Automation on an isolated fixture
-        timeout-minutes: 5
-        if: runner.os == 'Windows'
-        run: python scripts/test-computer-use-windows-fixture.py target/computer-use/win32-x64 --report target/computer-use/windows-fixture.json
-      - uses: actions/upload-artifact@v4
-        if: runner.os == 'Windows' && always()
-        with:
-          name: computer-use-windows-fixture-evidence
-          path: |
-            target/computer-use/windows-fixture*
-            target/computer-use/windows-console.json
-          if-no-files-found: warn
+      # The drive needs Accessibility for the Copilot bundle, which a hosted runner
+      # cannot grant; building the fixture keeps it ready for the live gate.
+      - name: Build the macOS fixture app
+        run: bash scripts/build-copilot-fixture-macos.sh
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: computer-use-${{ matrix.target }}
           path: target/computer-use/${{ matrix.target }}/
           if-no-files-found: error
+
+  container:
+    name: Build ${{ matrix.target }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: linux-x64
+            runner: ubuntu-24.04
+          # Built and checked although no desktop package ships it: the CLI
+          # Docker image does, and it keeps the arm64 adapter compiling.
+          - target: linux-arm64
+            runner: ubuntu-24.04-arm
+          - target: win32-x64
+            runner: ubuntu-24.04
+    runs-on: ${{ matrix.runner }}
+    env:
+      BIOROUTER_BUILD_JOBS: "3"
+      CROSS_REGISTRY_MOUNT: ${{ github.workspace }}/.cross-cache/copilot-registry
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+      - uses: actions/cache@v4
+        with:
+          path: .cross-cache/copilot-registry
+          key: copilot-registry-${{ hashFiles('vendor/agent-desktop/source/Cargo.lock') }}
+          restore-keys: copilot-registry-
+      - name: Vendored engine source matches its manifest
+        run: ./scripts/check-vendored-computer-use.sh
+      - name: Build in the pinned rust:1.92-bullseye container
+        run: bash scripts/build-computer-use-helper-cross.sh ${{ matrix.target }}
+      - name: Take ownership of the container-written cache
+        if: always()
+        run: if [ -d .cross-cache ]; then sudo chown -R "$(id -u):$(id -g)" .cross-cache; fi
+      - name: Verify payload bytes, glibc floor and imports
+        run: python scripts/computer-use-runtime.py verify ${{ matrix.target }}
+      # In a network namespace holding only loopback: the engine has no network
+      # client (AD-20), and a contract command that reached out would fail here.
+      - name: Contract smoke (no desktop access, no network)
+        if: matrix.target != 'win32-x64'
+        run: |
+          sudo unshare --net -- sh -c \
+            'ip link set lo up && exec setpriv --reuid="$SUDO_UID" --regid="$SUDO_GID" --init-groups -- "$@"' sh \
+            env HOME="$HOME" PATH="$PATH" python scripts/computer-use-runtime.py contract ${{ matrix.target }}
+      - name: Packaging regression tests
+        run: python scripts/test-computer-use-packaging.py
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: computer-use-${{ matrix.target }}
+          path: target/computer-use/${{ matrix.target }}/
+          if-no-files-found: error
+
+  windows:
+    name: Check win32-x64 on Windows
+    needs: container
+    timeout-minutes: 20
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/download-artifact@v4
+        with:
+          name: computer-use-win32-x64
+          path: target/computer-use/win32-x64
+      - name: Verify payload bytes, console subsystem and imports
+        run: python scripts/computer-use-runtime.py verify win32-x64
+      # The windows-gnu build is ours, not upstream's (it ships msvc). It must
+      # start on Windows with no MinGW runtime DLL beside it (AD-05).
+      - name: Contract smoke (no desktop access)
+        run: python scripts/computer-use-runtime.py contract win32-x64
+
+  # The GTK fixture driven through Copilot's own tools, in a throwaway X11 session
+  # with the accessibility bridge (at-spi2-core 2.52, Ubuntu 24.04's).
+  linux-fixture:
+    name: Drive the GTK fixture (linux-x64)
+    needs: container
+    timeout-minutes: 45
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.92"
+      - uses: actions/download-artifact@v4
+        with:
+          name: computer-use-linux-x64
+          path: target/computer-use/linux-x64
+      - name: Restore the engine's executable mode
+        run: chmod +x target/computer-use/linux-x64/agent-desktop
+      - name: Install the X11 session, accessibility bridge and GTK
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y python3 python3-gi gir1.2-gtk-3.0 at-spi2-core xvfb xauth dbus-x11 openbox
+      - name: Build the driver
+        run: cargo test --locked -p biorouter-mcp --test computer_use_fixture --no-run -j 3
+      - name: Drive the fixture through Copilot's tools, drag and drop included
+        timeout-minutes: 10
+        shell: bash
+        run: bash scripts/test-copilot-fixture-linux.sh target/computer-use/linux-x64 2>&1 | tee target/copilot-fixture-linux.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: copilot-fixture-linux
+          path: target/copilot-fixture-linux.log
+          if-no-files-found: warn
+
+  # The WinForms fixture driven through Copilot's own tools on a Windows desktop,
+  # with the engine this release ships (the windows-gnu build).
+  windows-fixture:
+    name: Drive the WinForms fixture (win32-x64)
+    needs: container
+    timeout-minutes: 60
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.92"
+      - uses: actions/download-artifact@v4
+        with:
+          name: computer-use-win32-x64
+          path: target/computer-use/win32-x64
+      - name: Build the driver
+        run: cargo test --locked -p biorouter-mcp --test computer_use_fixture --no-run -j 3
+      - name: Drive the fixture through Copilot's tools, drag and drop included
+        timeout-minutes: 10
+        shell: powershell
+        # Windows PowerShell 5.1 turns a native program's redirected stderr (cargo's warnings)
+        # into error records, and this shell stops on the first one; the exit code decides.
+        run: |
+          $ErrorActionPreference = 'Continue'
+          powershell -NoProfile -ExecutionPolicy Bypass -File scripts/test-copilot-fixture-windows.ps1 target/computer-use/win32-x64 2>&1 | ForEach-Object { "$_" } | Tee-Object -FilePath target/copilot-fixture-windows.log
+          exit $LASTEXITCODE
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: copilot-fixture-windows
+          path: target/copilot-fixture-windows.log
+          if-no-files-found: warn
+
+  # Upstream's own unit tests for the platform-neutral core, on the vendored tree
+  # and Biorouter's toolchain, so a pin move that breaks the core under 1.92 is
+  # caught before a payload is built from it.
+  upstream-core-tests:
+    name: agent-desktop core unit tests
+    timeout-minutes: 30
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.92"
+      - name: cargo test -p agent-desktop-core --lib
+        env:
+          RUSTUP_TOOLCHAIN: "1.92"
+        # Upstream's own suite, run unchanged. Its session liveness tests are timing
+        # sensitive under parallel threads on hosted runners (seen once in eight runs:
+        # session::gc_tests::multiple_liveness_owners_do_not_serialize_each_other), so a
+        # failure gets one rerun on a single thread; a real break fails both runs.
+        run: |
+          set -o pipefail
+          manifest=vendor/agent-desktop/source/Cargo.toml
+          if ! cargo test --locked --manifest-path "$manifest" -p agent-desktop-core --lib -j 3; then
+            echo "::warning::agent-desktop core tests failed once; rerunning on one thread"
+            cargo test --locked --manifest-path "$manifest" -p agent-desktop-core --lib -j 3 -- --test-threads=1
+          fi
+
   native-release-gate:
     timeout-minutes: 5
     if: always()
-    needs: native
+    needs: [macos, container, windows, linux-fixture, windows-fixture, upstream-core-tests]
     runs-on: ubuntu-latest
     steps:
-      - name: Require every desktop and container native target
+      - name: Require every target's payload, both fixture drives and the core tests
         env:
-          RESULT: ${{ needs.native.result }}
-        run: test "$RESULT" = success
+          MACOS: ${{ needs.macos.result }}
+          CONTAINER: ${{ needs.container.result }}
+          WINDOWS: ${{ needs.windows.result }}
+          LINUX_FIXTURE: ${{ needs.linux-fixture.result }}
+          WINDOWS_FIXTURE: ${{ needs.windows-fixture.result }}
+          CORE: ${{ needs.upstream-core-tests.result }}
+        run: |
+          test "$MACOS" = success && test "$CONTAINER" = success && test "$WINDOWS" = success \
+            && test "$LINUX_FIXTURE" = success && test "$WINDOWS_FIXTURE" = success && test "$CORE" = success

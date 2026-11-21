@@ -87,7 +87,55 @@ pub const DEFAULT_SECRET_PATTERNS: &[&str] = &[
     // The shared daemon's user-action key, saved by whoever started the daemon so the desktop
     // app and `biorouter crew` can connect without asking the person for anything.
     "**/daemon/user-action-key.json",
+    // BB-25: the cookie jars that hold a person's logins. Chrome's own (macOS
+    // `Library/Application Support/Google/Chrome/<profile>`, Windows `Google/Chrome/User Data`,
+    // Linux `.config/google-chrome`) with its saved passwords and payment data beside them, and
+    // the Biorouter Browser's profile, which holds what a Chrome import set.
+    "**/Google/Chrome/**/Cookies",
+    "**/Google/Chrome/**/Login Data",
+    "**/Google/Chrome/**/Login Data For Account",
+    "**/Google/Chrome/**/Web Data",
+    "**/google-chrome/**/Cookies",
+    "**/google-chrome/**/Login Data",
+    "**/google-chrome/**/Login Data For Account",
+    "**/google-chrome/**/Web Data",
+    "**/Partitions/biorouter-embedded-browser/**/Cookies",
 ];
+
+/// The floor line whose last component reaches a `.env` template's name, and so the only
+/// one [`SecretGuard::is_denied`] reopens a template spelled in another case against.
+const ENV_FAMILY_FLOOR: &str = "**/.env.*";
+
+/// Conventional `.env` templates, reopened on top of the floor (issue #522).
+///
+/// `**/.env.*` above also matches the templates a repository commits next to
+/// its `.env`, which hold variable names and no values, so an agent could not
+/// read one or run the usual `cp .env.example .env`. These negations are added
+/// right after the floor and before any `.biorouterignore`, so gitignore's
+/// last-match-wins order still lets a project or the global file deny a
+/// template again. They name exact file names only: `.env`, `.env.local` and
+/// `.env.production` stay denied, and a template that is a symlink is judged
+/// as the file it reaches, so a link from `.env.example` to `.env` is refused.
+pub const DEFAULT_SECRET_TEMPLATE_EXCEPTIONS: &[&str] = &[
+    "!**/.env.example",
+    "!**/.env.sample",
+    "!**/.env.template",
+    "!**/.env.dist",
+    "!**/.env.tpl",
+    "!**/.env.defaults",
+    "!**/.env.*.example",
+];
+
+/// Add the built-in floor, then its template exceptions, to a builder. Both
+/// guard constructors call this, so their floors cannot drift apart.
+fn add_builtin_floor(builder: &mut GitignoreBuilder) {
+    for pattern in DEFAULT_SECRET_PATTERNS
+        .iter()
+        .chain(DEFAULT_SECRET_TEMPLATE_EXCEPTIONS)
+    {
+        let _ = builder.add_line(None, pattern);
+    }
+}
 
 /// Object keys whose string values are treated as file paths and scanned in
 /// full (every whitespace token). Tokens under any other key are only scanned
@@ -113,6 +161,9 @@ fn key_is_pathlike(key: &str) -> bool {
                 | "destination"
                 | "location"
                 | "uri"
+                // An MCP resource locator. Read as a path, so a bare name and a
+                // template that is a symlink are judged (issue #522).
+                | "resource"
                 | "url"
                 | "folder"
         )
@@ -152,10 +203,8 @@ impl SecretGuard {
         let cwd = path.root();
         let mut builder = GitignoreBuilder::new(cwd);
         let mut machine_builder = GitignoreBuilder::new(cwd);
-        for pattern in DEFAULT_SECRET_PATTERNS {
-            let _ = builder.add_line(None, pattern);
-            let _ = machine_builder.add_line(None, pattern);
-        }
+        add_builtin_floor(&mut builder);
+        add_builtin_floor(&mut machine_builder);
         if let Ok(dirs) = crate::paths::platform_dirs() {
             let global = dirs.config.join(".biorouterignore");
             let _ = builder.add(&global);
@@ -194,10 +243,8 @@ impl SecretGuard {
         let mut builder = GitignoreBuilder::new(cwd);
         let mut machine_builder = GitignoreBuilder::new(cwd);
 
-        for pat in DEFAULT_SECRET_PATTERNS {
-            let _ = builder.add_line(None, pat);
-            let _ = machine_builder.add_line(None, pat);
-        }
+        add_builtin_floor(&mut builder);
+        add_builtin_floor(&mut machine_builder);
 
         let project_local = cwd.join(".biorouterignore");
         for source in sources {
@@ -312,7 +359,7 @@ impl SecretGuard {
     /// textual descendant of the root.
     pub fn is_denied(&self, path: &Path) -> bool {
         if self.is_denied_as_spelled(path, path) {
-            return true;
+            return !self.is_a_template_spelled_in_another_case(path);
         }
         match path.to_str() {
             // The lowercase form is a second spelling to MATCH, never a second
@@ -325,6 +372,45 @@ impl SecretGuard {
             }
             _ => false,
         }
+    }
+
+    /// `.env.Example` and its kin (issue #522). The floor's `**/.env.*` and the
+    /// [`DEFAULT_SECRET_TEMPLATE_EXCEPTIONS`] that reopen `.env.example` are both
+    /// case-sensitive, like every gitignore pattern, so a template spelled with a
+    /// capital after `.env.` matched the floor and missed its exception: refused,
+    /// while `.ENV.EXAMPLE`, which the floor misses as spelled, was readable. On APFS
+    /// and NTFS that spelling opens the template itself.
+    ///
+    /// Reopened only when all three hold, so nothing a person wrote is overridden:
+    /// the name, lowercased, is a template; every matcher that denies the spelling
+    /// as written does so by the floor's own `**/.env.*` line, so no
+    /// `.biorouterignore` line matched it (a project's `.env.Example` stays
+    /// denied); and the whole path lowercased is not denied, so a rule that denies
+    /// the lowercase template (`.env.example`) still holds. `.env`, `.Env.local`
+    /// and `.env.Production` are no template and stay refused.
+    fn is_a_template_spelled_in_another_case(&self, path: &Path) -> bool {
+        let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+            return false;
+        };
+        if !name.chars().any(char::is_uppercase)
+            || !resolve::is_env_template_name(&name.to_lowercase())
+        {
+            return false;
+        }
+        let denied_only_by_the_env_floor = |matcher: &Gitignore| match matcher.matched(path, false)
+        {
+            ignore::Match::Ignore(glob) => {
+                glob.from().is_none() && glob.original() == ENV_FAMILY_FLOOR
+            }
+            ignore::Match::None | ignore::Match::Whitelist(_) => true,
+        };
+        if !denied_only_by_the_env_floor(&self.ignore)
+            || !denied_only_by_the_env_floor(&self.machine_wide)
+        {
+            return false;
+        }
+        path.to_str()
+            .is_some_and(|text| !self.is_denied_as_spelled(Path::new(&text.to_lowercase()), path))
     }
 
     /// `spelled` is matched against the patterns; `located` is the path whose
@@ -430,6 +516,14 @@ impl SecretGuard {
     /// Every string also gets the literal whitespace-token pass the guard has
     /// always made, now without the `exists()` gate. It is IO-free and it is
     /// what keeps this change from permitting anything the old scan refused.
+    /// The whole string is one more literal candidate, except for a command
+    /// line of several words, whose words the resolver reads (see [`Whole`]).
+    ///
+    /// This scan does not know which tool it is reading, so prose keeps the
+    /// separator rule even where a tool never opens it. The dispatch boundary,
+    /// which does know, leaves out the free-text fields of the bundled Todo
+    /// tools and the source of Code Execution's `execute_code`, whose inner
+    /// calls are each dispatched, and judged, on their own (issue #522).
     ///
     /// A sibling `working_directory` / `cwd` argument is treated as another
     /// directory the command may run in, because for the Developer shell it is
@@ -478,7 +572,7 @@ impl SecretGuard {
             return Some(DeniedAccess::from(finding));
         }
         let mut found = None;
-        self.legacy_scan(command, true, &mut found);
+        self.legacy_scan(command, true, Whole::OnlyOneWord, &mut found);
         found
     }
 
@@ -492,7 +586,7 @@ impl SecretGuard {
         env: &ShellEnv,
     ) -> Option<DeniedAccess> {
         let mut found = None;
-        self.legacy_scan(code, true, &mut found);
+        self.legacy_scan(code, true, Whole::OnlyOneWord, &mut found);
         if found.is_some() {
             return found;
         }
@@ -579,7 +673,12 @@ impl SecretGuard {
                 return;
             }
         }
-        self.legacy_scan(s, pathlike_key, found);
+        let whole = if kind == KeyKind::Command {
+            Whole::OnlyOneWord
+        } else {
+            Whole::Always
+        };
+        self.legacy_scan(s, pathlike_key, whole, found);
         if found.is_some() || kind != KeyKind::Path {
             return;
         }
@@ -590,11 +689,24 @@ impl SecretGuard {
 
     /// The whole string, then each whitespace token, taken literally — the
     /// scan the guard has always made, minus its `exists()` gate.
-    fn legacy_scan(&self, s: &str, pathlike_key: bool, found: &mut Option<DeniedAccess>) {
+    fn legacy_scan(
+        &self,
+        s: &str,
+        pathlike_key: bool,
+        whole: Whole,
+        found: &mut Option<DeniedAccess>,
+    ) {
         let trimmed = s.trim();
 
         // Whole-string candidate (covers a plain `{"path": ".env"}` argument).
-        if (pathlike_key || has_separator(trimmed)) && self.candidate_is_denied(trimmed) {
+        let whole_is_a_candidate = match whole {
+            Whole::Always => true,
+            Whole::OnlyOneWord => !trimmed.contains(char::is_whitespace),
+        };
+        if whole_is_a_candidate
+            && (pathlike_key || has_separator(trimmed))
+            && self.candidate_is_denied(trimmed)
+        {
             *found = Some(DeniedAccess::literal(trimmed));
             return;
         }
@@ -637,6 +749,7 @@ pub struct DeniedAccess {
     /// What it resolved to, when that differs usefully from `shown`.
     pub resolved: Option<PathBuf>,
     reason: resolve::Reason,
+    heredoc: Option<resolve::BodyReading>,
 }
 
 impl DeniedAccess {
@@ -645,6 +758,7 @@ impl DeniedAccess {
             shown: shown.to_string(),
             resolved: None,
             reason: resolve::Reason::Pattern,
+            heredoc: None,
         }
     }
 
@@ -657,7 +771,7 @@ impl DeniedAccess {
             }
             _ => format!("'{}'", self.shown),
         };
-        match self.reason {
+        let refusal = match self.reason {
             resolve::Reason::Pattern => format!(
                 "Access to {target} is blocked: it matches a secret/credential deny pattern \
                  (.env, private key, cloud or provider credentials). The check does not depend \
@@ -679,6 +793,32 @@ impl DeniedAccess {
                  reads, because the command nests shells too deeply or names more links than it \
                  can follow. Split it into simpler commands."
             ),
+            resolve::Reason::BrowserKeyHelper => "The command is blocked: it runs `biorouterd \
+                 browser-key`, the helper that reads the key to the person's Chrome logins for \
+                 the desktop app's Import from Chrome. Only the Biorouter app runs it, when the \
+                 person imports from Chrome in Settings. Do not run it in any other way; if the \
+                 task needs the person's Chrome logins, ask them to import from Chrome themselves."
+                .to_string(),
+            resolve::Reason::CopilotEngine => "The command is blocked: it starts Biorouter \
+                 Copilot's engine, which holds the person's Accessibility and Screen Recording \
+                 permissions. Use Biorouter Copilot's own tools, which ask the person first; never \
+                 start its engine from a shell."
+                .to_string(),
+        };
+        // #546: a model that wrote the body as text looks for the word among
+        // its commands and finds nothing, so say where it was.
+        match self.heredoc {
+            None => refusal,
+            Some(resolve::BodyReading::Script) => format!(
+                "{refusal} The word is inside a here-document body, which the guard reads as a \
+                 script this command may run. If the body is the content of a file, write it in \
+                 a call of its own as `cat > FILE <<'EOF'`, with the delimiter quoted, so the \
+                 body is read as file content."
+            ),
+            Some(resolve::BodyReading::Data) => format!(
+                "{refusal} The word is inside a here-document body written to a file. The guard \
+                 still reads such a body, because the file can be run later."
+            ),
         }
     }
 }
@@ -689,8 +829,28 @@ impl From<resolve::Finding> for DeniedAccess {
             shown: finding.shown,
             resolved: finding.path,
             reason: finding.reason,
+            heredoc: finding.heredoc,
         }
     }
+}
+
+/// Whether [`SecretGuard::legacy_scan`] also takes the whole string as one
+/// path.
+///
+/// A command line or a script is several words. Each word is a candidate of
+/// its own, and the resolver reads the command as the shell will, keeping a
+/// quoted path with spaces together, so the whole line names no file. It used
+/// to be judged as one anyway, which refused `cat config/.env.example | head`
+/// because the text after its last `/`, `.env.example | head`, matches
+/// `**/.env.*` (issue #522). Every word of it is still judged.
+///
+/// Any other value keeps the whole-string candidate: a path argument can hold
+/// spaces, and so can a path an unknown tool takes under a key that does not
+/// look like one (`/keys/My Server.pem`), where no single word matches.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Whole {
+    Always,
+    OnlyOneWord,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1100,6 +1260,167 @@ mod tests {
         ] {
             assert!(!g.is_denied(Path::new(ordinary)), "{ordinary}");
             assert!(!g.is_denied(&fake.home.join(ordinary)), "~/{ordinary}");
+        }
+    }
+
+    /// BB-25: the cookie and password stores of Chrome and of the Biorouter Browser's own profile.
+    const BROWSER_STORES: &[&str] = &[
+        "Library/Application Support/Google/Chrome/Default/Cookies",
+        "Library/Application Support/Google/Chrome/Default/Network/Cookies",
+        "Library/Application Support/Google/Chrome/Profile 1/Login Data",
+        "Library/Application Support/Google/Chrome/Default/Login Data For Account",
+        "Library/Application Support/Google/Chrome/Default/Web Data",
+        ".config/google-chrome/Default/Cookies",
+        ".config/google-chrome/Profile 2/Login Data",
+        ".config/google-chrome/Default/Web Data",
+        "AppData/Local/Google/Chrome/User Data/Default/Network/Cookies",
+        "Library/Application Support/Biorouter/Partitions/biorouter-embedded-browser/Cookies",
+        "Library/Application Support/Biorouter/Partitions/biorouter-embedded-browser/Network/Cookies",
+    ];
+
+    #[test]
+    fn bb_25_browser_cookie_and_password_stores_are_on_the_floor() {
+        let fake = FakeHome::new();
+        let g = fake.guard();
+        for store in BROWSER_STORES {
+            assert!(g.is_denied(&fake.home.join(store)), "~/{store}");
+        }
+        // Chrome's other files, and files merely called Cookies elsewhere, stay readable.
+        for ordinary in [
+            "Library/Application Support/Google/Chrome/Default/Bookmarks",
+            "Library/Application Support/Google/Chrome/Default/Preferences",
+            "Library/Application Support/Google/Chrome/Local State",
+            "Library/Application Support/Biorouter/biorouter-browser/bookmarks.json",
+            "project/Cookies",
+            "project/src/cookies/index.ts",
+            "notes/Login Data.md",
+        ] {
+            assert!(!g.is_denied(&fake.home.join(ordinary)), "~/{ordinary}");
+        }
+        let (g, env) = (fake.guard(), fake.env());
+        for command in [
+            "cat ~/Library/Application\\ Support/Google/Chrome/Default/Cookies",
+            "sqlite3 \"$HOME/Library/Application Support/Google/Chrome/Default/Login Data\" .dump",
+            "cp ~/.config/google-chrome/Default/Cookies /tmp/c",
+            "cd ~/.config/google-chrome/Default && sqlite3 'Web Data' .tables",
+            "cat ~/Library/Application\\ Support/Biorouter/Partitions/biorouter-embedded-browser/Cookies",
+        ] {
+            assert!(
+                scan_command(&g, &env, command).is_some(),
+                "reached a browser store: {command}"
+            );
+        }
+    }
+
+    /// BB-23: the browser-key helper reads the key to the person's Chrome cookies, silently once
+    /// the Keychain prompt was answered with Always Allow, so an agent's shell never runs it, in
+    /// any spelling the guard can read. Searching the code for it stays possible.
+    #[test]
+    fn bb_23_the_browser_key_helper_is_refused_in_every_spelling() {
+        let fake = FakeHome::new();
+        let (g, env) = (fake.guard(), fake.env());
+        let refused = [
+            "biorouterd browser-key --source chrome",
+            "/Applications/Biorouter.app/Contents/Resources/bin/biorouterd browser-key --source chrome",
+            "~/repo/target/debug/biorouterd browser-key --source=chrome | xxd",
+            "BIOROUTERD browser-key --source chrome",
+            "C:\\Program Files\\Biorouter\\resources\\bin\\biorouterd.exe browser-key --source chrome",
+            "env FOO=1 biorouterd browser-key --source chrome",
+            "exec nohup biorouterd browser-key --source chrome > /tmp/key",
+            "\"biorouterd\" 'browser-key' --source chrome",
+            "bio\"rou\"terd brow'ser'-key --source chrome",
+            "biorouterd browser\\-key --source chrome",
+            "B=biorouterd; $B browser-key --source chrome",
+            "K=browser-key; biorouterd \"$K\" --source chrome",
+            "sh -c 'biorouterd browser-key --source chrome'",
+            "bash -lc \"cd /tmp && biorouterd browser-key --source chrome\"",
+            "eval 'biorouterd browser-key --source chrome'",
+            "alias k='biorouterd browser-key'; k --source chrome",
+            "biorouterd $(echo browser-key) --source chrome",
+            "cp \"$(which biorouterd)\" /tmp/x && /tmp/x browser-key --source chrome",
+            "/tmp/renamed browser-key --source chrome",
+            "echo browser-key --source chrome | xargs /tmp/renamed",
+            "python3 -c \"import subprocess; subprocess.run(['biorouterd','browser-key','--source','chrome'])\"",
+            "cat <<EOF | sh\nbiorouterd browser-key --source chrome\nEOF",
+            "cargo run -p biorouter-server --bin biorouterd -- browser-key --source chrome",
+        ];
+        for command in refused {
+            let denied = g
+                .find_denied_access_in(json!({ "command": command }).as_object().unwrap(), &env)
+                .unwrap_or_else(|| panic!("ran the browser-key helper: {command}"));
+            assert!(
+                denied.message().contains("Only the Biorouter app runs it"),
+                "{command}: {}",
+                denied.message()
+            );
+            assert!(
+                g.find_denied_in_command(command, &fake.home, &env)
+                    .is_some(),
+                "the Developer shell's own check missed: {command}"
+            );
+        }
+        assert!(g
+            .find_denied_in_code(
+                "system(\"biorouterd browser-key --source chrome\")",
+                &fake.home,
+                &env
+            )
+            .is_some());
+        for ordinary in [
+            "rg browser-key crates/",
+            "grep -rn 'browser-key' docs/desktop-ui/built-in-browser.md",
+            "cargo test -p biorouter-server --bin biorouterd browser_key_tests",
+            "biorouterd --version",
+            "ps aux | grep biorouterd",
+            "biorouter session list --source mine",
+        ] {
+            assert!(
+                scan_command(&g, &env, ordinary).is_none(),
+                "refused an ordinary command: {ordinary}"
+            );
+        }
+    }
+
+    /// AD-12: a shell never starts Biorouter Copilot's engine, which holds the person's
+    /// Accessibility and Screen Recording permissions. Talking about it stays possible, and an
+    /// engine the person installed themselves is theirs.
+    #[test]
+    fn ad_12_copilots_engine_is_never_started_from_a_shell() {
+        let fake = FakeHome::new();
+        let (g, env) = (fake.guard(), fake.env());
+        for command in [
+            "\"/Applications/Biorouter.app/Contents/Resources/computer-use/Biorouter Copilot.app/Contents/MacOS/agent-desktop\" snapshot --app Notes",
+            "cd '/Applications/Biorouter.app/Contents/Resources/computer-use/Biorouter Copilot.app/Contents/MacOS' && ./agent-desktop screenshot --screen 0 /tmp/s.png",
+            "open -a 'Biorouter Copilot' --args snapshot",
+            "open -b org.biorouter.computer-use",
+            "/usr/bin/open -na \"/Applications/Biorouter.app/Contents/Resources/computer-use/Biorouter Copilot.app\"",
+            "osascript -e 'tell application \"Biorouter Copilot\" to activate'",
+            "/usr/libexec/biorouter/computer-use/agent-desktop list-apps",
+            "C:\\Program Files\\Biorouter\\resources\\computer-use\\agent-desktop.exe list-apps",
+            "sh -c '/opt/Biorouter/resources/computer-use/agent-desktop click @s1:e1'",
+            "python3 -c \"import subprocess; subprocess.run(['/usr/libexec/biorouter/computer-use/agent-desktop','list-apps'])\"",
+        ] {
+            let denied = g
+                .find_denied_access_in(json!({ "command": command }).as_object().unwrap(), &env)
+                .unwrap_or_else(|| panic!("started Copilot's engine: {command}"));
+            assert!(
+                denied.message().contains("Biorouter Copilot's own tools"),
+                "{command}: {}",
+                denied.message()
+            );
+        }
+        for ordinary in [
+            "rg 'Biorouter Copilot' ui/desktop/src",
+            "grep -rn org.biorouter.computer-use vendor/agent-desktop/pin.json",
+            "agent-desktop list-apps",
+            "~/.cargo/bin/agent-desktop snapshot --app Notes",
+            "open https://agent-browser.dev/desktop",
+            "open -a TextEdit notes.txt",
+        ] {
+            assert!(
+                scan_command(&g, &env, ordinary).is_none(),
+                "refused an ordinary command: {ordinary}"
+            );
         }
     }
 
@@ -1814,6 +2135,70 @@ mod tests {
         assert!(!g.is_denied(Path::new("Notes.TXT")));
     }
 
+    /// Issue #522 follow-up: a `.env` template is readable whatever its case, and folding
+    /// case never reopens a real `.env` file or a template a person denied.
+    #[test]
+    fn a_template_spelled_in_another_case_is_readable_and_nothing_else_is() {
+        let dir = tempdir().unwrap();
+        let g = SecretGuard::for_dir(dir.path());
+        for template in [
+            ".env.example",
+            ".env.Example",
+            ".ENV.EXAMPLE",
+            ".Env.Sample",
+            "config/.Env.Sample",
+            "config/.env.Template",
+            ".env.Local.Example",
+            "/h/Project/.env.Dist",
+        ] {
+            assert!(!g.is_denied(Path::new(template)), "{template}");
+        }
+        for secret in [
+            ".env",
+            ".ENV",
+            ".Env",
+            ".Env.local",
+            ".env.Local",
+            ".env.Production",
+            ".ENV.PRODUCTION",
+            ".env.Example.bak",
+            "/h/.AWS/Credentials",
+        ] {
+            assert!(g.is_denied(Path::new(secret)), "{secret}");
+        }
+
+        // A project that denies the lowercase template keeps every spelling denied, and one
+        // that denies a capitalised spelling keeps that spelling denied.
+        let project = tempdir().unwrap();
+        std::fs::write(
+            project.path().join(".biorouterignore"),
+            ".env.example\n.env.Sample\n",
+        )
+        .unwrap();
+        let g = SecretGuard::for_dir(project.path());
+        for denied in [
+            ".env.example",
+            ".env.Example",
+            ".ENV.EXAMPLE",
+            ".env.Sample",
+        ] {
+            assert!(g.is_denied(Path::new(denied)), "{denied}");
+        }
+        assert!(!g.is_denied(Path::new(".env.Template")));
+
+        // The shell scan agrees with the guard.
+        let env = ShellEnv::with_vars([("HOME", dir.path().to_string_lossy().into_owned())]);
+        let scan = |command: &str| {
+            SecretGuard::for_dir(dir.path())
+                .find_denied_access_in(json!({ "command": command }).as_object().unwrap(), &env)
+                .map(|denied| denied.shown)
+        };
+        assert_eq!(scan("cat .env.Example"), None);
+        assert_eq!(scan("cat config/.Env.Sample"), None);
+        assert!(scan("cat .env.Local").is_some());
+        assert!(scan("cat .Env").is_some());
+    }
+
     #[test]
     #[cfg(unix)]
     fn is_denied_resolved_follows_a_symlink() {
@@ -2081,5 +2466,794 @@ mod tests {
         // ...but the rest of the floor still stands.
         assert!(g.is_denied(Path::new(".env")));
         assert!(g.is_denied(Path::new("secrets.yaml")));
+    }
+
+    fn issue546_assert_heredoc_denied(fake: &FakeHome, command: &str) {
+        let (g, env) = (fake.guard(), fake.env());
+        assert!(
+            scan_command(&g, &env, command).is_some(),
+            "the command guard allowed protected here-document input: {command}"
+        );
+        assert!(
+            resolve::Resolver::new(&g, &env)
+                .scan_command(command, &[resolve::Base::Dir(fake.project.clone())])
+                .is_err(),
+            "the resolver alone allowed protected here-document input: {command}"
+        );
+    }
+
+    #[test]
+    fn issue546_quoted_r_data_is_not_a_shell_path() {
+        let fake = FakeHome::new();
+        let (g, env) = (fake.guard(), fake.env());
+        for delimiter in ["'EOF'", "\"EOF\"", "\\EOF", "'E'OF"] {
+            let command = format!(
+                "cat > summarize.R <<{delimiter}\nres <- data.frame(IHS = c(1, Inf))\nres$IHS[is.finite(res$IHS)]\nEOF\n"
+            );
+            assert_eq!(scan_command(&g, &env, &command), None, "{command}");
+        }
+    }
+
+    #[test]
+    fn issue546_backquoted_markdown_data_is_not_shell_execution() {
+        let fake = FakeHome::new();
+        let (g, env) = (fake.guard(), fake.env());
+        let command =
+            "cat > notes.md <<'EOF'\nUse `res$IHS[is.finite(res$IHS)]` when filtering.\nEOF\n";
+        assert_eq!(scan_command(&g, &env, command), None);
+    }
+
+    #[test]
+    fn issue546_six_hundred_punctuated_prose_words_are_allowed() {
+        let fake = FakeHome::new();
+        let (g, env) = (fake.guard(), fake.env());
+        let body = (0..600)
+            .map(|index| format!("sentence{index}."))
+            .collect::<Vec<_>>()
+            .join(" ");
+        let command = format!("cat > notes.md <<'EOF'\n{body}\nEOF\n");
+        assert_eq!(scan_command(&g, &env, &command), None);
+    }
+
+    #[test]
+    fn issue546_unknown_stdin_receivers_keep_the_secret_floor() {
+        let fake = FakeHome::new();
+        for receiver in ["unclassified_reader", "at now", "batch", "crontab -"] {
+            issue546_assert_heredoc_denied(
+                &fake,
+                &format!("{receiver} <<'EOF'\ncd ~/.aws\ncat credentials\nEOF\n"),
+            );
+        }
+    }
+
+    #[test]
+    fn issue546_executable_and_filename_stdin_keep_the_secret_floor() {
+        let fake = FakeHome::new();
+        for command in [
+            "bash <<'EOF'\ncd ~/.aws\ncat credentials\nEOF\n",
+            "fish <<'EOF'\ncd ~/.aws; cat credentials\nEOF\n",
+            "cat <<'EOF' | sh\ncd ~/.aws\ncat credentials\nEOF\n",
+            "cd ~/.aws && xargs cat <<'EOF'\ncredentials\nEOF\n",
+            "cd ~/.aws && while read f; do cat \"$f\"; done <<'EOF'\ncredentials\nEOF\n",
+            "cat > x.sh <<'EOF'\ncd ~/.aws\ncat credentials\nEOF\nbash x.sh\n",
+            "xargs sh -c <<'EOF'\ncd ~/.aws && cat credentials\nEOF\n",
+            "docker exec -i fixture sh <<'EOF'\ncd ~/.aws && cat credentials\nEOF\n",
+            "python3 - <<'EOF'\nimport os\nos.system('cat ~/.aws/credentials')\nEOF\n",
+            "tar -T - <<'EOF'\n$HOME/.aws/credentials\nEOF\n",
+            "cat > notes.md <<EOF\n$(cat ~/.aws/credentials)\nEOF\n",
+        ] {
+            issue546_assert_heredoc_denied(&fake, command);
+        }
+    }
+
+    #[test]
+    fn issue546_literal_and_obfuscated_body_paths_keep_the_secret_floor() {
+        let fake = FakeHome::new();
+        for command in [
+            "cat > notes.md <<'EOF'\n~/.aws/credentials\nEOF\n",
+            "cat > notes.md <<'EOF'\ncd ~/.aws\ncat cred\"\"entials\nEOF\n",
+            "cat > notes.md <<'EOF'\ncd ~/.aws\ncat $'cred\\x65ntials'\nEOF\n",
+            "cat > notes.md <<'EOF'\ncd ~/.aws\ncat cred$(printf e)ntials\nEOF\n",
+        ] {
+            issue546_assert_heredoc_denied(&fake, command);
+        }
+    }
+
+    #[test]
+    fn issue546_body_handling_does_not_hide_a_later_outer_access() {
+        let fake = FakeHome::new();
+        issue546_assert_heredoc_denied(
+            &fake,
+            "cat > notes.md <<'EOF'\nordinary prose\nEOF\ncd ~/.aws && cat credentials\n",
+        );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn issue546_quoted_data_keeps_symlink_target_denial() {
+        let fake = FakeHome::new().with_links();
+        let g = fake.guard();
+        assert!(!g.is_denied(&fake.project.join("creds-link")));
+        for command in [
+            "cat > notes.md <<'EOF'\ncat creds-link\nEOF\n",
+            "cat > notes.md <<'EOF'\ncat aws-link/credentials\nEOF\n",
+        ] {
+            issue546_assert_heredoc_denied(&fake, command);
+        }
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn issue546_quoted_body_link_past_the_budget_is_refused() {
+        let fake = FakeHome::new();
+        for padding in [8, 600] {
+            let body = padded_link_command(&fake, padding);
+            let g = fake.guard();
+            assert!(!g.is_denied(&fake.project.join("ln/zz")));
+            issue546_assert_heredoc_denied(&fake, "cat ln/zz");
+            issue546_assert_heredoc_denied(
+                &fake,
+                &format!("cat > notes.md <<'EOF'\n{body}\nEOF\n"),
+            );
+        }
+    }
+
+    /// The R script of `issue546_quoted_r_data_is_not_a_shell_path`. Its
+    /// `res$IHS[…]` is refused whenever the body is read as a script this
+    /// command runs, which makes it a probe for whether a body was classified
+    /// as data.
+    const ISSUE546_R_BODY: &str =
+        "res <- data.frame(IHS = c(1, Inf))\nres$IHS[is.finite(res$IHS)]\n";
+
+    /// Item 5 of #546: a refusal for a word inside a here-document body says
+    /// so, and says how the body was read, so a model that wrote the body as
+    /// text is not left looking for the word among its commands.
+    #[test]
+    fn issue546_a_refusal_from_a_body_says_it_came_from_the_body() {
+        let fake = FakeHome::new();
+        let (g, env) = (fake.guard(), fake.env());
+        let message = |command: &str| {
+            let args = json!({ "command": command });
+            let from_dispatch = g
+                .find_denied_access_in(args.as_object().unwrap(), &env)
+                .unwrap_or_else(|| panic!("allowed: {command:?}"))
+                .message();
+            let from_shell = g
+                .find_denied_in_command(command, &fake.project, &env)
+                .unwrap_or_else(|| panic!("the shell's own check allowed: {command:?}"))
+                .message();
+            assert_eq!(from_dispatch, from_shell, "{command:?}");
+            from_dispatch
+        };
+        let r = ISSUE546_R_BODY;
+
+        // Read as a script: another command in the input could run the file.
+        let script = message(&format!("cat > a.R <<'EOF'\n{r}EOF\nRscript a.R\n"));
+        assert!(script.contains("here-document body"), "{script}");
+        assert!(script.contains("reads as a script"), "{script}");
+        assert!(script.contains("`cat > FILE <<'EOF'`"), "{script}");
+        let unquoted = message(&format!("cat > a.R <<EOF\n{r}EOF\n"));
+        assert!(unquoted.contains("reads as a script"), "{unquoted}");
+
+        // Read as file content, and still refused for a protected path.
+        let data = message("cat > notes.md <<'EOF'\n~/.aws/credentials\nEOF\n");
+        assert!(
+            data.contains("here-document body written to a file"),
+            "{data}"
+        );
+        assert!(!data.contains("reads as a script"), "{data}");
+
+        // A word outside every body keeps the plain message.
+        for command in [
+            "cat ~/.aws/credentials",
+            "cat > notes.md <<'EOF'\nordinary prose\nEOF\ncd ~/.aws && cat credentials\n",
+        ] {
+            let outside = message(command);
+            assert!(!outside.contains("here-document"), "{command:?}: {outside}");
+        }
+    }
+
+    /// A Windows host reads the input under both grammars, and the Windows
+    /// reading keeps `\` literal. The delimiter is still read the POSIX way, so
+    /// `<<\EOF` ends at `EOF` and the body is data under both readings; and the
+    /// grammar comes back for the words after it.
+    #[test]
+    fn issue546_a_windows_host_reads_every_quoted_delimiter_as_data() {
+        let fake = FakeHome::new();
+        let (g, env) = (fake.guard(), fake.env());
+        let bases = [resolve::Base::Dir(fake.project.clone())];
+        for delimiter in ["'EOF'", "\"EOF\"", "\\EOF", "'E'OF"] {
+            for target in ["summarize.R", r"out\summarize.R"] {
+                let command = format!("cat > {target} <<{delimiter}\n{ISSUE546_R_BODY}EOF\n");
+                for windows_host in [true, false] {
+                    assert!(
+                        resolve::Resolver::new(&g, &env)
+                            .scan_command_as_host(&command, &bases, windows_host)
+                            .is_ok(),
+                        "{command:?} (windows host: {windows_host})"
+                    );
+                }
+                assert!(
+                    resolve::Resolver::new(&g, &env)
+                        .under_one_grammar_for_tests(true, &command, &bases)
+                        .is_ok(),
+                    "the Windows reading alone refused {command:?}"
+                );
+            }
+        }
+        // The floor still holds in that body on a Windows host.
+        for body in [
+            "cd ~/.aws\ncat cred\"\"entials\n",
+            "cat ~/.aws/credentials\n",
+            "cd ~/.aws\ncat cred$(printf e)ntials\n",
+        ] {
+            let command = format!("cat > notes.md <<\\EOF\n{body}EOF\n");
+            assert!(
+                resolve::Resolver::new(&g, &env)
+                    .scan_command_as_host(&command, &bases, true)
+                    .is_err(),
+                "{command:?}"
+            );
+        }
+    }
+
+    /// Only `cat > FILE <<'DELIM'`, alone or beside more of the same, is data.
+    /// Each form below changes one thing, and each puts the R body back under
+    /// the script reading that refuses it.
+    #[test]
+    fn issue546_only_a_plain_file_write_is_data() {
+        let fake = FakeHome::new();
+        let (g, env) = (fake.guard(), fake.env());
+        let r = ISSUE546_R_BODY;
+        for command in [
+            format!("cat > a.R <<'EOF'\n{r}EOF\n"),
+            format!("cat <<'EOF' > a.R\n{r}EOF\n"),
+            format!("> a.R cat <<'EOF'\n{r}EOF\n"),
+            format!("cat >> a.R <<-'EOF'\n\t{r}\tEOF\n"),
+            format!("cat >| a.R <<'EOF'\n{r}EOF\n"),
+            format!("cat > a.R <<'EOF'\n{r}EOF\ncat > b.R <<'EOF'\n{r}EOF\n"),
+            format!("cat > a.R <<'A' && cat > b.md <<\"B\"\n{r}A\n{r}B\n"),
+        ] {
+            assert_eq!(scan_command(&g, &env, &command), None, "{command}");
+        }
+        for command in [
+            // Something else in the same input could run what was written.
+            format!("cat > a.R <<'EOF'\n{r}EOF\nRscript a.R\n"),
+            format!("mkdir -p out && cat > a.R <<'EOF'\n{r}EOF\n"),
+            format!("cat > a.R <<'EOF'\n{r}EOF\nbash a.R\n"),
+            // The output goes somewhere that may run it.
+            format!("cat <<'EOF' | tee a.R\n{r}EOF\n"),
+            format!("cat > a.R <<'EOF' | sh\n{r}EOF\n"),
+            format!("(cat > a.R <<'EOF'\n{r}EOF\n)"),
+            format!("cat <<'EOF'\n{r}EOF\n"),
+            format!("cat 2>&1 <<'EOF'\n{r}EOF\n"),
+            // Not bare `cat`, or not only one file.
+            format!("sudo cat > a.R <<'EOF'\n{r}EOF\n"),
+            format!("X=1 cat > a.R <<'EOF'\n{r}EOF\n"),
+            format!("\\cat > a.R <<'EOF'\n{r}EOF\n"),
+            format!("cat -v > a.R <<'EOF'\n{r}EOF\n"),
+            format!("cat - > a.R <<'EOF'\n{r}EOF\n"),
+            format!("cat > a.R > b.R <<'EOF'\n{r}EOF\n"),
+            format!("cat > \"$OUT\" <<'EOF'\n{r}EOF\n"),
+            format!("cat > a.R <<'EOF' <<'EOG'\n{r}EOF\n{r}EOG\n"),
+            // A delimiter that does not make the body plain text everywhere.
+            format!("cat > a.R <<EOF\n{r}EOF\n"),
+            format!("cat > a.R <<$'EOF'\n{r}EOF\n"),
+            format!("cat > a.R <<'EOF'\n{r}"),
+            format!("cat > a.R <<'EOF'\n{r}EOF\r\n"),
+        ] {
+            assert!(
+                scan_command(&g, &env, &command).is_some(),
+                "a form that is not a plain file write was read as data: {command:?}"
+            );
+        }
+    }
+
+    /// The lexer reads `\r` as a blank and the shell reads it as part of a
+    /// word, so after `<<'EOF'\r` the shell's delimiter is `EOF\r`. Its body
+    /// then ends at the first `EOF\r` line, and what this lexer would call the
+    /// rest of the body runs as commands. Such a body is never data.
+    #[test]
+    fn issue546_a_carriage_return_after_the_delimiter_is_never_data() {
+        let fake = FakeHome::new();
+        issue546_assert_heredoc_denied(
+            &fake,
+            "cat > a.md <<'EOF'\r\nEOF\r\ncd \"$(echo ~/.aws)\"\ncat credentials\nEOF\n",
+        );
+    }
+
+    /// The secret floor reads every word of a data body, whatever program the
+    /// line starts with, so a link or a spelling trick is refused in any
+    /// position.
+    #[test]
+    #[cfg(unix)]
+    fn issue546_aliases_in_any_position_of_a_data_body_are_refused() {
+        let fake = FakeHome::new().with_links();
+        for body in [
+            "head creds-link",
+            "X=1 cat creds-link",
+            "unknownprefix aws-link/credentials",
+            "creds-link",
+            "less aws-link/cred*",
+            "head ~/.a\"ws\"/credentials",
+            "printf '%s' \"$(cat creds-link)\"",
+            "Use `cat creds-link` to check.",
+        ] {
+            issue546_assert_heredoc_denied(
+                &fake,
+                &format!("cat > notes.md <<'EOF'\nprose first\n{body}\nEOF\n"),
+            );
+        }
+    }
+
+    /// Prose stops spending the symlink budget, and nothing else does: a link
+    /// in a data body after more real files than the budget covers, or after
+    /// more path-looking words than the code pass reads, is still refused, and
+    /// so is an unstable name that the disk answers with anything but "not
+    /// found".
+    #[test]
+    #[cfg(unix)]
+    fn issue546_a_data_body_keeps_the_budget_for_real_files_and_links() {
+        let fake = FakeHome::new().with_links();
+        let (g, env) = (fake.guard(), fake.env());
+        let many = fake.project.join("many");
+        fs::create_dir_all(&many).unwrap();
+        let mut files = Vec::new();
+        for i in 0..600 {
+            fs::write(many.join(format!("f{i}.txt")), "x\n").unwrap();
+            files.push(format!("many/f{i}.txt"));
+        }
+        // The control: the same body without the link is allowed.
+        let files = files.join(" ");
+        let plain = format!("cat > notes.md <<'EOF'\nreader {files}\nEOF\n");
+        assert_eq!(scan_command(&g, &env, &plain), None);
+        // 600 real files, then a link.
+        issue546_assert_heredoc_denied(
+            &fake,
+            &format!("cat > notes.md <<'EOF'\nreader {files} creds-link\nEOF\n"),
+        );
+        // More than 2048 path-looking words, then a link.
+        let long: Vec<String> = (0..2100)
+            .map(|i| format!("many/f{}.txt", i % 600))
+            .collect();
+        issue546_assert_heredoc_denied(
+            &fake,
+            &format!(
+                "cat > notes.md <<'EOF'\n{}\nreader creds-link\nEOF\n",
+                long.join("\n")
+            ),
+        );
+        // `data.csv/x.` is "not a directory", not "not found": resolved, and
+        // past the budget an unstable name is unverifiable.
+        let words: Vec<String> = (0..600).map(|i| format!("data.csv/x{i}.")).collect();
+        issue546_assert_heredoc_denied(
+            &fake,
+            &format!("cat > notes.md <<'EOF'\n{}\nEOF\n", words.join(" ")),
+        );
+    }
+
+    /// A zsh `(D)` in a data body turns dot-file globbing on for that body,
+    /// as it would if the body ran, and for nothing else in the command.
+    #[test]
+    fn issue546_dot_globbing_stays_inside_its_data_body() {
+        let fake = FakeHome::new();
+        fs::write(fake.project.join(".env"), "TOKEN=fixture\n").unwrap();
+        let (g, env) = (fake.guard(), fake.env());
+        assert!(scan_command(&g, &env, "cat > a.zsh <<'EOF'\nls *(D)\nEOF\n").is_some());
+        assert!(scan_command(
+            &g,
+            &env,
+            "cat > a.sh <<'EOF'\nshopt -s dotglob\ncat *\nEOF\n"
+        )
+        .is_some());
+        for command in [
+            "cat > a.md <<'EOF'\nGrade (D) students\nEOF\ncat > b.md <<'EOF'\n* item\nEOF\n",
+            "cat > a.sh <<'EOF'\nshopt -s dotglob\nEOF\ncat > b.md <<'EOF'\n* item\nEOF\n",
+        ] {
+            assert_eq!(scan_command(&g, &env, command), None, "{command}");
+        }
+    }
+
+    /// A data body is one level deeper, like any nested script, so nesting
+    /// past the limit inside it is still refused.
+    #[test]
+    fn issue546_nesting_inside_a_data_body_keeps_the_limit() {
+        let fake = FakeHome::new();
+        let (g, env) = (fake.guard(), fake.env());
+        // The body is one level, so four `sh -c` inside it is five: past the
+        // limit of four, exactly as it was before data bodies existed.
+        let mut deep = "echo hi".to_string();
+        for _ in 0..4 {
+            deep = format!("sh -c {}", shell_quote(&deep));
+        }
+        issue546_assert_heredoc_denied(&fake, &format!("cat > x.sh <<'EOF'\n{deep}\nEOF\n"));
+        let mut shallow = "echo hi".to_string();
+        for _ in 0..3 {
+            shallow = format!("sh -c {}", shell_quote(&shallow));
+        }
+        assert_eq!(
+            scan_command(&g, &env, &format!("cat > x.sh <<'EOF'\n{shallow}\nEOF\n")),
+            None
+        );
+    }
+
+    /// Code read from stdin names files by strings with no `/` in them. A
+    /// string that is a protected path is refused when the body is a script
+    /// or code; a data body that only mentions one reads nothing.
+    #[test]
+    fn issue546_code_from_stdin_is_judged_by_its_strings() {
+        let fake = FakeHome::new();
+        fs::write(fake.project.join(".env"), "TOKEN=fixture\n").unwrap();
+        let (g, env) = (fake.guard(), fake.env());
+        for command in [
+            "python3 - <<'EOF'\nprint(open('.env').read())\nEOF\n",
+            "python - <<'EOF'\nprint(open(\".env\").read())\nEOF\n",
+            "node <<'EOF'\nrequire('fs').readFileSync(\"id_ed25519\")\nEOF\n",
+            "cat <<'EOF' | python3\nopen('secrets.yaml')\nEOF\n",
+        ] {
+            issue546_assert_heredoc_denied(&fake, command);
+        }
+        for command in [
+            "python3 - <<'EOF'\nprint('hello, world')\nprint(open(\"data.csv\").read())\nEOF\n",
+            "cat > load.py <<'EOF'\nprint(open('.env').read())\nEOF\n",
+        ] {
+            assert_eq!(scan_command(&g, &env, command), None, "{command}");
+        }
+    }
+}
+
+// External candidate: append to secret_guard.rs after the existing test modules.
+#[cfg(test)]
+mod issue522_guard_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn issue522_conventional_env_templates_are_allowed_by_both_builders() {
+        use biorouter_sandbox::bounded_fs::{AccessMode, BoundedFs};
+
+        let root = tempfile::tempdir().unwrap();
+        std::fs::create_dir(root.path().join("config")).unwrap();
+        let names = [
+            ".env.example",
+            ".env.sample",
+            ".env.template",
+            ".env.dist",
+            ".env.tpl",
+            ".env.defaults",
+            ".env.production.example",
+        ];
+        for name in names {
+            std::fs::write(root.path().join("config").join(name), "REGION=\n").unwrap();
+        }
+        let bounded = BoundedFs::open(root.path()).unwrap();
+        let path = bounded
+            .bind("config/.env.example", AccessMode::Read)
+            .unwrap();
+        let guards = [
+            SecretGuard::for_dir(root.path()),
+            SecretGuard::for_bounded_path(&path).unwrap(),
+        ];
+        for guard in guards {
+            for name in names {
+                let relative = format!("config/{name}");
+                assert!(!guard.is_denied(Path::new(&relative)), "{relative}");
+                assert!(
+                    guard
+                        .find_denied_access(json!({"path": relative}).as_object().unwrap())
+                        .is_none(),
+                    "{name}"
+                );
+            }
+        }
+    }
+
+    /// The generic scan does not know which tool a key belongs to, and `code`
+    /// under an unknown tool can be a program that opens the path (Compute's
+    /// `compute_python`, an external runner). So a slash path in a prose key
+    /// stays refused here; only the dispatch boundary, which knows the call is
+    /// the bundled Todo or Code Execution tool, leaves those fields out
+    /// (`agents::extension_manager`'s `issue522_` tests). A template and an
+    /// ordinary file in the same prose stay readable.
+    #[test]
+    fn issue522_generic_prose_keys_keep_the_floor_for_slash_paths() {
+        let root = tempfile::tempdir().unwrap();
+        let guard = SecretGuard::for_dir(root.path());
+        for key in [
+            "text",
+            "content",
+            "message",
+            "title",
+            "description",
+            "commit_message",
+            "code",
+        ] {
+            let protected = serde_json::Map::from_iter([(
+                key.to_string(),
+                json!("configuration/.env copy still needs the user"),
+            )]);
+            let denied = guard
+                .find_denied_access(&protected)
+                .unwrap_or_else(|| panic!("prose key {key} let a protected path through"));
+            assert_eq!(denied.shown, "configuration/.env", "{key}");
+            assert!(
+                denied.message().contains("secret/credential deny pattern"),
+                "{key}: {}",
+                denied.message()
+            );
+            for benign in [
+                "configuration/notes.md copy still needs the user",
+                "the user still copies configuration/.env.example",
+            ] {
+                let args = serde_json::Map::from_iter([(key.to_string(), json!(benign))]);
+                assert!(
+                    guard.find_denied_access(&args).is_none(),
+                    "prose key {key} refused {benign:?}"
+                );
+            }
+        }
+        let denied = guard
+            .find_denied_access(
+                json!({"updates": [{"id": "1", "text": "configuration/.env needs the user"}]})
+                    .as_object()
+                    .unwrap(),
+            )
+            .expect("a nested prose key keeps the floor");
+        assert_eq!(denied.shown, "configuration/.env");
+        assert!(guard
+            .find_denied_access(
+                json!({"updates": [{"id": "1", "text": "configuration/notes.md needs the user"}]})
+                    .as_object()
+                    .unwrap()
+            )
+            .is_none());
+    }
+
+    #[test]
+    fn issue522_copy_template_reports_the_protected_destination() {
+        let root = tempfile::tempdir().unwrap();
+        let guard = SecretGuard::for_dir(root.path());
+        let denied = guard
+            .find_denied_access(
+                json!({"command": "cp config/.env.example config/.env"})
+                    .as_object()
+                    .unwrap(),
+            )
+            .expect("the .env destination stays protected");
+        let shown = denied.shown.replace('\\', "/");
+        assert!(
+            shown.ends_with("config/.env"),
+            "wrong operand refused: {shown}"
+        );
+        assert!(
+            !shown.contains(".env.example"),
+            "template source was refused: {shown}"
+        );
+    }
+
+    #[test]
+    fn issue522_typed_paths_and_resolved_commands_keep_the_secret_floor() {
+        let root = tempfile::tempdir().unwrap();
+        let guard = SecretGuard::for_dir(root.path());
+        let env = ShellEnv::with_vars([("HOME", root.path().to_string_lossy().into_owned())]);
+        for args in [
+            json!({"path": "config/.env"}),
+            json!({"file_path": "config/.env.local"}),
+            json!({"resource": "config/.env.production"}),
+            json!({"path": ".env.example/id_rsa"}),
+            json!({"command": "cat 'config/.env'"}),
+            json!({"shell_command": "cat config/.e\"\"nv"}),
+            json!({"command": "cat config/$'.e\\x6ev'"}),
+            json!({"command": "sh -c 'cat config/.env'"}),
+            json!({"command": "cat \"$HOME/.aws/credentials\""}),
+            json!({"command": "cat ~/.ssh/id_ed25519"}),
+            json!({"command": "cat keys/server.pem"}),
+            json!({"command": "cp config/.env.template config/.env.production"}),
+        ] {
+            assert!(
+                guard
+                    .find_denied_access_in(args.as_object().unwrap(), &env)
+                    .is_some(),
+                "protected access passed: {args}"
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn issue522_template_alias_cannot_reopen_a_real_secret() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::write(root.path().join(".env"), "SYNTHETIC=only\n").unwrap();
+        std::fs::write(root.path().join("id_rsa"), "synthetic private fixture\n").unwrap();
+        for (template, target) in [(".env.example", ".env"), (".env.sample", "id_rsa")] {
+            std::os::unix::fs::symlink(root.path().join(target), root.path().join(template))
+                .unwrap();
+        }
+        let guard = SecretGuard::for_dir(root.path());
+        for template in [".env.example", ".env.sample"] {
+            for key in ["path", "resource"] {
+                let args = serde_json::Map::from_iter([(key.to_string(), json!(template))]);
+                assert!(
+                    guard.find_denied_access(&args).is_some(),
+                    "template alias reopened {template} through {key}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn issue522_explicit_project_policy_can_still_deny_a_template() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::write(root.path().join(".biorouterignore"), ".env.example\n").unwrap();
+        use biorouter_sandbox::bounded_fs::{AccessMode, BoundedFs};
+
+        std::fs::write(root.path().join(".env.example"), "REGION=\n").unwrap();
+        let bounded = BoundedFs::open(root.path()).unwrap();
+        let path = bounded.bind(".env.example", AccessMode::Read).unwrap();
+        for guard in [
+            SecretGuard::for_dir(root.path()),
+            SecretGuard::for_bounded_path(&path).unwrap(),
+        ] {
+            assert!(guard.is_denied(Path::new(".env.example")));
+            assert!(guard.is_denied(Path::new(".env")));
+            assert!(guard.is_denied(Path::new("keys/server.pem")));
+        }
+    }
+}
+
+#[cfg(test)]
+mod issue522_unclassified_controls {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn issue522_unclassified_fields_and_command_aliases_keep_literal_refusals() {
+        let root = tempfile::tempdir().unwrap();
+        let guard = SecretGuard::for_dir(root.path());
+        for args in [
+            json!({"resource": "configuration/.env"}),
+            json!({"unknown_argument": "configuration/.env"}),
+            json!({"shell_script": "cat configuration/.env"}),
+            json!({"text": "ordinary note", "nested": {"path": "configuration/.env"}}),
+            json!({"code": "// ordinary source", "command": "cat configuration/.env"}),
+        ] {
+            assert!(guard
+                .find_denied_access(args.as_object().unwrap())
+                .is_some());
+        }
+    }
+}
+
+/// Issue #522 through the resolver: a template is reopened wherever the guard
+/// can see its name, and nothing it shares a prefix with is.
+#[cfg(test)]
+mod issue522_template_resolution {
+    use super::*;
+    use serde_json::json;
+
+    fn command_denial(guard: &SecretGuard, env: &ShellEnv, command: &str) -> Option<String> {
+        guard
+            .find_denied_access_in(json!({ "command": command }).as_object().unwrap(), env)
+            .map(|denied| denied.shown)
+    }
+
+    #[test]
+    fn issue522_template_with_an_unknown_root_is_readable_and_its_neighbours_are_not() {
+        let root = tempfile::tempdir().unwrap();
+        let guard = SecretGuard::for_dir(root.path());
+        let env = ShellEnv::with_vars([("HOME", root.path().to_string_lossy().into_owned())]);
+        for command in [
+            "cat \"$(git rev-parse --show-toplevel)/config/.env.example\"",
+            "cp \"$UNSET_ROOT/config/.env.sample\" config/settings.txt",
+            "cat \"$(pwd)/.env.production.example\"",
+            "cat \"$(pwd)/.ENV.EXAMPLE\"",
+            // A template spelled with a capital after `.env.` is the template on APFS
+            // and NTFS; it used to be refused because the floor's exceptions are
+            // lowercase only.
+            "cat \"$UNSET_ROOT/.env.Example\"",
+        ] {
+            assert_eq!(command_denial(&guard, &env, command), None, "{command}");
+        }
+        for command in [
+            "cat \"$(git rev-parse --show-toplevel)/config/.env\"",
+            "cat \"$(git rev-parse --show-toplevel)/config/.env.local\"",
+            "cat \"$UNSET_ROOT/.env.production\"",
+            "cat \"$UNSET_ROOT/.env.example.bak\"",
+            "cat \"$UNSET_ROOT/.env.Example.bak\"",
+            "cat \"$UNSET_ROOT/.env.Local\"",
+            "cat \"$UNSET_ROOT/.Env.Production\"",
+            "cat \"$UNSET_ROOT/.env.example/id_rsa\"",
+        ] {
+            assert!(command_denial(&guard, &env, command).is_some(), "{command}");
+        }
+    }
+
+    /// The literal pass used to take a whole command line as one path, so the
+    /// text after its last `/` (`.env.example | head -5`) matched `**/.env.*`.
+    #[test]
+    fn issue522_a_template_followed_by_more_words_is_readable() {
+        let root = tempfile::tempdir().unwrap();
+        let guard = SecretGuard::for_dir(root.path());
+        let env = ShellEnv::with_vars([("HOME", root.path().to_string_lossy().into_owned())]);
+        for command in [
+            "cat config/.env.example | head -5",
+            "cp config/.env.example .",
+            "grep -n REGION config/.env.example && echo done",
+        ] {
+            assert_eq!(command_denial(&guard, &env, command), None, "{command}");
+            assert_eq!(
+                guard
+                    .find_denied_in_command(command, root.path(), &env)
+                    .map(|denied| denied.shown),
+                None,
+                "{command}"
+            );
+        }
+        for command in [
+            "cat config/.env | head -5",
+            "cp config/.env.local .",
+            "grep -n REGION config/.env.example config/.env.production && echo done",
+        ] {
+            assert!(command_denial(&guard, &env, command).is_some(), "{command}");
+            assert!(
+                guard
+                    .find_denied_in_command(command, root.path(), &env)
+                    .is_some(),
+                "{command}"
+            );
+        }
+    }
+
+    /// Only a command line loses the whole-string candidate: an unknown tool
+    /// may take a path with spaces under a key that does not look like one.
+    #[test]
+    fn issue522_prose_keeps_the_whole_value_as_one_candidate() {
+        let root = tempfile::tempdir().unwrap();
+        let guard = SecretGuard::for_dir(root.path());
+        for value in ["/keys/My Server.pem", "config/.env.example copy"] {
+            let args = serde_json::Map::from_iter([("attachment".to_string(), json!(value))]);
+            assert!(guard.find_denied_access(&args).is_some(), "{value}");
+        }
+    }
+
+    #[test]
+    fn issue522_a_project_deny_still_reaches_a_template_with_an_unknown_root() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::write(root.path().join(".biorouterignore"), ".env.example\n").unwrap();
+        let guard = SecretGuard::for_dir(root.path());
+        let env = ShellEnv::with_vars([("HOME", root.path().to_string_lossy().into_owned())]);
+        assert!(command_denial(
+            &guard,
+            &env,
+            "cat \"$(git rev-parse --show-toplevel)/config/.env.example\""
+        )
+        .is_some());
+    }
+
+    #[test]
+    fn issue522_globs_open_a_template_and_never_the_secret_beside_it() {
+        let root = tempfile::tempdir().unwrap();
+        let config = root.path().join("config");
+        std::fs::create_dir(&config).unwrap();
+        std::fs::write(config.join(".env.example"), "REGION=\n").unwrap();
+        let guard = SecretGuard::for_dir(root.path());
+        let env = ShellEnv::with_vars([("HOME", root.path().to_string_lossy().into_owned())]);
+        assert_eq!(command_denial(&guard, &env, "cat config/.e*"), None);
+        assert_eq!(
+            command_denial(&guard, &env, "cat config/.[e]nv.example"),
+            None
+        );
+
+        std::fs::write(config.join(".env.local"), "SYNTHETIC=only\n").unwrap();
+        assert!(command_denial(&guard, &env, "cat config/.e*").is_some());
+        assert_eq!(
+            command_denial(&guard, &env, "cat config/.[e]nv.example"),
+            None
+        );
+
+        std::fs::write(config.join(".env"), "SYNTHETIC=only\n").unwrap();
+        assert!(command_denial(&guard, &env, "cat config/.[e]nv").is_some());
+        assert!(command_denial(&guard, &env, "cat config/.EN?").is_some());
+        assert!(command_denial(&guard, &env, "cat CONFIG/.ENV").is_some());
     }
 }

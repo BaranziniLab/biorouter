@@ -10,6 +10,7 @@ use biorouter::providers::formats::google::{
 use biorouter::providers::google::{
     GoogleProvider, GOOGLE_DEFAULT_FAST_MODEL, GOOGLE_DEFAULT_MODEL, GOOGLE_KNOWN_MODELS,
 };
+use biorouter::providers::pricing::provider_model_pricing;
 use futures::StreamExt;
 use rmcp::model::{CallToolResult, Content};
 use serde_json::{json, Value};
@@ -45,8 +46,58 @@ fn gemini4_catalogue_starts_with_the_recommended_daily_model() {
 }
 
 #[test]
+fn gemini4_neon_is_offered_without_changing_the_recommended_default() {
+    assert_eq!(GOOGLE_DEFAULT_MODEL, "gemini-4-hydrogen");
+    assert_eq!(GOOGLE_DEFAULT_FAST_MODEL, "gemini-3.5-flash-lite");
+    assert_eq!(GOOGLE_KNOWN_MODELS.first(), Some(&GOOGLE_DEFAULT_MODEL));
+    assert_eq!(
+        GOOGLE_KNOWN_MODELS
+            .iter()
+            .filter(|name| **name == "gemini-4-neon")
+            .count(),
+        1
+    );
+    let metadata = GoogleProvider::metadata();
+    assert_eq!(metadata.default_model, GOOGLE_DEFAULT_MODEL);
+    let neon = metadata
+        .known_models
+        .iter()
+        .find(|model| model.name == "gemini-4-neon")
+        .expect("the direct Google catalogue includes Neon");
+    assert_eq!(neon.supports_vision, Some(true));
+}
+
+#[test]
+fn gemini4_neon_has_its_exact_direct_context_window() {
+    assert_eq!(
+        ModelConfig::registry_context_window("gemini-4-neon"),
+        Some(1_048_576)
+    );
+    assert_eq!(
+        ModelConfig::new_or_fail("gemini-4-neon").context_limit(),
+        1_048_576
+    );
+}
+
+#[test]
+fn gemini4_neon_has_its_direct_standard_and_implicit_cache_prices() {
+    let pricing =
+        provider_model_pricing("google", "gemini-4-neon").expect("Neon has a direct Google price");
+    assert!((pricing.input_token_cost * 1e6 - 3.0).abs() < 1e-12);
+    assert!((pricing.output_token_cost * 1e6 - 15.0).abs() < 1e-12);
+    assert!((pricing.cache_read_cost.unwrap() * 1e6 - 0.15).abs() < 1e-12);
+    assert_eq!(pricing.cache_write_cost, None);
+    assert_eq!(pricing.context_length, Some(1_048_576));
+}
+
+#[test]
 fn gemini4_replays_all_prior_call_signatures_without_inheritance() {
-    for model in ["gemini-4-hydrogen", "gemini-4-argon", "gemini-4-carbon"] {
+    for model in [
+        "gemini-4-hydrogen",
+        "gemini-4-argon",
+        "gemini-4-carbon",
+        "gemini-4-neon",
+    ] {
         let native = response_to_message(response(
             model,
             vec![

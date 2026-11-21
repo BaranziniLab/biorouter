@@ -416,6 +416,8 @@ struct ExtensionReach {
 
 pub struct ExtensionManager {
     pub computer_use: Arc<crate::security::computer_use::ComputerUseConsent>,
+    /// BB-17: the Biorouter Browser's two grants for this chat.
+    pub browser_use: Arc<crate::security::browser_use::BrowserUseConsent>,
     extensions: Mutex<HashMap<String, Extension>>,
     context: PlatformExtensionContext,
     provider: SharedProvider,
@@ -906,6 +908,7 @@ fn apply_dispatch_admissions(
 ) -> bool {
     if let Some(permit) = computer_permit {
         meta.computer_use_generation = Some(permit.generation.clone());
+        meta.computer_use_grant = Some(permit.grant.as_str().to_owned());
     }
     if let Some(admission) = file_admission {
         meta.file_access_token = Some(admission.authority.token().to_string());
@@ -1001,7 +1004,11 @@ async fn call_computer_use(
         _ = permit.cancel.cancelled() => {
             call_cancel.cancel();
             let _ = tokio::time::timeout(Duration::from_secs(10), &mut call).await;
-            Err(ErrorData::new(ErrorCode::INVALID_REQUEST, "Biorouter Copilot stopped. An action already delivered to the desktop may have completed; no result was shared.", None))
+            Err(ErrorData::new(ErrorCode::INVALID_REQUEST, if tool_name == "drag" {
+                "Biorouter Copilot stopped. An action already delivered to the desktop may have completed; no result was shared. If the pointer seems stuck, click once in an empty area."
+            } else {
+                "Biorouter Copilot stopped. An action already delivered to the desktop may have completed; no result was shared."
+            }, None))
         },
         _ = cancellation_token.cancelled() => {
             permit.cancel.cancel();
@@ -1176,6 +1183,142 @@ fn configured_tool_name(
         .into());
     }
     Ok(tool_name.to_owned())
+}
+
+/// Free text a bundled tool keeps as data and never opens as a path, which the
+/// dispatch-time secret scan therefore leaves out (issue #522).
+///
+/// The generic scan reads a slash path in any prose argument as a possible
+/// file access, because it cannot tell which tool it is reading: `code` under
+/// Compute is a program, and an external tool may name a path anything. Here
+/// the call has already been routed, so the tool is known. Only two shipped
+/// Platform extensions qualify, and only through [`Self::of`]:
+///
+/// - Todo, whose text fields are stored in the session's checklist and shown
+///   back to the model. Its handlers never touch the filesystem.
+/// - Code Execution's `execute_code`, whose source runs in a sandbox with no
+///   file or process access of its own. Every tool call the script makes is
+///   dispatched back through [`ExtensionManager::dispatch_tool_call`] and
+///   judged there with its evaluated arguments, which is also the only place a
+///   path the script assembles at run time can be seen.
+///
+/// Every other field of these calls, a field of the wrong JSON type, and every
+/// call to any other extension is scanned as before. The tool itself still
+/// receives the original arguments.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FreeTextFields {
+    /// `todo_write`'s `content`.
+    TodoChecklist,
+    /// `todo_add` and `todo_expand`: each `items` entry, a string or the text
+    /// of an object (`ITEM_TEXT_KEYS`).
+    TodoItems,
+    /// `todo_update`'s `text`, at the top level and in each `updates` entry.
+    TodoUpdate,
+    /// `plan_write`'s `plan`.
+    TodoPlan,
+    /// `execute_code`'s `code`, and the `description` of each `tool_graph`
+    /// node, which only labels the flow for the interface.
+    ExecuteCode,
+}
+
+impl FreeTextFields {
+    /// The free text of the tool `prefixed_name` names, when the extension it
+    /// resolved to under `key` is the shipped Todo or Code Execution.
+    ///
+    /// `trusted_bundled` is the entry's own record that it was built by the
+    /// shipped Platform registry (see [`Extension::trusted_bundled`]); a client
+    /// injected under the same name and config by `add_client` or
+    /// `add_inprocess_server` has no free text. The key, the config's name and
+    /// the tool must all agree, so a nested key (`todo__x`) or another
+    /// extension's tool with the same name gets nothing either. Read from the
+    /// same snapshot as the client the call is dispatched to.
+    fn of(
+        trusted_bundled: bool,
+        key: &str,
+        config: &ExtensionConfig,
+        prefixed_name: &str,
+    ) -> Option<Self> {
+        let ExtensionConfig::Platform { name, .. } = config else {
+            return None;
+        };
+        if !trusted_bundled || normalize(name) != key {
+            return None;
+        }
+        let tool = prefixed_name.strip_prefix(key)?.strip_prefix("__")?;
+        match (key, tool) {
+            ("todo", "todo_write") => Some(Self::TodoChecklist),
+            ("todo", "todo_add" | "todo_expand") => Some(Self::TodoItems),
+            ("todo", "todo_update") => Some(Self::TodoUpdate),
+            ("todo", "plan_write") => Some(Self::TodoPlan),
+            ("code_execution", "execute_code") => Some(Self::ExecuteCode),
+            _ => None,
+        }
+    }
+
+    /// A copy of `arguments` with these fields' strings emptied: what the scan
+    /// reads. Only a string in the expected place is emptied; anything else is
+    /// left for the scan to judge.
+    fn withheld_from(self, arguments: &rmcp::model::JsonObject) -> rmcp::model::JsonObject {
+        fn empty(value: Option<&mut Value>) {
+            if let Some(Value::String(text)) = value {
+                text.clear();
+            }
+        }
+        fn empty_in_each(value: Option<&mut Value>, keys: &[&str]) {
+            if let Some(Value::Array(entries)) = value {
+                for entry in entries {
+                    if let Value::Object(entry) = entry {
+                        for key in keys {
+                            empty(entry.get_mut(*key));
+                        }
+                    }
+                }
+            }
+        }
+        let mut scanned = arguments.clone();
+        match self {
+            Self::TodoChecklist => empty(scanned.get_mut("content")),
+            Self::TodoItems => {
+                if let Some(Value::Array(items)) = scanned.get_mut("items") {
+                    for item in items {
+                        match item {
+                            Value::String(text) => text.clear(),
+                            Value::Object(item) => {
+                                for key in crate::agents::todo_extension::ITEM_TEXT_KEYS {
+                                    empty(item.get_mut(*key));
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+            }
+            Self::TodoUpdate => {
+                empty(scanned.get_mut("text"));
+                empty_in_each(scanned.get_mut("updates"), &["text"]);
+            }
+            Self::TodoPlan => empty(scanned.get_mut("plan")),
+            Self::ExecuteCode => {
+                empty(scanned.get_mut("code"));
+                empty_in_each(scanned.get_mut("tool_graph"), &["description"]);
+            }
+        }
+        scanned
+    }
+}
+
+/// One call as the dispatch-time secret scan reads it: the call, and the free
+/// text it may leave out ([`FreeTextFields`]).
+#[derive(Clone, Copy)]
+struct ScannedCall<'a> {
+    call: &'a CallToolRequestParams,
+    free_text: Option<FreeTextFields>,
+}
+
+impl<'a> ScannedCall<'a> {
+    fn new(call: &'a CallToolRequestParams, free_text: Option<FreeTextFields>) -> Self {
+        Self { call, free_text }
+    }
 }
 
 /// Sanitizes a string by replacing invalid characters with underscores.
@@ -1739,6 +1882,7 @@ impl ExtensionManager {
                 std::env::current_dir().unwrap_or_default(),
             )),
             computer_use: Arc::default(),
+            browser_use: Arc::default(),
         }
     }
 
@@ -1776,30 +1920,211 @@ impl ExtensionManager {
         session_id: &str,
         config: &ExtensionConfig,
         tool: &str,
+        arguments: Option<&rmcp::model::JsonObject>,
         cap: crate::privacy::CallCapability,
         cancel: &CancellationToken,
     ) -> Result<Option<crate::security::computer_use::ComputerUsePermit>> {
+        use crate::security::computer_use;
         let builtin =
             matches!(config, ExtensionConfig::Builtin { name, .. } if name == "computercontroller");
         anyhow::ensure!(
-            builtin || !crate::security::computer_use::is_computer_use_tool(tool),
+            builtin || !computer_use::is_computer_use_tool(tool),
             "The Biorouter Copilot namespace is reserved for BioRouter's reviewed built-in capability"
         );
         if !builtin {
             return Ok(None);
         }
-        anyhow::ensure!(crate::security::computer_use::is_computer_use_tool(tool),
+        anyhow::ensure!(computer_use::is_computer_use_tool(tool),
             "This former tool is unavailable. Use Biorouter Copilot's current tools or the Web & Documents capability.");
+        // Refused before the person is asked: a secret is never typed whatever they allow.
+        computer_use::refuse_secret_text(tool, arguments)?;
         let status = self.computer_use_status(session_id).await?;
         anyhow::ensure!(
             status.public_model != cap.tier().is_private(),
             "Biorouter Copilot caller differs from the approved model destination"
         );
+        // A call with no live grant raises the card, which only a window holding the chat
+        // shows: refuse now where none does, instead of waiting 900 s for nobody. A grant the
+        // person already gave keeps working for the rest of the request, as before. With no
+        // person at all (a scheduled run, `/agent/call_tool`) `permit_for` refuses with its own
+        // sentence.
+        if status.grant.is_none() && !crate::user_surface::no_human_surface() {
+            computer_use::refuse_unless_a_window_holds(session_id)?;
+            // A host with no workspace services (the CLI's own process) shows the card only at
+            // its prompt, which polls the chat the person is in and never a subagent's, so a
+            // subagent there waited the whole 900 s for nobody. Hidden (`--no-session`) and
+            // Terminal (`biorouter term`) chats answer at that prompt and are not refused. A row
+            // that cannot be read keeps the wait: this refusal saves a wait, it grants nothing.
+            if crate::workspace_services::get().is_none()
+                && self
+                    .context
+                    .session_manager
+                    .get_session(session_id, false)
+                    .await
+                    .is_ok_and(|session| {
+                        session.session_type
+                            == crate::session::session_manager::SessionType::SubAgent
+                    })
+            {
+                anyhow::bail!(computer_use::SUBAGENT_NOBODY_CAN_ANSWER);
+            }
+        }
+        let needed = computer_use::grant_for_call(tool, arguments);
         Ok(Some(
             self.computer_use
-                .permit(session_id, &self.provider, cancel)
+                .permit_for(session_id, &self.provider, needed, cancel)
                 .await?,
         ))
+    }
+
+    /// Biorouter Copilot's admission and the Biorouter Browser's, each `None` for every other
+    /// extension. One call in `dispatch_tool_call`, which the `clippy::too_many_lines` baseline
+    /// caps.
+    async fn admit_agent_capabilities(
+        &self,
+        session_id: &str,
+        config: &ExtensionConfig,
+        prefixed_name: &str,
+        arguments: Option<&rmcp::model::JsonObject>,
+        cap: crate::privacy::CallCapability,
+        cancel: &CancellationToken,
+    ) -> Result<(
+        Option<crate::security::computer_use::ComputerUsePermit>,
+        Option<crate::security::browser_use::BrowserPermit>,
+    )> {
+        let computer = self
+            .admit_computer_use(session_id, config, prefixed_name, arguments, cap, cancel)
+            .await?;
+        let browser = self
+            .admit_browser(session_id, config, prefixed_name, arguments, cap, cancel)
+            .await?;
+        Ok((computer, browser))
+    }
+
+    /// The Biorouter Browser's consent for this chat, for the status poll (BB-17).
+    pub async fn browser_use_status(
+        &self,
+        session_id: &str,
+    ) -> Result<crate::security::browser_use::BrowserUseStatus> {
+        let mut status = self.browser_use.status(session_id, &self.provider).await?;
+        status.enabled = self
+            .is_extension_enabled(crate::security::browser_use::EXTENSION_KEY)
+            .await;
+        status.available = crate::agents::browser_extension::desktop_browser_available();
+        Ok(status)
+    }
+
+    /// BB-17: admit a Biorouter Browser call. Reserves the `browser__browser_` names to the
+    /// built-in extension (a Copilot grant never admits them, and a browser grant never admits
+    /// `computercontroller__*`), picks the grant from the tool and its arguments, and waits for
+    /// the person when it is not held. `None` for every other extension.
+    async fn admit_browser(
+        &self,
+        session_id: &str,
+        config: &ExtensionConfig,
+        tool: &str,
+        arguments: Option<&rmcp::model::JsonObject>,
+        cap: crate::privacy::CallCapability,
+        cancel: &CancellationToken,
+    ) -> Result<Option<crate::security::browser_use::BrowserPermit>> {
+        use crate::security::browser_use;
+        let builtin = matches!(config, ExtensionConfig::Platform { name, .. }
+            if crate::config::extensions::name_to_key(name) == browser_use::EXTENSION_KEY);
+        anyhow::ensure!(
+            builtin || !browser_use::is_reserved_browser_name(tool),
+            "The Biorouter Browser namespace is reserved for BioRouter's built-in browser"
+        );
+        if !builtin {
+            return Ok(None);
+        }
+        anyhow::ensure!(
+            browser_use::is_browser_tool(tool),
+            "This is not a Biorouter Browser tool. Use the browser_* tools the browser lists."
+        );
+        // Where the browser cannot run, nothing is asked: the tool itself says why (BB-16).
+        if !crate::agents::browser_extension::desktop_browser_available() {
+            return Ok(None);
+        }
+        // Fail closed: a chat whose kind cannot be read is never assumed to be a person's own.
+        let session = self
+            .context
+            .session_manager
+            .get_session(session_id, false)
+            .await
+            .map_err(|_| anyhow::anyhow!(crate::agents::browser_extension::UNKNOWN_CHAT_REFUSAL))?;
+        anyhow::ensure!(
+            session.session_type != crate::session::session_manager::SessionType::SubAgent,
+            crate::agents::browser_extension::SUBAGENT_REFUSAL
+        );
+        let status = self.browser_use.status(session_id, &self.provider).await?;
+        anyhow::ensure!(
+            status.public_model != cap.tier().is_private(),
+            "The Biorouter Browser caller differs from the approved model destination"
+        );
+        Self::refuse_browser_unless_a_window_holds(session_id)?;
+        let grant = browser_use::grant_for_call(tool, arguments);
+        Ok(Some(
+            self.browser_use
+                .permit(session_id, &self.provider, grant, cancel)
+                .await?,
+        ))
+    }
+
+    /// BB-10 and BB-17: refuse at once, with the sentence the operation itself would have
+    /// returned, when no window holds the chat. Only a window that holds the chat polls its
+    /// consent, so without this a chat driven off screen (`biorouter session send`,
+    /// `workspace_send_prompt`) parked for the whole 900 s approval wait, then was stopped.
+    /// Asked before every wait, so it runs whether or not the grant is already held: the
+    /// operation would fail the same way after a held grant. A host that cannot tell (no
+    /// workspace services, or the default answer) keeps today's wait.
+    fn refuse_browser_unless_a_window_holds(session_id: &str) -> Result<()> {
+        match crate::workspace_services::get()
+            .and_then(|services| services.browser_route_refusal(session_id))
+        {
+            Some(refusal) => Err(anyhow::anyhow!(refusal.to_string())),
+            None => Ok(()),
+        }
+    }
+
+    /// The act grant for a call admitted under observe whose target turned out to need it
+    /// (`browser_click` on something other than a plain link to the page's own origin). Called
+    /// by the browser extension
+    /// with the same session and the call's own cancel token.
+    pub async fn browser_act_permit(
+        &self,
+        session_id: &str,
+        cancel: &CancellationToken,
+    ) -> Result<crate::security::browser_use::BrowserPermit> {
+        Self::refuse_browser_unless_a_window_holds(session_id)?;
+        self.browser_use
+            .permit(
+                session_id,
+                &self.provider,
+                crate::security::browser_use::BrowserGrant::Act,
+                cancel,
+            )
+            .await
+    }
+
+    pub async fn bind_browser_use_task(&self, session_id: &str) -> Result<()> {
+        self.browser_use.bind_task(session_id, &self.provider).await
+    }
+
+    pub async fn approve_browser_use(
+        &self,
+        session_id: &str,
+        challenge_id: &str,
+        grant: crate::security::browser_use::BrowserGrant,
+        lifetime: crate::security::browser_use::ActLifetime,
+    ) -> Result<crate::security::browser_use::BrowserUseStatus> {
+        anyhow::ensure!(
+            self.is_extension_enabled(crate::security::browser_use::EXTENSION_KEY)
+                .await,
+            "Turn on the Biorouter Browser for this chat before allowing it"
+        );
+        self.browser_use
+            .approve(session_id, challenge_id, grant, lifetime, &self.provider)
+            .await
     }
 
     pub async fn bind_computer_use_task(&self, session_id: &str) -> Result<()> {
@@ -1808,17 +2133,20 @@ impl ExtensionManager {
             .await
     }
 
+    /// The person's answer on Biorouter Copilot's card: `Act` (Allow) or `Observe` (Only let it
+    /// look) for this request (AD-10).
     pub async fn approve_computer_use(
         &self,
         session_id: &str,
         challenge_id: &str,
+        level: crate::security::computer_use::ComputerUseGrant,
     ) -> Result<crate::security::computer_use::ComputerUseStatus> {
         anyhow::ensure!(
             self.is_extension_enabled("computercontroller").await,
             "Enable Biorouter Copilot for this chat before allowing control"
         );
         self.computer_use
-            .approve(session_id, challenge_id, &self.provider)
+            .approve_with(session_id, challenge_id, level, &self.provider)
             .await
     }
 
@@ -1909,6 +2237,17 @@ impl ExtensionManager {
         {
             return Err(ExtensionError::ConfigError(
                 "This extension name is reserved for the Biorouter Copilot built-in. Rename the custom extension.".into(),
+            ));
+        }
+        // BB-09: the key `browser` is the Biorouter Browser's. A custom extension that took it
+        // would have its `browser__browser_*` tools refused at dispatch anyway; refusing at load
+        // says why while it can still be renamed.
+        if sanitized_name == crate::security::browser_use::EXTENSION_KEY
+            && !matches!(&config, ExtensionConfig::Platform { name, .. }
+                if crate::config::extensions::name_to_key(name) == crate::security::browser_use::EXTENSION_KEY)
+        {
+            return Err(ExtensionError::ConfigError(
+                "This extension name is reserved for the Biorouter Browser built-in. Rename the custom extension.".into(),
             ));
         }
 
@@ -2192,9 +2531,10 @@ impl ExtensionManager {
     /// arriving by the other door. Excluding it by name as well as by origin is
     /// what keeps the question honest.
     ///
-    /// The `decisions` extension is excluded by name for the same reason: it is
-    /// default-on and loads as `Explicit`, so counting it would open the gate in
-    /// every chat whether or not the user enabled anything.
+    /// The `decisions` extension and the `dictionary` capability are excluded by
+    /// name for the same reason: each is default-on and loads as `Explicit`, so
+    /// counting it would open the gate in every chat whether or not the user
+    /// enabled anything. The Dictionary's tools also never reach a subagent.
     pub async fn has_non_injected_extensions(&self) -> bool {
         self.extensions
             .lock()
@@ -2211,6 +2551,10 @@ impl ExtensionManager {
     fn is_not_counted_by_the_delegation_gate(name: &str) -> bool {
         name.eq_ignore_ascii_case(crate::agents::agent::Agent::SPAWN_EXTENSION)
             || name.eq_ignore_ascii_case(crate::agents::decisions_extension::EXTENSION_NAME)
+            || name.eq_ignore_ascii_case(crate::agents::dictionary_extension::EXTENSION_NAME)
+            // BB-09: the Biorouter Browser is on by default in every chat, so counting it would
+            // enable delegation everywhere by itself.
+            || name.eq_ignore_ascii_case(crate::security::browser_use::EXTENSION_KEY)
     }
 
     pub async fn add_client(
@@ -2374,6 +2718,9 @@ impl ExtensionManager {
         let sanitized_name = normalize(name);
         if sanitized_name == "computercontroller" {
             self.computer_use.revoke();
+        }
+        if sanitized_name == crate::security::browser_use::EXTENSION_KEY {
+            self.browser_use.revoke();
         }
         self.extensions.lock().await.remove(&sanitized_name);
         self.invalidate_tools_cache_and_bump_version().await;
@@ -3097,6 +3444,7 @@ impl ExtensionManager {
         ExtensionConfig,
         crate::privacy::ExtensionClassification,
         ExtensionOrigin,
+        Option<FreeTextFields>,
     )> {
         // Issue #56 Task 16: the SAME resolver Gate E filters with. A `find` over
         // a `HashMap` returned whichever of two overlapping keys the
@@ -3112,6 +3460,14 @@ impl ExtensionManager {
             extension.config.clone(),
             crate::privacy::resolve_extension(name, Some(&extension.config)),
             extension.origin,
+            // Issue #522: from this snapshot too, so the free text the scan
+            // leaves out belongs to the client the call is dispatched to.
+            FreeTextFields::of(
+                extension.trusted_bundled,
+                name,
+                &extension.config,
+                prefixed_name,
+            ),
         ))
     }
 
@@ -3139,8 +3495,13 @@ impl ExtensionManager {
     /// `cat /Users/…/.aws/credentials` was refused. See
     /// `SecretGuard::find_denied_access`. What a text scan cannot see is
     /// covered on the way back out by [`call_tool_withholding_secrets`].
-    async fn secret_guard_denial(&self, tool_call: &CallToolRequestParams) -> Option<ErrorData> {
-        let args = tool_call.arguments.as_ref()?;
+    ///
+    /// Issue #522: the free text of the shipped Todo tools and of
+    /// `execute_code`'s source is left out of the scan ([`FreeTextFields`]).
+    async fn secret_guard_denial(&self, scanned: ScannedCall<'_>) -> Option<ErrorData> {
+        let args = scanned.call.arguments.as_ref()?;
+        let withheld = scanned.free_text.map(|fields| fields.withheld_from(args));
+        let args = withheld.as_ref().unwrap_or(args);
         let cwd = self.resolve_working_dir().await;
         let secret_guard_phase =
             crate::agents::phase_timing::Phase::start("mcp.secret_guard_for_dir");
@@ -3816,7 +4177,7 @@ impl ExtensionManager {
         // Dispatch tool call based on the prefix naming convention. The client
         // and the config that authorizes it come out of ONE snapshot — see
         // `get_client_for_tool`.
-        let (client_name, client, client_config, ext_class, extension_origin) = self
+        let (client_name, client, client_config, ext_class, extension_origin, free_text) = self
             .get_client_for_tool(&prefixed_name)
             .await
             .ok_or_else(|| unroutable_tool_error(&prefixed_name, tool_call.name.as_ref()))?;
@@ -3836,17 +4197,19 @@ impl ExtensionManager {
                 "Crew tools must resolve to the built-in scoped extension, not an external tool with a similar name.");
         }
         let computer_use = matches!(&client_config, ExtensionConfig::Builtin { name, .. } if name == "computercontroller");
-        let computer_permit = self
-            .admit_computer_use(
+        let (computer_permit, browser_permit) = self
+            .admit_agent_capabilities(
                 session_id,
                 &client_config,
                 &prefixed_name,
+                tool_call.arguments.as_ref(),
                 cap,
                 &cancellation_token,
             )
             .await?;
 
-        self.authorize_dispatch_boundaries(session_id, &client_name, &ext_class, cap, &tool_call)
+        let scanned = ScannedCall::new(&tool_call, free_text);
+        self.authorize_dispatch_boundaries(session_id, &client_name, &ext_class, cap, scanned)
             .await?;
 
         let file_admission = self
@@ -3901,6 +4264,7 @@ impl ExtensionManager {
             computer_permit.as_ref(),
             file_admission.as_ref(),
         );
+        meta.browser_permit = browser_permit;
         // DR-33, design §2.6. Decided here, at admission, off the same sample.
         let private_content =
             self.private_content_probe(&client_name, &tool_name, arguments.as_ref(), cap);
@@ -3971,7 +4335,7 @@ impl ExtensionManager {
         client_name: &str,
         ext_class: &crate::privacy::ExtensionClassification,
         cap: crate::privacy::CallCapability,
-        tool_call: &CallToolRequestParams,
+        scanned: ScannedCall<'_>,
     ) -> Result<()> {
         // Issue #56 Gate C, beside BR-23's SecretGuard block below for the
         // reason that block's own comment states: this is the single choke
@@ -4054,7 +4418,7 @@ impl ExtensionManager {
         // BR-23: the central secret-redaction boundary — see
         // [`Self::secret_guard_denial`], which is where the whole rationale
         // lives.
-        if let Some(err) = self.secret_guard_denial(tool_call).await {
+        if let Some(err) = self.secret_guard_denial(scanned).await {
             return Err(err.into());
         }
 
@@ -4754,6 +5118,66 @@ fn extension_listing_lines(
 
 #[cfg(test)]
 mod tests {
+
+    #[tokio::test]
+    async fn issue522_real_todo_update_dispatch_accepts_a_prose_path_mention() {
+        let (dir, em, _sm, id) = manager_with_a_session().await;
+        let em = Arc::new(em);
+        em.set_working_dir(dir.path().to_path_buf()).await;
+        em.add_extension(ExtensionConfig::Platform {
+            name: "todo".into(),
+            description: "Todo".into(),
+            bundled: Some(true),
+            available_tools: Vec::new(),
+        })
+        .await
+        .unwrap();
+        let cap = crate::privacy::CallCapability::for_test_restricted();
+        let write = em
+            .dispatch_tool_call(
+                &id,
+                CallToolRequestParams {
+                    task: None,
+                    name: "todo__todo_write".into(),
+                    arguments: Some(object!({"content": "- [ ] prepare local prerequisites"})),
+                    meta: None,
+                },
+                cap,
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap()
+            .result
+            .await
+            .unwrap();
+        assert_ne!(write.is_error, Some(true));
+        let result = em
+            .dispatch_tool_call(
+                &id,
+                CallToolRequestParams {
+                    task: None,
+                    name: "todo__todo_update".into(),
+                    arguments: Some(
+                        object!({"id": "1", "text": "configuration/.env copy still needs the user"}),
+                    ),
+                    meta: None,
+                },
+                cap,
+                CancellationToken::new(),
+            )
+            .await
+            .expect("prose is not a file access")
+            .result
+            .await
+            .unwrap();
+        assert_ne!(result.is_error, Some(true));
+        assert!(result
+            .content
+            .iter()
+            .filter_map(|part| part.as_text())
+            .any(|part| part.text.contains("configuration/.env")));
+    }
+
     include!("computer_use_nested_tests.rs");
     use super::*;
     use rmcp::model::CallToolResult;
@@ -4856,6 +5280,355 @@ mod tests {
             manager.has_non_injected_extensions().await,
             "an ordinary extension still counts"
         );
+    }
+
+    /// The Dictionary capability is on by default (owner, 2026-11-19) and loads as
+    /// Explicit, so like `decisions` it must not satisfy condition 5 by itself. Its tools
+    /// reach only a person's own chat, never a subagent, so it is no capability a delegated
+    /// child could use either.
+    #[tokio::test]
+    async fn the_default_on_dictionary_capability_never_opens_the_delegation_gate_by_itself() {
+        let root = tempfile::tempdir().unwrap();
+        let manager = Arc::new(ExtensionManager::new_without_provider(
+            root.path().to_path_buf(),
+        ));
+        let platform = |name: &str| ExtensionConfig::Platform {
+            name: name.to_string(),
+            description: String::new(),
+            bundled: Some(true),
+            available_tools: Vec::new(),
+        };
+        let dictionary = crate::agents::dictionary_extension::EXTENSION_NAME;
+        manager.add_extension(platform(dictionary)).await.unwrap();
+        assert!(manager.is_extension_enabled(dictionary).await);
+        assert!(
+            !manager.has_non_injected_extensions().await,
+            "the Dictionary alone must not count as a capability the user granted"
+        );
+
+        manager.add_extension(platform("todo")).await.unwrap();
+        assert!(
+            manager.has_non_injected_extensions().await,
+            "an ordinary extension still counts"
+        );
+    }
+
+    /// BB-09: the Biorouter Browser is on by default in every chat, so it must not open the
+    /// delegation gate by itself, as `decisions` must not.
+    #[tokio::test]
+    async fn the_default_on_browser_never_opens_the_delegation_gate_by_itself() {
+        let root = tempfile::tempdir().unwrap();
+        let manager = Arc::new(ExtensionManager::new_without_provider(
+            root.path().to_path_buf(),
+        ));
+        manager
+            .add_extension(ExtensionConfig::Platform {
+                name: crate::agents::browser_extension::EXTENSION_NAME.to_string(),
+                description: String::new(),
+                bundled: Some(true),
+                available_tools: Vec::new(),
+            })
+            .await
+            .unwrap();
+        assert!(
+            manager
+                .is_extension_enabled(crate::security::browser_use::EXTENSION_KEY)
+                .await
+        );
+        assert!(!manager.has_non_injected_extensions().await);
+    }
+
+    /// BB-16: the subagent refusal fails closed. A chat whose row cannot be read could be a
+    /// subagent, so no grant is asked for and nothing reaches the window.
+    #[tokio::test]
+    #[serial_test::serial(workspace_services)]
+    async fn a_browser_call_from_a_chat_that_cannot_be_found_is_refused() {
+        let root = tempfile::tempdir().unwrap();
+        let manager = Arc::new(ExtensionManager::new_without_provider(
+            root.path().to_path_buf(),
+        ));
+        let config = ExtensionConfig::Platform {
+            name: crate::agents::browser_extension::EXTENSION_NAME.to_string(),
+            description: String::new(),
+            bundled: Some(true),
+            available_tools: Vec::new(),
+        };
+        crate::agents::browser_extension::set_available_for_tests(Some(true));
+        let refused = manager
+            .admit_browser(
+                "no-such-chat",
+                &config,
+                "browser__browser_snapshot",
+                None,
+                crate::privacy::CallCapability::for_test_restricted(),
+                &CancellationToken::new(),
+            )
+            .await;
+        crate::agents::browser_extension::set_available_for_tests(None);
+        let error = refused.expect_err("refused").to_string();
+        assert_eq!(
+            error,
+            crate::agents::browser_extension::UNKNOWN_CHAT_REFUSAL,
+            "{error}"
+        );
+    }
+
+    /// A desktop host on which no window holds any chat, answering `browser_route_refusal`
+    /// with its refusal; everything else is `NullServices`. Installing it refuses the Biorouter
+    /// Browser and Biorouter Copilot alike, so a test that does holds both
+    /// `serial(workspace_services)` and Copilot's `test_serial`.
+    struct OffScreenHost(crate::workspace_services::BrowserChannelError);
+
+    #[async_trait::async_trait]
+    impl crate::workspace_services::WorkspaceServices for OffScreenHost {
+        fn gui_attached(&self) -> bool {
+            true
+        }
+        fn layout_snapshot(&self) -> Option<serde_json::Value> {
+            None
+        }
+        fn is_turn_active(&self, session_id: &str) -> bool {
+            crate::workspace_services::NullServices.is_turn_active(session_id)
+        }
+        fn cancel_turn(&self, session_id: &str) -> Option<String> {
+            crate::workspace_services::NullServices.cancel_turn(session_id)
+        }
+        fn begin_turn(
+            &self,
+            session_id: &str,
+            cancel: CancellationToken,
+        ) -> Result<Box<dyn crate::workspace_services::WorkspaceTurnLease>, String> {
+            crate::workspace_services::NullServices.begin_turn(session_id, cancel)
+        }
+        async fn stop_agent(&self, session_id: &str) -> Result<(), String> {
+            crate::workspace_services::NullServices
+                .stop_agent(session_id)
+                .await
+        }
+        async fn start_detached_turn(
+            &self,
+            session_id: &str,
+            message: crate::conversation::message::Message,
+        ) -> Result<String, String> {
+            crate::workspace_services::NullServices
+                .start_detached_turn(session_id, message)
+                .await
+        }
+        async fn start_session(
+            &self,
+            working_dir: std::path::PathBuf,
+            extensions: Option<Vec<String>>,
+            knowledge_bases: Vec<String>,
+            primary: crate::workspace_services::KbPrimaryChoice,
+        ) -> Result<String, String> {
+            crate::workspace_services::NullServices
+                .start_session(working_dir, extensions, knowledge_bases, primary)
+                .await
+        }
+        fn set_knowledge_bases(
+            &self,
+            session_id: &str,
+            kbs: &[String],
+            primary: crate::workspace_services::KbPrimaryChoice,
+        ) -> Result<crate::workspace_services::KbSelectionView, String> {
+            crate::workspace_services::NullServices.set_knowledge_bases(session_id, kbs, primary)
+        }
+        fn knowledge_selection(
+            &self,
+            session_id: &str,
+        ) -> crate::workspace_services::KbSelectionView {
+            crate::workspace_services::NullServices.knowledge_selection(session_id)
+        }
+        async fn gui_command(
+            &self,
+            frame: serde_json::Value,
+            wait_result: bool,
+        ) -> Result<serde_json::Value, String> {
+            crate::workspace_services::NullServices
+                .gui_command(frame, wait_result)
+                .await
+        }
+        fn browser_route_refusal(
+            &self,
+            _session_id: &str,
+        ) -> Option<crate::workspace_services::BrowserChannelError> {
+            Some(self.0.clone())
+        }
+    }
+
+    /// BB-10 and BB-17: a chat no window holds (one driven by `biorouter session send` or
+    /// `workspace_send_prompt`) is refused at once with the operation's own sentence, and no
+    /// consent card is asked for. Before, it parked for the whole 900 s approval wait for a
+    /// card only a window holding the chat would show, then was stopped. The control half
+    /// shows the wait itself is unchanged where the host cannot tell.
+    #[tokio::test]
+    #[serial_test::serial(workspace_services)]
+    async fn a_browser_call_from_a_chat_no_window_holds_is_refused_before_the_consent_wait() {
+        use crate::privacy::ProviderTier;
+        use crate::providers::base::{Provider, ProviderMetadata, ProviderUsage};
+        use crate::security::browser_use::BrowserGrant;
+        use crate::workspace_services::{BrowserChannelError, NullServices};
+
+        // The host below refuses Copilot too, so no Copilot test may run beside it.
+        let _copilot = crate::security::computer_use::tests::test_serial()
+            .lock()
+            .await;
+        struct Overrides;
+        impl Drop for Overrides {
+            fn drop(&mut self) {
+                crate::workspace_services::clear_test_override();
+                crate::agents::browser_extension::set_available_for_tests(None);
+            }
+        }
+
+        struct Model;
+        #[async_trait::async_trait]
+        impl Provider for Model {
+            fn metadata() -> ProviderMetadata {
+                ProviderMetadata::empty()
+            }
+            fn get_name(&self) -> &str {
+                "browser-route-test"
+            }
+            fn get_model_config(&self) -> crate::model::ModelConfig {
+                crate::model::ModelConfig::new_or_fail("m1")
+            }
+            fn tier(&self) -> ProviderTier {
+                ProviderTier::Public
+            }
+            async fn complete_with_model(
+                &self,
+                _: &crate::model::ModelConfig,
+                _: &str,
+                _: &[crate::conversation::message::Message],
+                _: &[rmcp::model::Tool],
+            ) -> Result<
+                (crate::conversation::message::Message, ProviderUsage),
+                crate::providers::errors::ProviderError,
+            > {
+                unreachable!()
+            }
+        }
+
+        let root = tempfile::tempdir().unwrap();
+        let sessions = Arc::new(crate::session::SessionManager::new(
+            root.path().to_path_buf(),
+        ));
+        let manager = Arc::new(ExtensionManager::new(
+            Arc::new(tokio::sync::Mutex::new(Some(
+                Arc::new(Model) as Arc<dyn Provider>
+            ))),
+            Arc::clone(&sessions),
+        ));
+        let session = sessions
+            .create_session(
+                root.path().to_path_buf(),
+                "browser off screen".into(),
+                crate::session::session_manager::SessionType::User,
+            )
+            .await
+            .unwrap()
+            .id;
+        let config = ExtensionConfig::Platform {
+            name: crate::agents::browser_extension::EXTENSION_NAME.to_string(),
+            description: String::new(),
+            bundled: Some(true),
+            available_tools: Vec::new(),
+        };
+        let cap = crate::privacy::CallCapability::for_test_restricted();
+        let cancel = CancellationToken::new();
+        crate::agents::browser_extension::set_available_for_tests(Some(true));
+        crate::workspace_services::set_for_tests(Some(Arc::new(OffScreenHost(
+            BrowserChannelError::ChatNotOnScreen,
+        ))));
+        let _overrides = Overrides;
+        // A request is running and bound to this model, as at the start of a turn, so without
+        // the check the call would park for the card.
+        let _task = manager.browser_use.task_guard();
+        manager.bind_browser_use_task(&session).await.unwrap();
+
+        let refused = tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            manager.admit_browser(
+                &session,
+                &config,
+                "browser__browser_snapshot",
+                None,
+                cap,
+                &cancel,
+            ),
+        )
+        .await
+        .expect("refused at once, not parked for the consent card");
+        let error = refused.expect_err("refused").to_string();
+        assert_eq!(error, BrowserChannelError::ChatNotOnScreen.to_string());
+        let act = tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            manager.browser_act_permit(&session, &cancel),
+        )
+        .await
+        .expect("the act grant is not waited for either");
+        assert!(act.is_err(), "no act permit for a chat no window holds");
+        let status = manager.browser_use_status(&session).await.unwrap();
+        assert_eq!(status.requested, None, "no consent card was asked for");
+        assert_eq!(status.state, "idle");
+
+        // Control: a host that cannot tell keeps today's wait, so the check was the cause.
+        crate::workspace_services::set_for_tests(Some(Arc::new(NullServices)));
+        let parked = tokio::time::timeout(
+            std::time::Duration::from_millis(100),
+            manager.admit_browser(
+                &session,
+                &config,
+                "browser__browser_snapshot",
+                None,
+                cap,
+                &cancel,
+            ),
+        )
+        .await;
+        assert!(parked.is_err(), "the consent wait is unchanged elsewhere");
+        let status = manager.browser_use_status(&session).await.unwrap();
+        assert_eq!(status.requested, Some(BrowserGrant::Observe));
+    }
+
+    /// BB-09 and BB-18: the `browser` key and the `browser__browser_*` names belong to the
+    /// built-in browser. A custom extension cannot load under the key, and a third party that
+    /// answered to those names is refused at dispatch, before any grant is asked for.
+    #[tokio::test]
+    async fn external_servers_cannot_impersonate_the_browser_namespace() {
+        let root = tempfile::tempdir().unwrap();
+        let manager = Arc::new(ExtensionManager::new_without_provider(
+            root.path().to_path_buf(),
+        ));
+        for name in ["browser", "Browser", "BROWSER"] {
+            let config = ExtensionConfig::stdio(name, "must-not-launch", "untrusted", 30_u64);
+            let error = manager
+                .add_extension(config)
+                .await
+                .expect_err("the browser key is reserved");
+            assert!(error.to_string().contains("reserved"), "{error}");
+        }
+        manager
+            .add_mock_third_party_extension("browser", Arc::new(MockClient {}))
+            .await;
+        for tool in ["browser_click", "browser_open", "browser_anything"] {
+            let result = manager
+                .dispatch_tool_call(
+                    "chat",
+                    CallToolRequestParams {
+                        name: format!("browser__{tool}").into(),
+                        arguments: None,
+                        meta: None,
+                        task: None,
+                    },
+                    crate::privacy::CallCapability::for_test_restricted(),
+                    CancellationToken::new(),
+                )
+                .await;
+            let error = result.err().expect("refused").to_string();
+            assert!(error.contains("reserved"), "{error}");
+        }
     }
 
     #[tokio::test]
@@ -5714,7 +6487,7 @@ mod tests {
             )
             .await;
 
-        let (name, _client, config, class, _origin) = extension_manager
+        let (name, _client, config, class, _origin, _free_text) = extension_manager
             .get_client_for_tool("guarded__forbidden")
             .await
             .expect("the extension resolves");
@@ -6699,13 +7472,22 @@ mod tests {
             ("Skills", "skills"),
             ("Todo", "todo"),
             ("Web & Documents", "webdocuments"),
-            ("Agent Drafter", "agent_drafter"),
+            ("Application Drafter", "agent_drafter"),
             ("Crew", "crew"),
         ] {
             let target = resolve_bundled_extension(label).expect(label);
             assert_eq!(target.key(), id);
             assert_eq!(target.display_name(), label);
         }
+    }
+
+    /// A chat, a workflow or a `/ext:` marker written before the rename still names the
+    /// extension by its retired label, which reduces to the key it kept.
+    #[test]
+    fn the_retired_application_drafter_label_still_resolves() {
+        let target = resolve_bundled_extension("Agent Drafter").expect("legacy label");
+        assert_eq!(target.key(), "agent_drafter");
+        assert_eq!(target.display_name(), "Application Drafter");
     }
 
     #[test]
@@ -8153,6 +8935,265 @@ mod tests {
         let serialized = serde_json::to_string(&error).unwrap();
         assert!(!serialized.contains(&secret), "{serialized}");
         assert!(!serialized.contains(&key_id), "{serialized}");
+    }
+
+    /// A `developer` stand-in whose `text_editor` reads `path` under a FAKE
+    /// home: a leading `~/` resolves to a temp dir, never the process's own
+    /// HOME, so the test can neither read nor depend on the operator's
+    /// `~/.aws`. If the secret guard ever let a script's sub-call through, this
+    /// client would return the fake file's text, and the counter would move.
+    struct FakeHomeEditor {
+        home: PathBuf,
+        reads: Arc<std::sync::atomic::AtomicUsize>,
+    }
+
+    #[async_trait::async_trait]
+    impl McpClientTrait for FakeHomeEditor {
+        fn get_info(&self) -> Option<&InitializeResult> {
+            None
+        }
+        async fn list_resources(
+            &self,
+            _next_cursor: Option<String>,
+            _cancellation_token: CancellationToken,
+        ) -> Result<ListResourcesResult, Error> {
+            Err(Error::TransportClosed)
+        }
+        async fn read_resource(
+            &self,
+            _uri: &str,
+            _cancellation_token: CancellationToken,
+        ) -> Result<ReadResourceResult, Error> {
+            Err(Error::TransportClosed)
+        }
+        async fn list_tools(
+            &self,
+            _next_cursor: Option<String>,
+            _cancellation_token: CancellationToken,
+        ) -> Result<ListToolsResult, Error> {
+            Ok(ListToolsResult {
+                tools: vec![Tool::new(
+                    "text_editor".to_string(),
+                    "View a file".to_string(),
+                    Arc::new(
+                        serde_json::json!({
+                            "type": "object",
+                            "properties": {
+                                "command": {"type": "string"},
+                                "path": {"type": "string"}
+                            }
+                        })
+                        .as_object()
+                        .unwrap()
+                        .clone(),
+                    ),
+                )],
+                next_cursor: None,
+                meta: None,
+            })
+        }
+        async fn call_tool(
+            &self,
+            _name: &str,
+            arguments: Option<JsonObject>,
+            _meta: McpMeta,
+            _cancellation_token: CancellationToken,
+        ) -> Result<CallToolResult, Error> {
+            self.reads.fetch_add(1, Ordering::SeqCst);
+            let path = arguments
+                .as_ref()
+                .and_then(|a| a.get("path"))
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            let resolved = match path.strip_prefix("~/") {
+                Some(rest) => self.home.join(rest),
+                None => PathBuf::from(path),
+            };
+            let text = std::fs::read_to_string(&resolved).unwrap_or_else(|e| e.to_string());
+            Ok(CallToolResult::success(vec![rmcp::model::Content::text(
+                text,
+            )]))
+        }
+        async fn list_prompts(
+            &self,
+            _next_cursor: Option<String>,
+            _cancellation_token: CancellationToken,
+        ) -> Result<ListPromptsResult, Error> {
+            Err(Error::TransportClosed)
+        }
+        async fn get_prompt(
+            &self,
+            _name: &str,
+            _arguments: Value,
+            _cancellation_token: CancellationToken,
+        ) -> Result<GetPromptResult, Error> {
+            Err(Error::TransportClosed)
+        }
+        async fn subscribe(&self) -> mpsc::Receiver<ServerNotification> {
+            mpsc::channel(1).1
+        }
+    }
+
+    /// H1 through Code Execution (1.94.6 security review). Issue #522 leaves
+    /// `execute_code`'s source out of the dispatch-time scan, on the promise
+    /// that every call the script makes comes back through
+    /// `dispatch_tool_call` and is judged there on its EVALUATED arguments.
+    /// This holds that promise end to end with the real boa sandbox: a script
+    /// that assembles `~/.aws/credentials` at run time is admitted (its source
+    /// names no path), its `text_editor` sub-call is refused by the secret
+    /// guard before the client is contacted, and no byte of the (fake) file
+    /// reaches the result. And the exemption is exactly `code` (plus
+    /// `tool_graph[].description`): the same path in any other string argument
+    /// still refuses the outer call.
+    #[tokio::test]
+    async fn h1_a_script_assembled_credential_path_is_refused_at_its_inner_dispatch() {
+        let (dir, em, _sm, id) = manager_with_a_session().await;
+        let em = Arc::new(em);
+        em.set_working_dir(dir.path().to_path_buf()).await;
+
+        // The fake HOME, with a credentials file carrying a sentinel line no
+        // output redaction would remove, so a leak cannot hide behind
+        // `secret_output`'s key masking.
+        let home = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(home.path().join(".aws")).unwrap();
+        let sentinel = "region = h1-execute-code-sentinel";
+        std::fs::write(
+            home.path().join(".aws").join("credentials"),
+            format!("{}{sentinel}\n", fake_credentials_text()),
+        )
+        .unwrap();
+        let reads = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        em.add_client(
+            "developer".into(),
+            ExtensionConfig::Platform {
+                name: "developer".into(),
+                description: "fake-home text_editor fixture".into(),
+                bundled: Some(true),
+                available_tools: Vec::new(),
+            },
+            Arc::new(FakeHomeEditor {
+                home: home.path().to_path_buf(),
+                reads: Arc::clone(&reads),
+            }),
+            None,
+            None,
+        )
+        .await;
+        // The shipped Code Execution, built by the Platform registry: only its
+        // `code` is left out of the outer scan.
+        em.add_extension(ExtensionConfig::Platform {
+            name: "code_execution".into(),
+            description: "Code execution".into(),
+            bundled: Some(true),
+            available_tools: Vec::new(),
+        })
+        .await
+        .unwrap();
+        let cap = crate::privacy::CallCapability::for_test_restricted();
+        let key_id = format!("{}{}", "AKIA", "FAKEFAKEFAKE0000");
+        let secret = format!("{}{}", "fakeSecretKeyForTestsOnly", "0".repeat(15));
+
+        // The fixture itself works: a benign sub-call reaches it, so a zero
+        // count below means "refused", not "never routable".
+        let benign = em
+            .dispatch_tool_call(
+                &id,
+                CallToolRequestParams {
+                    task: None,
+                    name: "code_execution__execute_code".into(),
+                    arguments: Some(object!({
+                        "code": "import { text_editor } from \"developer\"; \
+                                 record_result(text_editor({command: \"view\", path: \"~/notes.txt\"}));"
+                    })),
+                    meta: None,
+                },
+                cap,
+                CancellationToken::default(),
+            )
+            .await
+            .unwrap_or_else(|e| panic!("a benign script was refused: {e:#}"))
+            .result
+            .await;
+        assert!(benign.is_ok(), "{benign:?}");
+        assert_eq!(reads.load(Ordering::SeqCst), 1, "the fixture is routable");
+
+        for code in [
+            r#"import { text_editor } from "developer"; const p = "~/.aws/" + "credentials"; record_result(text_editor({command: "view", path: p}));"#,
+            r#"import { text_editor } from "developer"; const p = ["~", ".aws", "credentials"].join("/"); text_editor({command: "view", path: p});"#,
+        ] {
+            // Admitted: the source names no protected path.
+            let dispatched = em
+                .dispatch_tool_call(
+                    &id,
+                    CallToolRequestParams {
+                        task: None,
+                        name: "code_execution__execute_code".into(),
+                        arguments: Some(object!({ "code": code })),
+                        meta: None,
+                    },
+                    cap,
+                    CancellationToken::default(),
+                )
+                .await
+                .unwrap_or_else(|e| panic!("the outer call was refused for its source: {e:#}"));
+            // The script's failure may come back as an error result or as an
+            // error; either way, everything the caller can see is serialized.
+            let serialized = match dispatched.result.await {
+                Ok(result) => serde_json::to_string(&result).unwrap(),
+                Err(error) => serde_json::to_string(&error).unwrap(),
+            };
+            assert_eq!(
+                reads.load(Ordering::SeqCst),
+                1,
+                "the inner sub-call reached the client: {code}"
+            );
+            assert!(
+                serialized.contains("secret/credential deny pattern"),
+                "the inner refusal is the secret guard's: {serialized}"
+            );
+            assert!(
+                serialized.contains(".aws/credentials"),
+                "the refusal names the evaluated path: {serialized}"
+            );
+            for leaked in [sentinel, key_id.as_str(), secret.as_str()] {
+                assert!(!serialized.contains(leaked), "{leaked} in {serialized}");
+            }
+        }
+
+        // Only `code` (and `tool_graph[].description`) is free text: the same
+        // path in any other string argument still refuses the OUTER call,
+        // before a script runs.
+        for arguments in [
+            object!({"code": "1 + 1", "path": "~/.aws/credentials"}),
+            object!({"code": "1 + 1", "note": "~/.aws/credentials"}),
+            object!({"code": "1 + 1", "description": "~/.aws/credentials"}),
+            object!({"code": "1 + 1", "tool_graph": [
+                {"tool": "~/.aws/credentials", "description": "safe"}
+            ]}),
+        ] {
+            let refused = match em
+                .dispatch_tool_call(
+                    &id,
+                    CallToolRequestParams {
+                        task: None,
+                        name: "code_execution__execute_code".into(),
+                        arguments: Some(arguments.clone()),
+                        meta: None,
+                    },
+                    cap,
+                    CancellationToken::default(),
+                )
+                .await
+            {
+                Ok(_) => panic!("{arguments:?} was admitted"),
+                Err(e) => e.to_string(),
+            };
+            assert!(
+                refused.contains("secret/credential deny pattern"),
+                "{arguments:?}: {refused}"
+            );
+        }
+        assert_eq!(reads.load(Ordering::SeqCst), 1);
     }
 
     /// The capability `POST /agent/call_tool` hands the manager —
@@ -9837,6 +10878,8 @@ mod tests {
         /// Whether the token the host handed `call_tool` was already cancelled
         /// when the call answered `Ok` regardless. `None` until it answers.
         token_cancelled_at_answer: std::sync::Mutex<Option<bool>>,
+        /// The Copilot grant the host sent with the call (AD-10).
+        seen_grant: std::sync::Mutex<Option<String>>,
     }
 
     #[async_trait::async_trait]
@@ -9877,9 +10920,10 @@ mod tests {
             &self,
             _name: &str,
             _arguments: Option<JsonObject>,
-            _meta: McpMeta,
+            meta: McpMeta,
             cancellation_token: CancellationToken,
         ) -> Result<CallToolResult, Error> {
+            *self.seen_grant.lock().unwrap() = meta.computer_use_grant.clone();
             self.entered.notify_one();
             // Deliberately NOT raced against `cancellation_token`: a native
             // helper that has already acted may finish and answer anyway, and
@@ -9917,6 +10961,316 @@ mod tests {
         }
     }
 
+    /// Drive a Copilot admission until it has raised the card. It cannot finish without an
+    /// answer, so it is polled in short slices until the status says a card waits, however long
+    /// the steps before the card take (on a host with no workspace services, a session read).
+    async fn drive_until_the_card_is_raised<F: std::future::Future>(
+        manager: &ExtensionManager,
+        chat: &str,
+        mut admission: std::pin::Pin<&mut F>,
+    ) {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+        loop {
+            assert!(
+                tokio::time::timeout(Duration::from_millis(5), admission.as_mut())
+                    .await
+                    .is_err(),
+                "the admission finished before the card was answered"
+            );
+            if manager.computer_use_status(chat).await.unwrap().requested {
+                return;
+            }
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "the card was never raised"
+            );
+        }
+    }
+
+    fn copilot_call(tool: &str, arguments: serde_json::Value) -> CallToolRequestParams {
+        CallToolRequestParams {
+            name: format!("computercontroller__{tool}").into(),
+            arguments: arguments.as_object().cloned(),
+            meta: None,
+            task: None,
+        }
+    }
+
+    /// AD-10: the person can allow looking only. The admitted call carries that grant to the
+    /// wrapper, and an act call in the same request fails at once with no second card.
+    #[tokio::test]
+    async fn a_look_only_grant_reaches_the_wrapper_and_refuses_control_at_once() {
+        let _serial = crate::security::computer_use::tests::test_serial()
+            .lock()
+            .await;
+        let (_dir, manager, _provider) = manager_bound_to(crate::privacy::ProviderTier::Public);
+        let client = Arc::new(GatedMockClient::default());
+        manager
+            .add_mock_extension("computercontroller".into(), client.clone())
+            .await;
+        let _task = manager.computer_use.task_guard();
+        manager.bind_computer_use_task("look-chat").await.unwrap();
+        let admission = manager.dispatch_tool_call(
+            "look-chat",
+            copilot_call("get_app_state", serde_json::json!({"app":"TextEdit"})),
+            crate::privacy::CallCapability::for_test_restricted(),
+            CancellationToken::new(),
+        );
+        tokio::pin!(admission);
+        drive_until_the_card_is_raised(&manager, "look-chat", admission.as_mut()).await;
+        let status = manager.computer_use_status("look-chat").await.unwrap();
+        manager
+            .computer_use
+            .approve_with(
+                "look-chat",
+                &status.challenge_id,
+                crate::security::computer_use::ComputerUseGrant::Observe,
+                &manager.provider,
+            )
+            .await
+            .unwrap();
+        let admitted = admission.await.unwrap();
+        // The call runs only when its result is polled; the stored permit lets it answer.
+        client.release.notify_one();
+        admitted.result.await.unwrap();
+        assert_eq!(
+            client.seen_grant.lock().unwrap().as_deref(),
+            Some("observe")
+        );
+        let refused = tokio::time::timeout(
+            Duration::from_secs(2),
+            manager.dispatch_tool_call(
+                "look-chat",
+                copilot_call("click", serde_json::json!({"ref":"@s1:e1"})),
+                crate::privacy::CallCapability::for_test_restricted(),
+                CancellationToken::new(),
+            ),
+        )
+        .await
+        .expect("an act call under look only is refused without waiting")
+        .err()
+        .expect("refused");
+        assert!(
+            refused
+                .to_string()
+                .contains("allowed Biorouter Copilot to look only"),
+            "{refused}"
+        );
+        manager.computer_use.revoke();
+    }
+
+    /// AD-12: text that looks like a secret is refused before the person is even asked.
+    #[tokio::test]
+    async fn copilot_refuses_to_type_a_secret_before_asking_anyone() {
+        let _serial = crate::security::computer_use::tests::test_serial()
+            .lock()
+            .await;
+        let (_dir, manager, _provider) = manager_bound_to(crate::privacy::ProviderTier::Public);
+        let client = Arc::new(GatedMockClient::default());
+        manager
+            .add_mock_extension("computercontroller".into(), client.clone())
+            .await;
+        let _task = manager.computer_use.task_guard();
+        manager.bind_computer_use_task("secret-chat").await.unwrap();
+        let key = "-----BEGIN OPENSSH PRIVATE KEY-----\nb3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAAAAAABAAAAMwAAAAtzc2gtZW\n-----END OPENSSH PRIVATE KEY-----";
+        let refused = tokio::time::timeout(
+            Duration::from_secs(2),
+            manager.dispatch_tool_call(
+                "secret-chat",
+                copilot_call("type_text", serde_json::json!({"ref":"@s1:e1","text":key})),
+                crate::privacy::CallCapability::for_test_restricted(),
+                CancellationToken::new(),
+            ),
+        )
+        .await
+        .expect("refused without waiting for approval")
+        .err()
+        .expect("refused");
+        assert!(
+            refused.to_string().contains("looks like a secret"),
+            "{refused}"
+        );
+        let status = manager.computer_use_status("secret-chat").await.unwrap();
+        assert!(!status.requested, "no approval card was raised");
+    }
+
+    /// Copilot's card is shown only by a window that holds the chat, so a chat no window holds
+    /// (`biorouter session send`, `workspace_send_prompt`, a subagent whose tab is closed) is
+    /// refused at once and raises no card. Before, the call waited the whole 900 s approval
+    /// wait for an answer nobody could give. A host that cannot tell keeps the wait, and a
+    /// grant the person already gave keeps working when the chat leaves the screen.
+    #[tokio::test]
+    #[serial_test::serial(workspace_services)]
+    async fn a_copilot_call_from_a_chat_no_window_holds_is_refused_before_the_card() {
+        use crate::security::computer_use::{CHAT_NOT_ON_SCREEN, NO_WINDOW};
+        use crate::workspace_services::{BrowserChannelError, NullServices};
+
+        let _serial = crate::security::computer_use::tests::test_serial()
+            .lock()
+            .await;
+        struct Override;
+        impl Drop for Override {
+            fn drop(&mut self) {
+                crate::workspace_services::clear_test_override();
+            }
+        }
+        let _override = Override;
+        let (_dir, manager, _provider) = manager_bound_to(crate::privacy::ProviderTier::Public);
+        let client = Arc::new(GatedMockClient::default());
+        manager
+            .add_mock_extension("computercontroller".into(), client.clone())
+            .await;
+        let _task = manager.computer_use.task_guard();
+        manager.bind_computer_use_task("unseen-chat").await.unwrap();
+        let observe = || {
+            manager.dispatch_tool_call(
+                "unseen-chat",
+                copilot_call("get_app_state", serde_json::json!({"app":"TextEdit"})),
+                crate::privacy::CallCapability::for_test_restricted(),
+                CancellationToken::new(),
+            )
+        };
+
+        for (host, sentence) in [
+            (BrowserChannelError::ChatNotOnScreen, CHAT_NOT_ON_SCREEN),
+            (BrowserChannelError::NoDesktop, NO_WINDOW),
+        ] {
+            crate::workspace_services::set_for_tests(Some(Arc::new(OffScreenHost(host))));
+            let refused = tokio::time::timeout(Duration::from_secs(2), observe())
+                .await
+                .expect("refused at once, not parked for the card")
+                .err()
+                .expect("refused");
+            assert!(refused.to_string().contains(sentence), "{refused}");
+            let status = manager.computer_use_status("unseen-chat").await.unwrap();
+            assert!(!status.requested, "no card was raised");
+            assert!(
+                client.seen_grant.lock().unwrap().is_none(),
+                "nothing reached the desktop"
+            );
+        }
+
+        // Control: a host that cannot tell keeps the wait, so the check was the cause.
+        crate::workspace_services::set_for_tests(Some(Arc::new(NullServices)));
+        let admission = observe();
+        tokio::pin!(admission);
+        assert!(
+            tokio::time::timeout(Duration::from_millis(5), &mut admission)
+                .await
+                .is_err(),
+            "the card is waited for where the host cannot tell"
+        );
+        let status = manager.computer_use_status("unseen-chat").await.unwrap();
+        assert!(status.requested, "the card was raised");
+        manager
+            .approve_computer_use(
+                "unseen-chat",
+                &status.challenge_id,
+                crate::security::computer_use::ComputerUseGrant::Act,
+            )
+            .await
+            .unwrap();
+        let admitted = admission.await.unwrap();
+        client.release.notify_one();
+        admitted.result.await.unwrap();
+
+        // The person allowed it in a window, then the chat left the screen: the grant they
+        // gave still holds for the rest of the request.
+        crate::workspace_services::set_for_tests(Some(Arc::new(OffScreenHost(
+            BrowserChannelError::ChatNotOnScreen,
+        ))));
+        let again = tokio::time::timeout(Duration::from_secs(2), observe())
+            .await
+            .expect("a held grant is not waited for")
+            .expect("a held grant is not refused");
+        client.release.notify_one();
+        again.result.await.unwrap();
+        manager.computer_use.revoke();
+    }
+
+    /// The CLI's own process has no workspace services, and its prompt shows Copilot's card only
+    /// for the chat the person is in, so a subagent's card was never shown there and its call
+    /// waited the whole 900 s. A subagent is refused at once on such a host; the CLI's Hidden
+    /// (`--no-session`) and Terminal (`biorouter term`) chats, which answer the card at that
+    /// prompt, still raise it and wait.
+    #[tokio::test]
+    #[serial_test::serial(workspace_services)]
+    async fn a_subagents_copilot_call_is_refused_where_no_window_can_ever_answer() {
+        use crate::security::computer_use::SUBAGENT_NOBODY_CAN_ANSWER;
+        use crate::session::session_manager::SessionType;
+
+        let _serial = crate::security::computer_use::tests::test_serial()
+            .lock()
+            .await;
+        struct Override;
+        impl Drop for Override {
+            fn drop(&mut self) {
+                crate::workspace_services::clear_test_override();
+            }
+        }
+        // No daemon: the CLI's own process.
+        crate::workspace_services::set_for_tests(None);
+        let _override = Override;
+
+        for (kind, refused) in [
+            (SessionType::SubAgent, true),
+            (SessionType::Hidden, false),
+            (SessionType::Terminal, false),
+        ] {
+            // One manager per chat: a consent belongs to one chat at a time.
+            let (dir, manager, _provider) = manager_bound_to(crate::privacy::ProviderTier::Public);
+            let client = Arc::new(GatedMockClient::default());
+            manager
+                .add_mock_extension("computercontroller".into(), client.clone())
+                .await;
+            let chat = manager
+                .context
+                .session_manager
+                .create_session(dir.path().to_path_buf(), "chat".into(), kind)
+                .await
+                .unwrap()
+                .id;
+            let _task = manager.computer_use.task_guard();
+            manager.bind_computer_use_task(&chat).await.unwrap();
+            let admission = manager.dispatch_tool_call(
+                &chat,
+                copilot_call("get_app_state", serde_json::json!({"app":"TextEdit"})),
+                crate::privacy::CallCapability::for_test_restricted(),
+                CancellationToken::new(),
+            );
+            if refused {
+                let error = tokio::time::timeout(Duration::from_secs(2), admission)
+                    .await
+                    .expect("refused at once, not parked for the card")
+                    .err()
+                    .expect("refused");
+                assert!(
+                    error.to_string().contains(SUBAGENT_NOBODY_CAN_ANSWER),
+                    "{error}"
+                );
+                let status = manager.computer_use_status(&chat).await.unwrap();
+                assert!(!status.requested, "no card was raised for a {kind:?} chat");
+            } else {
+                tokio::pin!(admission);
+                // The admission cannot return before the card is answered, so "still parked"
+                // holds by construction rather than by the clock.
+                assert!(
+                    tokio::time::timeout(Duration::from_millis(50), &mut admission)
+                        .await
+                        .is_err(),
+                    "a {kind:?} chat waits for the card at the terminal's prompt"
+                );
+                let status = manager.computer_use_status(&chat).await.unwrap();
+                assert!(status.requested, "the card was raised for a {kind:?} chat");
+            }
+            assert!(
+                client.seen_grant.lock().unwrap().is_none(),
+                "nothing reached the desktop"
+            );
+            manager.computer_use.revoke();
+        }
+    }
+
     /// Stop while a native call is in flight, then let the client answer `Ok`
     /// anyway: the answer must be withheld, not shared.
     #[tokio::test]
@@ -9946,17 +11300,14 @@ mod tests {
             CancellationToken::new(),
         );
         tokio::pin!(admission);
-        // Not a race: admission parks until approval and cannot finish without
-        // it, so this times out however the thread is scheduled. It is here to
-        // drive admission to the point where it has asked for approval.
-        assert!(
-            tokio::time::timeout(Duration::from_millis(5), &mut admission)
-                .await
-                .is_err()
-        );
+        drive_until_the_card_is_raised(&manager, "isolated-chat", admission.as_mut()).await;
         let status = manager.computer_use_status("isolated-chat").await.unwrap();
         manager
-            .approve_computer_use("isolated-chat", &status.challenge_id)
+            .approve_computer_use(
+                "isolated-chat",
+                &status.challenge_id,
+                crate::security::computer_use::ComputerUseGrant::Act,
+            )
             .await
             .unwrap();
         let mut admitted = admission.await.unwrap();
@@ -10940,6 +12291,12 @@ mod tests {
     /// DR-33: the read ratchets and Gate C's decision-model sentence.
     mod private_read_tests {
         include!("extension_manager_private_read_tests.rs");
+    }
+
+    /// Issue #522: the free text the dispatch-time secret scan leaves out, and
+    /// nothing else.
+    mod free_text_tests {
+        include!("extension_manager_free_text_tests.rs");
     }
 }
 

@@ -274,7 +274,7 @@ The detailed manual steps and the reasoning behind each invariant follow.
 | `biorouter` | — | Core agent library: main agent loop, LLM providers, MCP extension manager, session/conversation state, workflow execution, scheduling |
 | `biorouter-server` | `biorouterd` | Axum REST API + WebSocket server; routes in `src/routes/`; OpenAPI spec generated via utoipa |
 | `biorouter-cli` | `biorouter` | Interactive CLI; subcommands in `src/commands/` |
-| `biorouter-mcp` | — | Built-in MCP servers (Developer, Biorouter Copilot, Web & Documents, Memory, Auto Visualiser, Knowledge, Agent Drafter, DataSQL, Files, Compute). Also hosts `active_work.rs`, which is *not* a server but the process-global registry of long-running work (background shell jobs + running subagents) that `GET /active_work` reads |
+| `biorouter-mcp` | — | Built-in MCP servers (Developer, Biorouter Copilot, Web & Documents, Memory, Auto Visualiser, Knowledge, Application Drafter, DataSQL, Files, Compute). Also hosts `active_work.rs`, which is *not* a server but the process-global registry of long-running work (background shell jobs + running subagents) that `GET /active_work` reads |
 | `biorouter-sandbox` | — | Capability-scoped sandboxed execution (`docker.rs`, `seatbelt.rs`, `local.rs`, `environment.rs`, `shell_sandbox/`); a leaf crate with no engine deps |
 | `biorouter-acp` | — | Agent Communication Protocol for multi-agent orchestration |
 | `biorouter-bench` | — | Benchmarking harness |
@@ -356,7 +356,7 @@ is not dead code.
 - **`contexts/`** — React Context for global state
 - **`workflow/`** — Workflow builder UI
 - **`components/knowledge/`**: the Knowledge route, under the sidebar's
-  Components disclosure (between Skills and Built apps). Provides KB selector
+  Components disclosure (between Skills and Applications). Provides KB selector
   with cmd-K-style palette, ingest panel (dropzone / paste text with URL extraction / staged
   list), and live SSE-streamed digestion progress via `useIngestStream`.
 
@@ -1035,7 +1035,7 @@ was removed to make it true:
   installs the repair listener.
 - **What reaches the panel:**
   1. `ui://` embedded resources from tool responses — Auto Visualiser figures and
-     reports, and Agent Drafter app preview cards (`create_app`, `configure_app`,
+     reports, and application preview cards (`create_app`, `configure_app`,
      `update_app`, `build_app`, `launch_app`, `preview_app` all return one).
   2. Files a tool call created, read off the call's **arguments** —
      `text_editor` (`write`/`str_replace`/`insert`/`undo_edit`, never `view`; ⚠ this
@@ -1109,7 +1109,7 @@ was removed to make it true:
     Tailwind, so only a real browser catches this class of bug; sweep the panel
     with the harness (`.artifact-harness`) across md / csv / json / yaml / xml /
     R / py / sql / css / sh / toml / rs / ts after touching the code view.
-- **No delete control on in-chat artifact cards.** Deleting an Agent Drafter app
+- **No delete control on in-chat artifact cards.** Deleting an application
   is destructive (removes files from disk) and lives only in the **Applications**
   tab (`ApplicationsView.tsx`) — never on the in-chat card in `MCPUIResourceRenderer`,
   where a stray click would nuke an app. The card opens the panel, and that is all
@@ -1313,11 +1313,13 @@ value's *location* is as load-bearing as the number.
   216–360px with a 288px default, dragged from `SidebarResizeHandle` and stored
   per user in `localStorage` (clamped **on read**, so a value from an older build
   can never land outside today's bounds). Two consequences that are easy to get
-  wrong. ⚠ **The window's `minWidth` derives from the DEFAULT** (288 + 760 =
-  1048, `main.ts`). It was briefly taken from the *minimum* on the argument that
-  216 is the only width in the range that is a property of the app rather than of
-  a preference; that runs backwards, because `216 + 760 = 976` leaves the shipped
-  288px sidebar a `688px` column — under the measure the floor exists to protect.
+  wrong. ⚠ **The window's `minWidth` no longer derives from the sidebar** (owner,
+  2026-11-19). It was the DEFAULT plus the measure (288 + 760 = 1048), which kept
+  Home's usage heat map whole and also stopped Home's composer from narrowing at
+  all. It is now `WINDOW_MIN_WIDTH` (721, `Layout/yieldLadder.ts`): the narrowest
+  window that holds a two-pane split at the chat floor (2 x 360 + 1), pinned in
+  `styles/measures.test.ts`. Below rung 1 the sidebar is an overlay that costs the
+  column nothing, so the floor needs no sidebar term; see "Below rung 1" below.
   ⚠ **The wide end is closed by an
   identity, not by a clamp** — `SIDEBAR_MAX_WIDTH + 760 = 1120 =
   SIDEBAR_COMPACT_WIDTH`, rung 1 of the yield ladder — so raising the max without
@@ -1362,9 +1364,10 @@ value's *location* is as load-bearing as the number.
   folded into one `.br-chat-row-gap` placeholder of exactly its height, so the
   scroll height and every drawn row's place are unchanged. The pitch is read off a
   drawn row (`measuredLinePitch` in `RecentChats.tsx`), never assumed: the Text
-  size preference scales the 28px row and its 2px gap (34.5px a line under Larger
-  text), which is also why the placeholder scales its own 2px. Kept drawn whatever
-  the range: the focused line (row, folder header or Show more), the current chat
+  size preference scales the 28px row and its 2px gap (32.1px a line at Standard,
+  the default, and 34.5px at Large), which is also why the placeholder scales its
+  own 2px. Kept drawn whatever the range: the focused line (row, folder header or
+  Show more), the current chat
   (so the list's single Tab stop stays on it), a row being renamed or just renamed,
   and a line whose right-click or `⋯` menu is open, so focus, an open menu or the
   editor is never unmounted under the person. ⚠ No row mounts a Radix menu root:
@@ -1421,6 +1424,36 @@ value's *location* is as load-bearing as the number.
   oversized box would otherwise scroll an ancestor. The size is the pane's `getBoundingClientRect`,
   never the viewport; `styles/paneFloor.test.ts` pins the CSS floor to the constants, and
   `composerCard.browser.test.tsx` pins the composer bar height the height floor is built on.
+- **Below rung 1 the composer narrows, and Home's usage card yields** (owner,
+  2026-11-19; [`docs/desktop-ui/narrow-windows.md`](docs/desktop-ui/narrow-windows.md)).
+  As the window narrows the sidebar folds at 1120, then Home's composer (the same
+  fluid `ChatInput`) narrows below an 808px window, down to 673px at the 721px
+  floor. Home's usage card shows only at its whole 760px measure, because its heat
+  map is the one thing on Home whose size is computed; narrower, it steps aside
+  rather than shrink. On a short window it yields before it can touch the composer:
+  the whole card while the greeting, the card and a 24px gap fit, then the tiles
+  only (the heat map and footnote fold), then no card. The decision is
+  `homeUsageFit` (`sessions/homeUsageFit.ts`, pure, kept by `useHomeUsageFit`); a
+  fold CLIPS the box to zero height and never unmounts it, so the card's natural
+  size is measured in every state and the answer cannot feed back into its inputs.
+  ⚠ **The desktop never shows the sidebar drawer.** `useIsMobile` is true under
+  930px, and the drawer is the `biorouter serve` browser's (`ui/sidebar.tsx` gates
+  it on `isBrowserSurface()`); the desktop keeps the overlay at every width it
+  allows, because every page band's titlebar reserve keys on
+  `[data-slot='sidebar'][data-state='collapsed']`, which the drawer does not render,
+  and in it page titles slid under the traffic lights. `AppLayout`'s width watcher
+  is a LAYOUT effect so a window opening below rung 1 is an overlay before the page
+  measures itself; as a passive effect, a reload at the floor merged a fitting
+  two-pane split (`ChatGroupsShell` read the box beside the docked column). Its
+  cleanup must not lift the overlay class (it re-runs on every toggle, and a lifted
+  class mid-commit stops ⌘B moving focus into the overlay); an unmount-only effect
+  removes it. ⚠ The
+  Knowledge band is the
+  widest band at the floor: while the reserve and its Sources/Graph pair share it
+  (a collapsed sidebar and a pane under 860), its counts fold (`main.css`, "THE
+  WINDOW FLOOR, KNOWLEDGE'S PART"). Tests: `sessions/homeUsageFit.test.ts`,
+  `sessions/homeLayout.browser.test.tsx`, `Layout/windowFloor.browser.test.tsx`,
+  `Layout/AppLayout.test.tsx`.
 - **Fills before lines** (R-27, owner message 13). In-page containers and
   controls are a subtle solid fill with no resting outline: `--background-fill`
   (`#f4f4f2` light, `#232320` dark) at rest and `--background-fill-strong`
@@ -1472,18 +1505,23 @@ value's *location* is as load-bearing as the number.
   right; the folder and the model on Home. Sending plays a short lift of the sent
   text and Send's arrow (`composer/useSendMotion.ts`, transform and opacity only,
   none under reduced motion), and Send's arrow settles in on the spring when the
-  field goes from empty to written (`data-armed`). The three readout
-  footer items open the same light hover card (`bottom_menu/useFooterCard.ts`,
+  field goes from empty to written (`data-armed`). The two readouts, the
+  context ring and the cost, open the same light hover card (`bottom_menu/useFooterCard.ts`,
   `bottom_menu/FooterCard.tsx`) with one behaviour: a hover previews it after
   300ms and a Tab at once (its trigger holds nothing), a click, tap, Enter or Space keeps it
   (its trigger holds `--background-fill-strong`, `data-pinned`), a hover never
   replaces a kept card, Escape or a press outside closes it, one card is open at
   a time, and it hangs above the composer card. That is the app's one pointer
   rule, "hover peeks, click pins" (`design.md` D-43; `docs/desktop-ui/shared-controls.md`,
-  "Hover and click"). The folder card writes a path as `~/…` in the sans reading
-  (`FooterCardPath`, `utils/folderPath.ts`), never mono. A new footer item
-  uses that card, never a `Tooltip` (`docs/desktop-ui/shared-controls.md`,
-  "Composer footer cards"). The card's classes live in one module,
+  "Hover and click"). A new readout uses that card, never a `Tooltip`
+  (`docs/desktop-ui/shared-controls.md`, "Composer footer cards"). The working
+  folder is a control, not a readout (owner, 2026-11-19): like the model chip, its
+  hover shows the dark label `Tooltip` and its click does the job in one step,
+  opening the folder chooser while the chat is empty; once the chat has a message
+  the folder is fixed, the click opens the folder access card instead, and the
+  daemon refuses a working-folder change (`docs/desktop-ui/shared-controls.md`,
+  "The folder chip").
+  The card's classes live in one module,
   `composer/composerCard.ts`, and Home renders the
   same `ChatInput`, so the two never differ. Its surface,
   `composerCardSurfaceClassName`, is also what the in-place message edit card in
@@ -1516,6 +1554,21 @@ value's *location* is as load-bearing as the number.
     `:has()`, so a component test that focuses the textarea and reads
     `borderColor` sees the resting value and passes whether the rule exists or
     not.
+  - **The working folder is a CONTROL, like the model chip** (owner, 2026-11-19,
+    D-43 amended; `bottom_menu/DirSwitcher.tsx`): a hover or Tab shows the app's
+    label `Tooltip` (the model chip's and the microphone's, with
+    `useSurfaceTriggerHint`): "Working folder: ~/…" (`tildePath` + `PathSegments`,
+    `.br-folder-tip__path`, never mono) and one status line. While the chat is empty
+    (Home, or no messages yet) the click opens the native chooser directly, with no
+    card. Once it has messages the folder is fixed (#44; the daemon's
+    `try_update_working_dir_if_empty` answers 409 too), the tooltip says "Fixed for
+    this chat", and the click opens the folder access card (`FolderAccessCard`,
+    kept from the start, never on hover), which lists the chat's other approved
+    folders with Revoke. ⚠ That card is the desktop's and the browser's ONLY revoke
+    control (`docs/security/folder-access.md`); do not drop it to make the locked
+    chip inert. It still joins the line's `FooterCardGroup` (one card at a time).
+    The card writes a path as `~/…` in the sans reading (`FooterCardPath`,
+    `utils/folderPath.ts`), never mono, and has no Choose folder… button.
   - **The `+` popover's switcher never moves** (R-25, owner message 13).
     `composer/ComposerPlusMenu.tsx` (which replaced the `+` menu AND the Tools
     chip, owner 2026-11-13) opens one popover above the `+` holding one list at a
@@ -1523,7 +1576,13 @@ value's *location* is as load-bearing as the number.
     LAST child. A click on `+` always opens on Add (attach files, mention,
     commands, decision monitors: the menu recipe's rows); the other three are the
     tool lists (a search field, a scope line saying where a change applies with
-    Enable all or Disable all, the switch rows). The control rides the
+    Enable all or Disable all, the switch rows). It is the model menu's width
+    (owner, 2026-11-19): ONE token, `--composer-popover-width` (288px, `main.css`),
+    sets both (`.br-plus-popover`, `.br-model-menu`); never write a second literal.
+    At 288px four equal columns cut "Knowledge", so the control runs in `fit` mode,
+    each segment its label plus 4px a side plus an equal share of the room
+    (`composer/composerPopovers.browser.test.tsx` measures both widths and every
+    label whole at the three Text sizes). The control rides the
     popover's bottom edge, 6px above the `+` (`sideOffset`): Radix places a `side="top"` popover by its bottom, so a
     longer or shorter list grows or shrinks it upward. ⚠ `avoidCollisions={false}`
     is load-bearing (collision handling would flip the popover below the chip or
@@ -1688,11 +1747,27 @@ gone, along with its exemption from the secret-key middleware; see
 - **Tests:** `cargo test -p biorouter-mcp --lib autovisualiser` (happy paths,
   edge cases, escaping, lenient enum parsing).
 
-### Agent Drafter (BioRouter apps) — agent-driven UI + export
+### Application Drafter (Biorouter applications) — agent-driven UI + export
 
-`agent_drafter` builds **BioRouter apps**: a TypeScript front-end wired to a real
+`agent_drafter` builds **Biorouter applications**: a TypeScript front-end wired to a real
 per-app agent over `GET /apps/<id>/agent`. Full design in
 [`docs/agent-drafter/apps-platform-design.md`](docs/agent-drafter/apps-platform-design.md).
+
+- ⚠ **Names (owner ruling, 2026-11-19).** A person or a model reads **Application Drafter**
+  for the extension, **Applications** for the sidebar entry, its page and the Reset row, and
+  **application** for the thing it builds. They replaced "Agent Drafter" and "Built apps".
+  Only the label moved: the key `agent_drafter`, the tool names (`agent_drafter__create_app`),
+  the in-process `appcontrol` server, the MCP server name `biorouter-agent-drafter`, the store
+  `~/.config/biorouter/agent_drafter/`, the resource address `ui://agent-drafter/<id>`, the
+  `/apps` routes, the `biorouter apps` subcommand and the folders `docs/agent-drafter/` and
+  `scripts/agent-drafter*/` keep the old spelling, because saved configurations, per-chat tool
+  overrides, transcripts and exported applications depend on them. The old label still
+  resolves (`resolve_bundled_extension`), a stored one is projected to the new label on read
+  (`rename_application_drafter` in `config/extensions.rs`), and a card is titled by the
+  application id, not by the address host (`titleFromResourceUri`). "App SDK" and "Apps SDK"
+  stay as the SDK's name, and "app" stays as the short form in the developer SDK docs and the
+  model-facing tool text, which the drafter's instructions define. Never write the old names in
+  new copy.
 
 - **Apps SDK v2** — the typed two-way surface (app contract, shared state doc,
   catalog + `ui_patch`, `br.kb`/`br.model`, theme packs, archetypes, standalone
@@ -1984,7 +2059,7 @@ and the capability itself by [`docs/extensions/built-in/workspace.md`](docs/exte
 **five** conditions. The generic `subagent` tool is offered only when all of them
 hold:
 
-1. `subagent_tool_enabled` — Agent-Drafter apps with declared worker profiles set
+1. `subagent_tool_enabled` — applications with declared worker profiles set
    this false, so `consult` stays the one delegation mechanism.
 2. **Completely Autonomous** mode (`BioRouterMode::Auto`).
 3. The bound model's name does **not** start with `gemini`.
@@ -1997,9 +2072,9 @@ hold:
 self-excluding.** `ensure_spawn_extension` puts `workspace` into the extension
 map, so counting it would make one turn's `true` the reason for the next turn's
 `true` — an agent that removed its last real extension would keep delegating
-forever off a grant it derived from itself. The default-on `decisions` platform
-extension is not counted either (`is_not_counted_by_the_delegation_gate` in
-`extension_manager.rs`): it is on in every chat, so counting it would enable
+forever off a grant it derived from itself. The default-on `decisions`,
+`dictionary` and `browser` platform extensions are not counted either (`is_not_counted_by_the_delegation_gate` in
+`extension_manager.rs`): each is on in every chat, so counting it would enable
 delegation everywhere by itself. The consequence to recognise: a chat
 with **every** extension disabled has no `subagent` tool, which looks exactly
 like a registration bug and is not one.
@@ -2173,7 +2248,7 @@ replaced a standalone `biorouter-headless` binary and its Linux tarball, both de
   breaks the terminal silently — one never prompts on the desktop's daemon, the other prompts a
   `serve` user for a key that does not exist. Pinned from both sides.
 - **Proof of a person is checked at the resolution choke point, not at one route.** Every door
-  that answers a parked decision — the HTTP route, an Agent Drafter app's WebSocket, ACP, the
+  that answers a parked decision — the HTTP route, an application's WebSocket, ACP, the
   CLI prompt, the TUI modal, an ancestor agent's relay — passes a `DecisionAuthority` into
   `PendingUserActions::resolve_matching`, which refuses an *allow* on a proof-backed
   `ToolApproval` from a surface that cannot prove a person acted. It is a newtype with a
@@ -2268,7 +2343,7 @@ replaced a standalone `biorouter-headless` binary and its Linux tarball, both de
   address is still refused, because Chrome sends no Fetch Metadata there. ⚠ Chrome sends no Fetch
   Metadata on a WebSocket handshake ANYWHERE, so a handshake counts when its `Origin` is `https`
   (`is_a_websocket_upgrade_from_an_https_page`); without that arm every app's agent socket was
-  refused behind an HTTPS proxy. Built apps under a prefix: the page gets `<base href="./">`, the
+  refused behind an HTTPS proxy. Applications under a prefix: the page gets `<base href="./">`, the
   launch bounce goes to `./`, the app cookie carries no `Path`, and `sdk.ts` reads the prefix off
   its own address (`proxyPrefix`). Don't reintroduce a root-absolute `/apps/{id}/` in any of them.
 - **Tests:** `cargo test -p biorouter-server --lib -- routes::web_ui routes::shell` (the `--`
@@ -2370,6 +2445,22 @@ binary, from `BaranziniLab/biorouter-models`.
   plus `--disable-features=AudioServiceSandbox` on macOS, where the sandboxed audio service
   otherwise cannot read the WAV and the track is silence (RMS 0). Fake audio is not a physical
   microphone, and the checklist records the two apart.
+- **The fn key and the indicator (macOS).** Hold fn to talk, double-tap fn for hands-free
+  (`ui/desktop/src/utils/fnGesture.ts`; routing in `utils/dictationFnKey.ts`, the composer side in
+  `components/dictation/fnGestureClient.ts`). Electron cannot see fn, so `crates/biorouter-fnkey`, a
+  listen-only Quartz event tap with no dependencies, runs as the app's child while the shortcut is
+  on and writes only fn down, fn up and "another key while fn was down", each with the event's own
+  time. ⚠ It creates the tap only after `CGPreflightListenEventAccess` says Input Monitoring is
+  granted, because creating one without it makes macOS prompt; the prompt comes only from
+  **Open Input Monitoring** in Settings. Never add a code path, test or script that creates a tap or
+  calls `CGRequestListenEventAccess` unasked. The setting is `<config>/dictation/fn-key.json`,
+  written only by main, like `anywhere.json`. `ui/desktop/scripts/build-fn-key-helper.mjs` stages it
+  for `bundle:default` and `bundle:intel`, and `release.sh verify` checks it is in the app, for the
+  app's architecture, at macOS 12.0 (`scripts/check-fn-key-helper-bundled.sh`). The on-screen
+  capsule (`utils/dictationIndicator.ts`) is a non-focusable, click-through panel fed only an
+  activity word and a level over `dictation:indicator`. ⌘⇧D keeps working; on macOS AppKit hides
+  D's key up while ⌘ is held, so its hold is timed to the first modifier release
+  ([surfaces](docs/dictation/surfaces.md), "Gestures").
 - **The dictionary tier rule.** `bias_set` in `crates/biorouter/src/dictation/bias.rs` is the only
   producer of the entries recognition may use, and one value feeds the token prompt, the decoder
   bonus and every correction step (DD-36); `eligible_entries_are_built_only_by_bias_set` pins its
@@ -2383,11 +2474,22 @@ binary, from `BaranziniLab/biorouter-models`.
   whose model is unstated (no live agent yet) gets only the private rows with no institution, which
   the owner kept on 2026-11-10 (O-43). Crew, the clipboard and the app preview use public terms
   unless the person includes private terms for one recording; ACP is public only. The `dictionary`
-  capability is off in a fresh configuration, and the workspace doors refuse it by name. The chat
-  extractor ships off (`LEARN_FROM_CHATS_DEFAULT = false` in
-  `crates/biorouter-dictation/src/store/schema.rs`), because its precision gate M-21 waits for the
-  owner's own labels (O-44). A row left out changes no field of a response. All of it is accident
-  prevention for cooperative actors: a shell can still read `dictionary.json`.
+  capability is on in a fresh configuration (owner, 2026-11-19, replacing DD-51's off) and a
+  `config.yaml` that saved it off keeps it off; `install --yes` with no suggest flag keeps the
+  configuration's value. The workspace doors refuse it by name, and the delegation gate never
+  counts it. The chat
+  extractor is on in a new store (`LEARN_FROM_CHATS_DEFAULT = true` in
+  `crates/biorouter-dictation/src/store/schema.rs`, owner 2026-11-19, replacing O-44's off); a
+  store that saved its setting keeps it, and a store with no file yet reads as a new one, so
+  `extractor::admission_stamp` admits it at version 0 and the first observation creates the file.
+  ⚠ Zero is a real version there (no file); the watcher's "not admitted" is `u64::MAX`, never 0,
+  or the switch would read on while nothing is learned. With both on, a Private chat still teaches
+  the extractor nothing, and a public model's `list_terms` sees public suggestions from the
+  person's other public chats but never a private row. Its switch, the
+  `agent_writes` select, the capability switch and **Find words** are Settings rows
+  (`settings/models/DictionarySettingsRows.tsx`); the Dictionary page holds the words alone. A row
+  left out changes no field of a response. All of it is accident prevention for cooperative
+  actors: a shell can still read `dictionary.json`.
 - **Where the tests run.** Every dictation integration binary runs in `rust.yml`'s offline step,
   with no line in its exclusion table; a test that needs a real model or the network is `#[ignore]`
   in the same binary (`dictation_accuracy`, `model_download_live`, `dictation_extractor_precision`),
@@ -2576,35 +2678,88 @@ All skills are published as releases of **`BaranziniLab/biorouter-skills`** (ass
 
 ### Native Biorouter Copilot
 
-**Upstream is VENDORED, not cloned.** `vendor/computer-use/source/` is a
-complete copy of the MIT-licensed upstream at `pin.json`'s commit, committed here, and a
-build reads it with **no network** — an upstream repository that disappears or changes
-cannot affect a BioRouter build. The tree is *pristine*; `patches/` is applied to a
-throwaway copy at build time, which is what keeps an upstream update tractable.
-`source-manifest.json` hashes every file and the build verifies it (both directions)
-before the bytes become build input. `scripts/check-vendored-computer-use.sh` is the CI
-guard and also asserts every vendored file is **committable** — repo-wide `.gitignore`
-rules matched 15 of them on the first attempt. Ten upstream files are deliberately
-excluded as third-party extracted artwork that MIT does not cover; they are docs, not
-build inputs, and the build is byte-identical without them.
-⚠ The staged copy gets its own `git init`, and that line is load-bearing: `git apply`
-resolves against the repository containing the working directory, and the staging
-directory lives inside BioRouter's, where `target/` is ignored. Without it the edits to
-tracked files landed while every `new file mode` hunk was silently dropped, and the build
-happily produced a helper 28,672 bytes smaller from effectively unpatched upstream.
-`scripts/check-computer-use-upstream.py` reports what changed upstream and, more usefully,
-which of those files our patches also touch.
+**The engine is agent-desktop, VENDORED, not cloned** (since 1.94.6;
+[design](docs/design/copilot-agent-desktop.md), AD-01 to AD-06). `vendor/agent-desktop/source/`
+is the Apache-2.0 upstream at `pin.json`'s tag and commit, **unmodified** (no `patches/`),
+limited to what a build reads (`INCLUDED` in `scripts/vendor-computer-use-source.py`;
+`crates/ffi` is in it because the workspace lists it as a member). `source-manifest.json`
+hashes every file and the build verifies it both ways before and after cargo runs;
+`scripts/check-vendored-computer-use.sh` (the CI guard) also checks committability,
+`-text`, that `Cargo.lock` locks no network client (AD-20) and that `DEPENDENCIES.txt` lists
+exactly the locked crates. `scripts/computer-use-runtime.py build <target>` runs cargo with the
+repository's 1.92 (`RUSTUP_TOOLCHAIN`), `--locked` and path remapping; darwin builds on macOS
+(`Biorouter Copilot.app`, bundle id `org.biorouter.computer-use`, minimum macOS 13.0), and
+linux and win32 build in the pinned `rust:1.92-bullseye` container through
+`scripts/build-computer-use-helper-cross.sh` (`cross_copilot_helper` in `cross-env.sh`; no Go,
+no Swift). ⚠ At the 13.0 floor one upstream Objective-C deprecation fails the bridges'
+`-Werror`; the build keeps it a warning with clang's `CCC_OVERRIDE_OPTIONS` rather than
+patching the vendored tree. `verify` reads the binaries themselves (Mach-O minimum, ELF glibc
+floor and libraries, PE subsystem and MinGW imports), and `contract` runs `version` and a
+refused bare reference with no desktop access. **Open Computer Use, the engine before it, is
+retired** (1.94.6, AD-18): `vendor/computer-use/` and every OCU-only script are deleted, the
+naming guard (`scripts/check-computer-use-naming.sh`) accepts that name only as retired and
+refuses the engine's own name in the interface, prompts and built-in skills, and on macOS the
+daemon ends, once at start, a leftover OCU agent of THIS installation, matched by its exact path
+(`computer_use::retired`, AD-19).
 
+**The wrapper** (`crates/biorouter-mcp/src/computer_use/`, AD-07 to AD-15) runs ONE engine
+command per operation, never `agent-desktop mcp`: `plan.rs` is the only place a command line is
+built (model strings only as `--flag=value` or after `--`, `--headed` only where the AD-11 table
+says, never `--cdp`/`--force`/`--trace`), `runner.rs` spawns it (cleared environment, the task's
+own `AGENT_DESKTOP_HOME`, text on stdin, 16 MiB cap, deadline + 5 s, Stop = SIGTERM, 1 s for
+the release guard, then SIGKILL of the group). ⚠ Windows has no graceful signal for a windowless
+console process, so Stop ends the job at once and the release guard never runs; after a stopped
+or timed out physical command the wrapper lifts any mouse button the system still reports down
+(`release_held_buttons` in `runner.rs`), or a stopped drag would leave the button held. ⚠ On macOS the spawn is `posix_spawn` with
+`responsibility_spawnattrs_setdisclaim` (AD-04), so TCC grants belong to `Biorouter Copilot.app`
+and never to Biorouter itself; it fails closed rather than spawning normally. `guard.rs` holds
+the AD-12 refusals (Biorouter's own pids, ancestors, install folder and bundle ids; security
+prompts; terminals; privacy settings; lock screen; secure input), `render.rs` frames app text as
+untrusted, and `mod.rs` keeps each chat's references per task generation (a reference this task
+never observed is refused before the engine is even located). Tests: `cargo test -p
+biorouter-mcp --lib computer_use` (a fake engine script, no desktop) and, with
+`BIOROUTER_COMPUTER_USE_DIR` naming a built payload, `-- --ignored` checks every option the
+wrapper writes against the pinned engine's `--help` and runs it through the disclaimed spawn.
 
 `computercontroller` — the extension key Biorouter Copilot kept for config
-compatibility — exposes exactly ten native tools: `list_apps`, `get_app_state`, `click`,
-`perform_secondary_action`, `scroll`, `drag`, `type_text`, `press_key`, `set_value`,
-`screen_capture`. The native helper owns all desktop observation/control; Developer has no
-capture or control tool. `webdocuments` owns web/document/cache utilities. Old scripting,
-control and capture implementations and aliases are removed, not migrated or hidden.
+compatibility — exposes thirteen native tools: the ten earlier names (`list_apps`,
+`get_app_state`, `click`, `perform_secondary_action`, `scroll`, `drag`, `type_text`,
+`press_key`, `set_value`, `screen_capture`, now with reference arguments such as `@s1abc:e4`)
+plus `find_elements`, `wait_for` and `open_app`. A restricted `available_tools` list never
+gains the three new names. The native engine owns all desktop observation/control; Developer
+has no capture or control tool, and the secret guard refuses a shell that starts the Copilot
+engine. `webdocuments` owns web/document/cache utilities.
 
-The host obtains one Biorouter Copilot grant per task/chat/model/target before observation. Respect
-Stop/revoke, avoid retry loops and script fallbacks, refresh stale state, and verify outcomes.
-Private/public chats retain separate observations and consent. Pause before private-to-public
-handoff because the physical desktop is shared. See `docs/design/computer-use-integration-plan.md`
-and the implementation-status ledger for all acceptance gates, including real-app validation.
+The host obtains one Biorouter Copilot grant per request: **Allow** (look and control) or look
+only (`ComputerUseConsent::approve_with`, `permit_for`; the classifier `grant_for_call` is
+`contract::grant_for`, shared with the wrapper, which refuses an act call again unless the
+dispatch meta carries `computer_use_grant: act`). Under look only an act call fails at once
+with `LOOK_ONLY_REFUSAL` and no second card. Every surface asks the same way (AD-10): the
+desktop card (`components/copilot/CopilotControl.tsx`) offers Allow, Only let it look and Cancel,
+`ComputerUseStatus.grant` says what holds while active, `POST /agent/computer_use/consent` takes
+`grant` (⚠ absent means `act`, so an older client keeps its meaning), and the CLI and TUI ask
+Allow, Only let it look or Deny (the TUI also Cancel), starting on Deny. Setup's **Request access**
+(`POST /agent/computer_use/setup/request`, user-action proof only) runs the engine's
+`permissions --request` through the disclaimed spawn, so macOS's own prompts name Biorouter
+Copilot; ⚠ the engine also asks for Automation of System Events, which Copilot does not use, and
+setup says the person may refuse it. Respect Stop/revoke, avoid retry loops and script
+fallbacks, refresh stale state, and verify outcomes. Private/public chats retain separate
+observations and consent. Pause before private-to-public handoff because the physical desktop is
+shared. Routing between Copilot and the Biorouter Browser is one sentence,
+`contract::ROUTING_SENTENCE`, which `browser_extension::COPILOT_ROUTING_SENTENCE` re-exports.
+See [the design](docs/design/copilot-agent-desktop.md) for the acceptance gates, including live
+macOS permission attribution and real-app drag and drop.
+
+**Fixture acceptance** ([`docs/testing/copilot-fixture-acceptance.md`](docs/testing/copilot-fixture-acceptance.md)):
+`crates/biorouter-mcp/tests/computer_use_fixture.rs` (ignored by default) drives a fixture app
+through `ComputerControllerServer` with the dispatch meta the consent gate attaches, and reads
+every outcome from the app's own state file, never from a tool's report: typing, clicking,
+checking, look only and password refusals, a list reordered by drag, text dragged into a second
+window, scrolling, and Stop mid-drag with no button left pressed. One set of names and state keys
+across `scripts/copilot-fixture-gtk.py`, `copilot-fixture-winforms.cs` (compiled to its own
+executable: ⚠ a PowerShell host is a terminal to Copilot, which refuses to type into it) and
+`copilot-fixture-macos.swift`. `computer-use-native.yml` runs the Linux and Windows drives in its
+release gate; macOS hosted runners cannot grant Accessibility to the Copilot bundle, so there it
+only builds the fixture. Measured 2026-11-20: the GTK drive passes four runs in four on Ubuntu
+24.04 arm64 in Docker (Xvfb, openbox, at-spi2-core 2.52), so drag and drop within an app and
+between two windows works on X11; the Windows and macOS drives are not yet run.

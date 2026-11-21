@@ -50,8 +50,11 @@ read, which carries the address, and never the address itself: a browser's comma
 read by other accounts on the machine, and the address works for anyone until `serve` stops.
 On a non-loopback bind without `--public-url`, it leaves the browser closed and prints the
 SSH tunnel instructions instead.
-Without `--open`, copy the URL, including the `?t=` part, which is what authenticates you. `Ctrl-C` stops the daemon and frees the port; so does
-stopping `serve` any other way (see [Stopping it](#stopping-it)).
+Without `--open`, copy the URL, including the `?t=` part, which is what authenticates you. The
+banner prints that part only to a terminal and only for a token made for this launch; anywhere else
+it prints the address without it and says how to show it (see
+[Where the token is printed](#where-the-token-is-printed)). `Ctrl-C` stops the daemon and frees the
+port; so does stopping `serve` any other way (see [Stopping it](#stopping-it)).
 
 `biorouter headless` is an accepted alias for `biorouter serve` and behaves identically. It is the
 name the retired standalone binary was known by, kept so older instructions still land in the right
@@ -60,7 +63,7 @@ place.
 ## The command and its options
 
 ```bash
-biorouter serve [--host <addr>] [--port <n>] [--token <t>] [--no-token] [--no-dictation-install] [--web-dir <dir>] [--public-url <url>] [--computer-use-approval] [--folder-access-approval] [--allow-public-decision-models] [--open]
+biorouter serve [--host <addr>] [--port <n>] [--token <t>] [--no-token] [--print-url] [--no-dictation-install] [--web-dir <dir>] [--public-url <url>] [--computer-use-approval] [--folder-access-approval] [--allow-public-decision-models] [--open]
 ```
 
 | Option | What it does | Default |
@@ -69,9 +72,10 @@ biorouter serve [--host <addr>] [--port <n>] [--token <t>] [--no-token] [--no-di
 | `-p, --port <n>` | Port to listen on. | `8765` |
 | `--token <t>` | Use this access token instead of generating a fresh one. It is trimmed, and an empty or blank value is refused before anything starts. The flag stays on the command line, where other accounts can read it, and `serve` prints a note saying so; `BIOROUTER_BROWSER_TOKEN` does not. | A new random token each launch |
 | `--no-token` | Serve with no access token. Refused for a non-loopback bind, and cannot be combined with `--token`. | Off |
+| `--print-url` | Print the address with its access token wherever the output goes, with a note when it is not a terminal. See [Where the token is printed](#where-the-token-is-printed). | Off |
 | `--no-dictation-install` | Stop browsers on this daemon from installing speech models. The host can still install them with `biorouter dictation install`. `BIOROUTER_DICTATION_BROWSER_INSTALL=false` and managed policy also stop browser installs. | Off |
 | `--web-dir <dir>` | Directory holding the built interface. It must contain an `index.html`, or `serve` refuses to start. Takes precedence over `BIOROUTER_SERVE_UI`. | `BIOROUTER_SERVE_UI` if set, otherwise found automatically — see [When the interface cannot be found](#when-the-interface-cannot-be-found) |
-| `--public-url <url>` | The `https://` address a reverse proxy serves the interface at, path prefix included. `serve` prints it with the token, and the live views accept connections from it. Takes precedence over `BIOROUTER_PUBLIC_URL`. See [Behind a reverse proxy](#behind-a-reverse-proxy). | None |
+| `--public-url <url>` | The `https://` address a reverse proxy serves the interface at, path prefix included. `serve` prints it as the address to open, and the live views accept connections from it. Takes precedence over `BIOROUTER_PUBLIC_URL`. See [Behind a reverse proxy](#behind-a-reverse-proxy). | None |
 | `--computer-use-approval` | Set a Biorouter Copilot approval key of at least 16 characters at a hidden terminal prompt. A person types it in the browser to approve a Biorouter Copilot task. It is never saved, and `serve` refuses the flag without an interactive terminal. | Off |
 | `--folder-access-approval` | Set a separate folder approval key the same way. A person types it in the browser's **Folder approval key** field to allow or revoke a chat's access to a folder outside its working folder. See [External folder access](../security/folder-access.md#browser-setup). | Off |
 | `--allow-public-decision-models` | Let a person in the browser make a new chat public by choosing a public decision model before its first message. Without it the daemon refuses that choice and saves nothing. See [SD-16](serve-decisions.md#sd-16-a-keyless-daemon-makes-no-chat-public-by-a-decision-model-unless-its-operator-allows-it). | Off |
@@ -113,8 +117,9 @@ A browser cannot send an authentication header on its first request, so the addr
 carries a credential instead.
 
 - **It is minted per launch** — 32 random bytes, printed as 64 hexadecimal characters in the URL's
-  `?t=` parameter, and different every time. It is shown once, in the terminal; there is nowhere
-  else to read it back from.
+  `?t=` parameter, and different every time. A terminal shows it once, in the banner; elsewhere
+  `biorouter serve url` reads it back for the account running `serve` (see
+  [Where the token is printed](#where-the-token-is-printed)).
 - **Opening the address exchanges it for a cookie.** The daemon validates the token, sets an
   `HttpOnly`, `SameSite=Strict` session cookie named for its port, `biorouter_session_<port>`
   (also `Secure` when the browser reached the address over `https`), and answers a short page
@@ -138,7 +143,8 @@ carries a credential instead.
   decides whether private chats and knowledge bases are listed there
   ([decision SD-10](serve-decisions.md#sd-10--the-served-interface-keeps-its-operators-reach-on-listings-and-knowledge-bases-and-gains-nothing-else)).
 - **Opening the address without the token** returns a short page saying the link needs its access
-  token. Open the full address the command printed, `?t=` included.
+  token. Open the full address, `?t=` included: the one the terminal showed, or the one
+  `biorouter serve url` prints.
 
 To keep one address working across restarts — a bookmark, or a service that restarts — pass the
 same token each time with `--token <t>`, or set `BIOROUTER_BROWSER_TOKEN` in the environment `serve`
@@ -151,6 +157,38 @@ in it reaches the daemon intact. A service
 unit should use the variable, from a file only the service user can read, rather than the flag,
 which `ps` shows to every user on the host. Treat that value like a password: anyone who has it has
 the same access you do.
+
+### Where the token is printed
+
+The address works for anyone who has it until `serve` stops, so `serve` prints it whole only to the
+person who has to open it. Its output is often a log: under systemd it is the journal, which other
+accounts can read (on Ubuntu, the `adm` group), and it is kept across restarts.
+
+| The token came from | Output is a terminal | Output is a log, a pipe or a file |
+|---|---|---|
+| Made for this launch | Printed | Left out |
+| `--token` or `BIOROUTER_BROWSER_TOKEN` | Left out, since you already have it | Left out |
+| Any of these, with `--print-url` | Printed | Printed, after a note that it will be kept there |
+
+Where the token is left out, the banner prints the address without it, says where the token came
+from, and names the command that shows the whole address:
+
+```text
+  Biorouter is serving at
+
+      http://127.0.0.1:8765/
+
+  The access token is the value of BIOROUTER_BROWSER_TOKEN. It is not printed here, so it stays out of logs.
+  To show the whole address, run `biorouter serve url` on this computer, as this account.
+```
+
+`biorouter serve url [--port <n>]` prints the address a browser opens, token included: the proxy's
+with `--public-url`, and for a network bind the `http://127.0.0.1:<port>/` end of the SSH tunnel.
+`serve` keeps that address in a file only its account can read (in Biorouter's state folder, mode
+`0600` in a folder of mode `0700`), and removes it when it stops. Run it as the account that runs
+`serve`, with the port `serve` listens on. What it prints is on your screen, and in any recording of
+the session, so run it where you would type a password. Reading the address out of a service log is
+never the way to get it, and with this rule there is nothing there to read.
 
 `--no-token` turns the gate off entirely. It is accepted **only** for a loopback bind, where the
 only callers are processes on the same machine, and `serve` prints a line saying so:
@@ -168,8 +206,10 @@ else. Exposing the port is an explicit act.
 biorouter serve --host 0.0.0.0
 ```
 
-With a wildcard bind and no `--public-url`, `serve` prints the SSH tunnel command and the full
-`http://127.0.0.1:8765/?t=<token>` address to open on your computer. It does not offer a plain
+With a wildcard bind and no `--public-url`, `serve` prints the SSH tunnel command and the
+`http://127.0.0.1:8765/` address to open on your computer, with its token where
+[the token is printed](#where-the-token-is-printed), and otherwise says to run
+`biorouter serve url` on the remote host for it. It does not offer a plain
 HTTP network address as a browser link. In a container it names the published host port instead.
 Browser access from another machine requires an HTTPS proxy or an SSH tunnel: the plain HTTP
 network address refuses the interface and apps, even with a valid access token.
@@ -213,7 +253,8 @@ the bind on loopback and forward it over SSH:
 ssh -N -L 8765:127.0.0.1:8765 user@remote-host
 ```
 
-Then open the URL `serve` printed on the remote host, unchanged, in a local browser. For a shared
+Then open the URL `serve` printed on the remote host, unchanged, in a local browser, or the one
+`biorouter serve url` prints there when the banner left the token out. For a shared
 host meant to stay up, see [Headless Linux deployment](headless-linux.md).
 
 ### Behind a reverse proxy
@@ -233,7 +274,8 @@ biorouter serve --port 8765 --public-url https://hub.example.org/biorouter/
 
 `--public-url` does three things:
 
-1. `serve` prints that address, with the access token, as the one to open.
+1. `serve` prints that address as the one to open, with the access token where
+   [the token is printed](#where-the-token-is-printed); `biorouter serve url` prints it whole.
 2. The live views accept a connection from a page at that address. Without it, they accept only a
    page whose address matches the `Host` and `X-Forwarded-Proto` headers the daemon receives,
    which a chain of proxies may not preserve.
@@ -267,7 +309,7 @@ location /user/a/biorouter/ {
 ```
 
 The page warns once per browser origin before its first microphone recording. The permission
-covers every page at that origin, including Biorouter apps and notebook outputs. Choose a grant
+covers every page at that origin, including Biorouter applications and notebook outputs. Choose a grant
 for one visit unless you trust every page there. Chromium applies Biorouter's app-page microphone
 header to each app document, but a same-origin popup can still use a lasting grant. Firefox and
 Safari do not enforce that header. The notice applies behind a path prefix too, where other pages
@@ -330,7 +372,11 @@ configuration), the same place `biorouter configure` puts them, and are never sh
 
 **At the terminal.** `biorouter configure` works as before, before or while `serve` runs. A change
 made there reaches new chats after `serve` is restarted; a change made in the browser applies at
-once.
+once. To enter only a provider's key, run `biorouter configure --provider <provider> --secret-stdin`
+on the serving machine, as the account that runs `serve`: it asks at a hidden prompt, or reads
+`NAME=value` lines from a file you redirect into it, checks the key with the provider, and saves it
+only when the check passes. The key never appears on the screen, on a command line or in shell
+history. See [the command reference](../cli/command-reference.md#configure).
 
 Three limits, each with a reason:
 
@@ -340,7 +386,10 @@ Three limits, each with a reason:
   [decision SD-18](serve-decisions.md#sd-18-the-person-in-the-served-page-sets-up-providers-and-an-agent-still-cannot).
 - **Only over a secure address.** The browser adds those headers only for an `https` address or
   this machine, so a key typed in the page never crosses a network unencrypted. A page opened at a
-  plain `http://` network address says so and points you to `biorouter configure`.
+  plain `http://` network address says so, and points you first to opening it over `https` or
+  through an SSH or SSM tunnel to a loopback address (`ssh -N -L 8765:127.0.0.1:8765 <host>`, then
+  `http://127.0.0.1:8765/`), where the page can set up the provider, and otherwise to
+  `biorouter configure` on the serving machine.
 - **Not with `--no-token`.** Without a token the daemon cannot tell its own page from any other
   program on the machine, so the page tells you to run `biorouter configure` on the host.
 
@@ -503,7 +552,7 @@ set `X-Forwarded-Proto: https`, and a chain of proxies that appends `http` to th
 every live view. The daemon logs each refusal as
 `rejected workspace WS: cross-origin connect rejected`, with the origin it was given.
 
-**Behind a proxy, a built app says "No Biorouter backend" and suggests `biorouterd agent`.**
+**Behind a proxy, an application says "No Biorouter backend" and suggests `biorouterd agent`.**
 Biorouter is running: it served the app's page. What failed is the app's live connection, a
 WebSocket, which the daemon refused for the reason in the entry above. JupyterHub's chain causes
 it when `serve` has no `--public-url`, because the scheme reaches the daemon as `https,http`. Pass

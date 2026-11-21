@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Benchmark: 20 apps built from VAGUE one-line ideas (no UI/control guidance).
-# Measures how well Agent Drafter turns under-specified requests into working,
+# Measures how well Application Drafter turns under-specified requests into working,
 # well-designed apps — relying on its own instructions + build harness rather
 # than a detailed ticket. Compare pass-rate / UI-variety vs the detailed round2.
 set -uo pipefail
@@ -36,7 +36,7 @@ author_one() {
   local spec="$1"; IFS='|' read -r id title idea <<< "$spec"
   # Deliberately VAGUE: the idea + a usefulness nudge, nothing about controls,
   # the SDK, layout, or the design system. The agent must figure it out.
-  local instr="Use the Agent Drafter tools to build a Biorouter app with id \"$id\", titled \"$title\", that can $idea. Make it genuinely useful and pleasant to use. Build it and launch it."
+  local instr="Use the Application Drafter tools to build a Biorouter app with id \"$id\", titled \"$title\", that can $idea. Make it genuinely useful and pleasant to use. Build it and launch it."
   "$HERE/author.sh" "$instr" > "/tmp/author3-$id.log" 2>&1
   echo "[done] $id (exit $?)"
 }

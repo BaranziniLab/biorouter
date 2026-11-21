@@ -11,6 +11,7 @@ use ratatui::text::{Line, Span};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::session::completion::SLASH_COMMANDS;
+use crate::session::executed_calls::{self, Part};
 
 /// Slash commands only the TUI handles (its subagent pane). Kept out of
 /// [`SLASH_COMMANDS`], which the classic CLI shares and which would then offer
@@ -206,6 +207,10 @@ pub struct App {
     /// told from any other failure (owner decision 4). Bounded as the
     /// line-oriented renderer's list is.
     pub pending_spawn_calls: Vec<String>,
+    /// `execute_code` requests drawn whose result has not been drawn yet, by
+    /// request id: only such a result is read for the calls its script ran
+    /// (issue #525), as the line-oriented renderer reads it.
+    pub pending_execute_code_calls: Vec<String>,
     /// The letter Ctrl inserts a newline with: J, or the letter
     /// `BIOROUTER_CLI_NEWLINE_KEY` names, read once at start
     /// (`configure_newline_key` in the parent module), so the TUI and the
@@ -271,6 +276,7 @@ impl App {
             decisions: None,
             decision_records: std::collections::HashMap::new(),
             pending_spawn_calls: Vec::new(),
+            pending_execute_code_calls: Vec::new(),
             newline_key: 'j',
             turn_replies: Vec::new(),
         }
@@ -556,35 +562,25 @@ impl App {
                         }
                     }
                 }
-                MessageContent::ToolRequest(req) => {
-                    if let Ok(call) = &req.tool_call {
-                        if crate::session::output::is_spawn_tool_name(&call.name) {
-                            crate::session::output::remember_spawn_call(
-                                &mut self.pending_spawn_calls,
-                                &req.id,
-                            );
-                        }
-                        self.push_tool_header(&call.name);
-                        if let Some(args) = &call.arguments {
-                            for (k, v) in args.iter() {
-                                let val = compact_value(v);
-                                self.push_line(Line::from(vec![
-                                    Span::styled(format!("    {}: ", k), DIM),
-                                    Span::raw(val),
-                                ]));
-                            }
-                        }
-                    }
-                }
+                MessageContent::ToolRequest(req) => self.push_tool_request(req),
                 MessageContent::ToolResponse(resp) => {
-                    let was_spawn_call = crate::session::output::forget_spawn_call(
+                    let was_spawn_call = crate::session::output::forget_pending_call(
                         &mut self.pending_spawn_calls,
+                        &resp.id,
+                    );
+                    let was_execute_code_call = crate::session::output::forget_pending_call(
+                        &mut self.pending_execute_code_calls,
                         &resp.id,
                     );
                     if let Err(error) = &resp.tool_result {
                         self.push_spawn_refusal_hint(was_spawn_call, &error.to_string());
                     }
                     if let Ok(result) = &resp.tool_result {
+                        // What the script really ran (issue #525), above its
+                        // output and outside the block the next call collapses.
+                        if was_execute_code_call {
+                            self.push_executed_calls(result, debug);
+                        }
                         let start = self.scrollback.len();
                         let mut has_artifact = false;
                         let failed = result.is_error == Some(true);
@@ -645,6 +641,68 @@ impl App {
                 }
                 _ => {}
             }
+        }
+    }
+
+    /// A tool call: its header and arguments. A spawn or `execute_code` call is
+    /// remembered by id, because its result carries no tool name and is drawn
+    /// with lines no other tool's result gets.
+    fn push_tool_request(&mut self, req: &biorouter::conversation::message::ToolRequest) {
+        let Ok(call) = &req.tool_call else {
+            return;
+        };
+        if crate::session::output::is_spawn_tool_name(&call.name) {
+            crate::session::output::remember_pending_call(&mut self.pending_spawn_calls, &req.id);
+        }
+        if executed_calls::is_execute_code_tool_name(&call.name) {
+            crate::session::output::remember_pending_call(
+                &mut self.pending_execute_code_calls,
+                &req.id,
+            );
+        }
+        self.push_tool_header(&call.name);
+        if let Some(args) = &call.arguments {
+            // #525: the model writes these (an `execute_code` call's graph
+            // labels and script among them), so they are shown as the calls
+            // the script ran are: credentials withheld, control and invisible
+            // characters dropped.
+            let arguments = serde_json::Value::Object(args.clone()).to_string();
+            match executed_calls::call_arguments(&arguments) {
+                executed_calls::CallArguments::Fields(fields) => {
+                    for (name, value) in fields {
+                        self.push_line(Line::from(vec![
+                            Span::styled(format!("    {name}: "), DIM),
+                            Span::raw(truncate_lines(&value, 1)),
+                        ]));
+                    }
+                }
+                executed_calls::CallArguments::Text(text) => {
+                    self.push_line(Line::from(vec![
+                        Span::styled("    arguments: ".to_string(), DIM),
+                        Span::raw(truncate_lines(&text, 1)),
+                    ]));
+                }
+            }
+        }
+    }
+
+    /// The calls an `execute_code` script ran, from its result's records: one
+    /// line per call, or every argument in full with `debug`.
+    fn push_executed_calls(&mut self, result: &rmcp::model::CallToolResult, debug: bool) {
+        let Some(calls) = executed_calls::executed_calls(result) else {
+            return;
+        };
+        for line in executed_calls::display_lines(&calls, debug) {
+            let mut spans = vec![Span::raw(" ".repeat(line.indent))];
+            for (part, text) in line.spans {
+                let style = match part {
+                    Part::Heading | Part::Note | Part::Name => DIM,
+                    Part::Tool => Style::new().add_modifier(Modifier::BOLD),
+                    Part::Value => Style::new(),
+                };
+                spans.push(Span::styled(text, style));
+            }
+            self.push_line(Line::from(spans));
         }
     }
 
@@ -1451,13 +1509,6 @@ fn flush(buf: &mut String, base: Style, spans: &mut Vec<Span<'static>>) {
     }
 }
 
-fn compact_value(v: &serde_json::Value) -> String {
-    match v {
-        serde_json::Value::String(s) => truncate_lines(s, 1),
-        other => other.to_string(),
-    }
-}
-
 /// What a tool result should look like in the transcript pane.
 ///
 /// Every successful tool result arrives wrapped in the guardrail's
@@ -1503,6 +1554,162 @@ fn truncate_lines(s: &str, max_lines: usize) -> String {
 
 #[cfg(test)]
 mod tests {
+
+    fn issue525_tui_projection(request_tool: &str, debug: bool) -> String {
+        use biorouter::conversation::message::Message;
+        use rmcp::model::{CallToolRequestParams, CallToolResult, Meta};
+
+        let mut app = super::App::new(super::StatusInfo::default());
+        let request = Message::assistant().with_tool_request("tui-525", Ok(CallToolRequestParams {
+            task: None, name: request_tool.to_owned().into(),
+            arguments: Some(serde_json::json!({"tool_graph": [{"tool": "developer/shell", "description": "list files"}], "code": "// SOURCE_ONLY_TUI_525"}).as_object().unwrap().clone()),
+            meta: None,
+        }));
+        app.push_message(&request, debug);
+        let mut result = CallToolResult::success(Vec::new());
+        result.meta = Some(Meta(serde_json::json!({"biorouter/tool-calls": [{"tool": "developer__shell", "args": "{\"command\":\"printf EVALUATED_ONLY_TUI_525\"}", "status": "ok", "result_bytes": 0}]}).as_object().unwrap().clone()));
+        app.push_message(
+            &Message::assistant().with_tool_response("tui-525", Ok(result)),
+            debug,
+        );
+        app.scrollback
+            .iter()
+            .flat_map(|line| line.spans.iter())
+            .map(|span| span.content.as_ref())
+            .collect::<String>()
+    }
+
+    /// #525: the request lines are model-written too (an `execute_code`
+    /// call's graph labels and script), so they get the filtering the
+    /// executed-call lines get: no control or invisible character reaches the
+    /// terminal, and a credential is withheld whether it is recognised by its
+    /// own shape, by its key, or by a `NAME=value` line past the first.
+    #[test]
+    fn issue525_tui_request_lines_are_shown_as_a_person_may_read_them() {
+        use biorouter::conversation::message::Message;
+        use rmcp::model::CallToolRequestParams;
+
+        let token = format!("sk-ant-{}", "Z9y8X7w6".repeat(4));
+        let mut app = super::App::new(super::StatusInfo::default());
+        let request = Message::assistant().with_tool_request(
+            "tui-525-request",
+            Ok(CallToolRequestParams {
+                task: None,
+                name: "code_execution__execute_code".into(),
+                arguments: Some(
+                    serde_json::json!({
+                        "tool_graph": [{
+                            "tool": "developer/shell",
+                            "description": "list \u{1b}[31mfiles\u{202e}"
+                        }],
+                        "code": format!("await shell({{command: 'curl -H {token}'}})"),
+                        "env": { "OPENAI_API_KEY": "plainvalue1234567890" },
+                        "later": "first line\nexport DEPLOY_TOKEN=q9w8e7r6t5y4u3i2o1p0",
+                        "\u{1b}[2Jname": "x"
+                    })
+                    .as_object()
+                    .unwrap()
+                    .clone(),
+                ),
+                meta: None,
+            }),
+        );
+        app.push_message(&request, false);
+        let shown = app
+            .scrollback
+            .iter()
+            .flat_map(|line| line.spans.iter())
+            .map(|span| span.content.as_ref())
+            .collect::<String>();
+        assert!(!shown.contains('\u{1b}'), "{shown:?}");
+        assert!(!shown.contains('\u{202e}'), "{shown:?}");
+        assert!(shown.contains("list"), "{shown}");
+        assert!(!shown.contains(&token), "{shown}");
+        assert!(!shown.contains("Z9y8X7w6"), "{shown}");
+        assert!(!shown.contains("plainvalue1234567890"), "{shown}");
+        assert!(!shown.contains("q9w8e7r6t5y4u3i2o1p0"), "{shown}");
+        assert!(shown.contains("[REDACTED"), "{shown}");
+        assert!(shown.contains("first line"), "{shown}");
+    }
+
+    #[test]
+    fn issue525_tui_shows_the_evaluated_inner_arguments() {
+        for debug in [false, true] {
+            let shown = issue525_tui_projection("code_execution__execute_code", debug);
+            assert!(
+                shown.contains("EVALUATED_ONLY_TUI_525"),
+                "actual arguments missing: {shown}"
+            );
+        }
+    }
+
+    /// Issue #525 through the real producer: the full-screen view lists the
+    /// calls the extension recorded, credential withheld, outside the block
+    /// the next tool call collapses.
+    #[tokio::test]
+    async fn issue525_tui_lists_what_the_real_producer_ran() {
+        use crate::session::executed_calls::producer::{
+            evaluated_token, run_execute_code, EVALUATED_WORD,
+        };
+        use biorouter::conversation::message::{Message, MessageContent};
+
+        let (request, response) = run_execute_code("tui-producer-525").await;
+        for debug in [false, true] {
+            let mut app = super::App::new(super::StatusInfo::default());
+            let mut message = Message::assistant();
+            message
+                .content
+                .push(MessageContent::ToolRequest(request.clone()));
+            app.push_message(&message, debug);
+            let mut message = Message::user();
+            message
+                .content
+                .push(MessageContent::ToolResponse(response.clone()));
+            app.push_message(&message, debug);
+            // The next call collapses the previous result's output.
+            app.push_message(
+                &Message::assistant().with_tool_request(
+                    "tui-producer-525-next",
+                    Ok(rmcp::model::CallToolRequestParams {
+                        task: None,
+                        name: "developer__shell".into(),
+                        arguments: None,
+                        meta: None,
+                    }),
+                ),
+                debug,
+            );
+            let shown = app
+                .scrollback
+                .iter()
+                .map(|line| {
+                    line.spans
+                        .iter()
+                        .map(|span| span.content.as_ref())
+                        .collect::<String>()
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
+            assert!(shown.contains("executed calls (2)"), "{shown}");
+            assert!(shown.contains("developer/shell"), "{shown}");
+            assert!(
+                shown.contains(&format!("command: test -n {EVALUATED_WORD}")),
+                "debug {debug}: {shown}"
+            );
+            assert!(!shown.contains(&evaluated_token()), "{shown}");
+            assert!(shown.contains("[REDACTED:api-token]"), "{shown}");
+        }
+    }
+
+    #[test]
+    fn issue525_tui_ignores_foreign_tool_call_metadata() {
+        let shown = issue525_tui_projection("fixture__run", false);
+        assert!(
+            !shown.contains("EVALUATED_ONLY_TUI_525"),
+            "foreign result was attributed as evaluated native calls: {shown}"
+        );
+    }
+
     use super::tool_output_preview;
     #[cfg(feature = "dictation")]
     use super::{App, StatusInfo};

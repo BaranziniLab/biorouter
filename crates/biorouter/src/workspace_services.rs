@@ -178,6 +178,95 @@ pub trait WorkspaceServices: Send + Sync {
         let _ = near_session;
         self.gui_command(frame, wait_result).await
     }
+
+    /// One Biorouter Browser operation (BB-10), on the window that shows `session_id` and on no
+    /// other.
+    ///
+    /// It differs from [`Self::gui_command_near`] in four ways, each a decision of the design:
+    ///
+    /// * **Strict routing.** Only the window whose echo holds the chat. There is no fallback to
+    ///   the focused or most recent window, because acting in the wrong window is worse than
+    ///   failing.
+    /// * **A deadline per operation**, which the caller chooses, instead of the fixed round trip
+    ///   of `gui_command`. The daemon waits 2 s beyond it.
+    /// * **Cancellation.** The wait races `cancel` (the turn's token joined with the grant's).
+    ///   On a cancel or a timeout the daemon tells the window to abandon the operation, and a
+    ///   timed out mutation is never replayed.
+    /// * **Typed failures**, each with a sentence written for the model.
+    ///
+    /// The default answers [`BrowserChannelError::NoDesktop`]: a host with no desktop window
+    /// (the CLI in its own process, `biorouter serve`) has no browser to reach.
+    async fn gui_browser_request(
+        &self,
+        frame: serde_json::Value,
+        session_id: &str,
+        deadline: std::time::Duration,
+        cancel: tokio_util::sync::CancellationToken,
+    ) -> Result<serde_json::Value, BrowserChannelError> {
+        let _ = (frame, session_id, deadline, cancel);
+        Err(BrowserChannelError::NoDesktop)
+    }
+
+    /// Why a Biorouter Browser operation for `session_id` could not reach a window right
+    /// now, by the same routing rule [`Self::gui_browser_request`] applies; `None` when a
+    /// window holds the chat, or when this host cannot tell.
+    ///
+    /// Asked BEFORE the consent wait (`ExtensionManager::admit_browser`). The card that
+    /// answers the wait is shown only by a window that holds the chat, so a chat no window
+    /// holds (driven through `/reply` by `biorouter session send` or `workspace_send_prompt`)
+    /// parked for the whole 900 s approval wait before the operation was refused anyway.
+    /// Biorouter Copilot asks it too, before raising its card
+    /// (`security::computer_use::refuse_unless_a_window_holds`), because its card is shown the
+    /// same way.
+    ///
+    /// The default answers `None`, which keeps the wait: a host that cannot tell must not
+    /// refuse a call the window might have answered.
+    fn browser_route_refusal(&self, session_id: &str) -> Option<BrowserChannelError> {
+        let _ = session_id;
+        None
+    }
+}
+
+/// Why a Biorouter Browser operation never reached a page, or never came back (BB-10).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BrowserChannelError {
+    /// No desktop window is attached to this daemon.
+    NoDesktop,
+    /// A desktop window is attached, but none of them shows this chat.
+    ChatNotOnScreen,
+    /// The window that showed the chat closed or reloaded before it answered.
+    WindowGone,
+    /// No answer within the operation's deadline.
+    Timeout,
+    /// The turn was cancelled, or the person stopped the browser.
+    Cancelled,
+}
+
+impl std::fmt::Display for BrowserChannelError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::NoDesktop => {
+                "The Biorouter Browser runs in the desktop app, and no desktop window is attached. \
+                 For the plain text of a public page use webdocuments web_scrape; otherwise tell \
+                 the person the browser is not available here."
+            }
+            Self::ChatNotOnScreen => {
+                "Biorouter's browser runs in this chat's side panel, and the chat is not on \
+                 screen. Ask the person to open the chat."
+            }
+            Self::WindowGone => {
+                "The window showing this chat closed or reloaded before the browser answered. \
+                 The operation may or may not have happened: take a browser_snapshot before \
+                 doing anything else."
+            }
+            Self::Timeout => {
+                "The browser did not answer in time. The operation may or may not have happened: \
+                 take a browser_snapshot to see the page before acting again, and never repeat a \
+                 click, fill or submit blindly."
+            }
+            Self::Cancelled => "The browser operation was canceled.",
+        })
+    }
 }
 
 static WORKSPACE_SERVICES: OnceLock<Arc<dyn WorkspaceServices>> = OnceLock::new();

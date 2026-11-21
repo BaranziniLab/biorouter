@@ -499,6 +499,36 @@ fn resolve_override(fallback: &str, own: Option<String>) -> String {
         .unwrap_or_else(|| fallback.to_string())
 }
 
+/// What to say when the store refused to read a configured `VERSA_AZURE_API_KEY`. It names
+/// the store that refused, as `providers::read_provider_credential` does: the file
+/// `BIOROUTER_DISABLE_KEYRING` selected, where Keychain advice would send the person to a
+/// store that was never asked, or the credential store, where a macOS Keychain grant bound to
+/// the build's signature is the usual cause. Both say the Azure CLI was not tried instead.
+/// The key's value is never part of it.
+fn key_read_refusal(
+    config: &crate::config::Config,
+    error: &crate::config::ConfigError,
+) -> anyhow::Error {
+    const NO_CLI_FALLBACK: &str = "Biorouter did NOT silently fall back to the Azure CLI, \
+                                   because this provider signs in with the API key.";
+    match config.secrets_file_selected_by_environment() {
+        Some(file) => anyhow::anyhow!(
+            "Could not read VERSA_AZURE_API_KEY from the file store {}: {error}\n\n\
+             The key appears to be configured, so this is the store refusing the read \
+             rather than a missing key. {NO_CLI_FALLBACK}",
+            file.display()
+        ),
+        None => anyhow::anyhow!(
+            "Could not read VERSA_AZURE_API_KEY from the credential store: {error}\n\n\
+             The key appears to be configured, so this is the store refusing the \
+             read rather than a missing key. On macOS a Keychain grant is tied to \
+             the application's signature, so a newly installed or re-signed build \
+             asks for permission again -- answer the prompt with \u{201c}Always \
+             Allow\u{201d}. {NO_CLI_FALLBACK}"
+        ),
+    }
+}
+
 impl VersaAzureProvider {
     pub async fn from_env(model: ModelConfig) -> Result<Self> {
         let config = crate::config::Config::global();
@@ -605,17 +635,7 @@ impl VersaAzureProvider {
                 VersaAzureCredentialSource::AzureCli
             }
             // Anything else is the store failing, not the key being absent.
-            Err(error) => {
-                return Err(anyhow::anyhow!(
-                    "Could not read VERSA_AZURE_API_KEY from the credential store: {error}\n\n\
-                     The key appears to be configured, so this is the store refusing the \
-                     read rather than a missing key. On macOS a Keychain grant is tied to \
-                     the application's signature, so a newly installed or re-signed build \
-                     asks for permission again -- answer the prompt with \u{201c}Always \
-                     Allow\u{201d}. Biorouter did NOT silently fall back to the Azure CLI, \
-                     because this provider signs in with the API key."
-                ));
-            }
+            Err(error) => return Err(key_read_refusal(config, &error)),
         };
 
         Self::build(
@@ -674,11 +694,10 @@ impl VersaAzureProvider {
         let config = crate::config::Config::global();
         let api_key = match credential_source {
             VersaAzureCredentialSource::ApiKey => {
-                let key = config
-                    .get_secret::<String>("VERSA_AZURE_API_KEY")
-                    .map_err(|_| {
-                        anyhow::anyhow!("VERSA_AZURE_API_KEY {}", super::CREDENTIAL_NEVER_SET)
-                    })?;
+                // Not a blanket "not configured": a key the store refused to
+                // hand over is there, and must not be re-entered (see
+                // `read_provider_credential`, and #521 for the file store).
+                let key = super::read_provider_credential(config, "VERSA_AZURE_API_KEY", None)?;
                 anyhow::ensure!(!key.trim().is_empty(), "VERSA_AZURE_API_KEY is empty");
                 Some(key)
             }
@@ -1073,6 +1092,60 @@ mod tests {
         assert_eq!(resolve_override("default", None), "default");
         // Blank is absent, not "point at nowhere".
         assert_eq!(resolve_override("default", Some("   ".into())), "default");
+    }
+
+    /// A refused read of the key names the store that refused it. While
+    /// `BIOROUTER_DISABLE_KEYRING` selects the file store, Keychain advice would send the
+    /// person to a store that was never asked; with the credential store, it is the usual
+    /// cause and stays. Neither says the Azure CLI was tried, and neither holds the key.
+    #[test]
+    fn a_refused_key_read_names_the_store_that_refused_it() {
+        use crate::config::{Config, ConfigError};
+        if !crate::test_sandbox::in_a_process_of_its_own() {
+            return;
+        }
+        let directory = tempfile::tempdir().unwrap();
+        let secrets = directory.path().join("secrets.yaml");
+        let file =
+            Config::new_with_file_secrets(directory.path().join("file.yaml"), &secrets).unwrap();
+        let _env = env_lock::lock_env([("BIOROUTER_DISABLE_KEYRING", Some("1"))]);
+        file.set_secret("VERSA_AZURE_API_KEY", &"synthetic-versa-value")
+            .unwrap();
+        // The file store refuses every read: its path is now a directory.
+        std::fs::remove_file(&secrets).unwrap();
+        std::fs::create_dir(&secrets).unwrap();
+        file.invalidate_secrets_cache();
+        let error = file
+            .get_secret::<String>("VERSA_AZURE_API_KEY")
+            .expect_err("a directory cannot be read as the secrets file");
+        assert!(!matches!(error, ConfigError::NotFound(_)), "{error:?}");
+        let refused = key_read_refusal(&file, &error).to_string();
+        assert!(
+            refused.starts_with("Could not read VERSA_AZURE_API_KEY from the file store"),
+            "{refused}"
+        );
+        assert!(
+            refused.contains(&secrets.display().to_string()),
+            "{refused}"
+        );
+        assert!(!refused.contains("Keychain"), "{refused}");
+        assert!(refused.contains("did NOT silently fall back to the Azure CLI"));
+        assert!(!refused.contains("synthetic-versa-value"), "{refused}");
+
+        // The credential store: the Keychain advice is the point.
+        let keyring =
+            Config::new(directory.path().join("keyring.yaml"), "synthetic-versa").unwrap();
+        let refused = key_read_refusal(
+            &keyring,
+            &ConfigError::DeserializeError("synthetic refusal".into()),
+        )
+        .to_string();
+        assert!(
+            refused.starts_with("Could not read VERSA_AZURE_API_KEY from the credential store"),
+            "{refused}"
+        );
+        assert!(refused.contains("Keychain"), "{refused}");
+        assert!(refused.contains("did NOT silently fall back to the Azure CLI"));
     }
 
     use crate::providers::api_client::AuthMethod;

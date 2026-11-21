@@ -219,7 +219,7 @@ for (const tag of ollamaRecommended) {
 // Derive the rail from the app rather than keeping a third copy of the list.
 // The hardcoded copy asserted 'Chat', 'History' and 'Apps', three rows the app
 // has never had under those names (they are 'New chat', reached from Recents,
-// and 'Built apps'), so it was checking the mockup against a list that matched
+// and 'Applications'), so it was checking the mockup against a list that matched
 // neither the app nor the site, and no edit to the site could turn it green.
 const appSidebar = source('ui/desktop/src/components/BioRouterSidebar/AppSidebar.tsx');
 const sidebarLabels = [...appSidebar.matchAll(/label: '([^']+)'/g)].map((match) => match[1]);

@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Docs · Biorouter</title>
-<meta name="description" content="Biorouter documentation: install, models, private and public chats, extensions, skills, workflows, knowledge bases, built apps, Crew and the command line. Documents biorouter v1.94.5.">
+<meta name="description" content="Biorouter documentation: install, models, private and public chats, extensions, skills, workflows, knowledge bases, applications, Crew and the command line. Documents biorouter v1.94.5.">
 <meta name="theme-color" content="#ffffff">
 <link rel="icon" href="icon-transparent.svg" type="image/svg+xml">
 <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -57,7 +57,7 @@
           <li><a class="docs-nav-item" id="dnav-extensions" data-page="extensions" href="#doc-extensions">Extensions and skills</a></li>
           <li><a class="docs-nav-item" id="dnav-workflows" data-page="workflows" href="#doc-workflows">Workflows and scheduling</a></li>
           <li><a class="docs-nav-item" id="dnav-knowledge" data-page="knowledge" href="#doc-knowledge">Knowledge bases</a></li>
-          <li><a class="docs-nav-item" id="dnav-apps" data-page="apps" href="#doc-apps">Built apps</a></li>
+          <li><a class="docs-nav-item" id="dnav-apps" data-page="apps" href="#doc-apps">Applications</a></li>
           <li><a class="docs-nav-item" id="dnav-crew" data-page="crew" href="#doc-crew">Crew</a></li>
         </ul></div>
         <div class="docs-group"><h2>How it works</h2><ul>
@@ -109,7 +109,7 @@
 <h2 id="getstarted-first-chat">Start a chat</h2>
 <ol class="steps">
   <li><strong>Open a new chat</strong> Choose <strong>New chat</strong> in the sidebar, or press <kbd>Cmd+T</kbd> (<kbd>Ctrl+T</kbd> on Windows and Linux).</li>
-  <li><strong>Pick a working folder</strong> The folder on the line under the text box is where the agent reads and writes files. Choose it to see its full path, and <strong>Choose folder…</strong> to switch before you send the first message. After that the chat keeps it, and the same card lists any other folders the chat may use, each with <strong>Revoke</strong>.</li>
+  <li><strong>Pick a working folder</strong> The folder on the line under the text box is where the agent reads and writes files. Point at it to see its full path, and click it to switch before you send the first message. After that the chat keeps it, and clicking it shows any other folders the chat may use, each with <strong>Revoke</strong>.</li>
   <li><strong>Ask</strong> Type a request in plain language and press <kbd>Enter</kbd>, for example “List the files in this folder and summarize the README.” The agent answers and shows each tool it runs as one line.</li>
 </ol>
 <p>From a terminal, <code>biorouter session</code> opens an interactive chat, and <code>biorouter run -t "Summarize ./notes.md"</code> sends one request and exits.</p>
@@ -157,10 +157,10 @@
       <li><strong>Skills.</strong> Instruction sets the agent loads when a task calls for one.</li>
       <li><strong>Knowledge.</strong> Knowledge bases the agent writes and reads. See <a href="#knowledge">Knowledge bases</a>.</li>
       <li><strong>Dictionary.</strong> The words dictation should spell your way. See <a href="#app-dictation">Dictation</a>.</li>
-      <li><strong>Built apps.</strong> Apps the agent built for you. This is the only place to delete one. See <a href="#apps">Built apps</a>.</li>
+      <li><strong>Applications.</strong> Applications the agent built for you. This is the only place to delete one. See <a href="#apps">Applications</a>.</li>
     </ul>
   </li>
-  <li><strong>Chats.</strong> Your chats, one row each. A running chat shows an indicator, and a private chat's icon carries a small lock. Chats that Crew, a schedule, a subagent or a built app started, and chats you diverged, each have their own icon. The <strong>View options</strong> menu in the header sets <strong>Group by</strong> (Date, Folder or None) and <strong>Sort by</strong> (Last activity, Created or Name). By default chats sit under Today, Yesterday, Previous 7 days, Previous 30 days and then a heading for each month. Grouped by folder, each folder has a <strong>+</strong> that opens a new chat window in it. <strong>All chats</strong> opens Chat history.</li>
+  <li><strong>Chats.</strong> Your chats, one row each. A running chat shows an indicator, and a private chat's icon carries a small lock. Chats that Crew, a schedule, a subagent or an application started, and chats you diverged, each have their own icon. The <strong>View options</strong> menu in the header sets <strong>Group by</strong> (Date, Folder or None) and <strong>Sort by</strong> (Last activity, Created or Name). By default chats sit under Today, Yesterday, Previous 7 days, Previous 30 days and then a heading for each month. Grouped by folder, each folder has a <strong>+</strong> that opens a new chat window in it. <strong>All chats</strong> opens Chat history.</li>
   <li><strong>Settings.</strong> Pinned at the bottom. When an update is ready, an update row appears above it. See <a href="#app-settings">Settings</a>.</li>
 </ul>
 <p>Right click a chat, or choose <strong>⋯</strong> on its row, for <strong>Rename</strong>, <strong>Open in new tab</strong>, <strong>Open in new window</strong>, <strong>Diverge</strong>, <strong>Export…</strong>, <strong>Copy chat ID</strong> and <strong>Delete chat…</strong>. Rename edits the title in the row. On a focused row, <kbd>F2</kbd> does the same.</p>
@@ -176,9 +176,9 @@
   <li><strong>Under the card.</strong> On the left, the working folder the agent reads and writes in. On the right, the model chip, then a ring that shows how much of the context window is left, then the estimated cost of the chat so far. A decision chat has no ring. On Home the line shows the folder and the model.</li>
   <li><strong>The model chip.</strong> It names the model this chat runs on. Its menu shows the provider and whether the model is private, sets <strong>Effort</strong> (Quick, Normal or Deep), which is how long the model thinks before it answers, and offers <strong>Change model…</strong>. See <a href="#app-models">Switching models</a>.</li>
 </ul>
-<p>Point at the folder, the ring or the cost to see a card about it, and click to keep the card open. <kbd>Esc</kbd> or a click elsewhere closes it.</p>
+<p>Point at the folder to see where it is. Point at the ring or the cost to see a card about it, and click to keep the card open. <kbd>Esc</kbd> or a click elsewhere closes it.</p>
 <ul>
-  <li><strong>Folder.</strong> The full path and, while the chat is empty, <strong>Choose folder…</strong>; once you send the first message the chat keeps its folder. Below it are the other folders the chat may use, each with <strong>Revoke</strong>. <kbd>Cmd</kbd>-click the folder to open it in Finder, or <kbd>Ctrl</kbd>-click on Windows and Linux; a <code>biorouter serve</code> browser cannot.</li>
+  <li><strong>Folder.</strong> Pointing at it shows the full path. While the chat is empty, clicking it opens the folder chooser; once you send the first message the chat keeps its folder, and clicking it opens a card with the other folders the chat may use, each with <strong>Revoke</strong>. <kbd>Cmd</kbd>-click the folder to open it in Finder, or <kbd>Ctrl</kbd>-click on Windows and Linux; a <code>biorouter serve</code> browser cannot.</li>
   <li><strong>Ring.</strong> How much is left and used, and a bar whose marker sets when Biorouter compacts the chat on its own. <strong>Compact chat</strong> compacts it now. When the chat can call more than 60 tools, <strong>Review extensions</strong> appears beside it.</li>
   <li><strong>Cost.</strong> What the chat used, and a limit for it in dollars or tokens. Until you set one, the default from <strong>Settings&nbsp;→&nbsp;App&nbsp;→&nbsp;Usage</strong> applies. The limit counts the chat and the subagents it starts, and a chat that reaches it pauses before its next model request. <strong>Settings&nbsp;→&nbsp;App&nbsp;→&nbsp;General&nbsp;→&nbsp;Show costs</strong> hides the dollar figures, not the limit.</li>
 </ul>
@@ -215,15 +215,15 @@
 </ol>
 <p>The same microphone sits in the message editor, and in Crew's channel composer and <strong>Ask my agent</strong> box, where nothing is posted until you press Send.</p>
 <h3 id="app-dictation-dictionary">Your dictionary</h3>
-<p><strong>Dictionary</strong>, in the sidebar's Components group, lists the words dictation should spell your way, such as UCSF or EPAS1. Add one there with <strong>Add a term…</strong>, or right click a word in a chat and choose <strong>Add to Biorouter dictionary…</strong>. A term you add from a private chat is private unless you untick <strong>Only in private chats</strong>: it shapes dictation only into chats on private models, and never into a chat on another institution's model. See <a href="#privacy">Private and public</a>.</p>
-<p>At the first install, <strong>Suggest dictionary words from my chats</strong> lets the agent add terms in new chats. <strong>Agent's terms</strong> on the Dictionary page sets what happens then. By default, <strong>Add when I ask, suggest otherwise</strong>, a term goes live at once only when you asked for it or answered the agent's offer of it, and anything else waits under <strong>Suggested</strong>. The other choices are <strong>Wait for my review</strong> and <strong>Add without asking</strong>. In the chat, the agent's line has <strong>Keep</strong> and <strong>Undo</strong> for each term it added; on the Dictionary page such a term has <strong>Keep</strong> and <strong>Remove</strong>.</p>
-<p><strong>Suggest words from my messages</strong>, a switch on the Dictionary page and in <strong>Settings&nbsp;→&nbsp;Models&nbsp;→&nbsp;Speech models</strong>, is off until you turn it on. It suggests terms such as EPAS1 or UCSF from what you type in chats on public models, once a word shows up in two different chats, or more after you dismiss most suggestions. A chat on a private model suggests nothing, and what it reads stays on this computer. With the switch on, <strong>Find words in my recent chats</strong> reads your recent chats once. <strong>Keep</strong> or <strong>Dismiss</strong> each suggestion, or choose <strong>Review all…</strong>; a dismissed word is not suggested again. The page groups terms under <strong>Suggested</strong>, <strong>Added by the agent</strong>, <strong>Added by you</strong>, <strong>From your chats</strong> and <strong>Imported</strong>. In a terminal chat, <code>/dictionary scan</code> and <code>/dictionary review</code> do the same.</p>
+<p><strong>Dictionary</strong>, in the sidebar's Components group, lists the words dictation should spell your way, such as UCSF or Biorouter. Add one there with <strong>Add a term…</strong>, or right click a word in a chat and choose <strong>Add to Biorouter dictionary…</strong>. A term you add from a private chat is private unless you untick <strong>Only in private chats</strong>: it shapes dictation only into chats on private models, and never into a chat on another institution's model. See <a href="#privacy">Private and public</a>.</p>
+<p>The page holds your words, and its options are in <strong>Settings&nbsp;→&nbsp;Models&nbsp;→&nbsp;Speech models</strong>, which the settings icon at the top of the page opens. <strong>Suggest dictionary words from my chats</strong>, on by default, lets the agent suggest and add terms in new chats; you can untick it beside <strong>Install</strong> at the first install or turn it off there later. <strong>Agent's terms</strong> sets what happens to a term the agent proposes. By default, <strong>Add when I ask, suggest otherwise</strong>, a term goes live at once only when you asked for it or answered the agent's offer of it, and anything else waits under <strong>Suggested</strong>. The other choices are <strong>Wait for my review</strong> and <strong>Add without asking</strong>. In the chat, the agent's line has <strong>Keep</strong> and <strong>Undo</strong> for each term it added; on the Dictionary page such a term has <strong>Keep</strong> and <strong>Remove</strong>.</p>
+<p><strong>Suggest words from my messages</strong>, a switch in the same settings, starts on in a new dictionary, and a dictionary that already saved a choice keeps it. It suggests terms such as EPAS1 or UCSF from what you type in chats on public models, once a word shows up in two different chats, or more after you dismiss most suggestions. A chat on a private model suggests nothing, and what it reads stays on this computer. With the switch on, <strong>Find words</strong> beside <strong>Recent chats</strong> reads your recent chats once. On the Dictionary page, <strong>Keep</strong> or <strong>Dismiss</strong> each suggestion, or choose <strong>Review all…</strong>; a dismissed word is not suggested again. The page groups terms under <strong>Suggested</strong>, <strong>Added by the agent</strong>, <strong>Added by you</strong>, <strong>From your chats</strong> and <strong>Imported</strong>. In a terminal chat, <code>/dictionary scan</code> and <code>/dictionary review</code> do the same.</p>
 <h3 id="app-dictation-elsewhere">In the terminal, the browser and other apps</h3>
 <ul>
   <li><strong>Terminal.</strong> <kbd>Ctrl+T</kbd> or <code>/dictate</code> in a chat, and <code>biorouter dictate</code> anywhere else. See <a href="#cli-dictate">Dictate</a>.</li>
   <li><strong>Browser access.</strong> A <code>biorouter serve</code> browser has the same microphone. The audio is transcribed on the server, and models install there. Browsers offer the microphone only on <code>localhost</code> or an HTTPS address. See <a href="#cli-serve">Browser access</a>.</li>
   <li><strong>Other apps.</strong> <strong>Dictate to clipboard</strong> in the tray menu records and copies the text for you to paste anywhere. It starts only after you turn on <strong>Dictate into other apps</strong> in <strong>Settings&nbsp;→&nbsp;Models&nbsp;→&nbsp;Speech models</strong>, where you can also choose a keyboard shortcut for it; until then the tray item opens that setting. The tray item is there only while <strong>Settings&nbsp;→&nbsp;App&nbsp;→&nbsp;General&nbsp;→&nbsp;Show in menu bar</strong> is on; the shortcut works without it. On Windows and Linux both work only while a Biorouter window is open, minimized included, because closing the last window quits the app there. <strong>Include my private terms</strong>, beside it in the tray menu, lets your private terms shape one recording after a warning. It is greyed out until <strong>Dictate into other apps</strong> is on, and where private terms cannot be used. The shortcut always uses public terms only. GNOME on Wayland lets no app set a shortcut that works in other apps, so there use the tray item, which GNOME shows with the AppIndicator extension.</li>
-  <li><strong>Built apps.</strong> In the preview of an app the agent built, click into one of its text fields and choose <strong>Dictate into this app</strong>, which appears while a field has focus. It works whether or not <strong>Dictate into other apps</strong> is on.</li>
+  <li><strong>Applications.</strong> In the preview of an application the agent built, click into one of its text fields and choose <strong>Dictate into this application</strong>, which appears while a field has focus. It works whether or not <strong>Dictate into other apps</strong> is on.</li>
 </ul>
 <div class="note"><p>Audio is never saved, and once a model is installed dictation needs no network. On a computer with no network, run <code>biorouter dictation urls</code> on a connected one, carry the files over and run <code>biorouter dictation install --from</code> with their folder. Processors without AVX2 cannot run local dictation, and Biorouter says so before any download.</p></div>
 
@@ -678,12 +678,12 @@ sudo dnf install ./biorouter-cli-*-1.x86_64.rpm</code></pre></li>
   <thead><tr><th>Capability</th><th>In a browser</th></tr></thead>
   <tbody>
     <tr><td>Chat, history, extensions, skills, knowledge bases and workflows</td><td>Yes. Private chats and knowledge bases are listed only when the configured model is private.</td></tr>
-    <tr><td>Several chats at once, workspace control, built apps and their agents</td><td>Yes</td></tr>
+    <tr><td>Several chats at once, workspace control, applications and their agents</td><td>Yes</td></tr>
     <tr><td>Stop, and Stop &amp; send</td><td>Yes</td></tr>
     <tr><td>Steering a turn while it runs</td><td>No. What you type waits and is sent when the turn ends.</td></tr>
     <tr><td>A subagent's own tab</td><td>Read only.</td></tr>
     <tr><td>Model and provider selection</td><td>Yes, for the host's providers and its default model, from the page <code>serve</code> printed at a secure address. An open chat keeps its model. See <a href="#cli-serve-model">Choosing the model</a>.</td></tr>
-    <tr><td>Dictation and Dictionary</td><td>Yes. The browser records from its own microphone and sends the audio to the machine running <code>serve</code>, which transcribes it. <strong>Settings&nbsp;→&nbsp;Models&nbsp;→&nbsp;Speech models</strong> installs a speech model on that machine, unless <code>serve</code> started with <code class="code-token">--no-dictation-install</code>, <code class="code-token">BIOROUTER_DICTATION_BROWSER_INSTALL=false</code> is set, or managed policy stops it. The Dictionary page adds, edits, accepts and deletes terms. Making a term public or private, and the settings that raise agent writes or turn learning from chats on, are done on the host with <code>biorouter dictionary</code>. A private add needs private standing. <strong>Show in Finder</strong> is unavailable, because the model folder belongs to the host.</td></tr>
+    <tr><td>Dictation and Dictionary</td><td>Yes. The browser records from its own microphone and sends the audio to the machine running <code>serve</code>, which transcribes it. <strong>Settings&nbsp;→&nbsp;Models&nbsp;→&nbsp;Speech models</strong> installs a speech model on that machine, unless <code>serve</code> started with <code class="code-token">--no-dictation-install</code>, <code class="code-token">BIOROUTER_DICTATION_BROWSER_INSTALL=false</code> is set, or managed policy stops it. The Dictionary page adds, edits, accepts and deletes terms, and the dictionary's options are rows in <strong>Settings&nbsp;→&nbsp;Models&nbsp;→&nbsp;Speech models</strong>. Making a term public or private, raising <strong>Agent's terms</strong>, and turning <strong>Suggest dictionary words from my chats</strong> or <strong>Suggest words from my messages</strong> on are done on the host with <code>biorouter dictionary</code>. A private add needs private standing. <strong>Show in Finder</strong> is unavailable, because the model folder belongs to the host.</td></tr>
     <tr><td>Usage and limits</td><td>No. <strong>Settings&nbsp;→&nbsp;App&nbsp;→&nbsp;Usage</strong> reads nothing and says this month's usage and limits are in the desktop app.</td></tr>
     <tr><td>Updating Biorouter</td><td>Yes. An <strong>Update</strong> row appears at the lower left when a release is out. See <a href="#cli-serve-update">Updating from the page</a>.</td></tr>
     <tr><td>Crew</td><td>No, and it says so before you try: opening Crew shows &ldquo;Crew needs the Biorouter desktop app&rdquo;. Every Crew action needs proof that a person is at this computer, which the desktop app and <code>biorouter crew</code> supply themselves; the daemon <code>serve</code> starts never holds it. Use Crew in the desktop app or with <code>biorouter crew</code> in a terminal on your own computer.</td></tr>
@@ -721,7 +721,7 @@ sudo dnf install ./biorouter-cli-*-1.x86_64.rpm</code></pre></li>
     <tr><td><code>setup-path</code></td><td>Put <code>biorouter</code> on your PATH.</td></tr>
     <tr><td><code>term</code></td><td>One chat per terminal window, and <code>@biorouter</code> or <code>@g</code> to ask from the prompt with your recent commands as context. Add <code>eval "$(biorouter term init zsh)"</code> to <code>~/.zshrc</code>; <code>term init</code> also takes <code>bash</code>, <code>fish</code> and <code>powershell</code>.</td></tr>
     <tr><td><code>project</code></td><td>Continue in your last project folder. <code>projects</code> lists recent ones to pick from.</td></tr>
-    <tr><td><code>apps</code></td><td>Open an app the agent built in your browser: <code>apps list</code>, then <code>apps open ID</code> or <code>apps serve ID</code>. See <a href="#apps">Built apps</a>.</td></tr>
+    <tr><td><code>apps</code></td><td>Open an application the agent built in your browser: <code>apps list</code>, then <code>apps open ID</code> or <code>apps serve ID</code>. See <a href="#apps">Applications</a>.</td></tr>
     <tr><td><code>crew</code></td><td>Crew workspaces from a terminal. See <a href="#crew">Crew</a>.</td></tr>
     <tr><td><code>mcp</code></td><td>A bundled MCP server over standard input and output, for a host to start: <code>autovisualiser</code>, <code>computercontroller</code>, <code>webdocuments</code>, <code>developer</code> or <code>memory</code>.</td></tr>
     <tr><td><code>acp</code></td><td>An Agent Client Protocol server for editors such as Zed. <code class="code-token">--ws</code> serves a WebSocket on <code>127.0.0.1:11577</code>.</td></tr>
@@ -1054,8 +1054,8 @@ biorouter run --provider versa_azure -t "Summarize ./notes.md"</code></pre>
 <p>To open one protected file on purpose, add a negation to <code>.biorouterignore</code>: the project's own file for paths inside the project, or <code>~/.config/biorouter/.biorouterignore</code> for every path. For example, <code>!**/.env.example</code> in the project's file reopens its example env files. Any other pattern you add there keeps those files from the agent too.</p>
 <div class="note"><p>The guard stops mistakes, not a determined attacker. It cannot see a path a program builds while it runs, a recursive read of a parent folder such as <code>grep -r key ~/.aws</code>, or text inside a screenshot.</p></div>
 
-<h2 id="vaulting-app-vault">Secrets for built apps</h2>
-<p>A <a href="#apps">built app</a> can hold its own secrets, apart from your provider keys. Its <code>vault</code> capability is off unless the app's manifest names each secret, for example <code>"vault": { "encrypted": ["SPOKEAGENT_PASSCODE"] }</code>. The values are stored encrypted in the app's <code>.vault/</code> folder, and the app refers to each one by name as <code>{{vault:NAME}}</code>. Biorouter fills in the value when a tool runs, so the value never reaches the model. An exported app leaves <code>.vault/</code> behind.</p>
+<h2 id="vaulting-app-vault">Secrets for applications</h2>
+<p>An <a href="#apps">application</a> can hold its own secrets, apart from your provider keys. Its <code>vault</code> capability is off unless the application's manifest names each secret, for example <code>"vault": { "encrypted": ["SPOKEAGENT_PASSCODE"] }</code>. The values are stored encrypted in the application's <code>.vault/</code> folder, and the application refers to each one by name as <code>{{vault:NAME}}</code>. Biorouter fills in the value when a tool runs, so the value never reaches the model. An exported application leaves <code>.vault/</code> behind.</p>
 
 <h2 id="vaulting-dictation">Dictation</h2>
 <div class="note"><p><strong>Next release.</strong> Local dictation arrives in the release after v1.94.1.</p></div>
@@ -1090,7 +1090,8 @@ biorouter run --provider versa_azure -t "Summarize ./notes.md"</code></pre>
 <p>A permission card nobody answers does not wait forever. After its window, 5 minutes for a folder card and an hour by default for a tool card (<code class="code-token">BIOROUTER_CONFIRMATION_TIMEOUT_SECS</code>), it turns into a line reading <strong>Expired: ask again</strong>, the call is not run, and the model is told why. A late click approves nothing. To go ahead, ask again in the chat.</p>
 
 <h3 id="vaulting-copilot">Biorouter Copilot asks for each task</h3>
-<p>Turning on Biorouter Copilot in <strong>Settings → Chat → Capabilities</strong> does not give it your desktop. Before its first capture or action for a request, Biorouter asks for approval that names the model and provider, where their data goes, and the computer to control. With a public model, the approval says that screenshots and application text can be sent to that provider. The approval covers that one request and ends when the reply finishes, when you stop it, or when the model changes. Chat only refuses every Biorouter Copilot tool.</p>
+<p>Turning on Biorouter Copilot in <strong>Settings → Chat → Capabilities</strong> does not give it your desktop. Before its first capture or action for a request, Biorouter asks for approval that names the model and provider, where their data goes, and the computer to control. With a public model, the approval says that screenshots and application text can be sent to that provider. You choose <strong>Allow</strong>, which lets it look and control, or <strong>Only let it look</strong>, which lets it see your apps and change nothing. The approval covers that one request and ends when the reply finishes, when you stop it, or when the model changes. It never reaches Biorouter's own windows, password fields or system security prompts. Chat only refuses every Biorouter Copilot tool.</p>
+<p>On macOS, Accessibility and Screen Recording belong to an app named Biorouter Copilot inside Biorouter, never to Biorouter itself, so a command the agent runs in a shell cannot use them. <strong>Request access</strong> in Biorouter Copilot's setup has macOS ask for both.</p>
 
 <h2 id="vaulting-managed-policy">Managed policy</h2>
 <p>An administrator can install a policy file that outranks your own settings. It can deny a tool, require approval for it or approve it in advance, and it can add hooks that always run. It can also turn local voice dictation off or narrow it, through a <code>dictation:</code> block. A deny holds in Autonomous mode too, and the call reports “Blocked by your organization's managed policy.”</p>
@@ -1167,7 +1168,7 @@ biorouter run --provider versa_azure -t "Summarize ./notes.md"</code></pre>
   <thead><tr><th>Extension</th><th>Default</th><th>What it does</th></tr></thead>
   <tbody>
     <tr><td><strong>Developer</strong></td><td>On</td><td>Reads, writes and edits files, searches code and runs shell commands. Its commands run with your own user account's access.</td></tr>
-    <tr><td><strong>Biorouter Copilot</strong></td><td>On</td><td>Looks at and operates the apps on your desktop. It asks you to approve each task first, and Stop ends it.</td></tr>
+    <tr><td><strong>Biorouter Copilot</strong></td><td>On</td><td>Looks at and operates the apps on your desktop, including drag and drop. It asks you first for each request, to look and control or only to look, and Stop ends it. Web pages go to the Biorouter Browser instead.</td></tr>
     <tr><td><strong>Web &amp; Documents</strong></td><td>On</td><td>Reads web pages and works with spreadsheets, Word documents and PDFs.</td></tr>
     <tr><td><strong>Auto Visualiser</strong></td><td>On</td><td>Draws interactive figures from data: 32 kinds of chart, scientific plot, network, diagram and map, including volcano, Manhattan, Kaplan-Meier and forest plots. Several figures can form one report. Each opens in the side panel.</td></tr>
     <tr><td><strong>Code Execution</strong></td><td>On</td><td>Lets the model write one short JavaScript program that makes many tool calls at once, so the steps in between do not fill the conversation.</td></tr>
@@ -1176,7 +1177,7 @@ biorouter run --provider versa_azure -t "Summarize ./notes.md"</code></pre>
     <tr><td><strong>Todo</strong></td><td>On</td><td>Keeps a checklist for a task with several steps, so you can see what is done and what is left.</td></tr>
     <tr><td><strong>Memory</strong></td><td>On</td><td>Remembers preferences and conventions you teach it, for one project or for all of them.</td></tr>
     <tr><td><strong>Knowledge</strong></td><td>On</td><td>Lets the agent build, read and search your knowledge bases from a chat. See <a href="#knowledge">Knowledge bases</a>.</td></tr>
-    <tr><td><strong>Agent Drafter</strong></td><td>On</td><td>Builds apps that have their own agent, and exports them as projects that run on their own. See <a href="#apps">Built apps</a>.</td></tr>
+    <tr><td><strong>Application Drafter</strong></td><td>On</td><td>Builds applications that have their own agent, and exports them as projects that run on their own. See <a href="#apps">Applications</a>.</td></tr>
     <tr><td><strong>Chat Recall</strong></td><td>Off</td><td>Searches your earlier chats and loads a summary of one, so earlier work can continue here. It reads only the chat history on this computer.</td></tr>
     <tr><td><strong>Workspace Control</strong></td><td>On</td><td>Lets the agent work across chats: open, read and steer another chat, and run subagents. A subagent runs in the background and is listed in the chat summary, where its card has <strong>Open in a tab</strong>. When you ask to watch a subagent, the agent opens its tab as it starts it. <strong>Settings → App → General → Open subagent tabs automatically</strong> opens one for every subagent, unless <strong>Never open tabs automatically</strong> is on. See <a href="#agentloop">The agent loop</a>.</td></tr>
     <tr><td><strong>Crew</strong></td><td>On</td><td>Lets a chat use your saved Crew connections. A chat you connect with <code>/crew</code> reads the Crew channels you choose and posts in its channel. Your other chats can do what the Crew view does, as you, through <code>crew__read</code> and <code>crew__change</code>: the first read of a workspace asks your permission, and every change waits for you on a card. See <a href="#crew">Crew</a>.</td></tr>
@@ -1610,15 +1611,15 @@ biorouter knowledge lint</code></pre>
 </div>
 
 <div class="doc-page" id="doc-apps">
-<h1>Built apps</h1>
-<p class="doc-lede">Agent Drafter builds apps: a small web page with its own agent, which fills panels, draws charts and asks you questions while you use it.</p>
+<h1>Applications</h1>
+<p class="doc-lede">Application Drafter builds applications. Each is a small web page with its own agent, which fills panels, draws charts and asks you questions while you use it.</p>
 
-<h2 id="apps-what">What an app is</h2>
-<p>An app is a TypeScript front end (<code>index.html</code> and <code>src/main.ts</code>) with a <code>manifest.json</code> that sets its agent: instructions, model, extensions, skills, knowledge bases and what the app may do. Apps live in <code>~/.config/biorouter/agent_drafter/&lt;id&gt;/</code>. Biorouter's background service serves each one at <code>/apps/&lt;id&gt;/</code> and connects the page to its agent over a WebSocket.</p>
-<p>Build one when a task needs a working surface rather than a transcript: a cohort reviewer, a variant workbench, a knowledge graph explorer, a dashboard for one lab. To see every app you have, open the sidebar's Components group and choose <strong>Built apps</strong>.</p>
+<h2 id="apps-what">What an application is</h2>
+<p>An application is a TypeScript front end (<code>index.html</code> and <code>src/main.ts</code>) with a <code>manifest.json</code> that sets its agent: instructions, model, extensions, skills, knowledge bases and what the application may do. Applications live in <code>~/.config/biorouter/agent_drafter/&lt;id&gt;/</code>. Biorouter's background service serves each one at <code>/apps/&lt;id&gt;/</code> and connects the page to its agent over a WebSocket.</p>
+<p>Build one when a task needs a working surface rather than a transcript: a cohort reviewer, a variant workbench, a knowledge graph explorer, a dashboard for one lab. To see every application you have, open the sidebar's Components group and choose <strong>Applications</strong>.</p>
 
-<h2 id="apps-drive">How the agent drives the app</h2>
-<p>Each app's agent gets a set of tools that act on the page. A call becomes a message on the app's socket and the page's SDK applies it. What you do in the page, such as answering a form or selecting a row, comes back over the same socket.</p>
+<h2 id="apps-drive">How the agent drives the application</h2>
+<p>Each application's agent gets a set of tools that act on the page. A call becomes a message on the application's socket and the page's SDK applies it. What you do in the page, such as answering a form or selecting a row, comes back over the same socket.</p>
 <div class="doc-table-scroll"><table>
   <thead><tr><th>Tool</th><th>What it does</th></tr></thead>
   <tbody>
@@ -1626,29 +1627,29 @@ biorouter knowledge lint</code></pre>
     <tr><td><code>ui_panel</code>, <code>ui_render</code></td><td>Open a panel, or render widgets (cards, tables, stats, forms, Markdown) into a target.</td></tr>
     <tr><td><code>ui_patch</code></td><td>Change rendered widgets in place by id, keeping scroll position and typed input.</td></tr>
     <tr><td><code>ui_chart</code>, <code>ui_graph</code>, <code>ui_figure</code></td><td>Draw a chart, a network graph, or an Auto Visualiser figure such as a volcano plot or a survival curve.</td></tr>
-    <tr><td><code>ui_html</code></td><td>Render HTML that Biorouter has cleaned of scripts and forms. Off unless the app allows it.</td></tr>
+    <tr><td><code>ui_html</code></td><td>Render HTML that Biorouter has cleaned of scripts and forms. Off unless the application allows it.</td></tr>
     <tr><td><code>ui_highlight</code>, <code>ui_notify</code>, <code>ui_suggest</code></td><td>Point at a region, show a short message, or offer up to five next steps the user can choose or ignore.</td></tr>
     <tr><td><code>ui_theme</code>, <code>ui_layout</code></td><td>Switch the theme pack, accent, light or dark mode and density, or rearrange the layout.</td></tr>
     <tr><td><code>ui_state</code>, <code>ui_patch_state</code></td><td>Read and change the shared state the page is bound to.</td></tr>
     <tr><td><code>ui_ask</code></td><td>Show a form and wait for the answer. See <a href="#apps-ask">Questions that wait</a>.</td></tr>
-    <tr><td><code>ui_subscribe</code></td><td>Listen to signals the app declares, such as a row being selected.</td></tr>
-    <tr><td><code>app_call</code>, <code>emit_result</code></td><td>Call an action the app registered, or return a structured result the app is waiting for.</td></tr>
-    <tr><td><code>consult</code></td><td>Ask one of the app's worker profiles a question that stands on its own. Works only when the app declares worker profiles; otherwise it says there are none.</td></tr>
+    <tr><td><code>ui_subscribe</code></td><td>Listen to signals the application declares, such as a row being selected.</td></tr>
+    <tr><td><code>app_call</code>, <code>emit_result</code></td><td>Call an action the application registered, or return a structured result the application is waiting for.</td></tr>
+    <tr><td><code>consult</code></td><td>Ask one of the application's worker profiles a question that stands on its own. Works only when the application declares worker profiles; otherwise it says there are none.</td></tr>
   </tbody>
 </table></div>
 
 <h2 id="apps-regions">Regions</h2>
-<p>An app marks the places the agent may write with a region attribute:</p>
+<p>An application marks the places the agent may write with a region attribute:</p>
 <pre><code>&lt;section data-br-region="results"&gt;
 &lt;/section&gt;</code></pre>
-<p>The agent finds regions with <code>ui_describe</code> and writes to <code>@region:results</code>. It can also target <code>@panel:ID</code>, <code>@main</code>, <code>@chat</code> or a CSS selector such as <code>#out</code>. Panels need no region: every app has a dock for them. Up to 12 panels stay open by default, and the oldest closes when a new one opens.</p>
+<p>The agent finds regions with <code>ui_describe</code> and writes to <code>@region:results</code>. It can also target <code>@panel:ID</code>, <code>@main</code>, <code>@chat</code> or a CSS selector such as <code>#out</code>. Panels need no region: every application has a dock for them. Up to 12 panels stay open by default, and the oldest closes when a new one opens.</p>
 
 <h2 id="apps-ask">Questions that wait</h2>
-<p><code>ui_ask</code> shows a form in the page and holds the tool call until you submit it. The answers come back as the tool's result, so the agent can act on them in the same turn. Many apps have no chat box, so the agent asks this way rather than in prose.</p>
+<p><code>ui_ask</code> shows a form in the page and holds the tool call until you submit it. The answers come back as the tool's result, so the agent can act on them in the same turn. Many applications have no chat box, so the agent asks this way rather than in prose.</p>
 <p>A form holds up to 24 fields and waits up to 300 seconds by default. If the page closes or reconnects, the waiting question is released. Unlike <code>ui_ask</code>, <code>ui_suggest</code> never makes the turn wait.</p>
 
 <h2 id="apps-archetypes">Archetypes</h2>
-<p>A new app starts from a working archetype rather than a blank page. When none is named, one is picked from the app's title and description, and <code>dashboard</code> is the fallback. Each starter runs as it is and passes the build checks; all but <code>chat</code> declare their own actions and signals.</p>
+<p>A new application starts from a working archetype rather than a blank page. When none is named, one is picked from the application's title and description, and <code>dashboard</code> is the fallback. Each starter runs as it is and passes the build checks; all but <code>chat</code> declare their own actions and signals.</p>
 <div class="doc-table-scroll"><table>
   <thead><tr><th>Archetype</th><th>Shape</th></tr></thead>
   <tbody>
@@ -1660,41 +1661,41 @@ biorouter knowledge lint</code></pre>
     <tr><td><code>chat</code></td><td>A plain conversation panel, picked only when the description asks for a chat or an assistant.</td></tr>
   </tbody>
 </table></div>
-<p>An app starts with Biorouter's look. Six theme packs are available: <code>biorouter</code>, <code>clinical</code>, <code style="white-space: nowrap">lab-notebook</code>, <code>terminal</code>, <code>journal</code> and <code>midnight</code>.</p>
+<p>An application starts with Biorouter's look. Six theme packs are available: <code>biorouter</code>, <code>clinical</code>, <code style="white-space: nowrap">lab-notebook</code>, <code>terminal</code>, <code>journal</code> and <code>midnight</code>.</p>
 
-<h2 id="apps-build">Build and export an app</h2>
+<h2 id="apps-build">Build and export an application</h2>
 <ol class="steps">
-  <li><strong>Ask for it</strong> In a chat, describe the app, for example “Use Agent Drafter to build a dashboard app for this cohort.” Agent Drafter is on by default.</li>
-  <li><strong>Let it build</strong> The agent creates the app from an archetype, edits its source, sets its model and tools, then builds it. <code>build_app</code> bundles <code>src/main.ts</code> and runs the app's checks; an error must be fixed before the app launches or exports.</li>
-  <li><strong>Open it</strong> A preview card appears in the chat; choose it to open the app in the side panel. The agent can also open it in your browser.</li>
+  <li><strong>Ask for it</strong> In a chat, describe the application, for example “Use Application Drafter to build a dashboard application for this cohort.” Application Drafter is on by default.</li>
+  <li><strong>Let it build</strong> The agent creates the application from an archetype, edits its source, sets its model and tools, then builds it. <code>build_app</code> bundles <code>src/main.ts</code> and runs the application's checks; an error must be fixed before the application launches or exports.</li>
+  <li><strong>Open it</strong> A preview card appears in the chat; choose it to open the application in the side panel. The agent can also open it in your browser.</li>
 </ol>
-<p>In <strong>Built apps</strong>, each row has <strong>Launch</strong>, which opens the app in your browser, and a <strong>⋯</strong> menu with <strong>Open the chat it was built in</strong>, <strong>Export…</strong> and <strong>Delete</strong>. The card in a chat has no delete control. Delete an app here, or ask the agent to.</p>
-<p>Biorouter checks that the chat still exists before it opens anything. When that chat was deleted, the row says <strong>Build chat deleted</strong> and the menu shows the same words, grayed out, in place of <strong>Open the chat it was built in</strong>, instead of opening an empty tab. <strong>Refresh</strong> checks again. An app built by a subagent opens the chat that started the subagent.</p>
+<p>In <strong>Applications</strong>, each row has <strong>Launch</strong>, which opens the application in your browser, and a <strong>⋯</strong> menu with <strong>Open the chat it was built in</strong>, <strong>Export…</strong> and <strong>Delete</strong>. The card in a chat has no delete control. Delete an application here, or ask the agent to.</p>
+<p>Biorouter checks that the chat still exists before it opens anything. When that chat was deleted, the row says <strong>Build chat deleted</strong> and the menu shows the same words, grayed out, in place of <strong>Open the chat it was built in</strong>, instead of opening an empty tab. <strong>Refresh</strong> checks again. An application built by a subagent opens the chat that started the subagent.</p>
 <h3 id="apps-export">Exporting</h3>
 <p><strong>Export…</strong> asks you to choose a folder and offers two modes:</p>
 <ul>
-  <li><strong>Launcher</strong> writes the app and its launch scripts. It uses the knowledge bases, skills, extensions and models already on the computer that runs it.</li>
-  <li><strong>Full</strong> also packs the app's knowledge base (as a <code>.brkb</code> file) and the skills you tick, and optionally <code>biorouterd</code> itself. BAAM extensions you tick are listed in <code>export.json</code>, at the top of the folder, for the recipient to install. On the first run the launcher lists the skills and knowledge base and asks first. If you agree, it installs the skills and copies the knowledge base to <code>~/.config/biorouter/knowledge-imports/</code>, for you to bring in with <strong>Import from .brkb</strong> in Knowledge.</li>
+  <li><strong>Launcher</strong> writes the application and its launch scripts. It uses the knowledge bases, skills, extensions and models already on the computer that runs it.</li>
+  <li><strong>Full</strong> also packs the application's knowledge base (as a <code>.brkb</code> file) and the skills you tick, and optionally <code>biorouterd</code> itself. BAAM extensions you tick are listed in <code>export.json</code>, at the top of the folder, for the recipient to install. On the first run the launcher lists the skills and knowledge base and asks first. If you agree, it installs the skills and copies the knowledge base to <code>~/.config/biorouter/knowledge-imports/</code>, for you to bring in with <strong>Import from .brkb</strong> in Knowledge.</li>
 </ul>
-<p>The folder runs without a build step or Node.js. On macOS open <code>run.command</code>, on Linux run <code style="white-space: nowrap">bash run.sh</code>, and on Windows open <code>run.bat</code>. The launcher uses the <code>biorouterd</code> bundled in a Full export, or the one Biorouter installed on the computer. If there is none, it stops and says so; install Biorouter, or set <code>BIOROUTERD_BIN</code> to its path. It starts <code>biorouterd</code> in the background when it needs to and opens the app in the browser. An export carries no API keys, so the app uses the models configured by whoever runs it. The app's vault is never exported.</p>
+<p>The folder runs without a build step or Node.js. On macOS open <code>run.command</code>, on Linux run <code style="white-space: nowrap">bash run.sh</code>, and on Windows open <code>run.bat</code>. The launcher uses the <code>biorouterd</code> bundled in a Full export, or the one Biorouter installed on the computer. If there is none, it stops and says so; install Biorouter, or set <code>BIOROUTERD_BIN</code> to its path. It starts <code>biorouterd</code> in the background when it needs to and opens the application in the browser. An export carries no API keys, so the application uses the models configured by whoever runs it. The application's vault is never exported.</p>
 
 <h2 id="apps-security">Security model</h2>
-<p>Biorouter treats an app's page as untrusted.</p>
+<p>Biorouter treats an application's page as untrusted.</p>
 <ul>
-  <li><strong>The socket.</strong> Each app has its own socket token, held in memory for one run of the background service and never written to disk. The socket accepts only the app page's own origin.</li>
+  <li><strong>The socket.</strong> Each application has its own socket token, held in memory for one run of the background service and never written to disk. The socket accepts only the application page's own origin.</li>
   <li><strong>What the page sends.</strong> Action arguments, signals and widget submissions reach the agent wrapped in <code style="white-space: nowrap">&lt;app-data&gt;</code>, which the agent is told to treat as data, not instructions.</li>
-  <li><strong>What the agent writes.</strong> State bindings set text and a short list of attributes, never code. <code>ui_html</code> is off unless the app allows it, and Biorouter cleans the HTML even then.</li>
-  <li><strong>Capabilities.</strong> Control of the page is on by default, since it reaches only the app's own page. Files, data sources, compute and the vault are off until the manifest grants them. A signal that starts a turn by itself is off, and only you can turn it on; the agent cannot.</li>
-  <li><strong>Knowledge.</strong> An app reads only the knowledge bases its manifest names, and writes only where it is granted write access.</li>
-  <li><strong>Sensitive data.</strong> An app with an OMOP or CDW source, or a knowledge base it can write, may not send work to a public model. A model route or a worker profile that names one is refused.</li>
+  <li><strong>What the agent writes.</strong> State bindings set text and a short list of attributes, never code. <code>ui_html</code> is off unless the application allows it, and Biorouter cleans the HTML even then.</li>
+  <li><strong>Capabilities.</strong> Control of the page is on by default, since it reaches only the application's own page. Files, data sources, compute and the vault are off until the manifest grants them. A signal that starts a turn by itself is off, and only you can turn it on; the agent cannot.</li>
+  <li><strong>Knowledge.</strong> An application reads only the knowledge bases its manifest names, and writes only where it is granted write access.</li>
+  <li><strong>Sensitive data.</strong> An application with an OMOP or CDW source, or a knowledge base it can write, may not send work to a public model. A model route or a worker profile that names one is refused.</li>
 </ul>
-<p>An app's agent is a chat like any other, so the rules in <a href="#privacy">Private and public</a> apply to it.</p>
+<p>An application's agent is a chat like any other, so the rules in <a href="#privacy">Private and public</a> apply to it.</p>
 
 <h2 id="apps-cli">Command line</h2>
 <pre><code>biorouter apps list
 biorouter apps open cohort-explorer
 biorouter apps serve cohort-explorer</code></pre>
-<p><code>list</code> prints every app (<code class="code-token">--json</code> for scripts). <code>open</code> and <code>serve</code> use the background service on <code class="code-token">BIOROUTER_PORT</code> (3000 by default) and start one if none is running. <code>open</code> opens the app in your browser; <code>serve</code> prints its address, and when it started the service it stays in the foreground and stops it when you press <kbd>Ctrl+C</kbd>. Apps always open in a browser, not in the terminal.</p>
+<p><code>list</code> prints every application (<code class="code-token">--json</code> for scripts). <code>open</code> and <code>serve</code> use the background service on <code class="code-token">BIOROUTER_PORT</code> (3000 by default) and start one if none is running. <code>open</code> opens the application in your browser; <code>serve</code> prints its address, and when it started the service it stays in the foreground and stops it when you press <kbd>Ctrl+C</kbd>. Applications always open in a browser, not in the terminal.</p>
 </div>
 
 <div class="doc-page" id="doc-crew">
@@ -2044,7 +2045,7 @@ biorouter crew ask methods \
   <li>The model's name does not start with <code>gemini</code>.</li>
   <li>The chat is not itself a subagent.</li>
   <li>At least one extension besides Workspace Control and Decisions is turned on. Neither of those two counts, because both are on by default.</li>
-  <li>The chat is not a built app that delegates to its own worker profiles.</li>
+  <li>The chat is not an application that delegates to its own worker profiles.</li>
 </ol>
 
 <h3>Workspace Control</h3>
@@ -2125,7 +2126,7 @@ BIOROUTER_MAX_TOOL_CALLS: 0</code></pre>
     <tr><td><strong>Knowledge bases</strong></td><td><code>~/.config/biorouter/knowledge/</code></td></tr>
     <tr><td><strong>Global memories</strong></td><td><code>~/.config/biorouter/memory/</code></td></tr>
     <tr><td><strong>Dictionary</strong></td><td><code>~/.config/biorouter/dictionary/</code> (<code>dictionary.json</code>, <code>usage.json</code>): the words dictation spells your way. On macOS and Linux only your account can read it.</td></tr>
-    <tr><td><strong>Built apps</strong></td><td><code>~/.config/biorouter/agent_drafter/</code></td></tr>
+    <tr><td><strong>Applications</strong></td><td><code>~/.config/biorouter/agent_drafter/</code></td></tr>
     <tr><td><strong>Chats</strong></td><td><code>~/.local/share/biorouter/sessions/sessions.db</code></td></tr>
     <tr><td><strong>Speech models</strong></td><td><code>~/.local/share/biorouter/dictation/models/&lt;id&gt;/</code>. On Windows they sit in <code>%LOCALAPPDATA%\UCSF\biorouter\data\dictation\models\</code>, beside the cache, so they never roam.</td></tr>
     <tr><td><strong>Schedules</strong></td><td><code>~/.local/share/biorouter/schedule.json</code>, with a copy of each scheduled workflow in <code>scheduled_workflows/</code> beside it</td></tr>
@@ -2246,7 +2247,7 @@ BIOROUTER_MAX_TOOL_CALLS: 0</code></pre>
     <tr><td><strong>Agent library</strong></td><td><code>biorouter</code> holds the loop, model providers, chats, privacy, workflows and schedules, decision models and usage limits, and capabilities such as Code Execution, Skills, Todo, Chat Recall, Workspace and Decisions, plus the Dictionary capability, which starts off.</td></tr>
     <tr><td><strong>Background service</strong></td><td><code>biorouter-server</code> builds <code>biorouterd</code> and its HTTP and WebSocket API.</td></tr>
     <tr><td><strong>Command line</strong></td><td><code>biorouter-cli</code> builds <code>biorouter</code>.</td></tr>
-    <tr><td><strong>Bundled extensions</strong></td><td><code>biorouter-mcp</code> holds Developer, Biorouter Copilot, Web &amp; Documents, Memory, Auto Visualiser, Knowledge and Agent Drafter, plus the data, files and compute servers that built apps use.</td></tr>
+    <tr><td><strong>Bundled extensions</strong></td><td><code>biorouter-mcp</code> holds Developer, Biorouter Copilot, Web &amp; Documents, Memory, Auto Visualiser, Knowledge and Application Drafter, plus the data, files and compute servers that applications use.</td></tr>
     <tr><td><strong>Shell sandbox</strong></td><td><code>biorouter-sandbox</code>. See <a href="#vaulting-sandbox">Shell sandbox</a>.</td></tr>
     <tr><td><strong>Crew broker</strong></td><td><code>biorouter-crew</code> builds the <code>biorouter-crew</code> program for Linux.</td></tr>
     <tr><td><strong>Editor support</strong></td><td><code>biorouter-acp</code> adds Agent Client Protocol support, so programs such as code editors can drive Biorouter through <code>biorouter acp</code>.</td></tr>

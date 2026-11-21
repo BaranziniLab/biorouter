@@ -3049,10 +3049,9 @@ async fn execute_job(
     //
     // ⚠ This covers everything that asks through `PendingUserActions::park` or
     // `ActionRequiredManager::request_and_wait` (any MCP server's
-    // `create_elicitation` included). The tool-permission prompt in
-    // `agents/tool_execution.rs` does NOT consult `no_human_surface()` yet, so it
-    // still parks for its TTL; `classify_scheduled_run` below is what stops that
-    // being reported as a success.
+    // `create_elicitation` included), and the tool-permission prompt in
+    // `agents/tool_execution.rs`, which refuses at once with
+    // `UNATTENDED_APPROVAL_RESPONSE` instead of parking for its TTL (#543).
     let transcript = &mut conversation;
     let stream_error = crate::user_surface::without_human_surface(async {
         let stream = crate::session_context::with_session_id(Some(session_id.clone()), async {
@@ -3249,7 +3248,10 @@ impl std::error::Error for ScheduledRunLimited {}
 /// `tool_execution.rs` and would drift silently.
 ///
 /// The needle is the same `EXPIRED_RESPONSE` constant the expiry arm writes, so
-/// the two halves cannot disagree about what an expiry looks like.
+/// the two halves cannot disagree about what an expiry looks like. A scheduled
+/// run is unattended, so its prompt is now refused at once with
+/// `UNATTENDED_APPROVAL_RESPONSE` rather than left to expire (#543); the model
+/// carries on, but the tool still did not run, so that counts the same.
 fn an_approval_expired(conversation: &Conversation) -> bool {
     conversation.iter().any(|message| {
         message.content.iter().any(|content| {
@@ -3261,8 +3263,12 @@ fn an_approval_expired(conversation: &Conversation) -> bool {
                 return false;
             };
             result.content.iter().any(|item| {
-                item.as_text()
-                    .is_some_and(|text| text.text.contains(crate::agents::agent::EXPIRED_RESPONSE))
+                item.as_text().is_some_and(|text| {
+                    text.text.contains(crate::agents::agent::EXPIRED_RESPONSE)
+                        || text
+                            .text
+                            .contains(crate::agents::agent::UNATTENDED_APPROVAL_RESPONSE)
+                })
             })
         })
     })
@@ -3292,10 +3298,9 @@ fn finish_scheduled_run(
         )),
         ScheduledRunEnd::ApprovalExpired => Err(anyhow!(
             "this run asked for a tool permission nobody could answer — a scheduled run \
-             has no interface to show the card on — so the prompt expired, the tool did \
-             not run, and the schedule's last-run cursor was not advanced. Run this \
-             schedule from a chat, or give the workflow a permission mode that does not \
-             need approval."
+             has no interface to show the card on — so the tool did not run, and the \
+             schedule's last-run cursor was not advanced. Run this schedule from a chat, \
+             or give the workflow a permission mode that does not need approval."
         )),
         ScheduledRunEnd::UsageLimit => Err(ScheduledRunLimited.into()),
     }
@@ -5068,6 +5073,37 @@ mod tests {
             job.last_error.is_some(),
             "the expiry must be visible on the schedule, not only in a log line"
         );
+    }
+
+    /// #543: a scheduled run is unattended, so its permission prompt is now
+    /// refused at once instead of parking for the TTL. The model is told so and
+    /// carries on, but the tool still did not run: the run is not a success and
+    /// the cursor stays put, exactly as for an expiry.
+    #[test]
+    fn an_unattended_approval_refusal_is_not_a_success_either() {
+        let mut refused = Conversation::default();
+        refused.push(Message::user().with_text("Meditate over the last week of chats."));
+        refused.push(Message::user().with_tool_response(
+            "req-1",
+            Ok(rmcp::model::CallToolResult {
+                content: vec![rmcp::model::Content::text(
+                    crate::agents::agent::UNATTENDED_APPROVAL_RESPONSE,
+                )],
+                structured_content: None,
+                is_error: Some(true),
+                meta: None,
+            }),
+        ));
+        refused.push(Message::assistant().with_text("The note could not be written."));
+        assert_eq!(
+            classify_scheduled_run(false, false, &refused),
+            ScheduledRunEnd::ApprovalExpired
+        );
+        let error = finish_scheduled_run("session-1".to_string(), false, false, &refused)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("nobody could answer"), "{error}");
+        assert!(!error.contains("expired"), "{error}");
     }
 
     /// The over-match this classifier must not have. A run that merely *talks

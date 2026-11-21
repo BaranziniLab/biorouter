@@ -504,6 +504,20 @@ across an upgrade when the token stays the same. The page a browser without the 
 the address works until `serve` stops; it said the address "is shown once per launch" until the
 same date, which read as single use.
 
+**The banner prints the token only where nobody else reads it (issue #524, 2026-11).** Because
+the token is good until the daemon stops, an address printed into a log is a credential handed to
+every reader of that log. Under systemd, `serve`'s output is the journal, which other accounts can
+read (the `adm` group on Ubuntu), and it printed the whole address there on every start. The banner
+now prints the token only for a token minted for this launch when stdout is a terminal, or when the
+operator passes `--print-url` (which, aimed at anything but a terminal, prints a note first). A
+token the operator supplied, through `--token` or `BIOROUTER_BROWSER_TOKEN`, is never printed
+without `--print-url`: the operator has it. Everywhere else the banner prints the address without
+its query and names `biorouter serve url`, which prints the whole address from a file only the
+account running `serve` can read (mode `0600` in a `0700` folder, removed when `serve` stops). The
+file is no wider than the token already is: the daemon's environment, which the same account can
+read, holds it too. Nothing about the token's lifetime changes. Pinned by the `issue_524_` tests in
+`commands::serve` and `cli`.
+
 **Consequence to accept.** The address `serve` prints is a bearer credential for as long as the
 daemon runs. Revoking it means stopping `serve` — which is why SD-7 requires that the daemon never
 outlive it — and, for an address fixed by the operator, choosing a new token and restarting. Treat it like the
@@ -1197,7 +1211,7 @@ A request that carries neither header is served as before. The shell's response 
 predicate `auth::is_document_navigation`.
 
 **Why.** The shell embeds the daemon's secret, and its cookie is `Path=/`, so it rides along on
-every request to this origin. Every Agent Drafter app this daemon serves lives on the same origin,
+every request to this origin. Every application this daemon serves lives on the same origin,
 and an app's code is written by an agent, so an app's script could `fetch('/')` and read the
 secret out of the document. With it, the page could call any API route from the person's browser,
 with the served cookie's operator standing (SD-10) attached, and send the secret off the machine
@@ -1266,12 +1280,12 @@ configurable-http-proxy and jupyter-server-proxy.
    takes its API and interface endpoint addresses from the same base (`renderer.tsx`). The token
    exchange moves the browser to that relative address rather than to `/`. SD-4 is superseded.
 3. **`biorouter serve --public-url <address>` names the address a browser uses.** `serve` prints
-   that address with the access token. The daemon admits its origin on the WebSocket gates
+   that address as the one to open, with the access token where SD-9 allows the banner to print it. The daemon admits its origin on the WebSocket gates
    (`routes::PublicUrl`, `UpgradeOrigin::is_this_daemons`) and scopes the session cookie's `Path`
    to its path. `BIOROUTER_PUBLIC_URL` in the shell is read when the flag is absent. The address
    must be `https` unless it names this machine, and only a daemon that serves the interface reads
    the variable, because the desktop application hands its daemon its whole environment.
-4. **Built apps work under the prefix too.** An app's page is served with `<base href="./">`
+4. **Applications work under the prefix too.** An app's page is served with `<base href="./">`
    (it is only ever served at `/apps/{id}/`), its launch link moves the browser to `./`, and its
    access cookie carries no `Path`, so the browser scopes it to the address it redeemed the link
    at. The App SDK reads the prefix off its own page's address, in front of `/apps/{id}/`, for its
@@ -1411,7 +1425,7 @@ running it can make.
 > **First part (2026-11-05).** The header ruling landed before a served page could ask for the
 > microphone. The browser dictation ruling below completes this record with PR-21.
 
-**Ruling.** Every document an Agent Drafter app serves carries
+**Ruling.** Every document an application serves carries
 `Permissions-Policy: microphone=(), camera=(), display-capture=()`: the app's page and its build
 failure page (`routes::apps::app_page_response`), every file under its `dist/` and `assets/`
 (`with_app_file_csp`), its figure frame (`figure_frame`) and its launch bounce (`launch_bounce`).

@@ -3,13 +3,19 @@
 # docs/history/local-dictation-2026-11/implementation-plan.md).
 #
 # Usage:
-#   scripts/check-macos-deployment.sh [--require-imports] BINARY...
+#   scripts/check-macos-deployment.sh [--floor VERSION] [--require-imports] BINARY...
 #   scripts/check-macos-deployment.sh --self-test
+#
+# --floor VERSION holds the binaries to another minimum than the backends' 12.0.
+# Biorouter Copilot's engine (agent-desktop) declares 13.0, its upstream's tested
+# floor (AD-03 in docs/design/copilot-agent-desktop.md), and is checked with
+# `--floor 13.0`; both checks below then use that value.
 #
 # For every architecture slice of every BINARY:
 #
-#   1. The minimum macOS must be exactly 12.0. It is read with `vtool -show-build`
-#      (`otool -l` when vtool is missing), from LC_BUILD_VERSION's `minos` or, for
+#   1. The minimum macOS must be exactly 12.0 (or the --floor value). It is read
+#      with `vtool -show-build` (`otool -l` when vtool is missing), from
+#      LC_BUILD_VERSION's `minos` or, for
 #      an older x86_64 link, LC_VERSION_MIN_MACOSX's `version`. Older means the
 #      floor in .cargo/config.toml did not reach the link (rustc's own default is
 #      11.0 on arm64 and 10.12 on x86_64); newer means dyld refuses the binary on a
@@ -49,8 +55,10 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SELF="$ROOT/scripts/check-macos-deployment.sh"
 
 # The floor. .cargo/config.toml declares the same value; the self test fails when
-# the two differ.
-MACOS_FLOOR="12.0"
+# the two differ. --floor replaces MACOS_FLOOR for one run; CONFIG_FLOOR stays the
+# backends' value so the messages can say which rule a binary broke.
+CONFIG_FLOOR="12.0"
+MACOS_FLOOR="$CONFIG_FLOOR"
 
 # Symbols measured to need a newer macOS than the floor. One rule per line:
 #   <shell glob over the symbol name>|<macOS it needs>|<what it is>
@@ -226,7 +234,11 @@ check_binary() { # <binary> <require imports: 0|1>
         err "$bin [$arch] declares an unreadable macOS minimum '$min'"
         fail=1
       elif [ "$(version_cmp "$min" "$MACOS_FLOOR")" != 0 ]; then
-        err "$bin [$arch] declares macOS $min as its minimum, not $MACOS_FLOOR. .cargo/config.toml sets MACOSX_DEPLOYMENT_TARGET = \"$MACOS_FLOOR\" for every cargo build; a value already in the environment wins over it, so look for a stray export, or a build that did not run cargo from this checkout."
+        if [ "$MACOS_FLOOR" = "$CONFIG_FLOOR" ]; then
+          err "$bin [$arch] declares macOS $min as its minimum, not $MACOS_FLOOR. .cargo/config.toml sets MACOSX_DEPLOYMENT_TARGET = \"$MACOS_FLOOR\" for every cargo build; a value already in the environment wins over it, so look for a stray export, or a build that did not run cargo from this checkout."
+        else
+          err "$bin [$arch] declares macOS $min as its minimum, not $MACOS_FLOOR, the floor --floor names. Its build must set MACOSX_DEPLOYMENT_TARGET=$MACOS_FLOOR (scripts/computer-use-runtime.py does, for Biorouter Copilot's engine)."
+        fi
         fail=1
       else
         echo "$bin [$arch]: minimum macOS $min"
@@ -317,7 +329,11 @@ check() { # <require imports> <binary>...
     check_binary "$bin" "$require" || failed=1
   done
   if [ "$failed" -ne 0 ]; then
-    echo "The macOS backends must declare macOS $MACOS_FLOOR (DD-11); see the errors above." >&2
+    if [ "$MACOS_FLOOR" = "$CONFIG_FLOOR" ]; then
+      echo "The macOS backends must declare macOS $MACOS_FLOOR (DD-11); see the errors above." >&2
+    else
+      echo "These binaries must declare macOS $MACOS_FLOOR (--floor); see the errors above." >&2
+    fi
     return 1
   fi
   echo "OK: every binary declares macOS $MACOS_FLOOR"
@@ -574,6 +590,20 @@ int main(void) { return (int)((long)&OBJC_CLASS_$_MTLCompileOptions & 1); }' ||
   CHECK_MACOS_DEPLOYMENT_IMPORTS=otool \
     expect 2 "it must be auto, dyld_info or nm" "refuses an unknown import reader" "$tmp/does-not-exist"
 
+  # --floor: a binary built at 13.0 passes when 13.0 is the floor named, the
+  # backends' 12.0 binary then fails, and a malformed floor is a usage error.
+  if [ -f "$tmp/newer" ]; then
+    expect 0 "[$(slice_name "$host")]: minimum macOS 13.0" \
+      "passes a 13.0 binary under --floor 13.0 (Biorouter Copilot's engine)" --floor 13.0 "$tmp/newer"
+    expect 1 "not 13.1, the floor --floor names" \
+      "fails a 13.0 binary under --floor 13.1" --floor 13.1 "$tmp/newer"
+  fi
+  if [ -f "$tmp/config-$host" ]; then
+    expect 1 "not 13.0, the floor --floor names" \
+      "fails a 12.0 backend binary under --floor 13.0" --floor 13.0 "$tmp/config-$host"
+  fi
+  expect 2 "usage:" "refuses a --floor that is not a version" --floor thirteen "$tmp/does-not-exist"
+
   printf 'not a binary\n' >"$tmp/text"
   expect 1 "is not a Mach-O binary" "fails a file that is not a Mach-O binary" "$tmp/text"
   expect 2 "missing binary" "refuses a binary that does not exist" "$tmp/does-not-exist"
@@ -585,6 +615,12 @@ int main(void) { return (int)((long)&OBJC_CLASS_$_MTLCompileOptions & 1); }' ||
   fi
   echo "check-macos-deployment self test passed"
 }
+
+if [ "${1:-}" = "--floor" ]; then
+  is_version "${2:-}" || { echo "usage: $0 --floor VERSION [--require-imports] BINARY..." >&2; exit 2; }
+  MACOS_FLOOR="$2"
+  shift 2
+fi
 
 case "${1:-}" in
   --self-test)

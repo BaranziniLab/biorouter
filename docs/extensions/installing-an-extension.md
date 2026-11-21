@@ -4,7 +4,7 @@
 > **Status:** Current.
 > **Audience:** contributors, and operators deciding how to configure extensions safely.
 
-Four surfaces install extensions: **Add** then **Browse marketplace** in the desktop app, **Add** then **Install from file (.brxt)** beside it, `biorouter extension install` at a terminal, and an agent asked to do it in chat. They are one transaction with four front doors — [`crates/biorouter/src/extension_install/`](../../crates/biorouter/src/extension_install/) — and before that existed they were three implementations that disagreed on the one thing that matters.
+Four surfaces install extensions: **Add extension** then **Browse marketplace** in the desktop app, **Add extension** then **Install from file (.brxt)** beside it, `biorouter extension install` at a terminal, and an agent asked to do it in chat. They are one transaction with four front doors — [`crates/biorouter/src/extension_install/`](../../crates/biorouter/src/extension_install/) — and before that existed they were three implementations that disagreed on the one thing that matters.
 
 ---
 

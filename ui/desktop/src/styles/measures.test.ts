@@ -15,7 +15,13 @@ import {
   PREVIEW_DEFAULT_WIDTH_RATIO,
   READABLE_CHAT_WIDTH,
   SIDEBAR_COMPACT_WIDTH,
+  CHAT_COLUMN_CHROME,
+  CHAT_MIN_WIDTH,
+  WINDOW_MIN_WIDTH,
+  layoutFitsWidth,
+  layoutMinWidth,
 } from '../components/Layout/yieldLadder';
+import type { GroupLayout } from '../components/chatGroups/chatGroupsTypes';
 // Imported rather than re-parsed out of the component's source, which is what
 // this file used to do: the sidebar's bounds now live in a pure module with no
 // React and no DOM, so the values can be read directly and the regex that stood
@@ -268,56 +274,73 @@ describe('the page measure scales with the window', () => {
 
 /**
  * The window's minimum width is the one place a measure escapes the stylesheet.
- * It exists because the Home view's usage heatmap is the only element whose
- * size is COMPUTED rather than declared: it fits its cells to the box it is
- * given, so a window narrow enough to squeeze the reading column squeezes the
- * grid with it. The floor is therefore not a taste call — it is sidebar +
- * column, the width at which the reading column first reaches its own measure.
  *
- * ⚠ **The sidebar's DEFAULT, not its minimum.** The sidebar became
- * user-resizable, and the floor was briefly derived from the bottom of that
- * range on the argument that the minimum is the only width in it that is a
- * property of the app rather than of a preference. That gets the direction
- * backwards, and this file was rewritten to agree with it rather than catching
- * it: a floor of `SIDEBAR_MIN_WIDTH + 760` is a promise about a width no
- * install has until someone drags the edge, and at the width every install
- * ships with it leaves the column 976 − 288 = 688px — under the very measure
- * the floor exists to protect. The default is the sidebar the window must be
- * able to seat.
+ * ⚠ **The rule changed on 2026-11-19 (owner), and this file changed with it on
+ * purpose.** The floor was the 288px DEFAULT sidebar plus the 760px reading
+ * column (1048), because Home's usage heat map is the one element whose size is
+ * COMPUTED: a window narrow enough to squeeze the column squeezed the grid. The
+ * cost was that nothing narrowed past rung 1: the sidebar folded at 1120 and
+ * Home's composer stayed 760px wide all the way down. Now the sidebar folds
+ * first and the composer narrows after it, as a split pane's does, while the
+ * usage card steps aside instead of squeezing (`sessions/homeUsageFit.ts`).
+ * The property the old floor protected (a docked sidebar never squeezes the
+ * column) is still held, by rung 1 and the identity pinned below.
  *
- * The wide end of the range is not left unguarded — it is closed by
- * construction, and the second test below pins the identity that closes it.
+ * The floor is `WINDOW_MIN_WIDTH` (yieldLadder.ts): the narrowest window that
+ * still holds a two-pane split at the chat floor, the pane whose composer is
+ * the narrowest one the app ships. `layoutMinWidth` is the ladder's own
+ * arithmetic for that, so moving the chat floor or the splitter fails here.
  *
  * ⚠ Not the regression in docs/desktop-ui/window-scaling-regressions.md. That
  * one is a flat `max-width` that stops a WIDE window buying content. This is a
  * floor under a NARROW one and does nothing above it.
- *
- * Asserted as arithmetic, not as separate literals, so that changing the
- * sidebar's bounds or the chat measure fails here instead of silently leaving
- * the window able to compress the heatmap again.
  */
-describe('the minimum window width is derived from the sidebar and the chat measure', () => {
+describe('the minimum window width is the ladder’s floor', () => {
   const px = (value: string): number =>
     value.endsWith('rem') ? parseFloat(value) * 16 : parseFloat(value);
+  const leaf = (groupId: string): GroupLayout => ({ kind: 'leaf', groupId });
 
-  it('is exactly the default sidebar plus the reading column', () => {
+  it('is exactly WINDOW_MIN_WIDTH: a two-pane split at the chat floor', () => {
     const minWidth = MAIN.match(/^\s*minWidth: (\d+),$/m);
     if (!minWidth) throw new Error('the main window declares no minWidth');
 
-    expect(Number(minWidth[1])).toBe(SIDEBAR_DEFAULT_WIDTH + px(declaration('measure-chat')));
-
-    // The PROPERTY the equality above exists to produce, spelled out rather
-    // than left to be inferred from the arithmetic. The equality is the strict
-    // form and subsumes this line today; it is written out because the equality
-    // alone says only that three numbers add up, and a reader deciding which of
-    // them to move needs to see WHICH WAY the relation has to hold. If the
-    // exact equality is ever relaxed — a floor with slack in it would fail the
-    // line above while breaking nothing — this is the assertion that must
-    // survive, and swapping its constant for a narrower one is deleting the
-    // property, not adjusting a number.
-    expect(Number(minWidth[1]) - SIDEBAR_DEFAULT_WIDTH).toBeGreaterThanOrEqual(
-      px(declaration('measure-chat'))
+    expect(Number(minWidth[1])).toBe(WINDOW_MIN_WIDTH);
+    expect(WINDOW_MIN_WIDTH).toBe(
+      layoutMinWidth({
+        kind: 'branch',
+        dir: 'row',
+        children: [leaf('a'), leaf('b')],
+        sizes: [1, 1],
+      })
     );
+    // So rung 4 does not merge that split at the floor.
+    expect(
+      layoutFitsWidth(
+        { kind: 'branch', dir: 'row', children: [leaf('a'), leaf('b')], sizes: [1, 1] },
+        WINDOW_MIN_WIDTH
+      )
+    ).toBe(true);
+  });
+
+  /**
+   * The order the owner asked for: the sidebar folds first, and only then does
+   * the composer narrow. Rung 1 fires above the floor, and the composer reaches
+   * its whole measure (760 plus Home's 2 x 24px gutters) above it as well, so
+   * there is a range in which it narrows.
+   */
+  it('folds the sidebar before the composer narrows, and leaves room to narrow it', () => {
+    const measure = px(declaration('measure-chat'));
+    expect(SIDEBAR_COMPACT_WIDTH).toBeGreaterThan(measure + 2 * 24);
+    expect(WINDOW_MIN_WIDTH).toBeLessThan(measure + 2 * 24);
+  });
+
+  /**
+   * The narrowest Home composer is still wider than a split pane's composer at
+   * the pane floor, the one the owner measured as usable: the pane less the
+   * transcript's chrome (`CHAT_COLUMN_CHROME`, pinned in summaryRail.test.ts).
+   */
+  it('keeps Home’s narrowest composer wider than a pane’s narrowest', () => {
+    expect(WINDOW_MIN_WIDTH - 2 * 24).toBeGreaterThan(CHAT_MIN_WIDTH - CHAT_COLUMN_CHROME);
   });
 
   /**

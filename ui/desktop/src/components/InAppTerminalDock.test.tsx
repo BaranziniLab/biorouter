@@ -187,13 +187,14 @@ describe('InAppTerminalDock', () => {
     await waitFor(() => expect(terminal.focus).toHaveBeenCalledTimes(2));
     terminal.focus.mockClear();
     vi.mocked(window.electron.resizeTerminalSession).mockClear();
-    expect(terminal.options.fontSize).toBe(12);
-    await user.click(screen.getByRole('radio', { name: 'Larger' }));
+    // The default Text size is Standard, 1.07 (the size 1.94.5 called Large).
+    expect(terminal.options.fontSize).toBeCloseTo(12 * 1.07);
+    await user.click(screen.getByRole('radio', { name: 'Large' }));
     await waitFor(() => expect(window.electron.resizeTerminalSession).toHaveBeenCalled());
-    expect(screen.getByRole('radio', { name: 'Larger' })).toHaveFocus();
+    expect(screen.getByRole('radio', { name: 'Large' })).toHaveFocus();
     expect(terminal.focus).not.toHaveBeenCalled();
     expect(terminal.options.fontSize).toBeCloseTo(12 * 1.15);
-    await user.click(screen.getByRole('radio', { name: 'Standard' }));
+    await user.click(screen.getByRole('radio', { name: 'Small' }));
     expect(terminal.options.fontSize).toBe(12);
     expect(xtermInstances).toEqual([terminal]);
     expect(window.electron.createTerminalSession).toHaveBeenCalledTimes(1);

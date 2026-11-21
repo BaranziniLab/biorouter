@@ -3,8 +3,11 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { CopilotSetupPanel, CopilotSetupTrigger, useCopilotSetup } from './CopilotSetup';
 import { copilotSetupCopy } from './copy';
 
-const mocks = vi.hoisted(() => ({ setup: vi.fn() }));
-vi.mock('./copilotApi', () => ({ copilotSetup: mocks.setup }));
+const mocks = vi.hoisted(() => ({ setup: vi.fn(), request: vi.fn() }));
+vi.mock('./copilotApi', () => ({
+  copilotSetup: mocks.setup,
+  copilotRequestPermissions: mocks.request,
+}));
 beforeEach(() => {
   vi.clearAllMocks();
   Object.assign(window, { electron: { platform: 'darwin', getConfig: () => ({}) } });
@@ -30,7 +33,7 @@ describe('CopilotSetup', () => {
   it('distinguishes a present runtime from unverified OS permissions', async () => {
     mocks.setup.mockResolvedValue({
       status: 'ready',
-      runtime_version: '0.3.5',
+      runtime_version: '1.3.1',
       permissions: 'unknown',
       host: 'server-host',
       target: 'darwin-arm64',
@@ -43,36 +46,68 @@ describe('CopilotSetup', () => {
     // Which runtime answered is the state line's InfoTip, not two lines of the panel.
     const about = screen.getByRole('button', { name: 'About this runtime' });
     expect(about).toHaveAccessibleDescription(
-      'Backend computer: server-host. Runtime version: 0.3.5 · darwin-arm64.'
+      'Backend computer: server-host. Runtime version: 1.3.1 · darwin-arm64.'
     );
     expect(screen.getByText('Runtime ready')).toContainElement(about);
   });
 
-  // A real machine had three copies of the helper — an installed Biorouter, a
+  // A real machine had three copies of the engine — an installed Biorouter, a
   // packaged build and a source build — with the SAME bundle id and the same
   // Developer ID, and macOS had granted Screen Recording to two of them. The
-  // panel told the operator to "enable Screen Recording for BioRouter Computer
-  // Use" when they already had, for a different copy, and nothing on screen said
-  // which one was being probed. The path is the only thing that disambiguates.
+  // panel told the operator to allow Screen Recording when they already had,
+  // for a different copy, and nothing on screen said which one was being probed.
+  // The path is the only thing that disambiguates.
+  // The copy named is the app System Settings lists and grants, Biorouter Copilot, never the
+  // engine executable inside it.
   it('names the exact copy that needs the OS grant when one is missing', async () => {
     mocks.setup.mockResolvedValue({
       status: 'os_permission_required',
-      runtime_version: '0.3.5',
+      runtime_version: '1.3.1',
       target: 'darwin-arm64',
       executable:
-        '/Users/x/src/target/debug/computer-use/BioRouter Computer Use.app/Contents/MacOS/ocu',
+        '/Users/x/src/target/computer-use/darwin-arm64/Biorouter Copilot.app/Contents/MacOS/agent-desktop',
+      app_bundle: '/Users/x/src/target/computer-use/darwin-arm64/Biorouter Copilot.app',
       permissions: { accessibility: true, screen_recording: false },
     });
     render(<CopilotSetup />);
     fireEvent.click(checkButton());
     await screen.findByText(/Screen Recording: not allowed/);
     const path = screen.getByText(
-      '/Users/x/src/target/debug/computer-use/BioRouter Computer Use.app/Contents/MacOS/ocu'
+      '/Users/x/src/target/computer-use/darwin-arm64/Biorouter Copilot.app'
     );
     expect(path).toBeVisible();
     // Data read character by character, so it is set as code (design.md D-42).
     expect(path.tagName).toBe('CODE');
     expect(path).toHaveClass('font-mono', 'text-code');
+    expect(screen.queryByText(/Contents\/MacOS/)).not.toBeInTheDocument();
+  });
+
+  // A development payload outside any app is granted by its own executable, so that is shown.
+  it('names the executable on macOS only when no app holds it', async () => {
+    mocks.setup.mockResolvedValue({
+      status: 'os_permission_required',
+      target: 'darwin-arm64',
+      executable: '/Users/x/src/target/debug/engine',
+      permissions: { accessibility: false, screen_recording: false },
+    });
+    render(<CopilotSetup />);
+    fireEvent.click(checkButton());
+    await screen.findByText(/Accessibility: not allowed/);
+    expect(screen.getByText('/Users/x/src/target/debug/engine').tagName).toBe('CODE');
+  });
+
+  // Windows and Linux grant nothing per copy, so no path is named there.
+  it('names no path where the system grants nothing per copy', async () => {
+    mocks.setup.mockResolvedValue({
+      status: 'os_permission_required',
+      target: 'linux-x64',
+      executable: '/usr/lib/biorouter/computer-use/linux-x64/engine',
+      permissions: { accessibility: false, screen_recording: true },
+    });
+    render(<CopilotSetup />);
+    fireEvent.click(checkButton());
+    await screen.findByText(/Accessibility: not allowed/);
+    expect(screen.queryByText(/Grant these to this exact copy/)).not.toBeInTheDocument();
   });
 
   // The negative control: a ready runtime must NOT nag about a path, or every
@@ -80,10 +115,10 @@ describe('CopilotSetup', () => {
   it('does not name a path once permissions are allowed', async () => {
     mocks.setup.mockResolvedValue({
       status: 'ready',
-      runtime_version: '0.3.5',
+      runtime_version: '1.3.1',
       target: 'darwin-arm64',
       executable:
-        '/Applications/Biorouter.app/Contents/Resources/computer-use/x/Contents/MacOS/ocu',
+        '/Applications/Biorouter.app/Contents/Resources/computer-use/x/Contents/MacOS/agent-desktop',
       permissions: { accessibility: true, screen_recording: true },
     });
     render(<CopilotSetup />);
@@ -127,8 +162,8 @@ describe('CopilotSetup', () => {
   });
 
   it.each([
-    'Enable Accessibility for BioRouter Computer Use and Screen Recording for Biorouter in System Settings.',
-    'Enable Accessibility and Screen Recording for BioRouter Computer Use in System Settings.',
+    'Allow Biorouter Copilot in System Settings (Accessibility, and Screen Recording for screenshots), then check again.',
+    'Allow Biorouter Copilot in System Settings, then check again.',
   ])(
     'uses the native permission owners without contradictory static guidance: %s',
     async (message) => {
@@ -142,7 +177,9 @@ describe('CopilotSetup', () => {
       fireEvent.click(checkButton());
 
       expect(await screen.findByText(message)).toBeVisible();
-      expect(screen.getAllByText(/Biorouter Computer Use/i)).toHaveLength(1);
+      // The backend's own sentence names the owner, so the static one stands down.
+      expect(screen.getAllByText(/Allow Biorouter Copilot/)).toHaveLength(1);
+      expect(screen.getByText('Use the app names in the permission details above.')).toBeVisible();
       // What to do if macOS asks to reopen the app is the InfoTip beside the macOS line.
       expect(
         screen.getByRole('button', { name: 'About allowing permissions on macOS' })
@@ -296,6 +333,77 @@ describe('a check in flight', () => {
 });
 
 describe('permission repair controls', () => {
+  // AD-04: the grants belong to Biorouter Copilot, never to Biorouter itself.
+  it('names Biorouter Copilot, not Biorouter, as the app that holds the macOS grants', async () => {
+    mocks.setup.mockResolvedValue({
+      status: 'os_permission_required',
+      permissions: { accessibility: false, screen_recording: false },
+      target: 'darwin-arm64',
+    });
+    render(<CopilotSetup />);
+    fireEvent.click(checkButton());
+    expect(await screen.findByText(copilotSetupCopy.macGrantOwner)).toBeVisible();
+    expect(copilotSetupCopy.macGrantOwner).toMatch(/Biorouter itself needs neither/);
+  });
+
+  it('asks macOS for access in one press on a local backend and shows the answer', async () => {
+    Object.assign(window, {
+      electron: {
+        platform: 'darwin',
+        getConfig: () => ({ BIOROUTER_LOCAL_BACKEND: true }),
+        openCopilotPermissionSettings: vi.fn(),
+      },
+    });
+    mocks.setup.mockResolvedValue({
+      status: 'os_permission_required',
+      permissions: { accessibility: false, screen_recording: false },
+      target: 'darwin-arm64',
+    });
+    mocks.request.mockResolvedValue({
+      status: 'ready',
+      permissions: { accessibility: true, screen_recording: true },
+      target: 'darwin-arm64',
+    });
+    render(<CopilotSetup />);
+    fireEvent.click(checkButton());
+    const request = await screen.findByRole('button', { name: copilotSetupCopy.request });
+    expect(mocks.request).not.toHaveBeenCalled();
+    expect(
+      screen.getByRole('button', { name: 'About requesting access' })
+    ).toHaveAccessibleDescription(/System Events, which Biorouter Copilot does not use/);
+    fireEvent.click(request);
+    expect(await screen.findByText(/Nothing further to set up/)).toBeVisible();
+    expect(mocks.request).toHaveBeenCalledTimes(1);
+    expect(mocks.setup).toHaveBeenCalledTimes(1);
+  });
+
+  it('reports a request the system did not finish and keeps the settings shortcuts', async () => {
+    Object.assign(window, {
+      electron: {
+        platform: 'darwin',
+        getConfig: () => ({ BIOROUTER_LOCAL_BACKEND: true }),
+        openCopilotPermissionSettings: vi.fn(),
+      },
+    });
+    const blocked = {
+      status: 'os_permission_required',
+      permissions: { accessibility: false, screen_recording: false },
+      target: 'darwin-arm64',
+    };
+    mocks.setup.mockResolvedValue(blocked);
+    mocks.request.mockResolvedValue({
+      ...blocked,
+      request_error: 'The system prompts did not finish in time.',
+    });
+    render(<CopilotSetup />);
+    fireEvent.click(checkButton());
+    fireEvent.click(await screen.findByRole('button', { name: copilotSetupCopy.request }));
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      'The system prompts did not finish in time.'
+    );
+    expect(screen.getByRole('button', { name: 'Open Accessibility settings' })).toBeVisible();
+  });
+
   it('keeps probe failure separate from permission denial and shows recovery', async () => {
     mocks.setup.mockResolvedValue({
       status: 'probe_failed',
@@ -380,6 +488,8 @@ describe('permission repair controls', () => {
       screen.getByRole('button', { name: 'About a remote backend' })
     ).toHaveAccessibleDescription(/If it is remote, changing permissions/);
     expect(screen.queryByRole('button', { name: 'Open Accessibility settings' })).toBeNull();
+    // A remote backend's prompts would appear on a computer nobody here is looking at.
+    expect(screen.queryByRole('button', { name: copilotSetupCopy.request })).toBeNull();
     expect(openSettings).not.toHaveBeenCalled();
   });
 });

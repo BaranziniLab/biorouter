@@ -1,14 +1,14 @@
 # BioRouter Apps platform design
 
-> **What this is.** The design overview of the Agent Drafter subsystem — what a
-> BioRouter app is, how the Apps SDK v2 surface is organised, and how the protocol,
+> **What this is.** The design overview of the Application Drafter subsystem — what a
+> Biorouter application is, how the Apps SDK v2 surface is organised, and how the protocol,
 > capabilities, themes, export modes and multi-agent orchestration fit together.
 > It also preserves, in a clearly marked second half, the v1 redesign notes and the
 > app-building campaign logs that produced the current design.
 > **Status:** Current. The first half matches the shipped code (`control.rs`,
 > `manifest.rs`, `apps.rs`, six theme packs, six archetype starters); the second half
 > is a deliberately retained historical record, labelled as such.
-> **Audience:** developers working on Agent Drafter / BioRouter Apps.
+> **Audience:** developers working on Application Drafter / BioRouter Apps.
 > **Shorthand.** *MiMo* is the Xiaomi MiMo provider (see
 > [Xiaomi MiMo provider notes](../providers/xiaomi-mimo.md)); *round2* / *round3* name
 > batch-authoring runs driven by `scripts/agent-drafter-apps/round2.sh` and
@@ -16,9 +16,9 @@
 > `<section data-br-region="…">`; *Pillar N* refers to the nine SDK v2 pillars
 > enumerated below.
 
-Agent Drafter was reworked from "Claude-style artifacts" into a builder for
-**BioRouter apps**: TypeScript front-ends wired to a *real* BioRouter agent
-backend. When a user sends a message in a built app, BioRouter runs the full
+Application Drafter was reworked from "Claude-style artifacts" into a builder for
+**Biorouter applications**: TypeScript front-ends wired to a *real* BioRouter agent
+backend. When a user sends a message in an application, BioRouter runs the full
 agent loop — the app's own model, extensions, skills, and knowledge base (KB) — and
 streams the answer (text / markdown / tool activity) back into the app. Apps are
 *launched in the browser* (the desktop GUI auto-opens the default browser; the CLI
@@ -285,7 +285,7 @@ In-terminal rendering of an app is out of scope.
 | `cargo test -p biorouter-mcp --test ui_example_apps` | example UI apps emit `ui` frames deterministically |
 | `cargo test -p biorouter-server --lib routes::apps` | WebSocket frames, mid-turn dispatch, bridge rebind, parked `ui_ask`, KB grants, provider-class routing |
 | `node scripts/agent-drafter/ui-control-harness.mjs` | SDK v2 self-test — real `sdk.ts` in jsdom vs a mock daemon: state/bindings, `ui_patch`, signals, `app_call`, `br.call`, `br.kb`, `br.model`, theme/layout, presence, `wsToken` (needs esbuild + jsdom) |
-| `node scripts/agent-drafter/ui-control-harness.mjs --app <dir>` | serve a built app for a real browser (`/__emit` + `/__frames`) |
+| `node scripts/agent-drafter/ui-control-harness.mjs --app <dir>` | serve an application for a real browser (`/__emit` + `/__frames`) |
 | `ui/desktop/scripts/appcheck/check-ui-app.mjs` | real agent; asserts `ui` frames arrive |
 
 ---
@@ -370,7 +370,7 @@ In-terminal rendering of an app is out of scope.
     daemon's own listener. Loopback is not one account, so these routes are no
     longer exempt (W2-HRD-1).
 - **Frontend** — `ui/desktop/src/components/applications/ApplicationsView.tsx` +
-  an "Applications" sidebar entry under Knowledge. Lists built apps. Launch names
+  an "Applications" sidebar entry under Knowledge. Lists applications. Launch names
   the app to the main process (`apps:open-in-browser`), which mints its launch link
   with the secret the window was attached with, writes it into a page only this
   account can read, and opens that page in the default web browser (the `https:`
@@ -416,7 +416,7 @@ In-terminal rendering of an app is out of scope.
   newest one for that row: a deletion broadcast or a Refresh that lands while the
   click is checking wins, and the click says so in a toast instead. Only the
   newest click on a view that is still open acts at all. If the user clicks
-  another row or leaves Built apps while the check is out, the answer updates the
+  another row or leaves Applications while the check is out, the answer updates the
   row and nothing else, because `navigate` keeps working after the view
   unmounts. The control's glyph spins while its check is out. Navigating opens a
   tab and tabs are saved per window, so a dead id used to leave a "Could not load
@@ -585,7 +585,7 @@ Export, on a **fresh `$HOME`** with no app installed and no daemon on :3000:
 ### Campaign 1: 16 example apps built by driving MiMo
 
 Each app below was authored end-to-end by the **MiMo model itself** calling the
-Agent Drafter tools (`create_app` → `build_app` → `launch_app`) via
+Application Drafter tools (`create_app` → `build_app` → `launch_app`) via
 `biorouter run --with-builtin agent_drafter -t "…"` (see
 `scripts/agent-drafter-apps/round.sh`). All are served by `biorouterd` at
 `/apps/<id>/` and pass the checklist below.
@@ -809,6 +809,6 @@ branch exists in this repository any more.
 - [Apps SDK v2 phase roadmap](../apps-sdk/v2-phase-roadmap.md) — how the pillars
   were sequenced into shippable phases.
 - [App test-drive runbook](testing/app-test-drive-runbook.md) — how to drive a
-  model through the Agent Drafter tools and verify the app it builds.
+  model through the Application Drafter tools and verify the app it builds.
 - [100-app test-drive audit](../history/agent-drafter-testdrive-100/README.md) —
   the largest authored-app campaign, with per-app verdicts and the defects it found.

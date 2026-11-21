@@ -615,7 +615,7 @@ async fn standalone_figure_dashboard_works() {
 ///
 /// The dashboard's copy of this message was rewritten to name `render_figure`
 /// and the `kind` slugs, because a chat agent sees only three tools and cannot
-/// call `render_volcano` (#142). This door is Agent Drafter's `ui_figure`, whose
+/// call `render_volcano` (#142). This door is Application Drafter's `ui_figure`, whose
 /// own description hands the app agent exactly these names and which has neither
 /// `render_figure` nor `describe_figure` — `configure_agent` never injects
 /// autovisualiser into an app agent. Sharing one phrasing between the two doors

@@ -2,9 +2,11 @@ import * as React from 'react';
 import { isFocusFromTabKey } from '../ui/Tooltip';
 
 /**
- * When a footer card opens and closes, and where it hangs: ONE behaviour for every item on the
- * composer's footer line (the working folder, the context ring, the cost), so the three answer a
- * hover, a click, a key and a scroll the same way. The surface itself is `FooterCard.tsx`.
+ * When a footer card opens and closes, and where it hangs: ONE behaviour for the readouts on the
+ * composer's footer line (the context ring, the cost), so the two answer a hover, a click, a key
+ * and a scroll the same way. The folder chip's card uses the same hook through its click alone
+ * (`togglePin`): the chip is a control whose hover shows a label tooltip (`DirSwitcher`, owner
+ * 2026-11-19), so it takes none of `triggerHandlers`. The surface itself is `FooterCard.tsx`.
  *
  * The rules are InfoTip's (`ui/info-tip.tsx`), at a hover card's pace, with the differences that
  * come from what a card holds (buttons, a slider, in a browser a key field) and from where it
@@ -29,7 +31,7 @@ import { isFocusFromTabKey } from '../ui/Tooltip';
  *   - a PRESS inside the card pins it, so clicking a button in it or typing in a field never loses
  *     the card to a pointer that wandered off; a pinned card ignores pointer leave and scroll. So
  *     does FOCUS that enters it: the cards are portalled to the end of the page, so a Tab past the
- *     last item on the line (the folder chip on Home) lands in its card, and a card that holds
+ *     last item on the line (a readout that ends a chat's line) lands in its card, and a card that holds
  *     focus must not be closed by a pointer's grace running out, which would drop focus on the
  *     page;
  *   - `togglePin` is every trigger's click (and a tap, since touch never hovers): it pins the card,
@@ -517,7 +519,7 @@ export function useFooterCard({ suppressed = false }: { suppressed?: boolean } =
     onFocus: () => {
       // Focus inside the card pins it, however it got there. A press already has (above); this is
       // for the keyboard: the card is portalled to the end of the page, so a Tab past the last
-      // item on the line (the folder chip on Home, the readout last on a chat's line) moves into
+      // item on the line (the readout last on a chat's line) moves into
       // its card. Unpinned, that card would still close on the pointer's grace and drop focus on
       // the page, with the person's place in it gone.
       cancelClose();
@@ -612,8 +614,8 @@ export function useFooterCard({ suppressed = false }: { suppressed?: boolean } =
 }
 
 /**
- * Everything a footer item's trigger carries, spelled once for all three (the folder chip, the
- * context ring, the cost): the card's open state for assistive technology, the hook's hover and
+ * Everything a readout's trigger carries, spelled once for both (the context ring, the cost):
+ * the card's open state for assistive technology, the hook's hover and
  * focus handlers, and the click that pins. `detail` is 0 for Enter, Space and an assistive
  * technology's click: those also move focus into the card, so its controls can be reached from
  * the keyboard. `FooterCardTrigger` (FooterCard.tsx) renders the button with these.

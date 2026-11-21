@@ -25,6 +25,7 @@ import {
   ipcMain,
   Menu,
   MenuItem,
+  nativeImage,
   nativeTheme,
   Notification,
   powerMonitor,
@@ -54,6 +55,7 @@ import {
   startBiorouterd,
   externalBackendUrlFromEnv,
   getBiorouterCliBinaryPath,
+  getBiorouterdBinaryPath,
   type BiorouterdResult,
   type SharedDaemonLink,
 } from './biorouterd';
@@ -170,6 +172,7 @@ import {
   openUpdateSettings,
   popUpTrayMenu,
   registerUpdateIpcHandlers,
+  setChatWindowPredicate,
   setTrayRef,
   setupAutoUpdater,
   updateTrayMenu,
@@ -177,6 +180,7 @@ import {
 } from './utils/autoUpdater';
 import { UPDATES_ENABLED } from './updates';
 import { startMainThreadWatchdog } from './utils/mainThreadWatchdog';
+import { menuBarWindows, revealFromMenuBar } from './utils/menuBarReveal';
 import {
   STARTUP_UPDATER_SETUP_DELAY_MS,
   STARTUP_DEPENDENCY_CHECK_DELAY_MS,
@@ -210,19 +214,47 @@ import {
 import { readGitArtifactTree } from './utils/artifactGit';
 import {
   captureEmbeddedBrowser,
+  claimEmbeddedBrowser,
   clearEmbeddedBrowserData,
   controlEmbeddedBrowser,
   createEmbeddedBrowser,
   destroyEmbeddedBrowser,
   destroyEmbeddedBrowsersForWindow,
+  dismissEmbeddedBrowserNotice,
+  embeddedBrowserBookmarks,
+  embeddedBrowserImportTargets,
+  embeddedBrowserSearchEngine,
+  embeddedBrowserSuggestions,
+  findInEmbeddedBrowser,
   navigateEmbeddedBrowser,
   openExternalBrowserNavigation,
   readEmbeddedBrowserText,
   registerEmbeddedBrowserOwnerTeardown,
+  releaseEmbeddedBrowser,
+  setEmbeddedBrowserBookmark,
   setEmbeddedBrowserBounds,
   setEmbeddedBrowserVisible,
+  showEmbeddedBrowserDownload,
+  stopFindInEmbeddedBrowser,
+  zoomEmbeddedBrowser,
   type EmbeddedBrowserBounds,
 } from './utils/embeddedBrowser';
+import { configureBrowserTestHosts, reserveLocalPort } from './browser/localNetwork';
+import { cancelAgentBrowserOperation, runAgentBrowserOperation } from './browser/agent/driver';
+import {
+  BROWSER_AGENT_OPS,
+  type BrowserAgentOp,
+  type BrowserAgentRequest,
+} from './browser/agent/types';
+import { configureBrowserTestDownloads } from './browser/downloads';
+import { browserTestHooksEnabled } from './browser/testHooks';
+import { chromeImportSource } from './browser/chromeImport/appSource';
+import {
+  createChromeImportService,
+  validImportRequest,
+  type ChromeImportService,
+} from './browser/chromeImport/service';
+import type { ImportConfirmationText } from './browser/chromeImport/confirm';
 import { heicToPng } from './utils/heicConvert';
 import {
   managedAppHasFocusedField,
@@ -250,6 +282,25 @@ import {
   type AnywhereSource,
 } from './utils/dictationAnywhere';
 import type { Transcript } from './components/dictation/dictationApi';
+import { FnKeyService, fnKeyHelperPath, type FnKeyStatus } from './utils/fnKeyHelper';
+import {
+  defaultFnKeySettings,
+  fnDictationRunning,
+  fnStartRoute,
+  fnToggleRoute,
+  parseFnKeySettings,
+  type FnKeySettings,
+  type FnKeyView,
+  type FnWorld,
+} from './utils/dictationFnKey';
+import type { FnIntent } from './utils/fnGesture';
+import {
+  DictationIndicator,
+  INDICATOR_SIZE,
+  indicatorModeFor,
+  parseIndicatorReport,
+  type DictationActivityReport,
+} from './utils/dictationIndicator';
 import {
   bindManagedAppPreviewBackend,
   fetchDaemonAppOrigin,
@@ -271,6 +322,7 @@ import {
 import { IMAGE_BLOB_URL_THRESHOLD_BYTES, IMAGE_MIME_TYPES } from './utils/imageFormats';
 import { recordExtensionProvenance } from './utils/extensionProvenance';
 import {
+  agentCaptureDir,
   biorouterConfigDir,
   biorouterExtensionsDir,
   unsandboxedConfigDirCandidates,
@@ -820,6 +872,32 @@ async function ensureTempDirExists(): Promise<string> {
   return biorouterTempDir;
 }
 
+/**
+ * The folder the daemon reads an agent's captures from (M1): `browser_screenshot` and a
+ * `workspace_read_panel` capture. It is Biorouter's state folder, resolved as the daemon resolves
+ * it, never Electron's temporary folder, which a profile (`--user-data-dir`, a development
+ * profile) moves while the daemon's stays. Private to this user; the daemon deletes each file
+ * once it has read it, and anything older than a day is swept here.
+ */
+async function ensureAgentCaptureDir(): Promise<string> {
+  const dir = agentCaptureDir();
+  await fs.mkdir(dir, { recursive: true, mode: 0o700 });
+  const stats = await fs.lstat(dir);
+  if (!stats.isDirectory() || stats.isSymbolicLink()) {
+    throw new Error(`The capture folder is not a plain directory: ${dir}`);
+  }
+  await fs.chmod(dir, 0o700);
+  const now = Date.now();
+  for (const name of await fs.readdir(dir).catch(() => [] as string[])) {
+    const file = path.join(dir, name);
+    const entry = await fs.lstat(file).catch(() => null);
+    if (entry && (entry.isSymbolicLink() || now - entry.mtime.getTime() > 24 * 60 * 60 * 1000)) {
+      await fs.unlink(file).catch(() => {});
+    }
+  }
+  return dir;
+}
+
 async function configureProxy() {
   const httpsProxy = process.env.HTTPS_PROXY || process.env.https_proxy;
   const httpProxy = process.env.HTTP_PROXY || process.env.http_proxy;
@@ -988,7 +1066,7 @@ if (
       }
 
       // Only focus existing windows for non-bot/workflow URLs
-      const existingWindows = BrowserWindow.getAllWindows();
+      const existingWindows = menuBarWindows(BrowserWindow.getAllWindows(), isChatWindow);
       if (existingWindows.length > 0) {
         const mainWindow = existingWindows[0];
         if (mainWindow.isMinimized()) {
@@ -1033,7 +1111,7 @@ let pendingBrxtFilePath: string | null = null;
  * leave the user with a window.
  */
 async function ensureWindowAfterDeepLink(openDir?: string | null) {
-  if (BrowserWindow.getAllWindows().length > 0) return;
+  if (menuBarWindows(BrowserWindow.getAllWindows(), isChatWindow).length > 0) return;
   log.warn('[Main] Deep link produced no window; opening a plain one instead');
   await createNewWindow(app, openDir || undefined);
 }
@@ -1077,8 +1155,8 @@ async function handleProtocolUrl(url: string) {
     }
     await ensureWindowAfterDeepLink(openDir);
   } else {
-    // For other URL types, reuse existing window if available
-    const existingWindows = BrowserWindow.getAllWindows();
+    // For other URL types, reuse an existing chat window if available
+    const existingWindows = menuBarWindows(BrowserWindow.getAllWindows(), isChatWindow);
     if (existingWindows.length > 0) {
       firstOpenWindow = existingWindows[0];
       if (firstOpenWindow.isMinimized()) {
@@ -1210,7 +1288,7 @@ app.on('open-url', async (_event, url) => {
     pendingDeepLink = url;
     log.info('[Main] Stored pending deep link for processing after React ready:', url);
 
-    const existingWindows = BrowserWindow.getAllWindows();
+    const existingWindows = menuBarWindows(BrowserWindow.getAllWindows(), isChatWindow);
     if (existingWindows.length > 0) {
       firstOpenWindow = existingWindows[0];
       if (firstOpenWindow.isMinimized()) firstOpenWindow.restore();
@@ -1415,6 +1493,13 @@ let appConfig = {
 };
 
 const windowMap = new Map<number, BrowserWindow>();
+/**
+ * A chat window, as opposed to the dictation windows (the hidden capture window, a dismissed review
+ * card, the indicator), which are BrowserWindows too. Every path that brings Biorouter forward or
+ * asks whether a window is open uses this one test (`utils/menuBarReveal.ts`).
+ */
+const isChatWindow = (win: BrowserWindow): boolean => windowMap.has(win.id);
+setChatWindowPredicate(isChatWindow);
 const copilotPermissionSettings = new CopilotPermissionSettings();
 const biorouterdClients = new Map<number, Client>();
 /**
@@ -1647,7 +1732,7 @@ const daemonReattach = createDaemonReattachController({
  * The lifetime of every managed app preview on the shared daemon: aborted when that daemon is
  * lost, renewed when one answers. A shared daemon outlives this app, so its handle never
  * reports an exit, and a preview left open across a restart reached the new instance without
- * that instance's access cookie and showed its refusal ("Open this app from Biorouter").
+ * that instance's access cookie and showed its refusal ("Open this application from Biorouter").
  */
 let sharedAppPreviewLifetime = new AbortController();
 /** The instance `sharedAppPreviewLifetime` was opened for, once one has answered. */
@@ -1686,6 +1771,15 @@ const bindWindowAppPreview = (window: BrowserWindow) => {
     if (managedAppPreviewBindings.get(windowId) !== binding) return;
     if (backend && !window.isDestroyed()) managedAppPreviewBackends.set(windowId, backend);
     else managedAppPreviewBackends.delete(windowId);
+    // BB-06: the daemon's own app listener is reserved too (a shared daemon's differs from
+    // the proxy's port).
+    for (const origin of [backend?.baseUrl, backend?.appOrigin]) {
+      try {
+        if (origin) reserveLocalPort(new URL(origin).port);
+      } catch {
+        // Not a URL: nothing to reserve.
+      }
+    }
   });
   return binding;
 };
@@ -1736,7 +1830,7 @@ const watchSharedDaemon = (link: SharedDaemonLink) => {
   link.onConnection((event) => {
     if (event.kind === 'lost') {
       log.warn(`[daemon] the attached instance was lost (${event.reason})`);
-      // Open previews show "The app backend stopped" and close, rather than reach a daemon
+      // Open previews show "The application backend stopped" and close, rather than reach a daemon
       // that is gone or, after a restart, one that does not know their cookie.
       sharedAppPreviewLifetime.abort();
       void daemonReattach.lost();
@@ -1813,6 +1907,13 @@ const createChat = async (
       });
 
   const { baseUrl, process: biorouterdProcess, errorLog } = biorouterdResult;
+  // BB-06: the daemon (or the local proxy in front of a shared one) is never a page the
+  // browser may open, for anyone.
+  try {
+    reserveLocalPort(new URL(baseUrl).port);
+  } catch {
+    // A malformed base URL fails the readiness check below on its own.
+  }
   // A new window after the shared daemon restarted would otherwise open onto a proxy that
   // refuses every request, fail its readiness check and quit the app: reconnect first (R-1).
   let daemonAttached = true;
@@ -1867,58 +1968,38 @@ const createChat = async (
     y: initialBounds?.y ?? mainWindowState.y,
     width: initialBounds?.width ?? mainWindowState.width,
     height: initialBounds?.height ?? mainWindowState.height,
-    // DERIVED, not chosen: the 288px sidebar DEFAULT (`SIDEBAR_DEFAULT_WIDTH`
-    // in components/ui/sidebarWidth.ts) + the 760px reading column
-    // (`--measure-chat` in styles/main.css) = 1048. `useContentSize` is on, so
-    // this is content width, which is the number the renderer sees.
+    // DERIVED, not chosen: `WINDOW_MIN_WIDTH` in components/Layout/yieldLadder.ts,
+    // the narrowest window that still holds a two-pane split with each pane at
+    // the chat floor (2 x 360 + the 1px splitter = 721). `useContentSize` is on,
+    // so this is content width, which is the number the renderer sees.
+    // `styles/measures.test.ts` pins this literal to that constant.
     //
-    // ⚠ The sidebar's DEFAULT, not its minimum. The sidebar is user-resizable
-    // (216–360px, default 288), and it is tempting to take the floor from the
-    // bottom of that range on the argument that the minimum is the only width
-    // that is a property of the app rather than of a preference. That argument
-    // gets the direction backwards: a floor of 216 + 760 = 976 is a promise
-    // about a width NO install has until someone drags the edge, and at the
-    // width every install actually ships with it leaves the column 976 − 288 =
-    // 688px — under the very measure this floor exists to protect. The default
-    // is the sidebar the window must be able to seat.
+    // It was 1048, the 288px default sidebar plus the 760px chat measure, so
+    // that Home's usage card and its heat map could never be squeezed. The owner
+    // changed the rule (2026-11-19): as the window narrows the sidebar folds
+    // first (rung 1, at 1120), and then the composer narrows, the way a split
+    // pane's composer does. Home's usage card is not squeezed instead: it shows
+    // only at its whole measure and steps aside below it
+    // (components/sessions/homeUsageFit.ts). With the sidebar docked the column
+    // still has its whole measure at every sidebar width, because
+    // SIDEBAR_MAX_WIDTH + 760 = 1120 = SIDEBAR_COMPACT_WIDTH (pinned too).
     //
-    // Past the default the user is giving up reading room deliberately, with
-    // the window already open and the edge under their hand, and can give it
-    // back the same way; a floor cannot promise anything about a preference it
-    // is never told. The wide end is bounded separately and by construction:
-    // 360 + 760 = 1120 = SIDEBAR_COMPACT_WIDTH, so raising SIDEBAR_MAX_WIDTH
-    // past the point where rung 1 of the yield ladder collapses the sidebar to
-    // an overlay would start eating the measure. `styles/measures.test.ts` pins
-    // both the floor here and that identity.
-    //
-    // Below it the Home column is narrower than its own measure, and the usage
-    // heatmap — the one thing on Home whose size is computed rather than
-    // declared — starts shrinking its cells. Measured in a browser against the
-    // real stylesheet, WITH THE THEN-240px SIDEBAR: at 990px content width the
-    // grid is still at its full 23px cells; at 980px it drops to 22px and keeps
-    // stepping down to 16px by 800px, with the exact cliff at 989px.
-    //
-    // ⚠ That 989 is a WINDOW width and therefore carries the sidebar of the day
-    // inside it — what the heatmap actually reacts to is its own column, i.e.
-    // window minus sidebar, so the cliff moves with the sidebar. The measured
-    // cliff is a 749px column (989 − 240); against the 288px default the same
-    // cliff is a 1037px window, and 1048 clears it by the same 11px the old 1000
-    // cleared 989 by. The floor is still the tokens rather than the measurement,
-    // so it survives the heatmap's cell ladder changing.
-    // `styles/measures.test.ts` asserts the arithmetic still holds.
+    // Below 930px the renderer's `useIsMobile` is true, but the desktop keeps
+    // the overlay sidebar there (components/ui/sidebar.tsx): the drawer is the
+    // layout of a narrow browser, and the titlebar reserve every band keys on
+    // belongs to the overlay.
     //
     // ⚠ This is a *minimum window size*, not a content `max-width` — it is not
     // the flat pixel cap that docs/desktop-ui/window-scaling-regressions.md
     // warns about. It puts a floor under the window; it does nothing to a wide
     // one, where `--measure-page` still tracks the pane as a percentage.
     //
-    // The height axis is deliberately NOT capped to the same standard. A short
-    // window shrinks the heatmap's cells too, but the minHeight that would stop
-    // it lands around 700-800px, which is unusable on a 1280x800 display once
-    // the menu bar and Dock are taken out. The heatmap keeps its chrome locked
-    // to its grid instead (see UsageHeatmap's `heatStyle`), so a squeezed grid
-    // stays a coherent block rather than desyncing from its own labels.
-    minWidth: 1048,
+    // The height axis is deliberately NOT raised to fit the usage card. A
+    // minHeight that seated it whole lands around 700-800px, which is unusable
+    // on a 1280x800 display once the menu bar and Dock are taken out. Home's
+    // card yields instead: where it cannot leave the 24px gap above the
+    // composer it drops its heat map, then steps aside.
+    minWidth: 721,
     minHeight: 600,
     resizable: true,
     useContentSize: true,
@@ -2835,7 +2916,7 @@ const createTray = () => {
 
   try {
     tray = new Tray(iconPath);
-    setTrayRef(tray);
+    setTrayRef(tray, isChatWindow);
     updateTrayMenu(getUpdateAvailable());
 
     if (process.platform === 'win32' || process.platform === 'darwin') {
@@ -2854,38 +2935,17 @@ const createTray = () => {
 };
 
 const showWindow = async () => {
-  const windows = BrowserWindow.getAllWindows();
+  const windows = menuBarWindows(BrowserWindow.getAllWindows(), isChatWindow);
 
   if (windows.length === 0) {
-    log.info('No windows are open, creating a new one...');
+    log.info('No chat window is open, creating a new one...');
     const recentDirs = loadRecentDirs();
     const openDir = recentDirs.length > 0 ? recentDirs[0] : null;
     await createChat(app, undefined, openDir || undefined);
     return;
   }
 
-  const initialOffsetX = 30;
-  const initialOffsetY = 30;
-
-  // Iterate over all windows
-  windows.forEach((win, index) => {
-    const currentBounds = win.getBounds();
-    const newX = currentBounds.x + initialOffsetX * index;
-    const newY = currentBounds.y + initialOffsetY * index;
-
-    win.setBounds({
-      x: newX,
-      y: newY,
-      width: currentBounds.width,
-      height: currentBounds.height,
-    });
-
-    if (!win.isVisible()) {
-      win.show();
-    }
-
-    win.focus();
-  });
+  windows.forEach((win) => revealFromMenuBar(win, process.platform));
 };
 
 const buildRecentFilesMenu = () => {
@@ -3282,7 +3342,7 @@ const appLinkToCopy = (window: BrowserWindow, appId: string) => ({
       message: `Copy a link to open “${appId}”?`,
       detail:
         'Your default browser is a snap, and its sandbox cannot read the page Biorouter uses to ' +
-        'open apps in it. Copy a link instead, and paste it into the browser’s address bar. ' +
+        'open applications in it. Copy a link instead, and paste it into the browser’s address bar. ' +
         'It works once, within five minutes.',
     });
     return response === 1;
@@ -3307,7 +3367,7 @@ const appLinkToCopy = (window: BrowserWindow, appId: string) => ({
 const openAppForWindow = async (window: BrowserWindow, appId: unknown): Promise<void> => {
   const daemon = windowDaemons.get(window.id);
   if (!daemon) throw new Error('The local daemon is not available.');
-  if (typeof appId !== 'string') throw new Error('That is not an app name.');
+  if (typeof appId !== 'string') throw new Error('That is not an application name.');
   // The listener learned at attach, for a daemon too old to name its own in the launch answer.
   const backend = daemon.result.managed ? await windowAppPreviewBackend(window) : undefined;
   const opener: DefaultBrowserOpener = {
@@ -3338,7 +3398,7 @@ const openAppForWindow = async (window: BrowserWindow, appId: unknown): Promise<
  * A link to one of this machine's apps is routed BEFORE the public-site path, which refuses
  * every literal IP and used to drop such a link with nothing but a log line. Such a link is
  * never handed to the browser as it is: the browser holds no access cookie, so the daemon would
- * answer "Open this app from Biorouter", and its port can be one an earlier run of the daemon
+ * answer "Open this application from Biorouter", and its port can be one an earlier run of the daemon
  * had. It names the app, which is opened through a fresh launch link (`openAppForWindow`), and
  * the answer says what went wrong, for the renderer to show. Any other URL answers nothing.
  */
@@ -3358,7 +3418,7 @@ ipcMain.handle('open-external', async (event, url: string) => {
           message:
             error instanceof Error && error.message
               ? error.message
-              : 'Could not open the app in your browser.',
+              : 'Could not open the application in your browser.',
         };
       }
     }
@@ -4143,7 +4203,9 @@ async function confirmAnywhereRemote(
 async function startAnywhere(
   source: AnywhereSource,
   privateConfirmed: boolean,
-  preview?: { owner: BrowserWindow; viewId: string }
+  preview?: { owner: BrowserWindow; viewId: string },
+  /** fn down began this start: while it answers true for its generation, a refusal is silent. */
+  quiet?: (generation: number) => boolean
 ) {
   const switchOn = anywhereSettings.enabled && !anywhereOffRequested;
   if (source === 'shortcut' && !switchOn) return false;
@@ -4229,7 +4291,7 @@ async function startAnywhere(
       type: 'refuse',
       reason: availability === 'no-model' ? 'no-model' : 'policy',
     });
-    if (availability === 'no-model')
+    if (availability === 'no-model' && !quiet?.(generation))
       void showAnywhereReview('Set up a speech model in Settings > Models > Speech models.');
     return false;
   }
@@ -4388,7 +4450,7 @@ ipcMain.on('dictation:anywhere:capture-reply', (event, reply: unknown) => {
         (inserted) => {
           if (!inserted)
             void showAnywhereReview(
-              "Click into the app's text field, then use Dictate into this app.",
+              "Click into the application's text field, then use Dictate into this application.",
               typed.text
             );
         }
@@ -4533,6 +4595,344 @@ ipcMain.handle('dictation:anywhere:set', async (event, raw: unknown) => {
     () => undefined
   );
   return await pending;
+});
+
+// ── The fn key shortcut and the dictation indicator (macOS) ───────────────────
+// Hold fn to talk, double-tap fn for hands-free (`utils/fnGesture.ts`), read by the
+// `biorouter-fnkey` helper (`utils/fnKeyHelper.ts`), which runs only while the shortcut is on.
+// A gesture goes to the Biorouter window in front, or, with another app in front and **Use fn in
+// other apps** on, to Dictate to clipboard as the global shortcut would (`utils/dictationFnKey.ts`).
+// The setting is in `<config>/dictation/fn-key.json`, written only here, like `anywhere.json`.
+let fnKeySettings: FnKeySettings = defaultFnKeySettings(process.platform);
+let fnKeyService: FnKeyService | null = null;
+let fnSettingsQueue: Promise<unknown> = Promise.resolve();
+/**
+ * Which dictation the current press started (at fn down, or at the hold threshold), so its
+ * release, a tap or another key reaches that one and no other.
+ */
+let fnHold: { kind: 'window'; windowId: number } | { kind: 'anywhere'; generation: number } | null =
+  null;
+/**
+ * The Dictate to clipboard start that fn down began and no hold has confirmed yet: while it is
+ * this one, a refusal says nothing (the press may be a tap), and once the hold is confirmed or the
+ * double-tap keeps it, a refusal is shown as a shortcut's would be.
+ */
+let fnQuietGeneration: number | null = null;
+/** Each reporting page's dictation activity (`dictation:indicator`), by its webContents id. */
+const dictationReports = new Map<number, { windowId: number; report: DictationActivityReport }>();
+const watchedDictationReporters = new Set<number>();
+let dictationIndicator: DictationIndicator | null = null;
+
+const FN_KEY_STATUS_OFF: FnKeyStatus = {
+  supported: false,
+  active: false,
+  permission: 'unknown',
+  listening: false,
+  fnUsage: null,
+  failed: false,
+};
+
+function fnKeyStorePath(): string {
+  return path.join(biorouterConfigDir(), 'dictation', 'fn-key.json');
+}
+
+async function readFnKeySettings(): Promise<void> {
+  try {
+    fnKeySettings = parseFnKeySettings(
+      JSON.parse(await fs.readFile(fnKeyStorePath(), 'utf8')),
+      process.platform
+    );
+  } catch {
+    fnKeySettings = defaultFnKeySettings(process.platform);
+  }
+}
+
+async function writeFnKeySettings(settings: FnKeySettings): Promise<void> {
+  const filename = fnKeyStorePath();
+  await fs.mkdir(path.dirname(filename), { recursive: true, mode: 0o700 });
+  const temporary = `${filename}.${process.pid}.tmp`;
+  await fs.writeFile(temporary, JSON.stringify(settings), { mode: 0o600 });
+  await fs.rename(temporary, filename);
+}
+
+function fnKeyView(): FnKeyView {
+  return {
+    settings: fnKeySettings,
+    status: fnKeyService?.status() ?? FN_KEY_STATUS_OFF,
+    anywhereOn: anywhereSettings.enabled && !anywhereOffRequested,
+  };
+}
+
+function broadcastFnKey(): void {
+  const view = fnKeyView();
+  for (const win of windowMap.values()) {
+    if (!win.isDestroyed()) win.webContents.send('dictation:fn:state', view);
+  }
+}
+
+function startFnKeyShortcut(): void {
+  if (process.platform !== 'darwin') return;
+  fnKeyService ??= new FnKeyService({
+    platform: process.platform,
+    helperPath: fnKeyHelperPath(app),
+    // No environment: the helper needs none, so none of the app's reaches it.
+    // windowsHide is stated although this helper runs only on macOS: the
+    // console-window census reads every spawn site, platform-blind.
+    spawn: (file) =>
+      spawn(file, [], { stdio: ['pipe', 'pipe', 'ignore'], env: {}, windowsHide: true }),
+    onIntent: handleFnIntent,
+    onStatus: () => broadcastFnKey(),
+  });
+  fnKeyService.setActive(fnKeySettings.enabled);
+  broadcastFnKey();
+}
+
+function fnWorld(): FnWorld {
+  const focused = BrowserWindow.getFocusedWindow();
+  let recordingWindowId: number | null = null;
+  for (const { windowId, report } of dictationReports.values()) {
+    if (
+      (report.activity === 'arming' || report.activity === 'recording') &&
+      windowMap.has(windowId)
+    ) {
+      recordingWindowId = windowId;
+      break;
+    }
+  }
+  return {
+    focusedAppWindowId:
+      focused && !focused.isDestroyed() && windowMap.get(focused.id) === focused
+        ? focused.id
+        : null,
+    recordingWindowId,
+    anywherePhase: anywhereState.phase,
+    anywhereFnOn:
+      fnKeySettings.enabled &&
+      fnKeySettings.otherApps &&
+      anywhereSettings.enabled &&
+      !anywhereOffRequested,
+  };
+}
+
+function sendFnIntent(windowId: number, intent: FnIntent): void {
+  const win = windowMap.get(windowId);
+  if (win && !win.isDestroyed()) win.webContents.send('dictation:fn:intent', intent);
+}
+
+/** The Dictate to clipboard start `hold` names is still the one arming or recording. */
+function fnAnywhereHoldLive(hold: typeof fnHold): boolean {
+  return (
+    hold?.kind === 'anywhere' &&
+    hold.generation === anywhereGeneration &&
+    (anywhereState.phase === 'arming' || anywhereState.phase === 'recording')
+  );
+}
+
+/**
+ * Whether fn down may start Dictate to clipboard before the press is known to be a hold: only
+ * when nothing would be asked first, so a tap opens nothing. A remote daemon may ask for consent
+ * and a microphone not yet allowed asks macOS; those wait for the hold, as before.
+ */
+function fnMayPrimeAnywhere(): boolean {
+  return (
+    anywhereBackendIdentity()?.managed === true &&
+    systemPreferences.getMediaAccessStatus('microphone') === 'granted'
+  );
+}
+
+function handleFnIntent(intent: FnIntent): void {
+  const world = fnWorld();
+  switch (intent) {
+    case 'prime':
+    case 'start-hold': {
+      // At the threshold a capture this press started at fn down goes on: the window keeps its
+      // own, and Dictate to clipboard's now says why it stops, as a shortcut's would.
+      if (intent === 'start-hold' && fnHold?.kind === 'window') {
+        sendFnIntent(fnHold.windowId, 'start-hold');
+        return;
+      }
+      if (intent === 'start-hold' && fnAnywhereHoldLive(fnHold)) {
+        fnQuietGeneration = null;
+        return;
+      }
+      fnHold = null;
+      fnQuietGeneration = null;
+      if (fnDictationRunning(world)) return;
+      const route = fnStartRoute(world);
+      if (route?.kind === 'window') {
+        sendFnIntent(route.windowId, intent);
+        fnHold = { kind: 'window', windowId: route.windowId };
+      } else if (route?.kind === 'anywhere') {
+        if (intent === 'prime' && !fnMayPrimeAnywhere()) return;
+        // The global shortcut's source: public dictionary terms only, and the switch governs it.
+        const quiet = intent === 'prime';
+        void startAnywhere(
+          'shortcut',
+          false,
+          undefined,
+          (generation) => fnQuietGeneration === generation
+        );
+        if (anywhereState.phase === 'arming') {
+          fnHold = { kind: 'anywhere', generation: anywhereGeneration };
+          if (quiet) fnQuietGeneration = anywhereGeneration;
+        }
+      }
+      return;
+    }
+    case 'end-hold':
+    case 'cancel-hold': {
+      const hold = fnHold;
+      fnHold = null;
+      fnQuietGeneration = null;
+      if (!hold) return;
+      if (hold.kind === 'window') {
+        sendFnIntent(hold.windowId, intent);
+        return;
+      }
+      const live = anywhereState.phase === 'arming' || anywhereState.phase === 'recording';
+      if (hold.generation !== anywhereGeneration || !live) return;
+      // A release stops and copies (or cancels a start whose microphone never opened); fn with
+      // another key cancels.
+      if (intent === 'cancel-hold') cancelAnywhere();
+      else void startAnywhere('shortcut', false);
+      return;
+    }
+    case 'toggle': {
+      const hold = fnHold;
+      fnHold = null;
+      fnQuietGeneration = null;
+      // The double-tap's second press already started Dictate to clipboard: it goes on,
+      // hands-free. A window decides the same for its own (`fnGestureClient.ts`).
+      if (fnAnywhereHoldLive(hold)) return;
+      const route = fnToggleRoute(world);
+      if (route?.kind === 'window') sendFnIntent(route.windowId, 'toggle');
+      else if (route?.kind === 'anywhere') void startAnywhere('shortcut', false);
+      return;
+    }
+  }
+}
+
+function indicatorWorkArea() {
+  return screen.getDisplayNearestPoint(screen.getCursorScreenPoint()).workArea;
+}
+
+/**
+ * The indicator's window: transparent, never focused, ignoring the mouse, out of the Dock and
+ * Mission Control, and over every Space and full-screen app (`utils/dictationIndicator.ts`).
+ */
+function createIndicatorWindow(): BrowserWindow {
+  const win = new BrowserWindow({
+    width: INDICATOR_SIZE.width,
+    height: INDICATOR_SIZE.height,
+    show: false,
+    frame: false,
+    transparent: true,
+    backgroundColor: '#00000000',
+    hasShadow: false,
+    resizable: false,
+    movable: false,
+    minimizable: false,
+    maximizable: false,
+    fullscreenable: false,
+    focusable: false,
+    skipTaskbar: true,
+    alwaysOnTop: true,
+    hiddenInMissionControl: true,
+    type: 'panel',
+    webPreferences: {
+      sandbox: true,
+      contextIsolation: true,
+      nodeIntegration: false,
+      spellcheck: false,
+      backgroundThrottling: false,
+    },
+  });
+  win.setIgnoreMouseEvents(true);
+  win.setAlwaysOnTop(true, 'screen-saver');
+  win.setVisibleOnAllWorkspaces(true, {
+    visibleOnFullScreen: true,
+    skipTransformProcessType: true,
+  });
+  win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
+  win.webContents.on('will-navigate', (event) => event.preventDefault());
+  return win;
+}
+
+function updateDictationIndicator(): void {
+  if (process.platform !== 'darwin') return;
+  const { mode, level } = indicatorModeFor(
+    [...dictationReports.values()].map(({ report }) => report)
+  );
+  if (mode === 'hidden' && !dictationIndicator) return;
+  dictationIndicator ??= new DictationIndicator({
+    createWindow: createIndicatorWindow,
+    workArea: indicatorWorkArea,
+  });
+  dictationIndicator.update(mode, level);
+}
+
+ipcMain.on('dictation:indicator', (event, raw: unknown) => {
+  if (!isDictationSender(event) && !isDictationCaptureSender(event)) return;
+  const report = parseIndicatorReport(raw);
+  const contents = event.sender;
+  const win = BrowserWindow.fromWebContents(contents);
+  if (!report || !win) return;
+  if (!watchedDictationReporters.has(contents.id)) {
+    watchedDictationReporters.add(contents.id);
+    const id = contents.id;
+    contents.once('destroyed', () => {
+      watchedDictationReporters.delete(id);
+      dictationReports.delete(id);
+      updateDictationIndicator();
+    });
+  }
+  dictationReports.set(contents.id, { windowId: win.id, report });
+  updateDictationIndicator();
+});
+
+ipcMain.handle('dictation:fn:get', (event) => {
+  if (!isDictationSender(event)) return null;
+  return fnKeyView();
+});
+
+ipcMain.handle('dictation:fn:set', async (event, raw: unknown) => {
+  if (!isDictationSender(event)) return null;
+  const next = parseFnKeySettings(raw, process.platform);
+  const apply = async () => {
+    const previous = fnKeySettings;
+    fnKeySettings = next;
+    fnKeyService?.setActive(next.enabled);
+    try {
+      await writeFnKeySettings(next);
+    } catch {
+      // Unsaved, the next launch reads the old file; keep that one in effect now too.
+      fnKeySettings = previous;
+      fnKeyService?.setActive(previous.enabled);
+    }
+    broadcastFnKey();
+    return fnKeyView();
+  };
+  const pending = fnSettingsQueue.then(apply);
+  fnSettingsQueue = pending.catch(() => undefined);
+  return await pending;
+});
+
+ipcMain.handle('dictation:fn:open-settings', async (event, pane: unknown) => {
+  if (!isDictationSender(event)) return false;
+  if (process.platform !== 'darwin') return false;
+  if (pane === 'input-monitoring') {
+    // Asking once lists Biorouter on that page (and shows the system prompt the first time).
+    fnKeyService?.requestPermission();
+    await shell.openExternal(
+      'x-apple.systempreferences:com.apple.preference.security?Privacy_ListenEvent'
+    );
+    return true;
+  }
+  if (pane === 'keyboard') {
+    await shell.openExternal('x-apple.systempreferences:com.apple.preference.keyboard');
+    return true;
+  }
+  return false;
 });
 
 ipcMain.handle('dictation:anywhere:preview-focused', async (event, raw: unknown) => {
@@ -4966,11 +5366,14 @@ ipcMain.on('delete-temp-file', async (_event, filePath: string) => {
     return;
   }
 
-  // Ensure the path is within the designated temp directory
+  // Ensure the path is within the designated temp directory, or the agent capture folder (a
+  // panel capture the renderer drops because the panel changed while it was taken).
   const resolvedPath = path.resolve(filePath);
-  const resolvedTempDir = path.resolve(biorouterTempDir);
+  const tempRoot = [biorouterTempDir, agentCaptureDir()].find((root) =>
+    resolvedPath.startsWith(path.resolve(root) + path.sep)
+  );
 
-  if (!resolvedPath.startsWith(resolvedTempDir + path.sep)) {
+  if (!tempRoot) {
     console.warn(`[Main] Attempted to delete file outside designated temp directory: ${filePath}`);
     return;
   }
@@ -4987,7 +5390,7 @@ ipcMain.on('delete-temp-file', async (_event, filePath: string) => {
     let actualPath = filePath;
 
     try {
-      const realTempDir = await fs.realpath(biorouterTempDir);
+      const realTempDir = await fs.realpath(tempRoot);
       const realPath = await fs.realpath(filePath);
 
       // Double-check that the real path is still within our real temp directory
@@ -5242,7 +5645,10 @@ ipcMain.handle(
     // reject, so the empty case has to be checked rather than assumed.
     if (image.isEmpty()) return null;
 
-    const dir = await ensureTempDirExists();
+    // A capture of the panel for the agent goes where the daemon reads it; anything else (an
+    // annotation the person sends with a message) is a pasted image like any other.
+    const dir =
+      payload.label === 'panel' ? await ensureAgentCaptureDir() : await ensureTempDirExists();
     const safeLabel = (payload.label ?? 'region').replace(/[^a-zA-Z0-9-]/g, '').slice(0, 24);
     const filePath = path.join(
       dir,
@@ -5256,17 +5662,117 @@ ipcMain.handle(
 
 // ── Embedded browser (the artifact panel's live web view) ────────────────────
 //
-// Every handler resolves the owning window from the *event sender*. The main
-// registry keys renderer view ids by that owner, so an identical React id in a
-// second window cannot drive, read, capture, or destroy the first window's view.
+// Every handler resolves the owning window from the *event sender*, and answers only that
+// window's own renderer (`browserOwnerWindow`): a page in the browser has no preload and so no
+// IPC at all, and a popup window it opened has none either, so this is the window's chrome
+// talking. The main registry keys renderer view ids by that owner, so an identical React id in
+// a second window cannot drive, read, capture, or destroy the first window's view.
 //
 // An app link is answered once this window's preview backend is bound, which for a shared
 // daemon waits on the daemon naming its own listener (`bindWindowAppPreview`): a chat reopened
 // as the window starts would otherwise show its app as an external page. ⚠ `create` below stays
 // synchronous and reads the bound backend as it is: the renderer asks this first, and sends
 // `set-visible` and `set-bounds` right behind `create`, which must find the view already made.
-ipcMain.handle('embedded-browser:is-managed-app-url', async (event, payload: { url: string }) => {
+
+// BB-06 and the Electron tests (`tests/e2e/biorouter-browser.spec.ts`): fixture host names and
+// dialog-free downloads exist only in an unpackaged app run with BIOROUTER_E2E=1.
+{
+  const testHooks = browserTestHooksEnabled(process.env, app.isPackaged);
+  configureBrowserTestHosts(process.env.BIOROUTER_BROWSER_TEST_HOSTS, testHooks);
+  configureBrowserTestDownloads(
+    testHooks ? (process.env.BIOROUTER_BROWSER_TEST_DOWNLOAD_DIR ?? null) : null
+  );
+  // The dev renderer's own server is never a page the browser may open.
+  if (MAIN_WINDOW_VITE_DEV_SERVER_URL) {
+    reserveLocalPort(new URL(MAIN_WINDOW_VITE_DEV_SERVER_URL).port);
+  }
+}
+
+function browserOwnerWindow(event: Electron.IpcMainInvokeEvent): BrowserWindow | null {
   const window = BrowserWindow.fromWebContents(event.sender);
+  return window && window.webContents === event.sender ? window : null;
+}
+
+function isViewId(value: unknown): value is string {
+  return typeof value === 'string' && value.length > 0 && value.length <= 200;
+}
+
+// BB-10 and BB-11: one Biorouter Browser operation the daemon sent through this window's
+// workspace socket. The renderer checks the chat is on screen in this window and forwards the
+// frame here; main drives the chat's own agent tabs of THIS window through
+// `webContents.debugger`, and no other caller (a page, a popup, another window) can reach it.
+function agentBrowserRequest(payload: unknown): BrowserAgentRequest | null {
+  if (!payload || typeof payload !== 'object') return null;
+  const p = payload as Record<string, unknown>;
+  const text = (value: unknown) =>
+    typeof value === 'string' && value.length > 0 && value.length <= 200;
+  if (!text(p.requestId) || !text(p.sessionId)) return null;
+  if (typeof p.op !== 'string' || !BROWSER_AGENT_OPS.has(p.op)) return null;
+  if (!p.args || typeof p.args !== 'object' || Array.isArray(p.args)) return null;
+  if (p.grant !== 'observe' && p.grant !== 'act') return null;
+  if (p.tier !== 'public' && p.tier !== 'private') return null;
+  const deadline = Number(p.deadlineMs);
+  if (!Number.isFinite(deadline) || deadline <= 0) return null;
+  let downloadDir: string | undefined;
+  if (p.downloadDir !== undefined && p.downloadDir !== null) {
+    if (typeof p.downloadDir !== 'string' || !path.isAbsolute(p.downloadDir)) return null;
+    downloadDir = path.normalize(p.downloadDir);
+  }
+  return {
+    requestId: p.requestId as string,
+    sessionId: p.sessionId as string,
+    op: p.op as BrowserAgentOp,
+    args: p.args as Record<string, unknown>,
+    grant: p.grant,
+    tier: p.tier,
+    deadlineMs: deadline,
+    downloadDir,
+  };
+}
+
+/** A screenshot goes where the daemon's capture reader accepts it (PP-07, pixels out of band). */
+async function writeAgentScreenshot(png: Buffer): Promise<string> {
+  const dir = await ensureAgentCaptureDir();
+  const filePath = path.join(dir, `browser-shot-${crypto.randomBytes(6).toString('hex')}.png`);
+  await fs.writeFile(filePath, png, { mode: 0o600 });
+  return filePath;
+}
+
+function resizeAgentScreenshot(png: Buffer, maxWidth: number, maxHeight: number): Buffer {
+  const image = nativeImage.createFromBuffer(png);
+  const { width, height } = image.getSize();
+  const scale = Math.min(1, maxWidth / Math.max(1, width), maxHeight / Math.max(1, height));
+  if (scale >= 1) return png;
+  return image
+    .resize({
+      width: Math.max(1, Math.round(width * scale)),
+      height: Math.max(1, Math.round(height * scale)),
+      quality: 'good',
+    })
+    .toPNG();
+}
+
+ipcMain.handle('biorouter-browser:agent', async (event, payload: unknown) => {
+  const window = browserOwnerWindow(event);
+  if (!window) return { ok: false, detail: 'This window cannot drive the browser.' };
+  const request = agentBrowserRequest(payload);
+  if (!request) return { ok: false, detail: 'The browser operation was malformed.' };
+  return runAgentBrowserOperation(window, request, {
+    writeScreenshot: writeAgentScreenshot,
+    resizePng: resizeAgentScreenshot,
+  });
+});
+
+ipcMain.handle('biorouter-browser:agent-cancel', (event, payload: { requestId?: unknown }) => {
+  const window = browserOwnerWindow(event);
+  if (!window || typeof payload?.requestId !== 'string' || payload.requestId.length > 200) {
+    return false;
+  }
+  return cancelAgentBrowserOperation(payload.requestId);
+});
+
+ipcMain.handle('embedded-browser:is-managed-app-url', async (event, payload: { url: string }) => {
+  const window = browserOwnerWindow(event);
   if (!window || typeof payload?.url !== 'string' || !localAppPageId(payload.url)) return false;
   const backend = await windowAppPreviewBackend(window);
   return Boolean(managedAppPreviewScope(payload.url, backend));
@@ -5275,10 +5781,11 @@ ipcMain.handle('embedded-browser:is-managed-app-url', async (event, payload: { u
 ipcMain.handle(
   'embedded-browser:create',
   (event, payload: { viewId: string; url: string; managedOnly?: boolean }) => {
-    const window = BrowserWindow.fromWebContents(event.sender);
+    const window = browserOwnerWindow(event);
     if (
       !window ||
-      typeof payload?.viewId !== 'string' ||
+      !isViewId(payload?.viewId) ||
+      typeof payload.url !== 'string' ||
       (payload.managedOnly !== undefined && typeof payload.managedOnly !== 'boolean')
     )
       return null;
@@ -5300,22 +5807,28 @@ ipcMain.handle(
 ipcMain.handle(
   'embedded-browser:set-bounds',
   (event, payload: { viewId: string; bounds: EmbeddedBrowserBounds }) => {
-    const window = BrowserWindow.fromWebContents(event.sender);
-    if (window) setEmbeddedBrowserBounds(window, payload.viewId, payload.bounds);
+    const window = browserOwnerWindow(event);
+    if (window && isViewId(payload?.viewId) && payload.bounds) {
+      setEmbeddedBrowserBounds(window, payload.viewId, payload.bounds);
+    }
   }
 );
 
 ipcMain.handle(
   'embedded-browser:set-visible',
   (event, payload: { viewId: string; visible: boolean }) => {
-    const window = BrowserWindow.fromWebContents(event.sender);
-    if (window) setEmbeddedBrowserVisible(window, payload.viewId, payload.visible);
+    const window = browserOwnerWindow(event);
+    if (window && isViewId(payload?.viewId)) {
+      setEmbeddedBrowserVisible(window, payload.viewId, payload.visible === true);
+    }
   }
 );
 
 ipcMain.handle('embedded-browser:navigate', (event, payload: { viewId: string; url: string }) => {
-  const window = BrowserWindow.fromWebContents(event.sender);
-  return window ? navigateEmbeddedBrowser(window, payload.viewId, payload.url) : false;
+  const window = browserOwnerWindow(event);
+  return window && isViewId(payload?.viewId) && typeof payload.url === 'string'
+    ? navigateEmbeddedBrowser(window, payload.viewId, payload.url)
+    : false;
 });
 
 ipcMain.handle(
@@ -5324,8 +5837,14 @@ ipcMain.handle(
     event,
     payload: { viewId: string; action: 'back' | 'forward' | 'reload' | 'stop' | 'reload-if-idle' }
   ) => {
-    const window = BrowserWindow.fromWebContents(event.sender);
-    return window ? controlEmbeddedBrowser(window, payload.viewId, payload.action) : false;
+    const window = browserOwnerWindow(event);
+    if (
+      !window ||
+      !isViewId(payload?.viewId) ||
+      !['back', 'forward', 'reload', 'stop', 'reload-if-idle'].includes(payload.action)
+    )
+      return false;
+    return controlEmbeddedBrowser(window, payload.viewId, payload.action);
   }
 );
 
@@ -5341,8 +5860,8 @@ ipcMain.handle(
 ipcMain.handle(
   'embedded-browser:read-text',
   async (event, payload: { viewId: string; maxChars?: number }) => {
-    const window = BrowserWindow.fromWebContents(event.sender);
-    if (!window) return null;
+    const window = browserOwnerWindow(event);
+    if (!window || !isViewId(payload?.viewId)) return null;
     const requested = payload.maxChars ?? 20_000;
     const limit = Number.isFinite(requested)
       ? Math.min(40_000, Math.max(0, Math.floor(requested)))
@@ -5352,11 +5871,12 @@ ipcMain.handle(
 );
 
 ipcMain.handle('embedded-browser:capture', async (event, payload: { viewId: string }) => {
-  const window = BrowserWindow.fromWebContents(event.sender);
-  if (!window) return null;
+  const window = browserOwnerWindow(event);
+  if (!window || !isViewId(payload?.viewId)) return null;
   const shot = await captureEmbeddedBrowser(window, payload.viewId);
   if (!shot) return null;
-  const dir = await ensureTempDirExists();
+  // Only `workspace_read_panel` asks for this, so it goes where the daemon reads it.
+  const dir = await ensureAgentCaptureDir();
   const filePath = path.join(dir, `capture-page-${crypto.randomBytes(6).toString('hex')}.png`);
   await fs.writeFile(filePath, shot.png, { mode: 0o600 });
   return {
@@ -5368,13 +5888,210 @@ ipcMain.handle('embedded-browser:capture', async (event, payload: { viewId: stri
 });
 
 ipcMain.handle('embedded-browser:clear-data', async (event, payload: { viewId: string }) => {
-  const window = BrowserWindow.fromWebContents(event.sender);
-  return window ? clearEmbeddedBrowserData(window, payload.viewId) : false;
+  const window = browserOwnerWindow(event);
+  return window && isViewId(payload?.viewId)
+    ? clearEmbeddedBrowserData(window, payload.viewId)
+    : false;
+});
+
+// BB-01: hiding a tab when the panel shows something else keeps it; destroy ends it.
+ipcMain.handle('embedded-browser:release', (event, payload: { viewId: string }) => {
+  const window = browserOwnerWindow(event);
+  if (window && isViewId(payload?.viewId)) releaseEmbeddedBrowser(window, payload.viewId);
+});
+
+ipcMain.handle('embedded-browser:claim', (event, payload: { viewId: string }) => {
+  const window = browserOwnerWindow(event);
+  return window && isViewId(payload?.viewId) ? claimEmbeddedBrowser(window, payload.viewId) : false;
 });
 
 ipcMain.handle('embedded-browser:destroy', (event, payload: { viewId: string }) => {
-  const window = BrowserWindow.fromWebContents(event.sender);
-  if (window) destroyEmbeddedBrowser(window, payload.viewId);
+  const window = browserOwnerWindow(event);
+  if (window && isViewId(payload?.viewId)) destroyEmbeddedBrowser(window, payload.viewId);
+});
+
+ipcMain.handle(
+  'embedded-browser:zoom',
+  (event, payload: { viewId: string; direction: 'in' | 'out' | 'reset' }) => {
+    const window = browserOwnerWindow(event);
+    if (
+      !window ||
+      !isViewId(payload?.viewId) ||
+      !['in', 'out', 'reset'].includes(payload.direction)
+    )
+      return null;
+    return zoomEmbeddedBrowser(window, payload.viewId, payload.direction);
+  }
+);
+
+ipcMain.handle(
+  'embedded-browser:find',
+  (event, payload: { viewId: string; text: string; forward?: boolean; findNext?: boolean }) => {
+    const window = browserOwnerWindow(event);
+    if (!window || !isViewId(payload?.viewId) || typeof payload.text !== 'string') return false;
+    return findInEmbeddedBrowser(window, payload.viewId, payload.text, {
+      forward: payload.forward !== false,
+      findNext: payload.findNext === true,
+    });
+  }
+);
+
+ipcMain.handle('embedded-browser:stop-find', (event, payload: { viewId: string }) => {
+  const window = browserOwnerWindow(event);
+  if (window && isViewId(payload?.viewId)) stopFindInEmbeddedBrowser(window, payload.viewId);
+});
+
+ipcMain.handle('embedded-browser:dismiss-notice', (event, payload: { viewId: string }) => {
+  const window = browserOwnerWindow(event);
+  if (window && isViewId(payload?.viewId)) dismissEmbeddedBrowserNotice(window, payload.viewId);
+});
+
+ipcMain.handle('embedded-browser:show-download', (event, payload: { viewId: string }) => {
+  const window = browserOwnerWindow(event);
+  return window && isViewId(payload?.viewId)
+    ? showEmbeddedBrowserDownload(window, payload.viewId)
+    : false;
+});
+
+ipcMain.handle(
+  'embedded-browser:bookmark',
+  (event, payload: { viewId: string; bookmarked: boolean }) => {
+    const window = browserOwnerWindow(event);
+    if (!window || !isViewId(payload?.viewId) || typeof payload.bookmarked !== 'boolean')
+      return false;
+    return setEmbeddedBrowserBookmark(window, payload.viewId, payload.bookmarked);
+  }
+);
+
+ipcMain.handle('embedded-browser:bookmarks', (event) =>
+  browserOwnerWindow(event) ? embeddedBrowserBookmarks() : []
+);
+
+ipcMain.handle('embedded-browser:suggest', (event, payload: { query: string }) =>
+  browserOwnerWindow(event) && typeof payload?.query === 'string'
+    ? embeddedBrowserSuggestions(payload.query)
+    : []
+);
+
+ipcMain.handle('embedded-browser:search-engine', (event) =>
+  browserOwnerWindow(event) ? embeddedBrowserSearchEngine() : null
+);
+
+// ── Importing from Chrome (BB-21 to BB-25) ──────────────────────────────────
+//
+// Only the person can start an import: these handlers answer the main frame of one of the app's
+// own windows on the app's own origin (`browserImportOwner`), never a page in the browser, a
+// popup, an artifact frame or another process. There is no daemon route, workspace frame or tool
+// for any of it, so an agent can neither start an import nor answer the operating system's prompt
+// (a census test, `chromeImport/census.test.ts`, holds that line).
+//
+// What crosses back to the renderer is counts, site names and profile names. Cookie values and
+// the key stay in this process and the browser's own partition.
+
+let chromeImport: ChromeImportService | null = null;
+
+function chromeImportService(): ChromeImportService {
+  if (chromeImport) return chromeImport;
+  const source = chromeImportSource({
+    env: process.env,
+    isPackaged: app.isPackaged,
+    platform: process.platform,
+    home: os.homedir(),
+    helperBinary: () => getBiorouterdBinaryPath(app),
+  });
+  const targets = embeddedBrowserImportTargets();
+  chromeImport = createChromeImportService({
+    platform: source.platform,
+    dataRoot: source.dataRoot,
+    stateDir: targets.stateDir,
+    cookies: targets.cookies,
+    store: targets.store,
+    preferences: targets.preferences,
+    onPreferencesChanged: targets.onPreferencesChanged,
+    keyProvider: source.keyProvider,
+    // Counts, outcomes and site names only (the importer never passes a value here).
+    log: (message, details) => log.info(`[ChromeImport] ${message}`, details ?? {}),
+  });
+  return chromeImport;
+}
+
+function browserImportOwner(event: Electron.IpcMainInvokeEvent): BrowserWindow | null {
+  const owner = BrowserWindow.fromWebContents(event.sender);
+  const frame = event.senderFrame;
+  if (
+    !owner ||
+    owner.isDestroyed() ||
+    windowMap.get(owner.id) !== owner ||
+    owner.webContents !== event.sender ||
+    !frame ||
+    frame !== event.sender.mainFrame ||
+    !isAppOrigin(frame.url, rendererEntryUrl())
+  ) {
+    return null;
+  }
+  return owner;
+}
+
+ipcMain.handle('biorouter-browser-import:status', (event) =>
+  browserImportOwner(event) ? chromeImportService().status() : null
+);
+
+ipcMain.handle('biorouter-browser-import:profiles', (event) =>
+  browserImportOwner(event) ? chromeImportService().profiles() : []
+);
+
+ipcMain.handle('biorouter-browser-import:sites', (event, payload: { profileId?: unknown }) =>
+  browserImportOwner(event) &&
+  typeof payload?.profileId === 'string' &&
+  payload.profileId.length <= 64
+    ? chromeImportService().sites(payload.profileId)
+    : { readable: false, sites: [], total: 0 }
+);
+
+/**
+ * S3: the import's own confirmation, a native dialog this process shows over the window that
+ * asked. A page cannot answer it, so a compromised or buggy renderer cannot start an import
+ * alone; the service reads nothing from the profile but its name before the answer.
+ *
+ * Cancel is the default button as well as the cancel one, so a stray Return (or Escape) never
+ * starts an import: only a click on **Import** does.
+ */
+async function confirmChromeImport(
+  owner: BrowserWindow,
+  text: ImportConfirmationText
+): Promise<boolean> {
+  if (owner.isDestroyed()) return false;
+  const { response } = await dialog.showMessageBox(owner, {
+    type: 'question',
+    buttons: ['Cancel', text.confirmLabel],
+    defaultId: 0,
+    cancelId: 0,
+    noLink: true,
+    message: text.message,
+    detail: text.detail,
+  });
+  return response === 1;
+}
+
+ipcMain.handle('biorouter-browser-import:run', async (event, payload: unknown) => {
+  const owner = browserImportOwner(event);
+  if (!owner) return { ok: false, error: 'This window cannot import.' };
+  const request = validImportRequest(payload);
+  if (!request) return { ok: false, error: 'The import request was malformed.' };
+  return chromeImportService().run(request, (text) => confirmChromeImport(owner, text));
+});
+
+ipcMain.handle('biorouter-browser-import:remove', async (event, payload: { id?: unknown }) => {
+  if (!browserImportOwner(event) || typeof payload?.id !== 'string' || payload.id.length > 64) {
+    return false;
+  }
+  return chromeImportService().remove(payload.id);
+});
+
+ipcMain.handle('biorouter-browser-import:dismiss', (event) => {
+  if (!browserImportOwner(event)) return false;
+  chromeImportService().dismissOffer();
+  return true;
 });
 
 ipcMain.handle('read-artifact-file', async (event, filePath: string) => {
@@ -6277,8 +6994,8 @@ ipcMain.handle('brxt:uninstall', async (_event, { extensionName }: { extensionNa
 });
 
 function handleBrxtFileOpen(filePath: string) {
-  // Find the main window (or store for when one is ready)
-  const win = BrowserWindow.getAllWindows().find((w) => !w.isDestroyed());
+  // Find a chat window (or store for when one is ready); a dictation window cannot install it
+  const win = menuBarWindows(BrowserWindow.getAllWindows(), isChatWindow)[0];
   if (win) {
     win.webContents.send('open-brxt-file', filePath);
     win.focus();
@@ -7174,12 +7891,15 @@ const createNewWindow = async (app: App, dir?: string | null) => {
   return await createChat(app, undefined, openDir);
 };
 
+/**
+ * **Focus Biorouter Window** (⌘⌥G) and hiding the Dock icon: the chat windows come forward, the
+ * newest gets the input focus, and with none open a new one opens. Never a dictation window, which
+ * is hidden on purpose and would otherwise be shown, or counted as the open window.
+ */
 const focusWindow = () => {
-  const windows = BrowserWindow.getAllWindows();
+  const windows = menuBarWindows(BrowserWindow.getAllWindows(), isChatWindow);
   if (windows.length > 0) {
-    windows.forEach((win) => {
-      win.show();
-    });
+    windows.forEach((win) => revealFromMenuBar(win, process.platform));
     windows[windows.length - 1].webContents.send('focus-input');
   } else {
     createNewWindow(app);
@@ -7940,6 +8660,10 @@ async function appMain() {
     type: anywhereSettings.enabled ? 'enable' : 'disable',
   });
   registerAnywhereShortcut();
+  await readFnKeySettings();
+  startFnKeyShortcut();
+  // A grant made in System Settings reaches a new helper: look again when Biorouter comes back.
+  app.on('browser-window-focus', () => fnKeyService?.refresh());
   // Create tray if enabled in settings
   const settings = loadSettings();
   if (settings.showMenuBarIcon) {
@@ -8011,7 +8735,9 @@ async function appMain() {
   buildApplicationMenu();
 
   app.on('activate', () => {
-    if (BrowserWindow.getAllWindows().length === 0) {
+    // The Dock icon with no chat window open opens one, even while a hidden dictation window
+    // (the capture window, a review card, the indicator) is still alive.
+    if (menuBarWindows(BrowserWindow.getAllWindows(), isChatWindow).length === 0) {
       createNewWindow(app);
     }
   });
@@ -8701,6 +9427,8 @@ async function getAllowList(): Promise<string[]> {
 }
 
 app.on('will-quit', async () => {
+  fnKeyService?.dispose();
+  dictationIndicator?.dispose();
   clearAnywhereReview();
   stopAnywherePowerBlocker();
   if (anywhereShortcut) globalShortcut.unregister(anywhereShortcut);

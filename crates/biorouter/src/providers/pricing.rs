@@ -700,7 +700,7 @@ fn newly_unverified_hosted_price(provider: &str, model: &str) -> bool {
         || matches!(model, "gpt-6-1-sol" | "gpt-6-1-terra")
         || matches!(
             model,
-            "gemini-4-hydrogen" | "gemini-4-argon" | "gemini-4-carbon"
+            "gemini-4-hydrogen" | "gemini-4-argon" | "gemini-4-carbon" | "gemini-4-neon"
         )
         || matches!(
             claude_version(model),
@@ -1176,6 +1176,9 @@ fn mistral_pricing(model: &str) -> Option<ProviderModelPricing> {
 fn google_pricing_at(model: &str, date: chrono::NaiveDate) -> Option<ProviderModelPricing> {
     let (input, output) = match model {
         "gemini-4-hydrogen" => (1.50, 7.50),
+        // Standard tier, implicit caching only, no dated change listed
+        // (https://aistudio.google.com/docs/pricing, read 2026-11-19).
+        "gemini-4-neon" => (3.00, 15.00),
         "gemini-4-argon" | "gemini-4-carbon" => {
             if date < chrono::NaiveDate::from_ymd_opt(2026, 12, 1).unwrap() {
                 (2.00, 10.00)

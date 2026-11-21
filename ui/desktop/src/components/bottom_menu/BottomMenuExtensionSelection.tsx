@@ -441,7 +441,7 @@ export function useExtensionPicker(
    *
    * 1. *What is counted* — user-installed extensions only. Shipped capabilities
    *    (every entry of `CAPABILITIES`: Developer, Biorouter Copilot, Web &
-   *    Documents, Auto Visualiser, Memory, Knowledge, Agent Drafter, Todo, Chat
+   *    Documents, Auto Visualiser, Memory, Knowledge, Application Drafter, Todo, Chat
    *    Recall, Extension Manager, Code Execution, Skills, Workspace Control and
    *    Crew) are excluded; see the note inside. A chat whose only extensions
    *    are capabilities therefore reads `0`, and that is the number meaning

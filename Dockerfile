@@ -2,20 +2,26 @@
 # BioRouter CLI and Server Docker Image
 # Multi-stage build for minimal final image size
 
-# Native helper is part of the CLI image even when no desktop is attached.
-FROM --platform=$BUILDPLATFORM golang:1.26.8-bookworm AS computer-use-builder
+# Biorouter Copilot's engine (agent-desktop) is part of the CLI image even when no
+# desktop is attached. It is built from vendor/agent-desktop in the bullseye image
+# the release pins for Linux (glibc 2.31), natively for the image's architecture,
+# so the payload is the same one the Linux packages carry and passes the same
+# glibc-floor check in `computer-use-runtime.py verify`.
+FROM rust:1.92-bullseye AS computer-use-builder
 ARG TARGETARCH
-ENV GOMAXPROCS=2
-RUN apt-get update && apt-get install -y --no-install-recommends python3 git ca-certificates && rm -rf /var/lib/apt/lists/*
 WORKDIR /build
 # ⚠ Both scripts. `computer-use-runtime.py` loads `vendor-computer-use-source.py`
 # by path to verify the vendored tree against its manifest before building, so
-# copying only the first leaves the build failing on a missing module.
+# copying only the first leaves the build failing on a missing module. It also
+# reads the toolchain channel from rust-toolchain.toml and the workspace version
+# from Cargo.toml, which the payload manifest records.
+COPY rust-toolchain.toml Cargo.toml ./
 COPY scripts/computer-use-runtime.py scripts/computer-use-runtime.py
 COPY scripts/vendor-computer-use-source.py scripts/vendor-computer-use-source.py
-COPY vendor/computer-use vendor/computer-use
+COPY vendor/agent-desktop vendor/agent-desktop
 RUN case "$TARGETARCH" in amd64) HELPER_TARGET=linux-x64 ;; arm64) HELPER_TARGET=linux-arm64 ;; *) echo "Unsupported native helper architecture: $TARGETARCH" >&2; exit 1 ;; esac && \
-    python3 scripts/computer-use-runtime.py build "$HELPER_TARGET" && \
+    rustup toolchain install --no-self-update && \
+    BIOROUTER_BUILD_JOBS=2 python3 scripts/computer-use-runtime.py build "$HELPER_TARGET" && \
     cp -a "target/computer-use/$HELPER_TARGET" /computer-use && \
     touch /computer-use.ready
 
@@ -84,10 +90,6 @@ RUN apt-get update && \
     libssl3 \
     libdbus-1-3 \
     libxcb1 \
-    python3 \
-    python3-gi \
-    gir1.2-atspi-2.0 \
-    gir1.2-gtk-3.0 \
     at-spi2-core \
     curl \
     git \

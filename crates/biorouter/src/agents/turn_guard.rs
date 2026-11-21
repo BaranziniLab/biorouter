@@ -2,13 +2,15 @@
 //!
 //! [`crate::tool_monitor::RepetitionInspector`] owns the policy: it decides
 //! whether a call should warn, run, or be denied. This module deliberately has
-//! no threshold and never counts attempts. It converts a policy denial for one
-//! exact `(tool, arguments)` signature into the typed terminal event consumed by
+//! no threshold and never counts attempts. It records each valid denied exact
+//! `(tool, arguments)` signature, permits one model feedback opportunity, and
+//! converts every later valid denial into the typed terminal event consumed by
 //! the CLI, server, desktop, and Apps runtime.
 //!
-//! The guard is created once per user reply. Ending the reply after the denied
-//! tool response is recorded makes the stop structural: no additional billed
-//! provider call is needed, and a new user message starts with a fresh guard.
+//! The guard is created once per user reply. Ending the reply after the terminal
+//! denied tool response is recorded makes the stop structural: no additional
+//! billed provider call is needed, and a new user message starts with a fresh
+//! guard.
 
 use std::collections::HashSet;
 
@@ -47,17 +49,22 @@ impl TurnToolGuard {
         Self::default()
     }
 
-    /// Enforce a denial already decided by `RepetitionInspector`.
+    /// Record a denial already decided by `RepetitionInspector`.
     ///
-    /// Returning a terminal code is unconditional for a valid tool request. The
-    /// inspector has already made the stop decision; waiting for a second denied
-    /// attempt here would create a competing policy and burn another model call.
+    /// The first valid denial this turn is recorded without terminating so the
+    /// model receives one feedback opportunity. Every later valid denial is
+    /// recorded and produces the terminal code, regardless of its signature.
     pub fn enforce_denial(&mut self, request: &ToolRequest) -> Option<TurnAbortCode> {
         let signature = ToolCallSignature::from_request(request)?;
+        let is_first_denial = self.blocked.is_empty();
         self.blocked.insert(signature.clone());
-        Some(TurnAbortCode::ToolLoop {
-            tool: signature.tool,
-        })
+        if is_first_denial {
+            None
+        } else {
+            Some(TurnAbortCode::ToolLoop {
+                tool: signature.tool,
+            })
+        }
     }
 
     pub fn is_blocked(&self, request: &ToolRequest) -> bool {
@@ -88,17 +95,30 @@ mod tests {
     }
 
     #[test]
-    fn policy_denial_becomes_a_terminal_abort_immediately() {
+    fn first_policy_denial_blocks_the_signature_without_ending_feedback() {
         let mut guard = TurnToolGuard::new();
-        let denied = request("1", "ui_describe", json!({"app": "trial"}));
+        let denied = request("1", "fixture__probe", json!({"command": "first"}));
+
+        assert_eq!(guard.enforce_denial(&denied), None);
+        assert!(guard.is_blocked(&denied));
+    }
+
+    #[test]
+    fn second_policy_denial_is_terminal_for_a_different_signature() {
+        let mut guard = TurnToolGuard::new();
+        let first = request("1", "fixture__probe", json!({"command": "first"}));
+        let second = request("2", "fixture__other", json!({"command": "second"}));
+
+        let _ = guard.enforce_denial(&first);
 
         assert_eq!(
-            guard.enforce_denial(&denied),
+            guard.enforce_denial(&second),
             Some(TurnAbortCode::ToolLoop {
-                tool: "ui_describe".to_string(),
+                tool: "fixture__other".to_string(),
             })
         );
-        assert!(guard.is_blocked(&denied));
+        assert!(guard.is_blocked(&first));
+        assert!(guard.is_blocked(&second));
     }
 
     #[test]

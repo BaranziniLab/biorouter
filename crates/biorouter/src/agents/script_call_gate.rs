@@ -91,7 +91,7 @@
 //! A task-local is unreachable across a `tokio::spawn`, so "no gate on this
 //! task" is evidence of nothing by itself. It is equally the shape of
 //!
-//! * a **person** running a script — `POST /agent/call_tool`, an Agent Drafter
+//! * a **person** running a script — `POST /agent/call_tool`, an Application Drafter
 //!   app, the coding-agent bridge (which judges with its own `BridgeGrant`).
 //!   No agent loop dispatched it, every inspector was bypassed for the outer
 //!   call too, and there is no model decision to gate: benign, and behaves
@@ -142,6 +142,7 @@ use crate::tool_inspection::{InspectionResult, ToolInspectionManager};
 
 use super::tool_execution::{
     denied_response_text, CANCELLED_RESPONSE, DECLINED_RESPONSE, EXPIRED_RESPONSE,
+    UNATTENDED_APPROVAL_RESPONSE,
 };
 
 tokio::task_local! {
@@ -765,15 +766,12 @@ impl ScriptCallGate {
             }
             // `park` answers Cancelled at once where nobody could ever answer —
             // a scheduled run, say. Say so, rather than "cancelled", which reads
-            // as though someone decided.
+            // as though someone decided. The sentence a direct call gets (#543),
+            // with the tool named, since a script may make several calls.
             UserActionOutcome::Cancelled if crate::user_surface::no_human_surface() => {
                 ScriptCallVerdict::Refuse(ScriptCallRefusal::new(
                     "approval_unavailable",
-                    format!(
-                        "`{name}` needs a person's approval, and nobody can be asked in this \
-                         run, so it was not run. Do not retry it here; say what you needed it \
-                         for."
-                    ),
+                    format!("`{name}`: {UNATTENDED_APPROVAL_RESPONSE}"),
                     "Not run: nobody could be asked",
                 ))
             }
@@ -1839,7 +1837,7 @@ mod tests {
     /// An absent judge is two situations, and only one of them may run.
     ///
     /// The benign half is a **person** dispatching a script through a door that
-    /// judges nothing — `POST /agent/call_tool`, an Agent Drafter app, the
+    /// judges nothing — `POST /agent/call_tool`, an application, the
     /// coding-agent bridge. It runs, exactly as it always has.
     ///
     /// The other half is the agent loop's OWN dispatch arriving with its scope

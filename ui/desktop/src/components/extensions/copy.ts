@@ -14,8 +14,12 @@ export const EXTENSIONS_COPY = {
   /** The band filter's name and the start of its tooltip ("Filter extensions · ⌘F"). */
   filterLabel: 'Filter extensions',
 
-  /** The band's one primary action and the three ways an extension arrives. */
-  add: 'Add',
+  /**
+   * The band's one primary action and the three ways an extension arrives. Every band primary is
+   * a verb and its object: "New <thing>" makes one from scratch (New schedule, New workflow), "Add
+   * <thing>" brings one in (Add extension, Add skill, Add terms).
+   */
+  add: 'Add extension',
   browse: 'Browse marketplace',
   fromFile: 'Install from file (.brxt)',
   custom: 'Custom extension…',

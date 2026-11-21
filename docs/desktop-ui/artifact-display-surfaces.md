@@ -1,6 +1,6 @@
 # Where a generated artifact is displayed
 
-> **What this is.** The rule that an Auto Visualiser figure, an Agent Drafter app card, or any other artifact the agent produces is displayed in exactly one place — the artifact side panel — on every surface that shows a transcript, and the record of what was removed to make that true.
+> **What this is.** The rule that an Auto Visualiser figure, an application card, or any other artifact the agent produces is displayed in exactly one place — the artifact side panel — on every surface that shows a transcript, and the record of what was removed to make that true.
 > **Status:** Current.
 > **Audience:** contributors working on the desktop renderer.
 

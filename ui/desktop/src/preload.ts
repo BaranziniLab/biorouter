@@ -2,12 +2,36 @@ import Electron, { contextBridge, ipcRenderer, webUtils } from 'electron';
 import { Workflow } from './workflow';
 import { createCrewShareDroppedFile } from './utils/crewSharePathBridge';
 import type { AppExportRequest, AppExportResult } from './utils/appExportRequest';
+import type { FnKeySettings, FnKeyView } from './utils/dictationFnKey';
+import type { FnIntent } from './utils/fnGesture';
+import type { DictationActivityReport } from './utils/dictationIndicator';
 import {
   DICTIONARY_ADD_TERM_CHANNEL,
   DICTIONARY_OFFERED_CHANNEL,
   readDictionaryAddTermPayload,
   type DictionaryAddTermPayload,
 } from './components/dictionary/contextMenu';
+// The browser's types live in `browser/types.ts`, a types-only module, so preload can share
+// them without pulling in any main-process code (the import is erased at build time).
+import type {
+  ChromeImportProfile,
+  ChromeImportRequest,
+  ChromeImportResult,
+  ChromeImportSites,
+  ChromeImportStatus,
+  EmbeddedBrowserBookmark,
+  EmbeddedBrowserOpened,
+  EmbeddedBrowserShortcut,
+  EmbeddedBrowserState,
+  EmbeddedBrowserSuggestion,
+} from './browser/types';
+import type { SearchEngine } from './browser/addressBar';
+import type {
+  BrowserAgentActivity,
+  BrowserAgentRequest,
+  BrowserAgentResult,
+  BrowserAgentShowTab,
+} from './browser/agent/types';
 
 // One-time warning for callers still using the legacy `off()` API. Each
 // channel only warns once to avoid log spam under React StrictMode.
@@ -71,19 +95,6 @@ interface SaveDataUrlResponse {
   filePath?: string;
   error?: string;
 }
-
-// Mirrors `utils/embeddedBrowser.ts`. Declared here rather than imported because
-// preload is bundled separately and must not pull in main-process modules.
-type EmbeddedBrowserState = {
-  url: string;
-  title: string;
-  managedApp?: boolean;
-  sourceRevision: string;
-  canGoBack: boolean;
-  canGoForward: boolean;
-  isLoading: boolean;
-  error: string | null;
-};
 
 type ArtifactFileEntry = {
   name: string;
@@ -423,6 +434,20 @@ type ElectronAPI = {
   setDictationBusy?: (busy: boolean) => void;
   onDictationLockScreen?: (callback: () => void) => () => void;
   /**
+   * The fn key shortcut (macOS): its setting and the listener's state, written only by main.
+   * - `dictationFnOpenSettings`: open Input Monitoring (also asking macOS once, so Biorouter is
+   *   listed there) or the Keyboard pane, from a person's click in Settings.
+   * - `onDictationFnIntent`: a gesture main routed to this window (`fnGestureClient.ts`).
+   * - `dictationIndicator`: this window's dictation activity and level, for the on-screen
+   *   indicator (`utils/dictationIndicator.ts`).
+   */
+  dictationFnGet?: () => Promise<FnKeyView | null>;
+  dictationFnSet?: (value: FnKeySettings) => Promise<FnKeyView | null>;
+  dictationFnOpenSettings?: (pane: 'input-monitoring' | 'keyboard') => Promise<boolean>;
+  onDictationFnState?: (callback: (view: FnKeyView) => void) => () => void;
+  onDictationFnIntent?: (callback: (intent: FnIntent) => void) => () => void;
+  dictationIndicator?: (report: DictationActivityReport) => void;
+  /**
    * The context menu's **Add to Biorouter dictionary…** (DD-68): the word or
    * selection and where the menu opened, `{text, x, y}`, so the renderer can
    * resolve the pane under that point and open the term dialog prefilled. A
@@ -477,7 +502,7 @@ type ElectronAPI = {
   // app on this machine is opened through a fresh launch link instead, and answers whether it
   // opened (`utils/openInBrowser.ts`).
   openExternal: (url: string) => Promise<{ ok: true } | { ok: false; message: string } | void>;
-  /** Open a built app in the system browser; main mints and hands over its launch link. */
+  /** Open an application in the system browser; main mints and hands over its launch link. */
   openAppInBrowser: (appId: string) => Promise<void>;
   /**
    * Applications ▸ Export: main asks for a folder first, has this window's daemon build the
@@ -609,6 +634,52 @@ type ElectronAPI = {
     onState: (
       callback: (payload: { viewId: string; state: EmbeddedBrowserState }) => void
     ) => () => void;
+    /** Hide a tab the panel stopped showing; it keeps its page (BB-01). */
+    release: (viewId: string) => Promise<void>;
+    /** Keep a tab a page opened; unclaimed ones close after 30 seconds. */
+    claim: (viewId: string) => Promise<boolean>;
+    zoom: (viewId: string, direction: 'in' | 'out' | 'reset') => Promise<number | null>;
+    find: (
+      viewId: string,
+      text: string,
+      options?: { forward?: boolean; findNext?: boolean }
+    ) => Promise<boolean>;
+    stopFind: (viewId: string) => Promise<void>;
+    dismissNotice: (viewId: string) => Promise<void>;
+    showDownload: (viewId: string) => Promise<boolean>;
+    setBookmark: (viewId: string, bookmarked: boolean) => Promise<boolean>;
+    bookmarks: () => Promise<EmbeddedBrowserBookmark[]>;
+    suggest: (query: string) => Promise<EmbeddedBrowserSuggestion[]>;
+    /** The address field's search engine once Chrome's was imported; `null` for Google. */
+    searchEngine?: () => Promise<SearchEngine | null>;
+    onOpened: (callback: (payload: EmbeddedBrowserOpened) => void) => () => void;
+    onShortcut: (callback: (payload: EmbeddedBrowserShortcut) => void) => () => void;
+  };
+  /**
+   * BB-21 to BB-25: importing logins, bookmarks, history and settings from Chrome into the
+   * Biorouter Browser. Only the app's own windows can reach it, and only counts and names come
+   * back; no agent route, frame or tool leads here.
+   */
+  browserImport?: {
+    status: () => Promise<ChromeImportStatus | null>;
+    profiles: () => Promise<ChromeImportProfile[]>;
+    sites: (profileId: string) => Promise<ChromeImportSites>;
+    run: (request: ChromeImportRequest) => Promise<ChromeImportResult>;
+    remove: (id: string) => Promise<boolean>;
+    dismissOffer: () => Promise<boolean>;
+  };
+  /**
+   * BB-10: the agent's half of the Biorouter Browser. `run` forwards one operation the daemon
+   * sent through this window's workspace socket; main drives only this window's agent tabs of
+   * that chat. The events tell the chat's panel to show or close an agent tab, and when an
+   * operation is running on one (for the bar's label and Stop).
+   */
+  browserAgent?: {
+    run: (request: BrowserAgentRequest) => Promise<BrowserAgentResult>;
+    cancel: (requestId: string) => Promise<boolean>;
+    onShowTab: (callback: (payload: BrowserAgentShowTab) => void) => () => void;
+    onCloseTab: (callback: (payload: { sessionId: string; viewId: string }) => void) => () => void;
+    onActivity: (callback: (payload: BrowserAgentActivity) => void) => () => void;
   };
   openArtifactInBrowser: (payload: {
     html: string;
@@ -935,6 +1006,31 @@ const electronAPI: ElectronAPI = {
   dictationAnywherePrivateChoice: (include) =>
     ipcRenderer.invoke('dictation:anywhere:private-choice', include),
   setDictationBusy: (busy: boolean) => ipcRenderer.send('dictation:busy', busy === true),
+  dictationFnGet: () => ipcRenderer.invoke('dictation:fn:get'),
+  dictationFnSet: (value: FnKeySettings) => ipcRenderer.invoke('dictation:fn:set', value),
+  dictationFnOpenSettings: (pane: 'input-monitoring' | 'keyboard') =>
+    ipcRenderer.invoke('dictation:fn:open-settings', pane),
+  onDictationFnState: (callback: (view: FnKeyView) => void) => {
+    const listener = (_event: Electron.IpcRendererEvent, view: FnKeyView) => callback(view);
+    ipcRenderer.on('dictation:fn:state', listener);
+    return () => ipcRenderer.removeListener('dictation:fn:state', listener);
+  },
+  onDictationFnIntent: (callback: (intent: FnIntent) => void) => {
+    const listener = (_event: Electron.IpcRendererEvent, intent: unknown) => {
+      if (
+        intent === 'prime' ||
+        intent === 'start-hold' ||
+        intent === 'end-hold' ||
+        intent === 'cancel-hold' ||
+        intent === 'toggle'
+      )
+        callback(intent);
+    };
+    ipcRenderer.on('dictation:fn:intent', listener);
+    return () => ipcRenderer.removeListener('dictation:fn:intent', listener);
+  },
+  dictationIndicator: (report: DictationActivityReport) =>
+    ipcRenderer.send('dictation:indicator', report),
   onDictationLockScreen: (callback: () => void) => {
     const listener = () => callback();
     ipcRenderer.on('dictation:lock-screen', listener);
@@ -1097,6 +1193,73 @@ const electronAPI: ElectronAPI = {
       ipcRenderer.on('embedded-browser:state', wrapped);
       return () => {
         ipcRenderer.removeListener('embedded-browser:state', wrapped);
+      };
+    },
+    release: (viewId: string) => ipcRenderer.invoke('embedded-browser:release', { viewId }),
+    claim: (viewId: string) => ipcRenderer.invoke('embedded-browser:claim', { viewId }),
+    zoom: (viewId: string, direction: 'in' | 'out' | 'reset') =>
+      ipcRenderer.invoke('embedded-browser:zoom', { viewId, direction }),
+    find: (viewId: string, text: string, options?: { forward?: boolean; findNext?: boolean }) =>
+      ipcRenderer.invoke('embedded-browser:find', { viewId, text, ...options }),
+    stopFind: (viewId: string) => ipcRenderer.invoke('embedded-browser:stop-find', { viewId }),
+    dismissNotice: (viewId: string) =>
+      ipcRenderer.invoke('embedded-browser:dismiss-notice', { viewId }),
+    showDownload: (viewId: string) =>
+      ipcRenderer.invoke('embedded-browser:show-download', { viewId }),
+    setBookmark: (viewId: string, bookmarked: boolean) =>
+      ipcRenderer.invoke('embedded-browser:bookmark', { viewId, bookmarked }),
+    bookmarks: () => ipcRenderer.invoke('embedded-browser:bookmarks'),
+    suggest: (query: string) => ipcRenderer.invoke('embedded-browser:suggest', { query }),
+    searchEngine: () => ipcRenderer.invoke('embedded-browser:search-engine'),
+    onOpened: (callback: (payload: EmbeddedBrowserOpened) => void) => {
+      const wrapped = (_event: unknown, payload: EmbeddedBrowserOpened) => callback(payload);
+      ipcRenderer.on('embedded-browser:opened', wrapped);
+      return () => {
+        ipcRenderer.removeListener('embedded-browser:opened', wrapped);
+      };
+    },
+    onShortcut: (callback: (payload: EmbeddedBrowserShortcut) => void) => {
+      const wrapped = (_event: unknown, payload: EmbeddedBrowserShortcut) => callback(payload);
+      ipcRenderer.on('embedded-browser:shortcut', wrapped);
+      return () => {
+        ipcRenderer.removeListener('embedded-browser:shortcut', wrapped);
+      };
+    },
+  },
+  browserImport: {
+    status: () => ipcRenderer.invoke('biorouter-browser-import:status'),
+    profiles: () => ipcRenderer.invoke('biorouter-browser-import:profiles'),
+    sites: (profileId: string) =>
+      ipcRenderer.invoke('biorouter-browser-import:sites', { profileId }),
+    run: (request: ChromeImportRequest) =>
+      ipcRenderer.invoke('biorouter-browser-import:run', request),
+    remove: (id: string) => ipcRenderer.invoke('biorouter-browser-import:remove', { id }),
+    dismissOffer: () => ipcRenderer.invoke('biorouter-browser-import:dismiss'),
+  },
+  browserAgent: {
+    run: (request: BrowserAgentRequest) => ipcRenderer.invoke('biorouter-browser:agent', request),
+    cancel: (requestId: string) =>
+      ipcRenderer.invoke('biorouter-browser:agent-cancel', { requestId }),
+    onShowTab: (callback: (payload: BrowserAgentShowTab) => void) => {
+      const wrapped = (_event: unknown, payload: BrowserAgentShowTab) => callback(payload);
+      ipcRenderer.on('biorouter-browser:show-tab', wrapped);
+      return () => {
+        ipcRenderer.removeListener('biorouter-browser:show-tab', wrapped);
+      };
+    },
+    onCloseTab: (callback: (payload: { sessionId: string; viewId: string }) => void) => {
+      const wrapped = (_event: unknown, payload: { sessionId: string; viewId: string }) =>
+        callback(payload);
+      ipcRenderer.on('biorouter-browser:close-tab', wrapped);
+      return () => {
+        ipcRenderer.removeListener('biorouter-browser:close-tab', wrapped);
+      };
+    },
+    onActivity: (callback: (payload: BrowserAgentActivity) => void) => {
+      const wrapped = (_event: unknown, payload: BrowserAgentActivity) => callback(payload);
+      ipcRenderer.on('biorouter-browser:activity', wrapped);
+      return () => {
+        ipcRenderer.removeListener('biorouter-browser:activity', wrapped);
       };
     },
   },

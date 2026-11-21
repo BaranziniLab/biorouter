@@ -235,11 +235,51 @@ fn output_tail(bytes: &[u8]) -> String {
 }
 
 /// Resolve a possibly-relative check path against `cwd` when one is given.
-fn resolve_check_path(path: &str, cwd: Option<&std::path::Path>) -> std::path::PathBuf {
+pub fn resolve_check_path(path: &str, cwd: Option<&std::path::Path>) -> std::path::PathBuf {
     let p = std::path::Path::new(path);
     match cwd {
         Some(dir) if p.is_relative() => dir.join(p),
         _ => p.to_path_buf(),
+    }
+}
+
+/// Why a path does not hold a required output file (#535,
+/// [`SuccessCheck::FileNonEmpty`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RequiredFileProblem {
+    /// Nothing exists at the path.
+    Missing,
+    /// Something exists, but it is not a regular file (a directory, a socket, a
+    /// link to nothing regular).
+    NotAFile,
+    /// A regular file of zero bytes.
+    Empty,
+    /// The path could not be inspected (permissions, an I/O error).
+    Unreadable,
+}
+
+impl RequiredFileProblem {
+    /// The words a headless run reports for it.
+    pub fn describe(self) -> &'static str {
+        match self {
+            Self::Missing => "does not exist",
+            Self::NotAFile => "is not a regular file",
+            Self::Empty => "is empty",
+            Self::Unreadable => "could not be read",
+        }
+    }
+}
+
+/// What is wrong with `path` as a required output file, or `None` when it is a
+/// regular file of at least one byte. A symbolic link is followed, so a link to
+/// such a file passes.
+pub async fn required_file_problem(path: &std::path::Path) -> Option<RequiredFileProblem> {
+    match tokio::fs::metadata(path).await {
+        Ok(metadata) if !metadata.is_file() => Some(RequiredFileProblem::NotAFile),
+        Ok(metadata) if metadata.len() == 0 => Some(RequiredFileProblem::Empty),
+        Ok(_) => None,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Some(RequiredFileProblem::Missing),
+        Err(_) => Some(RequiredFileProblem::Unreadable),
     }
 }
 
@@ -287,6 +327,16 @@ pub async fn run_success_check(
                 Ok(CheckOutcome::Fail(format!(
                     "expected file `{path}` does not exist"
                 )))
+            }
+        }
+        SuccessCheck::FileNonEmpty { path } => {
+            let resolved = resolve_check_path(path, cwd);
+            match required_file_problem(&resolved).await {
+                None => Ok(CheckOutcome::Pass),
+                Some(problem) => Ok(CheckOutcome::Fail(format!(
+                    "required file `{path}` {}",
+                    problem.describe()
+                ))),
             }
         }
         SuccessCheck::OutputContains { command, substring } => {
@@ -938,6 +988,75 @@ mod tests {
         assert!(collect_check_failures(&all_pass, T, Some(dir.path()))
             .await
             .is_empty());
+    }
+
+    /// #535: `FileNonEmpty` passes only for a regular file of at least one
+    /// byte, and names why anything else fails. `FileExists` keeps passing on
+    /// an empty file and on a directory.
+    #[tokio::test]
+    async fn file_non_empty_check_refuses_empty_files_and_directories() {
+        let dir = tempfile::TempDir::new().unwrap();
+        std::fs::write(dir.path().join("answer.txt"), b"42\n").unwrap();
+        std::fs::write(dir.path().join("empty.md"), b"").unwrap();
+        std::fs::create_dir(dir.path().join("out")).unwrap();
+        let check = |path: &str| SuccessCheck::FileNonEmpty {
+            path: path.to_string(),
+        };
+        assert_eq!(
+            run_success_check(&check("answer.txt"), T, Some(dir.path()))
+                .await
+                .unwrap(),
+            CheckOutcome::Pass
+        );
+        for (path, words) in [
+            ("missing.txt", "does not exist"),
+            ("empty.md", "is empty"),
+            ("out", "is not a regular file"),
+        ] {
+            match run_success_check(&check(path), T, Some(dir.path()))
+                .await
+                .unwrap()
+            {
+                CheckOutcome::Fail(reason) => {
+                    assert!(reason.contains(path), "{reason}");
+                    assert!(reason.contains(words), "{reason}");
+                }
+                CheckOutcome::Pass => panic!("{path} must fail a non-empty check"),
+            }
+        }
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(
+                dir.path().join("answer.txt"),
+                dir.path().join("linked.txt"),
+            )
+            .unwrap();
+            assert_eq!(
+                run_success_check(&check("linked.txt"), T, Some(dir.path()))
+                    .await
+                    .unwrap(),
+                CheckOutcome::Pass,
+                "a link to a non-empty regular file passes"
+            );
+        }
+        for path in ["empty.md", "out"] {
+            assert_eq!(
+                run_success_check(
+                    &SuccessCheck::FileExists {
+                        path: path.to_string()
+                    },
+                    T,
+                    Some(dir.path())
+                )
+                .await
+                .unwrap(),
+                CheckOutcome::Pass,
+                "FileExists is unchanged for {path}"
+            );
+        }
+        let parsed: SuccessCheck =
+            serde_json::from_str(r#"{"type":"file_non_empty","path":"answer.txt"}"#).unwrap();
+        assert!(matches!(parsed, SuccessCheck::FileNonEmpty { path } if path == "answer.txt"));
     }
 
     #[tokio::test]

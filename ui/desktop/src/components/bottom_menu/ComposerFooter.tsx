@@ -21,10 +21,13 @@ import type { SessionUsageLimitController } from './useSessionUsageLimit';
  * finds it by. It is a menu trigger, not a footer card, so it opens on a click
  * only, like View options.
  *
- * Each of the three items opens a card in ONE format and with ONE behaviour
- * (`FooterCard`, `useFooterCard`): hover, Tab or a click opens it, a click
- * pins it, and only one is open at a time. The line is a `FooterCardGroup`,
- * which holds that rule and hands every card the composer card (`composerRef`)
+ * The two readouts (the ring and the cost) open a card in ONE format and with
+ * ONE behaviour (`FooterCard`, `useFooterCard`): hover, Tab or a click opens
+ * it, a click pins it. The folder is a control like the model (owner,
+ * 2026-11-19, `DirSwitcher`): its hover shows a label tooltip, and its click
+ * opens the folder chooser, or, once the chat has messages, the folder access
+ * card. The line is a `FooterCardGroup`, which keeps one card open at a time,
+ * the folder's included, and hands every card the composer card (`composerRef`)
  * to hang above, so no card ever covers the draft or its controls.
  *
  * Folder access has no control of its own on the line: the folder chip's card

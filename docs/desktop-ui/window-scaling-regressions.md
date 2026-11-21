@@ -96,50 +96,37 @@ anywhere in a layout container reintroduces this bug with nothing to stop it.
 
 ### Not this: the window's own minimum size
 
-`main.ts` sets `minWidth: 1048` on the main window, and it is easy to read that
+`main.ts` sets `minWidth: 721` on the main window, and it is easy to read that
 as the same mistake. It is the opposite kind of number: a **floor under a narrow
 window**, which does nothing at all to a wide one. The measures above still
 govern how the content uses the room.
 
-It is derived rather than chosen — the **288px sidebar default**
-(`SIDEBAR_DEFAULT_WIDTH` in `components/ui/sidebarWidth.ts`) plus the 760px
-reading column (`--measure-chat`) — because the reading column is the one Home's
-usage card, its heatmap and the composer share: below it, the card's 53-week grid
-(one fluid column per week, `UsageHeatmap.tsx`) shrinks its cells with the column.
-`styles/measures.test.ts` asserts the arithmetic, so changing either the
-sidebar's bounds or the chat measure fails there.
+It is derived rather than chosen: `WINDOW_MIN_WIDTH` in
+`components/Layout/yieldLadder.ts`, the narrowest window that still holds a
+two-pane split with each pane at the 360px chat floor (2 x 360 plus the 1px
+splitter). `styles/measures.test.ts` pins the literal to the constant and the
+constant to the yield ladder's own `layoutMinWidth`. What gives way above it, and
+in what order, is in [Narrow and short windows](narrow-windows.md).
 
-⚠ **The sidebar's DEFAULT, not its minimum** — the sidebar is user-resizable
-(216–360px, default 288), and this line read *"240px sidebar (`SIDEBAR_WIDTH`,
-15rem)"* while that was still a single number. The floor was then briefly taken
-from the *bottom* of the range, on the argument that the minimum is the only
-width in it that is a property of the app rather than of a preference. That
-argument runs backwards: `216 + 760 = 976` is a promise about a width no install
-has until someone drags the edge, and at the width every install ships with it
-leaves the column `976 − 288 = 688px`, under the very measure the floor exists to
-protect. Past the default the user is trading reading room away deliberately,
-with the window open and the edge under their hand; a floor cannot promise
-anything about a preference it is never told.
+⚠ **Until 2026-11-19 it was 1048**, the 288px default sidebar plus the 760px
+reading column, so that Home's usage card and its heat map (one fluid column per
+week, `UsageHeatmap.tsx`) were never squeezed. That floor also stopped Home's
+composer from narrowing at all, and the owner changed the rule: the sidebar folds
+first, then the composer narrows, and the usage card steps aside instead of
+shrinking (`components/sessions/homeUsageFit.ts`). The 1048 derivation, and the
+measured heat-map cliff behind it, are in this file's history.
 
-The wide end is bounded by construction rather than by this number:
+The wide end is still bounded by construction:
 `SIDEBAR_MAX_WIDTH + 760 = 1120 = SIDEBAR_COMPACT_WIDTH`, rung 1 of the yield
 ladder, below which the sidebar auto-collapses to an overlay and costs the chat
-nothing. `measures.test.ts` pins that identity too, so raising the max without
-moving the ladder fails loudly.
+nothing. So a docked sidebar never squeezes the reading column, at any width the
+user drags it to. `measures.test.ts` pins that identity too, so raising the max
+without moving the ladder fails loudly.
 
-Measured against the real stylesheet **with the then-240px sidebar** and the
-fitted heatmap that the 2026-10 redesign replaced, the cliff
-was at 989px of content width (23px cells at 989, 22px at 988, stepping down to
-16px by 800px). ⚠ That 989 is a *window* width and therefore carries the sidebar
-of the day inside it: what the heatmap reacts to is its own column, so the cliff
-moves with the sidebar. The measurement is really a **749px column**
-(989 − 240), and against the 288px default the same cliff sits at a **1037px**
-window — which 1048 clears by the same 11px the old 1000 cleared 989 by.
-
-The height axis is deliberately **not** capped to the same standard. A short
-window no longer shrinks anything: the hero compacts and then hides (container
-queries on `.biorouter-home-content`), and below that Home scrolls. The
-heatmap's cells follow the card's width only.
+The height axis is deliberately **not** raised to fit the usage card. Home's
+card yields instead: where it would not leave a 24px gap above the composer it
+drops its heat map, then steps aside; the hero compacts and then hides
+(container queries on `.biorouter-home-content`), and below that Home scrolls.
 
 ### Not this: Settings and Chat history, on the chat measure by decision (2026-09-07)
 
@@ -209,7 +196,7 @@ the paragraph below.
 
 **The component views joined on 2026-09-07 too**, and they are the reason the
 document-shaped bullet above lost its examples: Workflows, Extensions, Skills
-and Built apps were the views that bullet named, and the prediction it made
+and Built apps (now Applications) were the views that bullet named, and the prediction it made
 about them did not survive being looked at. None of them
 grows a column or a card per 100px of window. Each is a list of rows — a
 workflow's name and its seven hover actions, an extension's name and its

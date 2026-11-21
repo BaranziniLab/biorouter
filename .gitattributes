@@ -41,23 +41,22 @@ crates/biorouter/src/agents/snapshots/*.snap linguist-language=Text
 *.wav       binary
 *.flac      binary
 
-# Unified diff markers require spaces on blank context lines and before Go tab indentation.
-vendor/computer-use/patches/*.patch text eol=lf whitespace=-blank-at-eol,-space-before-tab
-
-# ⚠ The vendored Open Computer Use tree is HASHED, file by file, into
-# `vendor/computer-use/source-manifest.json`, and the build verifies
-# those hashes before the bytes become build input. So its bytes must be
+# ⚠ The vendored agent-desktop tree (Biorouter Copilot's engine, AD-02) is HASHED,
+# file by file, into `vendor/agent-desktop/source-manifest.json`, and the build
+# verifies those hashes before the bytes become build input. So its bytes must be
 # byte-identical on every platform, not merely equivalent.
 #
 # `-text` disables end-of-line conversion entirely — stronger than `text eol=lf`,
-# which still declares the file text and invites tooling to normalise it. The
-# rules above cover source by EXTENSION, and this tree is full of files that have
-# none: `LICENSE`, `Makefile`, `CODEOWNERS`, `.gitignore`, `.gitattributes`.
-# Measured on CI before this rule: a Windows checkout rewrote exactly those five
-# to CRLF and the manifest check failed with `changed=['.gitattributes',
-# '.gitignore', 'CODEOWNERS', 'LICENSE', 'Makefile']`, on a tree nobody had
-# edited.
-vendor/computer-use/source/** -text
+# which still declares the file text and invites tooling to normalise it. The rules
+# above cover source by EXTENSION, and a vendored tree holds files that have none
+# (`LICENSE`). Measured on CI with the retired Open Computer Use tree, before such a
+# rule: a Windows checkout rewrote its five extensionless files to CRLF and the
+# manifest check failed on a tree nobody had edited. The whole folder is pinned, not
+# only `source/`: the payload check compares the shipped `LICENSE.agent-desktop` with
+# `vendor/agent-desktop/LICENSE` byte for byte on a Windows runner.
+# `scripts/check-vendored-computer-use.py` fails on every platform when a file under
+# it is not `-text`.
+vendor/agent-desktop/** -text
 
 # The vendored whisper.cpp subset (the local dictation engine) is hashed file by file
 # into `vendor/whisper.cpp/source-manifest.json` for the same reason, and it also holds

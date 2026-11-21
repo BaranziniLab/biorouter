@@ -593,6 +593,9 @@ pub async fn run(exit_with_parent: Option<u32>) -> Result<()> {
     // and before `install_user_action_proof` pins the capability keys this
     // daemon was launched with (SD-12), so the pin records the migrated values.
     biorouter::config::retired_lead_worker::migrate_on_start();
+    // AD-19: the retired Copilot engine's macOS agent, left running by an earlier version of
+    // this installation, is ended once. Off the start path: it reads the process table.
+    tokio::task::spawn_blocking(biorouter_mcp::computer_use::retired::end_retired_engine_agent);
 
     let secret_key = std::env::var("BIOROUTER_SERVER__SECRET_KEY").unwrap_or_else(|_| {
         let bytes: [u8; 16] = rand::random();
@@ -700,7 +703,7 @@ pub async fn run(exit_with_parent: Option<u32>) -> Result<()> {
     let listener = biorouter::net::bind_non_inheritable(settings.socket_addr()).await?;
     let local_addr = listener.local_addr()?;
     info!("listening on {}", local_addr);
-    // Publish the base URL so in-process MCP tools (e.g. Agent Drafter's
+    // Publish the base URL so in-process MCP tools (e.g. Application Drafter's
     // `launch_app`) can emit absolute http://host:port/apps/<id>/ URLs.
     std::env::set_var("BIOROUTER_APP_BASE_URL", format!("http://{local_addr}"));
     // Publish the same base to the coding-agent tool bridge, so a bridged child

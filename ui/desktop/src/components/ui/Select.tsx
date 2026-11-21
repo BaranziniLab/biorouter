@@ -181,7 +181,21 @@ export const SELECT_MENU_SLOT = 'select-content';
 
 function SelectMenu(props: MenuProps) {
   const slot: Record<string, string> = { 'data-slot': SELECT_MENU_SLOT, 'data-state': 'open' };
-  return <selectComponents.Menu {...props} innerProps={{ ...props.innerProps, ...slot }} />;
+  return (
+    <selectComponents.Menu
+      {...props}
+      innerProps={{
+        ...props.innerProps,
+        ...slot,
+        onWheel: (event) => {
+          props.innerProps.onWheel?.(event);
+          // The dialog's scroll lock treats a body-portalled menu as outside it.
+          // Keep the wheel event here so the browser can scroll the menu.
+          if (props.selectProps.menuPortalTarget) event.stopPropagation();
+        },
+      }}
+    />
+  );
 }
 
 /**

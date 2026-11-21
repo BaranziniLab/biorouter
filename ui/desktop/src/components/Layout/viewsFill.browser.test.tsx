@@ -1,6 +1,6 @@
 // @vitest-environment node
 /**
- * The Workflows, Scheduler and Built apps surfaces under the fill rule, in a real layout engine
+ * The Workflows, Scheduler and Applications surfaces under the fill rule, in a real layout engine
  * (owner message 13, R-27, design.md 9.11; spec 3.10).
  *
  * jsdom runs no CSS, and every claim here is about the cascade: a custom property a recessed
@@ -118,7 +118,7 @@ const launchChromium = async (): Promise<Browser | null> => {
   return null;
 };
 
-describe('Workflows, Scheduler and Built apps under the fill rule (R-27)', () => {
+describe('Workflows, Scheduler and Applications under the fill rule (R-27)', () => {
   let browser: Browser | null = null;
   let script = '';
   let css = '';

@@ -461,7 +461,7 @@
    `.br-nav-list` puts between rows, so the scroll height and every drawn
    row's place are the same as with real rows. The Text size preference
    scales the row token and that 2px gap (`vite-plugins/fontScale.mjs`), but
-   not a `height`, so the 2px here says its scale itself: under Larger text a
+   not a `height`, so the 2px here says its scale itself: under Large text a
    line is 34.5px, and an unscaled 2px drifted 0.3px a line. */
 .br-chat-row-gap {
   flex: none;
@@ -590,6 +590,10 @@
 }
 
 /* ── Footer: a full-bleed hairline, then Update and Settings ────────────── */
+/* On `/crew`, Crew's You row (`.crew-sidebar-you`) stands beside this footer
+   and takes its box: this hairline, this 8px padding and one row of
+   `--row-height-nav`, so the two meet in one band. Change them together;
+   `crew/sidebar/sidebarFooters.browser.test.tsx` measures the pair. */
 .br-sidebar-footer {
   flex: none;
   display: flex;

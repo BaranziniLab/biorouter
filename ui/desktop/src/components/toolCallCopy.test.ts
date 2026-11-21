@@ -85,7 +85,7 @@ describe('tool names read in sentence case (V2-04)', () => {
   it('keeps acronyms and product names in capitals and nothing else', () => {
     expect(toolNamePhrase('text_editor')).toBe('text editor');
     expect(toolNamePhrase('ucsf_omop_query')).toBe('UCSF OMOP query');
-    expect(toolNamePhrase('agent_drafter_build_app')).toBe('Agent Drafter build app');
+    expect(toolNamePhrase('agent_drafter_build_app')).toBe('Application Drafter build app');
     expect(toolNamePhrase('autovisualiser_kb_sync')).toBe('Auto Visualiser KB sync');
     expect(toolDisplayName('developer__text_editor')).toBe('Text editor');
   });
@@ -110,7 +110,7 @@ describe('tool names read in sentence case (V2-04)', () => {
     expect(inSentence('Read the manifest')).toBe('read the manifest');
     expect(inSentence('list KBs')).toBe('list KBs');
     expect(inSentence('KBs in Soul')).toBe('KBs in Soul');
-    expect(inSentence('Agent Drafter build app')).toBe('Agent Drafter build app');
+    expect(inSentence('Application Drafter build app')).toBe('Application Drafter build app');
     expect(inSentence('Biorouter docs')).toBe('Biorouter docs');
   });
 

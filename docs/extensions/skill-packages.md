@@ -39,7 +39,7 @@ slashes, and read no manifest at all. A normal GitHub source archive is
 
 Everything that installs a skill calls it:
 
-- **Add skill** (`AddSkillModal.tsx`, opened from Skills → Add → From a repository or .zip…) — a URL field and a one-line drop zone;
+- **Add skill** (`AddSkillModal.tsx`, opened from Skills → Add skill → From a repository or .zip…) — a URL field and a one-line drop zone;
 - **the marketplace** (`baam/installSkill.ts`);
 - **the agent**, through the `importSkillPackage` MCP tool;
 - **the CLI**, `biorouter skill install <path-or-url>`;

@@ -156,8 +156,8 @@ describe('MCPUIResourceRenderer', () => {
     expect(onOpenArtifact).not.toHaveBeenCalled();
   });
 
-  it('does not offer a delete control for agent-drafter apps in chat', () => {
-    // Deleting an app is destructive and belongs in the Applications tab, not on
+  it('does not offer a delete control for applications in chat', () => {
+    // Deleting an application is destructive and belongs in Applications, not on
     // an in-chat artifact card where a stray click removes files from disk.
     renderSubject('ui://agent-drafter/researcher-impact-dashboard');
 
@@ -167,7 +167,7 @@ describe('MCPUIResourceRenderer', () => {
     expect(screen.queryByTitle('Delete application')).not.toBeInTheDocument();
     // The open affordance is still there — and it is the only control on the card.
     expect(
-      screen.getByRole('button', { name: /^Open .+ Researcher Impact Dashboard/i })
+      screen.getByRole('button', { name: /^Open Researcher Impact Dashboard /i })
     ).toBeInTheDocument();
   });
 
@@ -177,15 +177,16 @@ describe('MCPUIResourceRenderer', () => {
       mimeType: 'text/uri-list',
       text: 'http://127.0.0.1:64005/apps/chart/',
     });
-    openExternal.mockResolvedValueOnce({ ok: false, message: 'This app no longer exists.' });
-    fireEvent.click(
-      screen.getByRole('button', { name: 'Open Agent Drafter App in the default browser' })
-    );
+    openExternal.mockResolvedValueOnce({
+      ok: false,
+      message: 'This application no longer exists.',
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Open App in the default browser' }));
 
     await waitFor(() =>
       expect(toastError).toHaveBeenCalledWith({
         title: OPEN_IN_BROWSER_COPY.failedTitle,
-        msg: 'This app no longer exists.',
+        msg: 'This application no longer exists.',
       })
     );
     expect(onOpenArtifact).not.toHaveBeenCalled();
@@ -222,7 +223,7 @@ describe('MCPUIResourceRenderer', () => {
   it.each([
     ['ui://chart/visualization', 'figure', 'Figure'],
     ['ui://dashboard/report', 'report', 'Report'],
-    ['ui://agent-drafter/researcher-impact-dashboard', 'app', 'App'],
+    ['ui://agent-drafter/researcher-impact-dashboard', 'app', 'Application'],
   ])('names %s by its kind (%s), never by a MIME type', (uri, kind, label) => {
     renderSubject(uri);
     const card = screen.getByRole('button', { name: /^Open / });

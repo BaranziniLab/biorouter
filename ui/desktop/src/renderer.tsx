@@ -26,6 +26,9 @@ import { readRegistryDownload } from './utils/registryDownloadResult';
 import { openAppInThisBrowser } from './utils/appLaunchLink';
 import { exportAppInThisBrowser } from './utils/appExportRequest';
 import { clearRetiredDictationSettings } from './utils/retiredDictationSettings';
+import { migrateLegacyFontSize } from './hooks/useFontSize';
+import { installFnGestureClient } from './components/dictation/fnGestureClient';
+import { installIndicatorReporter } from './components/dictation/indicatorReport';
 
 const App = lazy(() => import('./App'));
 const DictationCapturePage = lazy(() => import('./components/dictation/DictationCapturePage'));
@@ -611,6 +614,8 @@ if (needsHeadlessElectron || typeof window.appConfig === 'undefined') {
 
   // The deleted cloud dictation's provider choice (DD-89). Local only, so it needs no daemon.
   clearRetiredDictationSettings();
+  // A Text size saved by 1.94.5 or earlier, under the old key and names, moves to the new ones.
+  migrateLegacyFontSize();
 
   // Check if we're in the launcher view (doesn't need biorouterd connection)
   const isLauncher = window.location.hash === '#/launcher';
@@ -648,6 +653,13 @@ if (needsHeadlessElectron || typeof window.appConfig === 'undefined') {
       </Suspense>
     );
     return;
+  }
+
+  // The fn gestures main routes to this window, and this window's dictation activity for the
+  // on-screen indicator (macOS desktop; a browser surface's bridge has neither, so both are no-ops).
+  if (!isLauncher) {
+    installFnGestureClient();
+    installIndicatorReporter();
   }
 
   // The code face (utils/systemMonoFont.ts): registered in the background, never

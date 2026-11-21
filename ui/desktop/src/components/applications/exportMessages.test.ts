@@ -55,12 +55,12 @@ describe('exportNotesMessage', () => {
   it('keeps two notes apart: they used to run together into one unpunctuated line', () => {
     expect(
       exportNotesMessage([
-        'the app has no built bundle yet; the daemon that opens it builds one',
-        'exported despite 2 harness error(s); the app may not work until they are fixed',
+        'the application has no built bundle yet; the daemon that opens it builds one',
+        'exported despite 2 harness error(s); the application may not work until they are fixed',
       ])
     ).toBe(
-      'The app has no built bundle yet; the daemon that opens it builds one. ' +
-        'Exported despite 2 harness error(s); the app may not work until they are fixed.'
+      'The application has no built bundle yet; the daemon that opens it builds one. ' +
+        'Exported despite 2 harness error(s); the application may not work until they are fixed.'
     );
   });
 
@@ -79,8 +79,8 @@ describe('exportNotesMessage', () => {
   });
 });
 
-describe('opening an app in the browser', () => {
-  it('fails in the same words from a chat card or the preview as from Built apps’ Launch', () => {
+describe('opening an application in the browser', () => {
+  it('fails in the same words from a chat card or the preview as from Applications’ Launch', () => {
     expect(OPEN_IN_BROWSER_COPY.failed).toBe(appsCopy.couldNotOpen);
   });
 });

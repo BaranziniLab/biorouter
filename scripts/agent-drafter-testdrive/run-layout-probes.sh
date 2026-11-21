@@ -34,7 +34,7 @@ run_probe() {
   fi
 
   local prompt
-  prompt="Build the controlled Agent Drafter layout-diversity probe below.
+  prompt="Build the controlled Application Drafter layout-diversity probe below.
 
 Use exact app id: $id
 Use exact non-chat archetype: $archetype
@@ -42,7 +42,7 @@ Use exact theme pack: $theme
 
 You must author every file only through create_app, update_app, configure_app,
 and build_app. Do not use shell/file tools. Build and fix every lint error.
-Keep the app in the Agent Drafter store; do not export it.
+Keep the app in the Application Drafter store; do not export it.
 
 LAYOUT CONTRACT:
 $layout

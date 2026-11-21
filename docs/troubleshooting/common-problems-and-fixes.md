@@ -126,6 +126,12 @@ Retrying will not help: this one returns the same way until its cause changes.
 1. **Update biorouter** to 1.93.0 or later. Llama Server then runs one request at a time and queues the rest, so requests cannot collide in the cache.
 2. **If it still happens**, the server is most likely one you started yourself: check whether `LLAMACPP_EXTERNAL_HOST` points at a `llama-server` running with its default settings, which share one cache between four slots. Start that server with `--parallel 1`, or give it a larger `--ctx-size`. Newer versions of biorouter name this failure ("ran out of room in its shared context cache") and retry it instead of giving up.
 
+### A reply stops partway on OpenRouter, or comes back empty
+
+Before 1.94.6, a temporary failure that OpenRouter reported inside the stream (a 502, an overloaded upstream, a mid-stream 429) ended the turn with "Provider reported an error while streaming" and "Retrying will not help", and an empty reply ended a `biorouter run` as a success with no answer.
+
+**Update biorouter** to 1.94.6 or later. A temporary failure inside a stream is now retried once, and the message names its code. An empty reply gets one more attempt; if the second reply is empty too, the turn stops with "The model sent an empty reply again" and a headless run exits as a provider failure. If either repeats, switch to another model or route. Errors that a retry cannot fix (a refused key, no credit, a content filter) still stop at once. [Stream faults, empty replies and streamed reasoning](../providers/stream-faults-and-empty-replies.md) lists how each error is read.
+
 ### Connection error with the Ollama provider on WSL
 
 If you encounter an error like this when setting up Ollama as the provider in biorouter:

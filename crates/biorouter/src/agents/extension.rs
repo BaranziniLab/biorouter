@@ -1,3 +1,4 @@
+use crate::agents::browser_extension;
 use crate::agents::chatrecall_extension;
 use crate::agents::code_execution_extension;
 use crate::agents::decisions_extension;
@@ -165,8 +166,28 @@ pub static PLATFORM_EXTENSIONS: Lazy<HashMap<&'static str, PlatformExtensionDef>
             PlatformExtensionDef {
                 name: dictionary_extension::EXTENSION_NAME,
                 description: "Suggest dictionary words from chats and add the terms you ask for",
-                default_enabled: false,
+                // Default ON (owner, 2026-11-19, replacing DD-51's off). This fills only an
+                // absent entry (`config::extensions::inject_platform_extensions`), so a
+                // configuration that saved it off keeps it off, and turning it on where it is
+                // off stays the person's act (DD-56). NOT counted by the delegation gate:
+                // `has_non_injected_extensions` excludes it by name, as it does `decisions`.
+                default_enabled: true,
                 client_factory: |ctx| Box::new(dictionary_extension::DictionaryClient::new(ctx)),
+            },
+        );
+
+        map.insert(
+            crate::security::browser_use::EXTENSION_KEY,
+            PlatformExtensionDef {
+                name: browser_extension::EXTENSION_NAME,
+                description: "Browse and use websites in Biorouter's own browser. You allow it \
+                              from the chat, and Stop stays above the composer.",
+                // On by default, like Biorouter Copilot (BB-09). Being on offers the tools;
+                // using them still needs the person's grants (BB-17). The delegation gate does
+                // not count it, and its tools are withheld where no desktop app hosts the
+                // browser (BB-16).
+                default_enabled: true,
+                client_factory: |ctx| Box::new(browser_extension::BrowserClient::new(ctx)),
             },
         );
 
@@ -979,7 +1000,7 @@ mod tests {
     /// be made on purpose rather than noticed later.
     #[test]
     fn workspace_is_a_default_on_capability_granting_its_whole_surface() {
-        assert_eq!(PLATFORM_EXTENSIONS.len(), 9);
+        assert_eq!(PLATFORM_EXTENSIONS.len(), 10);
         assert!(
             PLATFORM_EXTENSIONS["workspace"].default_enabled,
             "workspace is a capability now, so it ships on"
@@ -989,16 +1010,20 @@ mod tests {
     #[test]
     fn platform_extension_defaults_match_capabilities() {
         // todo, chatrecall, workspace, extensionmanager, skills, code_execution,
-        // decisions, dictionary and crew.
-        assert_eq!(PLATFORM_EXTENSIONS.len(), 9);
+        // decisions, dictionary, crew and browser.
+        assert_eq!(PLATFORM_EXTENSIONS.len(), 10);
+        assert!(PLATFORM_EXTENSIONS["browser"].default_enabled);
         assert!(PLATFORM_EXTENSIONS["todo"].default_enabled);
         assert!(PLATFORM_EXTENSIONS["decisions"].default_enabled);
         assert!(PLATFORM_EXTENSIONS["extensionmanager"].default_enabled);
         assert!(PLATFORM_EXTENSIONS["skills"].default_enabled);
         assert!(PLATFORM_EXTENSIONS["code_execution"].default_enabled);
         assert!(PLATFORM_EXTENSIONS["crew"].default_enabled);
+        // On by default since the owner's request of 2026-11-19, replacing DD-51's off: a
+        // configuration that saved a choice keeps it, because the default fills only an
+        // absent entry (`config::extensions::inject_platform_extensions`).
+        assert!(PLATFORM_EXTENSIONS["dictionary"].default_enabled);
         assert!(!PLATFORM_EXTENSIONS["chatrecall"].default_enabled);
-        assert!(!PLATFORM_EXTENSIONS["dictionary"].default_enabled);
     }
 
     /// Crew is a capability, not an extension: the desktop lists it in Settings → Chat →
@@ -1101,5 +1126,30 @@ available_tools: []
         } else {
             panic!("unexpected result of deserialization: {}", config)
         }
+    }
+
+    #[test]
+    fn issue538_shell_only_rosters_do_not_silently_grant_job_tools() {
+        let shell_only = ExtensionConfig::Builtin {
+            name: "developer".to_string(),
+            description: String::new(),
+            display_name: None,
+            timeout: None,
+            bundled: Some(true),
+            available_tools: vec!["shell".to_string()],
+        };
+        assert!(shell_only.is_tool_available("shell"));
+        assert!(!shell_only.is_tool_available("shell_status"));
+        assert!(!shell_only.is_tool_available("shell_kill"));
+        let mut default = shell_only;
+        if let ExtensionConfig::Builtin {
+            available_tools, ..
+        } = &mut default
+        {
+            available_tools.clear();
+        }
+        assert!(default.is_tool_available("shell"));
+        assert!(default.is_tool_available("shell_status"));
+        assert!(default.is_tool_available("shell_kill"));
     }
 }

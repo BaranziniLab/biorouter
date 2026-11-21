@@ -55,6 +55,30 @@ pub(crate) enum ParamOp {
 
 pub(crate) type Word = Vec<Piece>;
 
+/// What the lexer saw of one here-document (#546), so the resolver can tell a
+/// body the shell passes on as text from one it may expand or run.
+///
+/// Every field describes the input this lexer was given, never another
+/// grammar's reading of it: `body_span` is a byte range in that exact input.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Heredoc {
+    /// Part of the delimiter word was quoted (`'EOF'`, `"EOF"`, `\EOF`,
+    /// `'E'OF`), so the shell expands nothing in the body.
+    pub(crate) delimiter_quoted: bool,
+    /// The delimiter is not one every POSIX shell reads the same way, or not
+    /// the way this lexer reads it: missing, empty, holding anything but
+    /// letters, digits, `_`, `.`, `-` and the quotes around them, or followed
+    /// by a `\r` the shell takes as part of it. `$'…'` is the measured case of
+    /// the first kind: bash and zsh decode it, dash does not, so the shells
+    /// disagree on which line ends the body.
+    pub(crate) delimiter_unsupported: bool,
+    /// A line equal to the delimiter ended the body. When false the body ran
+    /// to the end of the input.
+    pub(crate) terminated: bool,
+    /// The body's bytes in the lexed input, when a body was read.
+    pub(crate) body_span: Option<std::ops::Range<usize>>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Token {
     Word(Word),
@@ -62,10 +86,12 @@ pub(crate) enum Token {
     Op(&'static str),
     /// A redirection. The next [`Token::Word`] is its target, except for a
     /// here-document, whose delimiter is consumed here and whose body — read
-    /// from the lines after the command — is attached as `body`.
+    /// from the lines after the command — is attached as `body`, with what
+    /// the lexer knows about it in `heredoc`.
     Redirect {
         op: String,
         body: Option<String>,
+        heredoc: Option<Heredoc>,
     },
 }
 
@@ -100,6 +126,10 @@ fn lex_param_word(input: &str, windows: bool) -> Word {
 struct Lexer {
     chars: Vec<char>,
     i: usize,
+    /// `(character index, byte offset)` of the last position converted by
+    /// [`Self::byte_offset`]. Bodies are read front to back, so the
+    /// conversion only ever walks forward from here.
+    byte_cursor: (usize, usize),
     out: Vec<Token>,
     /// Here-documents whose bodies start after the next newline:
     /// `(index of the Redirect token, delimiter, strip leading tabs)`.
@@ -117,6 +147,7 @@ impl Lexer {
         Self {
             chars: input.chars().collect(),
             i: 0,
+            byte_cursor: (0, 0),
             out: Vec::new(),
             pending: Vec::new(),
             param_word,
@@ -130,6 +161,22 @@ impl Lexer {
 
     fn peek(&self, n: usize) -> Option<char> {
         self.chars.get(self.i + n).copied()
+    }
+
+    /// The byte offset in the original input of character `index`.
+    fn byte_offset(&mut self, index: usize) -> usize {
+        let index = index.min(self.chars.len());
+        let (mut at, mut byte) = if index >= self.byte_cursor.0 {
+            self.byte_cursor
+        } else {
+            (0, 0)
+        };
+        while at < index {
+            byte += self.chars[at].len_utf8();
+            at += 1;
+        }
+        self.byte_cursor = (at, byte);
+        byte
     }
 
     fn run(mut self) -> Vec<Token> {
@@ -232,21 +279,11 @@ impl Lexer {
             while matches!(self.cur(), Some(' ' | '\t')) {
                 self.i += 1;
             }
-            let delimiter = self
-                .read_word()
-                .map(|word| {
-                    word.iter()
-                        .map(|piece| match piece {
-                            Piece::Lit { text, .. } => text.clone(),
-                            Piece::Param { name, .. } => format!("${name}"),
-                            _ => String::new(),
-                        })
-                        .collect::<String>()
-                })
-                .unwrap_or_default();
+            let (delimiter, heredoc) = self.read_heredoc_delimiter();
             self.out.push(Token::Redirect {
                 op: op.to_string(),
                 body: None,
+                heredoc: Some(heredoc),
             });
             self.pending
                 .push((self.out.len() - 1, delimiter, op == "<<-"));
@@ -255,14 +292,76 @@ impl Lexer {
         self.out.push(Token::Redirect {
             op: op.to_string(),
             body: None,
+            heredoc: None,
         });
+    }
+
+    /// The delimiter after `<<` or `<<-`, as the line that ends the body must
+    /// spell it, and what it says about the body.
+    ///
+    /// `<<` is POSIX shell syntax and means nothing to `cmd.exe` or
+    /// PowerShell, so the delimiter is always read with POSIX quote removal,
+    /// whichever grammar this pass is in: under the Windows reading `\EOF`
+    /// would otherwise keep its backslash, never match the `EOF` line, and
+    /// turn the rest of the input into body. Only the delimiter word is read
+    /// that way. The grammar is restored before anything else is read, on
+    /// every path, so paths after the delimiter keep this pass's reading of
+    /// `\`.
+    fn read_heredoc_delimiter(&mut self) -> (String, Heredoc) {
+        let start = self.i;
+        let windows = std::mem::replace(&mut self.windows, false);
+        let word = self.read_word();
+        self.windows = windows;
+        let source: String = self.chars[start..self.i].iter().collect();
+
+        let mut delimiter = String::new();
+        let mut quoted = false;
+        let mut literal_only = word.is_some();
+        for piece in word.iter().flatten() {
+            match piece {
+                Piece::Lit { text, quoted: q } => {
+                    delimiter.push_str(text);
+                    quoted |= *q;
+                }
+                Piece::Param { name, .. } => {
+                    delimiter.push('$');
+                    delimiter.push_str(name);
+                    literal_only = false;
+                }
+                Piece::Subst { .. } | Piece::Unknown => literal_only = false,
+            }
+        }
+        let plain = |c: char| c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '-');
+        // This lexer ends a word at `\r`; a shell does not. After `<<'EOF'\r`
+        // the shell's delimiter is `EOF\r`, its body ends at the first `EOF\r`
+        // line, and the lines this lexer would still call body run as
+        // commands (measured in bash, zsh and dash).
+        let ends_where_the_shell_ends_it = self.cur() != Some('\r');
+        let supported = literal_only
+            && ends_where_the_shell_ends_it
+            && !delimiter.is_empty()
+            && delimiter.chars().all(plain)
+            && source
+                .chars()
+                .all(|c| plain(c) || matches!(c, '\'' | '"' | '\\'));
+        let heredoc = Heredoc {
+            delimiter_quoted: quoted,
+            delimiter_unsupported: !supported,
+            terminated: false,
+            body_span: None,
+        };
+        (delimiter, heredoc)
     }
 
     fn read_heredoc_bodies(&mut self) {
         for (index, delimiter, strip_tabs) in std::mem::take(&mut self.pending) {
             let mut body = String::new();
+            let body_start = self.byte_offset(self.i);
+            let body_end;
+            let mut terminated = false;
             loop {
                 if self.i >= self.chars.len() {
+                    body_end = self.byte_offset(self.i);
                     break;
                 }
                 let start = self.i;
@@ -279,13 +378,24 @@ impl Lexer {
                     line.as_str()
                 };
                 if compared == delimiter {
+                    body_end = self.byte_offset(start);
+                    terminated = true;
                     break;
                 }
                 body.push_str(&line);
                 body.push('\n');
             }
-            if let Some(Token::Redirect { body: slot, .. }) = self.out.get_mut(index) {
+            if let Some(Token::Redirect {
+                body: slot,
+                heredoc,
+                ..
+            }) = self.out.get_mut(index)
+            {
                 *slot = Some(body);
+                if let Some(heredoc) = heredoc {
+                    heredoc.terminated = terminated;
+                    heredoc.body_span = Some(body_start..body_end);
+                }
             }
         }
     }
@@ -937,13 +1047,177 @@ mod tests {
             false,
         );
         let body = tokens.iter().find_map(|t| match t {
-            Token::Redirect { op, body } if op == "<<" => body.clone(),
+            Token::Redirect { op, body, .. } if op == "<<" => body.clone(),
             _ => None,
         });
         assert_eq!(body.as_deref(), Some("cat ~/.aws/credentials\n"));
         // The delimiter is not a word; the command after the body still is.
         let w = words("bash <<'EOF'\ncat ~/.aws/credentials\nEOF\necho done");
         assert_eq!(w.len(), 3, "{w:?}");
+    }
+
+    /// Every here-document in `input`, with its body, under one grammar.
+    fn heredocs(input: &str, windows: bool) -> Vec<(Option<String>, Heredoc)> {
+        lex_for(input, windows)
+            .into_iter()
+            .filter_map(|t| match t {
+                Token::Redirect {
+                    body,
+                    heredoc: Some(heredoc),
+                    ..
+                } => Some((body, heredoc)),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn one_heredoc(input: &str, windows: bool) -> (Option<String>, Heredoc) {
+        let mut found = heredocs(input, windows);
+        assert_eq!(found.len(), 1, "{input:?}: {found:?}");
+        found.remove(0)
+    }
+
+    /// #546: the four ways bash quotes a delimiter (and two more spellings of
+    /// them) are all quoted, under both grammars. `\EOF` is the one that
+    /// differs: the Windows reading of `\` would keep the backslash, so the
+    /// delimiter would be `\EOF`, never match the `EOF` line, and the rest of
+    /// the input would become body.
+    #[test]
+    fn issue546_quoted_delimiters_are_quoted_under_both_grammars() {
+        for windows in [false, true] {
+            for delimiter in ["'EOF'", "\"EOF\"", "\\EOF", "'E'OF", "E'OF'", "\"\"EOF"] {
+                let input = format!("cat > a.R <<{delimiter}\nx <- 1\nEOF\nnext\n");
+                let (body, heredoc) = one_heredoc(&input, windows);
+                assert_eq!(
+                    heredoc,
+                    Heredoc {
+                        delimiter_quoted: true,
+                        delimiter_unsupported: false,
+                        terminated: true,
+                        body_span: Some(13 + delimiter.len()..20 + delimiter.len()),
+                    },
+                    "{delimiter} (windows: {windows})"
+                );
+                assert_eq!(body.as_deref(), Some("x <- 1\n"));
+                assert_eq!(input.get(heredoc.body_span.unwrap()), Some("x <- 1\n"));
+                // The line after the delimiter is a command again.
+                assert_eq!(
+                    plain(
+                        lex_for(&input, windows)
+                            .iter()
+                            .rev()
+                            .find_map(|t| match t {
+                                Token::Word(w) => Some(w),
+                                _ => None,
+                            })
+                            .unwrap()
+                    ),
+                    "next"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn issue546_an_unquoted_delimiter_is_not_quoted() {
+        for windows in [false, true] {
+            let (body, heredoc) = one_heredoc("cat > a <<EOF\n$HOME\nEOF\n", windows);
+            assert!(!heredoc.delimiter_quoted, "{heredoc:?}");
+            assert!(!heredoc.delimiter_unsupported, "{heredoc:?}");
+            assert!(heredoc.terminated);
+            assert_eq!(body.as_deref(), Some("$HOME\n"));
+        }
+    }
+
+    /// A delimiter the shells read differently, or that is not a word at all,
+    /// is unsupported, so the resolver never treats its body as data.
+    #[test]
+    fn issue546_unusual_delimiters_are_unsupported() {
+        for header in [
+            "cat <<$'EOF'",
+            "cat <<$\"EOF\"",
+            "cat <<\"E$X\"",
+            "cat <<$X",
+            "cat <<$(echo EOF)",
+            "cat <<\"E\\OF\"",
+            "cat <<''",
+            "cat <<'E O F'",
+            "cat <<'E/F'",
+            "cat <<",
+        ] {
+            for windows in [false, true] {
+                let input = format!("{header}\nbody\nEOF\n");
+                let (_, heredoc) = one_heredoc(&input, windows);
+                assert!(
+                    heredoc.delimiter_unsupported,
+                    "{header} ({windows}): {heredoc:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn issue546_termination_is_recorded() {
+        // Runs to the end of the input.
+        let (body, heredoc) = one_heredoc("cat > a <<'EOF'\nline\n", false);
+        assert!(!heredoc.terminated);
+        assert_eq!(body.as_deref(), Some("line\n"));
+        assert_eq!(heredoc.body_span, Some(16..21));
+        // No newline after the header: no body was ever read.
+        let (body, heredoc) = one_heredoc("cat > a <<'EOF'", false);
+        assert_eq!(
+            (body, heredoc.terminated, heredoc.body_span),
+            (None, false, None)
+        );
+        // A CRLF delimiter line is not the delimiter, for the shell either,
+        // and a `\r` straight after the delimiter word is part of the shell's
+        // delimiter, so it is unsupported.
+        let (_, heredoc) = one_heredoc("cat > a <<'EOF'\r\nx\r\nEOF\r\n", false);
+        assert!(!heredoc.terminated);
+        assert!(heredoc.delimiter_unsupported);
+        let (_, heredoc) = one_heredoc("cat > a <<'EOF'\r\nEOF\r\nls\nEOF\n", false);
+        assert!(
+            heredoc.terminated && heredoc.delimiter_unsupported,
+            "{heredoc:?}"
+        );
+        // `<<-` strips leading tabs from the delimiter line; the body keeps them.
+        let (body, heredoc) = one_heredoc("cat > a <<-'EOF'\n\tx\n\tEOF\n", false);
+        assert!(heredoc.terminated);
+        assert_eq!(body.as_deref(), Some("\tx\n"));
+    }
+
+    /// The span is a byte range of the exact input, so it holds for text that
+    /// is not ASCII, and two bodies after one line are read in order.
+    #[test]
+    fn issue546_body_spans_are_bytes_of_the_input() {
+        let input = "cat > é.md <<'A'; cat > b <<\"B\"\nnaïve — café\nA\nsecond ✓\nB\nls\n";
+        let found = heredocs(input, false);
+        assert_eq!(found.len(), 2);
+        let bodies: Vec<&str> = found
+            .iter()
+            .map(|(_, h)| input.get(h.body_span.clone().unwrap()).unwrap())
+            .collect();
+        assert_eq!(bodies, ["naïve — café\n", "second ✓\n"]);
+        for (body, heredoc) in &found {
+            assert!(heredoc.terminated && heredoc.delimiter_quoted);
+            assert_eq!(
+                body.as_deref(),
+                input.get(heredoc.body_span.clone().unwrap())
+            );
+        }
+    }
+
+    /// Only the delimiter is read the POSIX way: the grammar is back before
+    /// the next word, whether the delimiter was read or missing.
+    #[test]
+    fn issue546_the_windows_reading_resumes_after_the_delimiter() {
+        let w = words_windows("cat <<\\EOF C:\\Users\\me\\x.txt\nbody\nEOF\n");
+        assert_eq!(plain(&w[1]), r"C:\Users\me\x.txt");
+        let w = words_windows("cat <<\n\nC:\\Users\\me\\x.txt\n");
+        assert_eq!(plain(w.last().unwrap()), r"C:\Users\me\x.txt");
+        // The POSIX reading of the same word still escapes.
+        let w = words("cat <<\\EOF C:\\Users\\me\\x.txt\nbody\nEOF\n");
+        assert_eq!(plain(&w[1]), "C:Usersmex.txt");
     }
 
     #[test]

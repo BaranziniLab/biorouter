@@ -370,6 +370,114 @@
         }
       }
     },
+    "/agent/browser/consent": {
+      "post": {
+        "tags": [
+          "super::routes::browser_use"
+        ],
+        "operationId": "browser_use_consent",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BrowserUseConsentRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BrowserUseStatus"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Human proof required"
+          },
+          "409": {
+            "description": "The request changed"
+          }
+        }
+      }
+    },
+    "/agent/browser/revoke": {
+      "post": {
+        "tags": [
+          "super::routes::browser_use"
+        ],
+        "operationId": "browser_use_revoke",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BrowserUseSessionRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BrowserUseStatus"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Session out of reach"
+          }
+        }
+      }
+    },
+    "/agent/browser/status": {
+      "get": {
+        "tags": [
+          "super::routes::browser_use"
+        ],
+        "operationId": "browser_use_status",
+        "parameters": [
+          {
+            "name": "session_id",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BrowserUseStatus"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Session out of reach"
+          },
+          "409": {
+            "description": "Chat mode does not run the browser"
+          },
+          "424": {
+            "description": "Chat not loaded"
+          }
+        }
+      }
+    },
     "/agent/call_tool": {
       "post": {
         "tags": [
@@ -592,6 +700,29 @@
                 "schema": {}
               }
             }
+          }
+        }
+      }
+    },
+    "/agent/computer_use/setup/request": {
+      "post": {
+        "tags": [
+          "super::routes::computer_use"
+        ],
+        "summary": "Ask the operating system to let Biorouter Copilot in (AD-04): on macOS the system's own prompts",
+        "description": "appear on the backend computer, naming Biorouter Copilot. Only a person's press reaches it,\nbecause it puts dialogs in front of whoever sits at that computer; a model or an API credential\ncannot.",
+        "operationId": "computer_use_request_permissions",
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "403": {
+            "description": "Human proof required"
           }
         }
       }
@@ -13623,6 +13754,14 @@
         },
         "additionalProperties": false
       },
+      "ActLifetime": {
+        "type": "string",
+        "description": "How long an act grant lasts.",
+        "enum": [
+          "request",
+          "chat"
+        ]
+      },
       "ActionRequired": {
         "type": "object",
         "required": [
@@ -14366,6 +14505,129 @@
           "metadata": {
             "type": "string",
             "nullable": true
+          }
+        }
+      },
+      "BrowserGrant": {
+        "type": "string",
+        "description": "Which grant a browser operation needs.",
+        "enum": [
+          "observe",
+          "act"
+        ]
+      },
+      "BrowserUseConsentRequest": {
+        "type": "object",
+        "required": [
+          "session_id",
+          "challenge_id",
+          "grant"
+        ],
+        "properties": {
+          "challenge_id": {
+            "type": "string"
+          },
+          "grant": {
+            "$ref": "#/components/schemas/BrowserGrant"
+          },
+          "lifetime": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/ActLifetime"
+              }
+            ],
+            "nullable": true
+          },
+          "session_id": {
+            "type": "string"
+          }
+        }
+      },
+      "BrowserUseSessionRequest": {
+        "type": "object",
+        "required": [
+          "session_id"
+        ],
+        "properties": {
+          "session_id": {
+            "type": "string"
+          }
+        }
+      },
+      "BrowserUseStatus": {
+        "type": "object",
+        "required": [
+          "enabled",
+          "available",
+          "session_id",
+          "provider",
+          "model",
+          "destination",
+          "public_model",
+          "state",
+          "observe",
+          "challenge_id",
+          "disclosure"
+        ],
+        "properties": {
+          "act": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/ActLifetime"
+              }
+            ],
+            "nullable": true
+          },
+          "activity_id": {
+            "type": "string",
+            "description": "The most recent request that used the browser in this chat.",
+            "nullable": true
+          },
+          "available": {
+            "type": "boolean",
+            "description": "This daemon serves a desktop app that hosts the browser (BB-16)."
+          },
+          "challenge_id": {
+            "type": "string"
+          },
+          "destination": {
+            "type": "string"
+          },
+          "disclosure": {
+            "type": "string",
+            "description": "The consent the card shows for `requested` (or for the active grant)."
+          },
+          "enabled": {
+            "type": "boolean",
+            "description": "The capability is on for this chat."
+          },
+          "model": {
+            "type": "string"
+          },
+          "observe": {
+            "type": "boolean",
+            "description": "Reading is allowed for this chat."
+          },
+          "provider": {
+            "type": "string"
+          },
+          "public_model": {
+            "type": "boolean"
+          },
+          "requested": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/BrowserGrant"
+              }
+            ],
+            "nullable": true
+          },
+          "session_id": {
+            "type": "string"
+          },
+          "state": {
+            "type": "string",
+            "description": "`idle`, `approval_required`, `active` or `stopped`."
           }
         }
       },
@@ -15115,10 +15377,26 @@
           "challenge_id": {
             "type": "string"
           },
+          "grant": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/ComputerUseGrantLevel"
+              }
+            ],
+            "nullable": true
+          },
           "session_id": {
             "type": "string"
           }
         }
+      },
+      "ComputerUseGrantLevel": {
+        "type": "string",
+        "description": "The person's answer on the card, as the status and the consent route carry it (AD-10).\n\nA typed twin of [`ComputerUseGrant`], which lives in `biorouter-mcp` and carries no schema, so\nthe generated client names the two answers instead of an open string.",
+        "enum": [
+          "observe",
+          "act"
+        ]
       },
       "ComputerUseSessionRequest": {
         "type": "object",
@@ -15165,6 +15443,14 @@
           },
           "enabled": {
             "type": "boolean"
+          },
+          "grant": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/ComputerUseGrantLevel"
+              }
+            ],
+            "nullable": true
           },
           "handoff_required": {
             "type": "boolean"
@@ -30089,6 +30375,26 @@
                 "type": "string",
                 "enum": [
                   "FileExists"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "#535: pass when `path` names a regular file of at least one byte (a\nsymbolic link is followed). A missing path, an empty file, a directory\nand anything else that is not a regular file each fail with their own\nreason. A relative `path` resolves as for\n[`FileExists`](SuccessCheck::FileExists). Says nothing about what the\nfile contains.",
+            "required": [
+              "path",
+              "type"
+            ],
+            "properties": {
+              "path": {
+                "type": "string",
+                "description": "The regular file that must hold at least one byte."
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "FileNonEmpty"
                 ]
               }
             }

@@ -861,6 +861,14 @@ async fn the_scan_of_recent_chats_is_the_persons_to_start() {
     use biorouter::dictation::suggestion_scan::MSG_SCAN_OFF;
 
     let (_state, app) = daemon().await;
+    // A new store has suggestions on (owner, 2026-11-19); the person turned them off.
+    post(
+        &app,
+        "/dictionary/settings",
+        Caller::Proof,
+        json!({"learn_from_chats": false}),
+    )
+    .await;
     let refused = post(
         &app,
         "/dictionary/suggestions/scan",
@@ -1571,6 +1579,16 @@ async fn managed_agent_writes_off_refuses_raising_the_settings() {
         .reason()
         .map(str::to_string)
         .expect("the staged policy is read");
+    // A new store has suggestions on (owner, 2026-11-19); turning them off is a lowering,
+    // which the policy admits, and makes turning them on again a raise.
+    let off = post(
+        &app,
+        "/dictionary/settings",
+        Caller::Proof,
+        json!({"learn_from_chats": false}),
+    )
+    .await;
+    assert_eq!(off.status, StatusCode::OK, "{}", off.body);
     for raise in [
         json!({"agent_writes": "add"}),
         json!({"learn_from_chats": true}),

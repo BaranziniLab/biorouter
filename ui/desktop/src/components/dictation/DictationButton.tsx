@@ -30,9 +30,13 @@ import type { View, ViewOptions } from '../../utils/navigationUtils';
 import { Mic } from '../icons/app-icons';
 import { CHAT_COLUMN_CHROME } from '../Layout/yieldLadder';
 import { Button } from '../ui/button';
+import { lastInputWasKey } from '../ui/inputTrail';
 import { Popover, PopoverAnchor, PopoverContent } from '../ui/popover';
 import { Spinner } from '../ui/spinner';
 import { Tooltip, TooltipContent, TooltipTrigger } from '../ui/Tooltip';
+import { levelToMeter } from './level';
+import { getFnKeySnapshot, subscribeFnKey } from './fnKeyStore';
+import { fnShortcutWorks } from '../../utils/dictationFnKey';
 import {
   DICTATION_ACTIONS,
   DICTATION_LABELS,
@@ -74,15 +78,7 @@ export const DICTATION_TIMER_MIN_PANE_PX = 440;
 /** Level bars in the recording pill. */
 export const DICTATION_LEVEL_BARS = 5;
 
-/**
- * A chunk's RMS on the meter's 0 to 1 scale: -60 dBFS (the noise floor the
- * session's MSG-NO-AUDIO-YET uses) to full scale.
- */
-export function levelToMeter(rms: number): number {
-  if (!(rms > 0)) return 0;
-  const db = 20 * Math.log10(rms);
-  return Math.max(0, Math.min(1, (db + 60) / 60));
-}
+export { levelToMeter };
 
 /** What the microphone shows: the session's activity for this composer first, then the status. */
 export function dictationPhaseFor(
@@ -95,6 +91,24 @@ export function dictationPhaseFor(
   if (decision.phase === 'unavailable') return 'unavailable';
   if (decision.phase === 'not-installed' || decision.phase === 'installing') return decision.phase;
   return activity === 'error' ? 'error' : 'idle';
+}
+
+/**
+ * Where focus goes when the setup popover opens: a pointer open is a quiet open, the rule every
+ * dialog follows (`useReturnFocusToOpener` in `ui/dialog.tsx`). The microphone keeps the field's
+ * focus on its press, and the field is `:focus-visible` (a text field always is), so Radix's
+ * own first stop, **More in Settings**, inherited the keyboard ring after a mouse click. After a
+ * pointer press focus rests on the popover box instead, which draws no ring
+ * (`.br-dictation-setup-popover:focus` in `composer.css`) and is where a screen reader reads
+ * its name; the next Tab reaches the first control, ringed. A key open (Enter or Space on the
+ * microphone, or the chord) keeps Radix's first stop, because there the ring is the point.
+ */
+export function quietSetupOpen(event: Event): void {
+  if (lastInputWasKey()) return;
+  const box = event.currentTarget instanceof HTMLElement ? event.currentTarget : null;
+  if (!box) return;
+  event.preventDefault();
+  box.focus({ preventScroll: true });
 }
 
 /** The session's snapshot; it is a cached object, so it also serves a server render. */
@@ -125,6 +139,7 @@ export function DictationButton({
 }: DictationButtonProps) {
   const snapshot = useSnapshot();
   const statusSnapshot = useDictationStatus();
+  const fnView = useSyncExternalStore(subscribeFnKey, getFnKeySnapshot, () => null);
   const decision = useMemo(() => resolveDictationPhase(statusSnapshot), [statusSnapshot]);
   const activity: DictationActivity = snapshot.key === control.key ? snapshot.activity : 'idle';
   const phase = dictationPhaseFor(activity, decision);
@@ -197,6 +212,8 @@ export function DictationButton({
 
   const browser = isBrowserSurface();
   const chord = browser ? '' : getDictationShortcutText();
+  // On macOS the fn gestures are the shortcut once they work; ⌘⇧D keeps working beside them.
+  const fnWorks = !browser && fnShortcutWorks(fnView);
   const clock = formatDictationClock(snapshot.key === control.key ? snapshot.elapsedS : 0);
   const label =
     phase === 'unavailable'
@@ -216,7 +233,12 @@ export function DictationButton({
     phase === 'recording'
       ? DICTATION_LABELS.recordingTooltip
       : phase === 'idle' || phase === 'error'
-        ? (idleTooltip ?? (browser ? DICTATION_LABELS.idle : `${DICTATION_LABELS.idle} ${chord}`))
+        ? (idleTooltip ??
+          (browser
+            ? DICTATION_LABELS.idle
+            : fnWorks
+              ? `${DICTATION_LABELS.idle} · ${DICTATION_LABELS.fnGesture}`
+              : `${DICTATION_LABELS.idle} ${chord}`))
         : label;
 
   const press = () => {
@@ -232,7 +254,7 @@ export function DictationButton({
   const glyph =
     phase === 'installing' ? (
       <span className="br-dictation-ring" aria-hidden>
-        <svg viewBox="0 0 28 28" width="28" height="28">
+        <svg className="br-dictation-ring__svg" viewBox="0 0 28 28" width="28" height="28">
           <circle className="br-dictation-ring__track" cx="14" cy="14" r="12" />
           <circle
             className="br-dictation-ring__value"
@@ -286,7 +308,13 @@ export function DictationButton({
       aria-label={label}
       aria-pressed={phase === 'arming' || phase === 'recording'}
       aria-busy={phase === 'arming' || phase === 'transcribing' || undefined}
-      aria-keyshortcuts={browser ? undefined : getDictationAriaKeyShortcuts()}
+      aria-keyshortcuts={
+        browser
+          ? undefined
+          : fnWorks
+            ? `Fn ${getDictationAriaKeyShortcuts()}`
+            : getDictationAriaKeyShortcuts()
+      }
       aria-haspopup={phase === 'not-installed' || phase === 'installing' ? 'dialog' : undefined}
       aria-expanded={phase === 'not-installed' || phase === 'installing' ? setupOpen : undefined}
       className={cn('br-dictation-button', className)}
@@ -341,7 +369,9 @@ export function DictationButton({
           <PopoverContent
             side="top"
             align="end"
-            className="w-80 p-0"
+            className="br-dictation-setup-popover w-80 p-0"
+            aria-label={DICTATION_LABELS.setUp}
+            onOpenAutoFocus={quietSetupOpen}
             onInteractOutside={(event) => {
               // The microphone toggles the popover itself, on its own pointer down.
               if (buttonRef.current?.contains(event.target as Node)) event.preventDefault();

@@ -5,7 +5,7 @@ import ProgressiveMessageList from './ProgressiveMessageList';
 import { PendingToolCallList } from './PendingToolCallCard';
 import { MainPanelLayout } from './Layout/MainPanelLayout';
 import ChatInput from './ChatInput';
-import { CopilotControl } from './copilot/CopilotControl';
+import { AgentCapabilityControls } from './agentControls/AgentCapabilityControls';
 import { deriveWorkingDirLocked } from './bottom_menu/DirSwitcher';
 import { ScrollArea, ScrollAreaHandle } from './ui/scroll-area';
 import { useFileDrop } from '../hooks/useFileDrop';
@@ -2902,6 +2902,22 @@ function BaseChatContent({
     (artifact: Parameters<typeof handleOpenArtifact>[0]) => openArtifactRef.current(artifact),
     []
   );
+  // BB-15: main asks this chat's panel to show a tab the agent opened in the Biorouter Browser.
+  // The agent drives only a tab the person can see, so the panel opens on it.
+  useEffect(() => {
+    const agent = window.electron?.browserAgent;
+    if (!sessionId || !agent?.onShowTab) return;
+    return agent.onShowTab((shown) => {
+      if (shown.sessionId !== sessionId) return;
+      void openArtifactRef.current({
+        kind: 'externalUrl',
+        title: shown.title || hostOfUrl(shown.url) || 'Biorouter Browser',
+        url: shown.url || 'about:blank',
+        viewId: shown.viewId,
+        openedBy: 'agent',
+      });
+    });
+  }, [sessionId]);
   // F-15: a subagent's spawn record is the header's "Instructions", its one
   // place. Drawn again as the transcript's first bubble it repeated the whole
   // record (1,774 words in QA). Only the view drops it: the saved chat and its
@@ -3066,7 +3082,9 @@ function BaseChatContent({
       */}
         <PinnedModelNote session={session} reportedByTurn={pinnedModel} className="mx-3 mb-1" />
         <ChatCrewAccessBar access={crewAccess} chatTitle={session?.name} className="mx-3 mb-1" />
-        {sessionId && agentReady && <CopilotControl key={sessionId} sessionId={sessionId} />}
+        {sessionId && agentReady && (
+          <AgentCapabilityControls key={sessionId} sessionId={sessionId} />
+        )}
         <PendingChatModelContext.Provider value={pendingChatModelScope}>
           <ChatInput
             sessionId={sessionId}
@@ -3751,6 +3769,15 @@ function BaseChatContent({
       )}
     </div>
   );
+}
+
+/** A page's host, for the panel tab of an agent tab that has no title yet. */
+function hostOfUrl(url: string): string {
+  try {
+    return new URL(url).hostname;
+  } catch {
+    return '';
+  }
 }
 
 export default function BaseChat(props: BaseChatProps) {

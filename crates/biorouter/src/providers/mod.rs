@@ -65,8 +65,7 @@ pub mod xiaomi_mimo;
 pub mod zai;
 
 pub use destination_keys::is_destination_key;
-#[cfg(test)]
-pub(crate) use factory::builtin_provider_metadata;
+pub use factory::builtin_provider_metadata;
 pub(crate) use factory::create_from_persisted;
 pub use factory::{
     create, create_from_saved_session, create_with_default_model, create_with_named_model,
@@ -163,6 +162,94 @@ pub const CREDENTIAL_NEVER_SET: &str = "is not configured";
 /// [`CREDENTIAL_NEVER_SET`] for why this is a wording check and not a type one.
 pub fn says_credential_never_set(text: &str) -> bool {
     text.contains(CREDENTIAL_NEVER_SET)
+}
+
+/// What to do about a missing key while `BIOROUTER_DISABLE_KEYRING` keeps
+/// secrets in the plaintext file (#521). The system keychain was never read,
+/// and the desktop app's Settings saves keys there, so "add it in Settings"
+/// cannot help; these two remedies can.
+pub const KEYCHAIN_DISABLED_REMEDY: &str =
+    "BIOROUTER_DISABLE_KEYRING is set, so the system keychain was not checked. \
+     Unset BIOROUTER_DISABLE_KEYRING to use keys saved in the system keychain, \
+     or run `biorouter configure` to add the key to the file.";
+
+/// What a provider says when credential `name` is not in `config`'s store.
+/// `remedy` is where the key is usually added ("Add it under Versa API Bedrock
+/// in Settings."), said while the system keychain is the store. While
+/// `BIOROUTER_DISABLE_KEYRING` has selected the file store, the message names
+/// the file that was read and gives [`KEYCHAIN_DISABLED_REMEDY`] instead. Both
+/// keep [`CREDENTIAL_NEVER_SET`], which the CLI matches on.
+pub fn credential_never_set(
+    config: &crate::config::Config,
+    name: &str,
+    remedy: Option<&str>,
+) -> String {
+    if let Some(file) = config.secrets_file_selected_by_environment() {
+        return format!(
+            "{name} {CREDENTIAL_NEVER_SET} in the file store {}. {KEYCHAIN_DISABLED_REMEDY}",
+            file.display()
+        );
+    }
+    match remedy {
+        Some(remedy) => format!("{name} {CREDENTIAL_NEVER_SET}. {remedy}"),
+        None => format!("{name} {CREDENTIAL_NEVER_SET}"),
+    }
+}
+
+/// Read credential `name` for a provider, saying why when it cannot.
+///
+/// ⚠ A blanket `map_err(|_| "... is not configured")` DISCARDS the reason, and
+/// the two reasons need opposite responses from the user:
+///
+/// - `NotFound`: the key is not saved, so adding it is right
+///   ([`credential_never_set`], with `remedy`).
+/// - anything else: the key IS there and the store refused the read, so "add
+///   it" sends the user to retype a credential that is already correct. On
+///   macOS that happens whenever the Keychain grant no longer covers the
+///   running binary: the grant is bound to the signature, so a newly installed
+///   or re-signed build asks again, and an unanswered prompt fails the read.
+///
+/// The value never appears in an error.
+pub(crate) fn read_provider_credential(
+    config: &crate::config::Config,
+    name: &str,
+    remedy: Option<&str>,
+) -> anyhow::Result<String> {
+    match config.get_secret::<String>(name) {
+        Ok(value) => Ok(value),
+        Err(crate::config::ConfigError::NotFound(_)) => {
+            Err(anyhow::anyhow!(credential_never_set(config, name, remedy)))
+        }
+        Err(error) => match config.secrets_file_selected_by_environment() {
+            Some(file) => Err(anyhow::anyhow!(
+                "Could not read {name} from the file store {}: {error}",
+                file.display()
+            )),
+            None => Err(anyhow::anyhow!(
+                "Could not read {name} from the credential store: {error}\n\n\
+                 The credential appears to be configured, so this is the store \
+                 refusing the read rather than a missing key -- do NOT re-enter it. \
+                 On macOS a Keychain grant is tied to the application's signature, \
+                 so a newly installed or re-signed build asks for permission again; \
+                 answer that prompt with \u{201c}Always Allow\u{201d}."
+            )),
+        },
+    }
+}
+
+/// What to tell a person whose provider could not start while
+/// `BIOROUTER_DISABLE_KEYRING` keeps secrets in the file store: the file that
+/// was read and [`KEYCHAIN_DISABLED_REMEDY`]. `None` while the system keychain
+/// is the store. The CLI says it in place of its advice to check the keychain.
+pub fn keychain_disabled_advice() -> Option<String> {
+    crate::config::Config::global()
+        .secrets_file_selected_by_environment()
+        .map(|file| {
+            format!(
+                "Keys are read from the file store {} only. {KEYCHAIN_DISABLED_REMEDY}",
+                file.display()
+            )
+        })
 }
 
 /// Whether a gateway's refusal names the CREDENTIAL, as opposed to anything
@@ -334,5 +421,115 @@ pub(crate) fn composite_affiliation(
             }
             Some(ModelAffiliation::Institutions(a.union(b)))
         }
+    }
+}
+
+#[cfg(test)]
+mod credential_message_tests {
+    use super::*;
+    use crate::config::Config;
+
+    const REMEDY: &str = "Add it under Versa API Bedrock in Settings.";
+
+    /// #521. The file-store wording appears exactly while BIOROUTER_DISABLE_KEYRING
+    /// has selected the file store; a keychain-backed store, or a file store
+    /// without the variable, keeps today's message word for word.
+    #[test]
+    fn issue_521_a_missing_key_names_the_file_store_only_while_the_variable_selects_it() {
+        if !crate::test_sandbox::in_a_process_of_its_own() {
+            return;
+        }
+        assert!(crate::config::test_binary_credentials::os_store_is_kept_off());
+        let directory = tempfile::tempdir().unwrap();
+        let secrets = directory.path().join("secrets.yaml");
+        // The process-memory store this test binary uses in place of the OS one.
+        let keychain =
+            Config::new(directory.path().join("keychain.yaml"), "issue-521-keychain").unwrap();
+        let file =
+            Config::new_with_file_secrets(directory.path().join("file.yaml"), &secrets).unwrap();
+        let unchanged = format!("SYNTHETIC_521_KEY {CREDENTIAL_NEVER_SET}. {REMEDY}");
+
+        {
+            let _env = env_lock::lock_env([("BIOROUTER_DISABLE_KEYRING", Some("1"))]);
+            assert_eq!(keychain.secrets_file_selected_by_environment(), None);
+            assert_eq!(
+                credential_never_set(&keychain, "SYNTHETIC_521_KEY", Some(REMEDY)),
+                unchanged
+            );
+            assert_eq!(
+                credential_never_set(&keychain, "SYNTHETIC_521_KEY", None),
+                format!("SYNTHETIC_521_KEY {CREDENTIAL_NEVER_SET}")
+            );
+
+            assert_eq!(
+                file.secrets_file_selected_by_environment(),
+                Some(secrets.as_path())
+            );
+            let message = credential_never_set(&file, "SYNTHETIC_521_KEY", Some(REMEDY));
+            assert_eq!(
+                message,
+                format!(
+                    "SYNTHETIC_521_KEY {CREDENTIAL_NEVER_SET} in the file store {}. \
+                     {KEYCHAIN_DISABLED_REMEDY}",
+                    secrets.display()
+                )
+            );
+            assert!(says_credential_never_set(&message));
+            assert!(!message.contains(REMEDY), "{message}");
+        }
+        {
+            let _env = env_lock::lock_env([("BIOROUTER_DISABLE_KEYRING", None::<&str>)]);
+            assert_eq!(file.secrets_file_selected_by_environment(), None);
+            assert_eq!(
+                credential_never_set(&file, "SYNTHETIC_521_KEY", Some(REMEDY)),
+                unchanged
+            );
+        }
+    }
+
+    /// A key that is there is returned; a missing one is "not configured" in
+    /// the file store; a file store that cannot be read is never reported as a
+    /// missing key, which would send the person to re-enter a key they have.
+    /// No value appears in any message.
+    #[test]
+    fn issue_521_a_store_that_cannot_be_read_is_not_a_missing_key() {
+        if !crate::test_sandbox::in_a_process_of_its_own() {
+            return;
+        }
+        let directory = tempfile::tempdir().unwrap();
+        let secrets = directory.path().join("secrets.yaml");
+        let file =
+            Config::new_with_file_secrets(directory.path().join("file.yaml"), &secrets).unwrap();
+        let _env = env_lock::lock_env([
+            ("BIOROUTER_DISABLE_KEYRING", Some("1")),
+            ("SYNTHETIC_521_KEY", None),
+            ("SYNTHETIC_521_OTHER", None),
+        ]);
+
+        file.set_secret("SYNTHETIC_521_KEY", &"synthetic-521-value")
+            .unwrap();
+        assert_eq!(
+            read_provider_credential(&file, "SYNTHETIC_521_KEY", Some(REMEDY)).unwrap(),
+            "synthetic-521-value"
+        );
+
+        let missing = read_provider_credential(&file, "SYNTHETIC_521_OTHER", Some(REMEDY))
+            .unwrap_err()
+            .to_string();
+        assert!(says_credential_never_set(&missing), "{missing}");
+        assert!(
+            missing.contains(&secrets.display().to_string()),
+            "{missing}"
+        );
+        assert!(!missing.contains("synthetic-521-value"), "{missing}");
+
+        std::fs::remove_file(&secrets).unwrap();
+        std::fs::create_dir(&secrets).unwrap();
+        let refused = read_provider_credential(&file, "SYNTHETIC_521_KEY", Some(REMEDY))
+            .unwrap_err()
+            .to_string();
+        assert!(!says_credential_never_set(&refused), "{refused}");
+        assert!(refused.starts_with("Could not read SYNTHETIC_521_KEY from the file store"));
+        assert!(!refused.contains("synthetic-521-value"), "{refused}");
     }
 }

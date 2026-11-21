@@ -71,7 +71,11 @@ mod computer_use_nested_tests {
         assert_eq!(client.calls.load(Ordering::SeqCst), 0);
         let status = manager.computer_use_status("nested-native").await.unwrap();
         manager
-            .approve_computer_use("nested-native", &status.challenge_id)
+            .approve_computer_use(
+                "nested-native",
+                &status.challenge_id,
+                crate::security::computer_use::ComputerUseGrant::Act,
+            )
             .await
             .unwrap();
         tokio::time::timeout(Duration::from_secs(5), async {

@@ -894,8 +894,9 @@ fn string_arg(arguments: &Option<JsonObject>, key: &str) -> Result<String, Strin
 }
 
 /// Keys a model plausibly hangs an item's text off when it sends objects
-/// instead of bare strings.
-const ITEM_TEXT_KEYS: &[&str] = &["text", "task", "title"];
+/// instead of bare strings. The dispatch-time secret scan leaves the same keys
+/// out of `todo_add` and `todo_expand` (issue #522).
+pub(crate) const ITEM_TEXT_KEYS: &[&str] = &["text", "task", "title"];
 
 /// Describe a JSON value for an error message, so a rejection says what
 /// actually arrived instead of only what was wanted.

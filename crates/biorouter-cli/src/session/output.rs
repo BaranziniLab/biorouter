@@ -1,3 +1,4 @@
+use super::executed_calls::{self, is_execute_code_tool_name, DisplayLine, Part};
 use anstream::println;
 use bat::WrappingMode;
 use biorouter::config::Config;
@@ -443,11 +444,18 @@ pub fn biorouter_mode_message(text: &str) {
 }
 
 fn render_tool_request(req: &ToolRequest, theme: Theme, debug: bool) {
+    if let Ok(call) = &req.tool_call {
+        if is_execute_code_tool_name(&call.name) {
+            note_execute_code_call(&req.id);
+        }
+    }
     match &req.tool_call {
         Ok(call) => match call.name.to_string().as_str() {
             "developer__text_editor" => render_text_editor_request(call, debug),
             "developer__shell" => render_shell_request(call, debug),
-            "code_execution__execute_code" => render_execute_code_request(call, debug),
+            "code_execution__execute_code" | "execute_code" => {
+                render_execute_code_request(call, debug)
+            }
             // BR-71: the spawn tool is advertised by the workspace extension
             // now, so the name that reaches the transcript is normally the
             // PREFIXED one. The bare form still arrives from prefix-stripping
@@ -502,9 +510,18 @@ fn content_clears_priority_gate(priority: Option<f32>, min_priority: f32, debug:
 fn render_tool_response(resp: &ToolResponse, theme: Theme, debug: bool) {
     let config = Config::global();
     let was_spawn_call = take_spawn_call(&resp.id);
+    let was_execute_code_call = take_execute_code_call(&resp.id);
 
     match &resp.tool_result {
         Ok(result) => {
+            // What an `execute_code` script really ran (issue #525), ahead of
+            // its output: the request showed only the model's own labels.
+            if was_execute_code_call {
+                if let Some(calls) = executed_calls::executed_calls(result) {
+                    let full = debug || get_show_full_tool_output();
+                    print_display_lines(&executed_calls::display_lines(&calls, full));
+                }
+            }
             for content in &result.content {
                 // A terminal can't render inline artifact HTML, so surface a
                 // browser-safe target before the normal text priority filter.
@@ -627,6 +644,9 @@ const AGENT_CANCELLED_MID_RUN: &str =
     "The user cancelled this turn while the tool call was still running";
 const AGENT_EXPIRED: &str =
     "The permission prompt for this tool call expired before the user answered it";
+/// #543: a call that needed approval in a run with nobody to ask.
+const AGENT_UNATTENDED: &str =
+    "This tool call was not run: it needs a person's approval, and nobody can be asked";
 /// What a hook's denial adds after [`AGENT_DECLINED`]'s text.
 const HOOK_FEEDBACK: &str = "Hook feedback:";
 
@@ -638,6 +658,10 @@ pub(crate) const PERSON_CANCELLED: &str =
 /// What the person reads for a call that was running when they stopped the turn.
 pub(crate) const PERSON_CANCELLED_MID_RUN: &str =
     "You stopped the turn while this tool call ran. It may have partly finished.";
+/// What the person reads for a call that needed approval in a run nobody could
+/// answer (a `biorouter run` without `-s`, say).
+pub(crate) const PERSON_UNATTENDED: &str =
+    "This tool call needs approval, and nobody could be asked in this run, so it did not run.";
 
 /// The person's line for a result Biorouter wrote to the model instead of a
 /// tool's answer, or None for any other text. An expired approval reads as the
@@ -660,6 +684,8 @@ fn agent_written_result_line(text: &str) -> Option<std::borrow::Cow<'static, str
         PERSON_CANCELLED
     } else if text.starts_with(AGENT_EXPIRED) {
         super::APPROVAL_EXPIRED
+    } else if text.starts_with(AGENT_UNATTENDED) {
+        PERSON_UNATTENDED
     } else {
         return None;
     };
@@ -744,10 +770,11 @@ fn failed_call_text(error: &rmcp::model::ErrorData) -> String {
 /// from any runtime thread. Bounded, because a call whose result never arrives
 /// (a cancelled turn) would otherwise stay for the life of the process.
 static PENDING_SPAWN_CALLS: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
-const MAX_PENDING_SPAWN_CALLS: usize = 64;
+/// How many shown calls of one kind a list holds whose result has not been shown.
+const MAX_PENDING_CALLS: usize = 64;
 
 fn note_spawn_call(request_id: &str) {
-    remember_spawn_call(
+    remember_pending_call(
         &mut PENDING_SPAWN_CALLS
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner),
@@ -757,8 +784,36 @@ fn note_spawn_call(request_id: &str) {
 
 /// Whether `request_id` was a spawn call this terminal showed, forgetting it.
 fn take_spawn_call(request_id: &str) -> bool {
-    forget_spawn_call(
+    forget_pending_call(
         &mut PENDING_SPAWN_CALLS
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner),
+        request_id,
+    )
+}
+
+/// The `execute_code` calls this terminal has shown and whose result it has
+/// not shown yet, by request id, kept as [`PENDING_SPAWN_CALLS`] is. Only the
+/// result of one of these is read for the calls its script ran (issue #525):
+/// any tool can put a `biorouter/tool-calls` key in its own result meta, and
+/// only code execution's records say what ran.
+static PENDING_EXECUTE_CODE_CALLS: std::sync::Mutex<Vec<String>> =
+    std::sync::Mutex::new(Vec::new());
+
+fn note_execute_code_call(request_id: &str) {
+    remember_pending_call(
+        &mut PENDING_EXECUTE_CODE_CALLS
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner),
+        request_id,
+    );
+}
+
+/// Whether `request_id` was an `execute_code` call this terminal showed,
+/// forgetting it, so a result drawn twice lists its calls once.
+fn take_execute_code_call(request_id: &str) -> bool {
+    forget_pending_call(
+        &mut PENDING_EXECUTE_CODE_CALLS
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner),
         request_id,
@@ -772,20 +827,21 @@ pub(crate) fn is_spawn_tool_name(name: &str) -> bool {
     name == SUBAGENT_TOOL_PREFIXED || name == SUBAGENT_TOOL_NAME
 }
 
-/// Remember a spawn request, oldest dropped past [`MAX_PENDING_SPAWN_CALLS`].
-/// The full-screen view keeps a list of its own and calls this too.
-pub(crate) fn remember_spawn_call(pending: &mut Vec<String>, request_id: &str) {
+/// Remember a shown request (a spawn, an `execute_code`), oldest dropped past
+/// [`MAX_PENDING_CALLS`]. The full-screen view keeps lists of its own and calls
+/// this too.
+pub(crate) fn remember_pending_call(pending: &mut Vec<String>, request_id: &str) {
     if pending.iter().any(|id| id == request_id) {
         return;
     }
-    if pending.len() >= MAX_PENDING_SPAWN_CALLS {
+    if pending.len() >= MAX_PENDING_CALLS {
         pending.remove(0);
     }
     pending.push(request_id.to_string());
 }
 
 /// Whether `request_id` is in `pending`, removing it.
-pub(crate) fn forget_spawn_call(pending: &mut Vec<String>, request_id: &str) -> bool {
+pub(crate) fn forget_pending_call(pending: &mut Vec<String>, request_id: &str) -> bool {
     match pending.iter().position(|id| id == request_id) {
         Some(at) => {
             pending.remove(at);
@@ -1012,7 +1068,7 @@ fn title_from_external_url(uri: &str) -> String {
         .unwrap_or_else(|| "Artifact link".to_string())
 }
 
-/// Extract live Agent Drafter launch targets from result metadata. A normal
+/// Extract live Application Drafter launch targets from result metadata. A normal
 /// `launch_app` result uses one path; `execute_code` can aggregate several.
 pub fn app_launch_notes(result: &rmcp::model::CallToolResult) -> Vec<ArtifactNote> {
     let Some(meta) = &result.meta else {
@@ -1504,14 +1560,17 @@ fn render_execute_code_request(call: &CallToolRequestParams, debug: bool) {
     print_section_rule(&format!("{} tool call{}", count, plural), "execute_code");
 
     for (i, node) in tool_graph.iter().filter_map(Value::as_object).enumerate() {
-        let tool = node
-            .get("tool")
-            .and_then(Value::as_str)
-            .unwrap_or("unknown");
-        let desc = node
-            .get("description")
-            .and_then(Value::as_str)
-            .unwrap_or("");
+        // #525: the model's own words, shown as the calls the script ran are.
+        let tool = executed_calls::person_safe_text(
+            node.get("tool")
+                .and_then(Value::as_str)
+                .unwrap_or("unknown"),
+        );
+        let desc = executed_calls::person_safe_text(
+            node.get("description")
+                .and_then(Value::as_str)
+                .unwrap_or(""),
+        );
         let deps: Vec<_> = node
             .get("depends_on")
             .and_then(Value::as_array)
@@ -1533,7 +1592,37 @@ fn render_execute_code_request(call: &CallToolRequestParams, debug: bool) {
             style(deps_str).dim()
         );
     }
+    // The labels above are the model's own words. What the script really runs
+    // is listed under its result; with `--debug` (or the full tool output
+    // toggle) the script itself is shown here too, before it runs.
+    if debug || get_show_full_tool_output() {
+        if let Some(code) = call
+            .arguments
+            .as_ref()
+            .and_then(|args| args.get("code"))
+            .and_then(Value::as_str)
+        {
+            print_display_lines(&executed_calls::script_source_lines(code));
+        }
+    }
     println!();
+}
+
+/// Print the lines of an `execute_code` block (`executed_calls`), styled as
+/// the rest of a tool call is: names and counts dim, tools as the graph's.
+fn print_display_lines(lines: &[DisplayLine]) {
+    for line in lines {
+        let mut text = " ".repeat(line.indent);
+        for (part, span) in &line.spans {
+            let styled = match part {
+                Part::Heading | Part::Note | Part::Name => style(span).dim(),
+                Part::Tool => style(span).cyan(),
+                Part::Value => style(span),
+            };
+            text.push_str(&styled.to_string());
+        }
+        println!("{text}");
+    }
 }
 
 fn render_subagent_request(call: &CallToolRequestParams, debug: bool) {
@@ -2157,6 +2246,259 @@ pub fn preview() {
 
 #[cfg(test)]
 mod tests {
+
+    // must skip lane_b_renderer_capture_child; each child invokes that exact helper.
+    fn lane_b_capture_renderer(case: &str) -> String {
+        capture_renderer_child(
+            "session::output::tests::lane_b_renderer_capture_child",
+            "BIOROUTER_LANE_B_RENDER_CASE",
+            case,
+        )
+    }
+
+    /// What the child test `child` prints for `case` (passed in `case_var`), its
+    /// colours stripped. The renderers print to the real stdout, so a child
+    /// process is the seam that captures them.
+    fn capture_renderer_child(child: &str, case_var: &str, case: &str) -> String {
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", child, "--nocapture", "--test-threads=1"])
+            .env(case_var, case)
+            .env("BIOROUTER_DISABLE_KEYRING", "true")
+            .env("NO_COLOR", "1")
+            .env("TERM", "dumb")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "renderer child failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let stdout =
+            String::from_utf8(output.stdout).expect("renderer stdout must stay valid UTF-8");
+        assert!(
+            stdout.contains("test result: ok. 1 passed"),
+            "child did not run exactly one helper: {stdout}"
+        );
+        console::strip_ansi_codes(&stdout).into_owned()
+    }
+
+    #[test]
+    fn issue525_only_matching_pending_requests_can_show_call_records() {
+        for case in ["wrong-response-id", "unsolicited-meta"] {
+            let shown = lane_b_capture_renderer(case);
+            assert!(!shown.contains("EVALUATED_ONLY_525"), "{case}: {shown}");
+        }
+        let shown = lane_b_capture_renderer("repeated-response");
+        assert_eq!(shown.matches("EVALUATED_ONLY_525").count(), 1, "{shown}");
+    }
+
+    #[test]
+    fn issue525_omitted_calls_are_named_and_malformed_records_are_skipped() {
+        let shown = lane_b_capture_renderer("dropped-meta");
+        assert!(shown.contains("EVALUATED_ONLY_525"), "{shown}");
+        assert!(shown.contains("5 additional calls not recorded"), "{shown}");
+        assert!(!shown.contains("SHOULD_NOT_RENDER_525"), "{shown}");
+    }
+
+    /// Issue #525 through the real producer: an `execute_code` call the
+    /// extension really ran, drawn as `biorouter run` draws it.
+    #[tokio::test]
+    async fn issue525_producer_capture_child() {
+        let Ok(case) = std::env::var("BIOROUTER_ISSUE525_PRODUCER_CASE") else {
+            return;
+        };
+        let (request, response) =
+            super::executed_calls::producer::run_execute_code("producer-525").await;
+        let debug = case == "debug";
+        render_tool_request(&request, Theme::Ansi, debug);
+        render_tool_response(&response, Theme::Ansi, debug);
+    }
+
+    #[test]
+    fn issue525_the_transcript_lists_what_the_real_producer_ran() {
+        use super::executed_calls::producer::{evaluated_token, EVALUATED_WORD, LABEL};
+        for case in ["default", "debug"] {
+            let shown = capture_renderer_child(
+                "session::output::tests::issue525_producer_capture_child",
+                "BIOROUTER_ISSUE525_PRODUCER_CASE",
+                case,
+            );
+            assert!(shown.contains(LABEL), "{case}: the graph heading: {shown}");
+            assert!(shown.contains("executed calls (2)"), "{case}: {shown}");
+            assert!(shown.contains("developer/shell"), "{case}: {shown}");
+            assert!(
+                shown.contains(&format!("command: test -n {EVALUATED_WORD}")),
+                "{case}: the evaluated command: {shown}"
+            );
+            assert!(
+                !shown.contains(&evaluated_token()),
+                "{case}: a credential the script assembled reached the terminal: {shown}"
+            );
+            assert!(shown.contains("[REDACTED:api-token]"), "{case}: {shown}");
+        }
+    }
+
+    #[test]
+    fn lane_b_renderer_capture_child() {
+        let Ok(case) = std::env::var("BIOROUTER_LANE_B_RENDER_CASE") else {
+            return;
+        };
+        let debug = case.ends_with("-debug");
+        let graph = if case == "empty-graph" {
+            serde_json::json!([])
+        } else {
+            serde_json::json!([{"tool": "developer/shell", "description": "list files"}])
+        };
+        let request_name = if case == "foreign-meta" {
+            "developer__shell"
+        } else {
+            "code_execution__execute_code"
+        };
+        let request = ToolRequest {
+            id: "lane-b-render-525".into(),
+            tool_call: Ok(CallToolRequestParams {
+                task: None, name: request_name.into(),
+                arguments: Some(serde_json::json!({"tool_graph": graph, "code": "// SOURCE_ONLY_525; actual arguments exist only in result metadata"}).as_object().unwrap().clone()),
+                meta: None,
+            }),
+            metadata: None, tool_meta: None,
+        };
+        if case != "unsolicited-meta" {
+            render_tool_request(&request, Theme::Ansi, debug);
+        }
+        if case == "empty-graph" {
+            return;
+        }
+        let args = match case.as_str() {
+            "long-default" | "long-debug" => serde_json::to_string(
+                &serde_json::json!({"command": format!("printf {}TAIL_525", "🧬".repeat(256))}),
+            )
+            .unwrap(),
+            "redaction-debug" => serde_json::to_string(
+                &serde_json::json!({"command": format!("printf sk-proj-{}", "Y".repeat(40))}),
+            )
+            .unwrap(),
+            "malformed-meta" => "{\"command\":\"printf ACTUAL_TRUNCATED_525…".into(),
+            _ => serde_json::to_string(
+                &serde_json::json!({"command": "printf EVALUATED_ONLY_525 && uname -a"}),
+            )
+            .unwrap(),
+        };
+        let mut result = CallToolResult::success(Vec::new());
+        result.meta = Some(Meta(
+            serde_json::json!({"biorouter/tool-calls": [{
+                "tool": "developer__shell", "args": args, "status": "ok", "result_bytes": 0
+            }]})
+            .as_object()
+            .unwrap()
+            .clone(),
+        ));
+        if case == "dropped-meta" {
+            let meta = result.meta.as_mut().unwrap();
+            meta.insert("biorouter/tool-calls-dropped".into(), serde_json::json!(5));
+            meta.get_mut("biorouter/tool-calls")
+                .unwrap()
+                .as_array_mut()
+                .unwrap()
+                .extend([
+                    serde_json::json!({"tool": "bad", "args": 7, "status": "ok"}),
+                    serde_json::json!({"tool": "bad", "args": "SHOULD_NOT_RENDER_525"}),
+                ]);
+        }
+        let response = ToolResponse {
+            id: if case == "wrong-response-id" {
+                "unrelated-response-525".into()
+            } else {
+                request.id
+            },
+            tool_result: Ok(result),
+            metadata: None,
+        };
+        let before = response.tool_result.as_ref().unwrap().meta.clone();
+        render_tool_response(&response, Theme::Ansi, debug);
+        assert_eq!(response.tool_result.as_ref().unwrap().meta, before);
+        if case == "repeated-response" {
+            render_tool_response(&response, Theme::Ansi, debug);
+        }
+    }
+
+    #[test]
+    fn issue525_transcript_uses_evaluated_meta_not_only_graph_label() {
+        let shown = lane_b_capture_renderer("evaluated");
+        assert!(
+            shown.contains("list files"),
+            "existing graph heading disappeared: {shown}"
+        );
+        assert!(
+            shown.contains("developer"),
+            "real tool name missing: {shown}"
+        );
+        assert!(
+            shown.contains("EVALUATED_ONLY_525"),
+            "actual evaluated command missing: {shown}"
+        );
+        assert!(
+            shown.contains("uname -a"),
+            "compound command missing: {shown}"
+        );
+    }
+
+    #[test]
+    fn issue525_default_truncates_utf8_and_debug_shows_recorded_tail() {
+        let compact = lane_b_capture_renderer("long-default");
+        let debug = lane_b_capture_renderer("long-debug");
+        assert!(
+            compact.contains("printf"),
+            "evaluated arguments absent: {compact}"
+        );
+        assert!(
+            !compact.contains("TAIL_525"),
+            "default display did not truncate"
+        );
+        assert!(
+            debug.contains("TAIL_525"),
+            "debug must show the complete recorded arguments"
+        );
+        assert!(debug.contains('🧬'));
+    }
+
+    #[test]
+    fn issue525_existing_token_redaction_applies_even_in_debug() {
+        let shown = lane_b_capture_renderer("redaction-debug");
+        assert!(
+            shown.contains("REDACTED"),
+            "the existing redactor was not used: {shown}"
+        );
+        assert!(!shown.contains(&format!("sk-proj-{}", "Y".repeat(40))));
+    }
+
+    #[test]
+    fn issue525_empty_graph_keeps_the_default_request_fallback() {
+        let shown = lane_b_capture_renderer("empty-graph");
+        assert!(
+            shown.contains("SOURCE_ONLY_525"),
+            "empty graph no longer uses the default renderer: {shown}"
+        );
+    }
+
+    #[test]
+    fn issue525_foreign_result_meta_is_not_executed_call_evidence() {
+        let shown = lane_b_capture_renderer("foreign-meta");
+        assert!(
+            !shown.contains("EVALUATED_ONLY_525"),
+            "another tool's metadata was shown as native executed calls: {shown}"
+        );
+    }
+
+    #[test]
+    fn issue525_truncated_args_remain_visible_without_json_parse_panics() {
+        let shown = lane_b_capture_renderer("malformed-meta");
+        assert!(
+            shown.contains("ACTUAL_TRUNCATED_525"),
+            "truncated producer args were silently dropped: {shown}"
+        );
+    }
+
     use super::*;
     use base64::Engine as _;
     use rmcp::model::{CallToolResult, Content, Meta, RawResource, ResourceContents};
@@ -3001,20 +3343,20 @@ mod tests {
     #[test]
     fn pending_spawn_calls_are_bounded() {
         let mut pending = Vec::new();
-        for n in 0..=MAX_PENDING_SPAWN_CALLS {
-            remember_spawn_call(&mut pending, &format!("call-{n}"));
+        for n in 0..=MAX_PENDING_CALLS {
+            remember_pending_call(&mut pending, &format!("call-{n}"));
         }
-        remember_spawn_call(&mut pending, "call-1");
-        assert_eq!(pending.len(), MAX_PENDING_SPAWN_CALLS);
+        remember_pending_call(&mut pending, "call-1");
+        assert_eq!(pending.len(), MAX_PENDING_CALLS);
         assert!(
-            !forget_spawn_call(&mut pending, "call-0"),
+            !forget_pending_call(&mut pending, "call-0"),
             "the oldest goes first"
         );
-        assert!(forget_spawn_call(&mut pending, "call-1"));
-        assert!(!forget_spawn_call(&mut pending, "call-1"));
-        assert!(forget_spawn_call(
+        assert!(forget_pending_call(&mut pending, "call-1"));
+        assert!(!forget_pending_call(&mut pending, "call-1"));
+        assert!(forget_pending_call(
             &mut pending,
-            &format!("call-{MAX_PENDING_SPAWN_CALLS}")
+            &format!("call-{MAX_PENDING_CALLS}")
         ));
     }
     /// A `pub const NAME: &str = "…";` from `agents/tool_execution.rs`, as the
@@ -3064,6 +3406,7 @@ mod tests {
             ("CANCELLED_RESPONSE", PERSON_CANCELLED),
             ("CANCELLED_MID_RUN_RESPONSE", PERSON_CANCELLED_MID_RUN),
             ("EXPIRED_RESPONSE", super::super::APPROVAL_EXPIRED),
+            ("UNATTENDED_APPROVAL_RESPONSE", PERSON_UNATTENDED),
         ] {
             let text = agent_constant(name);
             assert_eq!(tool_result_display_text(&text, true), line, "{name}");

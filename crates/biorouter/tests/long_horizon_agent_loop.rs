@@ -26,6 +26,9 @@ use tokio::sync::Notify;
 use tokio_util::sync::CancellationToken;
 
 const FINISHED: &str = "LONG_HORIZON_TASK_FINISHED";
+const REPETITION_DISPATCHES: &str = "repetition-dispatches";
+const REPEATED_COMMAND: &str = "printf unchanged; printf . >> repetition-dispatches";
+const PROGRESS_COMMAND: &str = "wc -c repetition-dispatches";
 
 #[ctor::ctor]
 fn sandbox_global_config() {
@@ -43,12 +46,16 @@ enum Work {
     Progress { iterations: usize, batch: usize },
     Repeat,
     Oscillate,
+    RecoverAfterDenial,
+    RetryBlockedAfterChangedSibling,
+    TwoDenialsInOneBatch,
     Hold,
 }
 
 struct LongTaskProvider {
     work: Work,
     calls: AtomicUsize,
+    denial_feedback_calls: AtomicUsize,
     started: Notify,
 }
 
@@ -57,6 +64,7 @@ impl LongTaskProvider {
         Arc::new(Self {
             work,
             calls: AtomicUsize::new(0),
+            denial_feedback_calls: AtomicUsize::new(0),
             started: Notify::new(),
         })
     }
@@ -66,6 +74,9 @@ impl LongTaskProvider {
             Work::Progress { .. } => format!("printf completed-{iteration}-{item}"),
             Work::Repeat => "printf unchanged".to_string(),
             Work::Oscillate => format!("printf state-{}", iteration % 2),
+            Work::RecoverAfterDenial
+            | Work::RetryBlockedAfterChangedSibling
+            | Work::TwoDenialsInOneBatch => REPEATED_COMMAND.to_string(),
             Work::Hold => unreachable!(),
         }
     }
@@ -76,7 +87,7 @@ impl Provider for LongTaskProvider {
     async fn complete(
         &self,
         system_prompt: &str,
-        _messages: &[Message],
+        messages: &[Message],
         _tools: &[Tool],
     ) -> Result<(Message, ProviderUsage), ProviderError> {
         let usage = ProviderUsage::new("long-horizon-mock".to_string(), Usage::default());
@@ -91,7 +102,44 @@ impl Provider for LongTaskProvider {
         if matches!(self.work, Work::Hold) {
             std::future::pending::<()>().await;
         }
+        let feedback_work = matches!(
+            self.work,
+            Work::RecoverAfterDenial
+                | Work::RetryBlockedAfterChangedSibling
+                | Work::TwoDenialsInOneBatch
+        );
+        if feedback_work && saw_repetition_denial(messages) {
+            let feedback = self.denial_feedback_calls.fetch_add(1, Ordering::SeqCst);
+            if matches!(self.work, Work::RetryBlockedAfterChangedSibling) && feedback == 0 {
+                return Ok((
+                    with_shell_call(
+                        Message::assistant(),
+                        "blocked-retry".to_string(),
+                        REPEATED_COMMAND.to_string(),
+                    ),
+                    usage,
+                ));
+            }
+            return Ok((Message::assistant().with_text(FINISHED), usage));
+        }
+        if feedback_work && iteration >= 8 {
+            return Ok((
+                Message::assistant().with_text("REPETITION_FIXTURE_EXHAUSTED"),
+                usage,
+            ));
+        }
+        if matches!(self.work, Work::RetryBlockedAfterChangedSibling) && iteration == 0 {
+            return Ok((
+                with_shell_call(
+                    Message::assistant(),
+                    "progress-before".to_string(),
+                    PROGRESS_COMMAND.to_string(),
+                ),
+                usage,
+            ));
+        }
         let batch = match self.work {
+            Work::TwoDenialsInOneBatch => 6,
             Work::Progress { iterations, .. } if iteration >= iterations => {
                 return Ok((Message::assistant().with_text(FINISHED), usage));
             }
@@ -100,14 +148,18 @@ impl Provider for LongTaskProvider {
         };
         let mut message = Message::assistant();
         for item in 0..batch {
-            message = message.with_tool_request(
+            message = with_shell_call(
+                message,
                 format!("step-{iteration}-{item}"),
-                Ok(CallToolRequestParams {
-                    task: None,
-                    meta: None,
-                    name: "developer__shell".into(),
-                    arguments: Some(object!({"command": self.command(iteration, item)})),
-                }),
+                self.command(iteration, item),
+            );
+        }
+        // The default fifth A call is denied; B still returns changed output in that batch.
+        if matches!(self.work, Work::RetryBlockedAfterChangedSibling) && iteration == 5 {
+            message = with_shell_call(
+                message,
+                "progress-after".to_string(),
+                PROGRESS_COMMAND.to_string(),
             );
         }
         Ok((message, usage))
@@ -150,6 +202,36 @@ impl Provider for LongTaskProvider {
     }
 }
 
+fn with_shell_call(message: Message, id: String, command: String) -> Message {
+    message.with_tool_request(
+        id,
+        Ok(CallToolRequestParams {
+            task: None,
+            meta: None,
+            name: "developer__shell".into(),
+            arguments: Some(object!({"command": command})),
+        }),
+    )
+}
+
+fn saw_repetition_denial(messages: &[Message]) -> bool {
+    messages
+        .iter()
+        .flat_map(|message| &message.content)
+        .any(|part| {
+            part.as_tool_response().is_some_and(|response| {
+                response.tool_result.as_ref().is_ok_and(|result| {
+                    result.is_error == Some(true)
+                        && result.content.iter().any(|content| {
+                            content.as_text().is_some_and(|text| {
+                                text.text.contains("automatic repetition guard")
+                            })
+                        })
+                })
+            })
+        })
+}
+
 struct TestAgent {
     agent: Agent,
     sessions: Arc<SessionManager>,
@@ -171,6 +253,10 @@ impl TestAgent {
             None,
             BioRouterMode::Auto,
         ));
+        agent
+            .extension_manager
+            .set_working_dir(work.path().to_path_buf())
+            .await;
         agent
             .add_extension(ExtensionConfig::Builtin {
                 name: "developer".to_string(),
@@ -348,4 +434,493 @@ async fn repeated_unchanged_work_stops_the_real_agent_loop() {
         assert!(provider.calls.load(Ordering::SeqCst) <= 10);
         assert!(!visible_text(&events).contains(FINISHED));
     }
+}
+
+fn repetition_fixture_overrides() -> std::collections::HashMap<String, String> {
+    let semantic = biorouter::tool_monitor::SemanticLoopConfig::default();
+    let failure = biorouter::tool_monitor::FailureLoopConfig::default();
+    [
+        ("BIOROUTER_REPETITION_SOFT_WARN", "3".to_string()),
+        ("BIOROUTER_REPETITION_HARD_STOP", "5".to_string()),
+        (
+            "BIOROUTER_LOOP_SEMANTIC_DETECTION",
+            semantic.enabled.to_string(),
+        ),
+        (
+            "BIOROUTER_LOOP_ARG_SIMILARITY",
+            semantic.similarity_threshold.to_string(),
+        ),
+        (
+            "BIOROUTER_LOOP_NEAR_DUP_SOFT_WARN",
+            semantic.near_dup_soft_warn.unwrap_or(0).to_string(),
+        ),
+        (
+            "BIOROUTER_LOOP_NEAR_DUP_HARD_STOP",
+            semantic.near_dup_hard_stop.unwrap_or(0).to_string(),
+        ),
+        (
+            "BIOROUTER_LOOP_OSCILLATION_SOFT_WARN",
+            semantic.oscillation_soft_warn.unwrap_or(0).to_string(),
+        ),
+        (
+            "BIOROUTER_LOOP_OSCILLATION_HARD_STOP",
+            semantic.oscillation_hard_stop.unwrap_or(0).to_string(),
+        ),
+        (
+            "BIOROUTER_FAILURE_LOOP_DETECTION",
+            failure.enabled.to_string(),
+        ),
+        (
+            "BIOROUTER_FAILURE_ERROR_SIMILARITY",
+            failure.similarity_threshold.to_string(),
+        ),
+        (
+            "BIOROUTER_FAILURE_LOOP_SOFT_WARN",
+            failure.soft_warn_at.unwrap_or(0).to_string(),
+        ),
+        (
+            "BIOROUTER_FAILURE_LOOP_ESCALATE",
+            failure.escalate_at.unwrap_or(0).to_string(),
+        ),
+        (
+            "BIOROUTER_FAILURE_LOOP_HARD_STOP",
+            failure.hard_stop_at.unwrap_or(0).to_string(),
+        ),
+        (
+            "BIOROUTER_FAILURE_LOOP_DENY_RETRYABLE",
+            failure.deny_retryable.to_string(),
+        ),
+    ]
+    .into_iter()
+    .map(|(key, value)| (key.to_string(), value))
+    .collect()
+}
+
+fn is_tool_loop(events: &[AgentEvent]) -> bool {
+    events.iter().any(|event| {
+        matches!(
+            event,
+            AgentEvent::TurnAborted {
+                code: TurnAbortCode::ToolLoop { .. },
+                ..
+            }
+        )
+    })
+}
+
+fn response_text(messages: &[Message], id: &str) -> String {
+    messages
+        .iter()
+        .flat_map(|message| &message.content)
+        .find(|part| {
+            part.as_tool_response()
+                .is_some_and(|response| response.id == id)
+        })
+        .unwrap_or_else(|| panic!("missing tool response {id}"))
+        .as_tool_response_text()
+        .unwrap_or_else(|| panic!("missing tool response text {id}"))
+}
+
+#[tokio::test]
+#[cfg_attr(not(unix), ignore = "requires the POSIX shell fixture")]
+async fn first_repetition_denial_reaches_one_feedback_request_and_can_finish() {
+    biorouter::config::with_config_overrides(repetition_fixture_overrides(), async {
+        let provider = LongTaskProvider::new(Work::RecoverAfterDenial);
+        let fixture = TestAgent::new(provider.clone()).await;
+        let events = fixture.run(fixture.config(), None).await;
+
+        assert_eq!(provider.denial_feedback_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(provider.calls.load(Ordering::SeqCst), 6);
+        assert!(!is_tool_loop(&events));
+        assert!(visible_text(&events).contains(FINISHED));
+        assert_eq!(
+            std::fs::read(fixture._work.path().join(REPETITION_DISPATCHES)).unwrap(),
+            b"....",
+            "the denied fifth call must not dispatch"
+        );
+        let stored = fixture
+            .sessions
+            .get_session(&fixture.session_id, true)
+            .await
+            .unwrap()
+            .conversation
+            .unwrap();
+        assert!(saw_repetition_denial(stored.messages()));
+        assert!(stored
+            .messages()
+            .iter()
+            .any(|message| message.as_concat_text().contains(FINISHED)));
+    })
+    .await;
+}
+
+#[tokio::test]
+#[cfg_attr(not(unix), ignore = "requires the POSIX shell fixture")]
+async fn a_changed_sibling_cannot_reopen_a_blocked_signature_on_feedback() {
+    biorouter::config::with_config_overrides(repetition_fixture_overrides(), async {
+        let provider = LongTaskProvider::new(Work::RetryBlockedAfterChangedSibling);
+        let fixture = TestAgent::new(provider.clone()).await;
+        std::fs::write(fixture._work.path().join(REPETITION_DISPATCHES), b"").unwrap();
+        let events = fixture.run(fixture.config(), None).await;
+
+        assert_eq!(provider.denial_feedback_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(provider.calls.load(Ordering::SeqCst), 7);
+        assert!(is_tool_loop(&events));
+        assert!(!visible_text(&events).contains(FINISHED));
+        assert_eq!(
+            std::fs::read(fixture._work.path().join(REPETITION_DISPATCHES)).unwrap(),
+            b"....",
+            "neither the denied call nor its blocked retry may dispatch"
+        );
+        let stored = fixture
+            .sessions
+            .get_session(&fixture.session_id, true)
+            .await
+            .unwrap()
+            .conversation
+            .unwrap();
+        for id in ["progress-before", "progress-after"] {
+            let response = stored
+                .messages()
+                .iter()
+                .flat_map(|message| &message.content)
+                .filter_map(|part| part.as_tool_response())
+                .find(|response| response.id == id)
+                .unwrap_or_else(|| panic!("missing changed-result sibling {id}"));
+            assert!(response
+                .tool_result
+                .as_ref()
+                .is_ok_and(|result| result.is_error != Some(true)));
+        }
+        assert!(
+            response_text(stored.messages(), "progress-before").contains("0 repetition-dispatches")
+        );
+        assert!(
+            response_text(stored.messages(), "progress-after").contains("4 repetition-dispatches")
+        );
+        assert_ne!(
+            response_text(stored.messages(), "progress-before"),
+            response_text(stored.messages(), "progress-after"),
+            "the allowed sibling must supply actual changed-result history"
+        );
+        let retry = stored
+            .messages()
+            .iter()
+            .flat_map(|message| &message.content)
+            .filter_map(|part| part.as_tool_response())
+            .find(|response| response.id == "blocked-retry")
+            .expect("the withheld retry must have a persisted tool response");
+        assert!(retry
+            .tool_result
+            .as_ref()
+            .is_ok_and(|result| result.is_error == Some(true)));
+    })
+    .await;
+}
+
+#[tokio::test]
+#[cfg_attr(not(unix), ignore = "requires the POSIX shell fixture")]
+async fn two_repetition_denials_in_one_batch_leave_no_feedback_request() {
+    biorouter::config::with_config_overrides(repetition_fixture_overrides(), async {
+        let provider = LongTaskProvider::new(Work::TwoDenialsInOneBatch);
+        let fixture = TestAgent::new(provider.clone()).await;
+        let events = fixture.run(fixture.config(), None).await;
+
+        assert!(is_tool_loop(&events));
+        assert_eq!(provider.calls.load(Ordering::SeqCst), 1);
+        assert_eq!(provider.denial_feedback_calls.load(Ordering::SeqCst), 0);
+        assert_eq!(
+            std::fs::read(fixture._work.path().join(REPETITION_DISPATCHES)).unwrap(),
+            b"...."
+        );
+        let stored = fixture
+            .sessions
+            .get_session(&fixture.session_id, true)
+            .await
+            .unwrap()
+            .conversation
+            .unwrap();
+        for id in ["step-0-4", "step-0-5"] {
+            assert!(response_text(stored.messages(), id).contains("automatic repetition guard"));
+        }
+    })
+    .await;
+}
+
+struct CurrentUserTurnProvider {
+    inner: Arc<LongTaskProvider>,
+}
+
+#[async_trait]
+impl Provider for CurrentUserTurnProvider {
+    async fn complete_with_model(
+        &self,
+        model_config: &ModelConfig,
+        system_prompt: &str,
+        messages: &[Message],
+        tools: &[Tool],
+    ) -> Result<(Message, ProviderUsage), ProviderError> {
+        let start = messages
+            .iter()
+            .rposition(|message| {
+                message.role == rmcp::model::Role::User
+                    && message.metadata.user_visible
+                    && !message
+                        .content
+                        .iter()
+                        .any(|content| content.as_tool_response().is_some())
+            })
+            .unwrap_or(0);
+        self.inner
+            .complete_with_model(model_config, system_prompt, &messages[start..], tools)
+            .await
+    }
+
+    fn get_model_config(&self) -> ModelConfig {
+        self.inner.get_model_config()
+    }
+
+    fn metadata() -> ProviderMetadata {
+        LongTaskProvider::metadata()
+    }
+
+    fn get_name(&self) -> &str {
+        self.inner.get_name()
+    }
+}
+
+#[tokio::test]
+#[cfg_attr(not(unix), ignore = "requires the POSIX shell fixture")]
+async fn a_new_user_turn_gets_its_own_repetition_feedback_opportunity() {
+    biorouter::config::with_config_overrides(repetition_fixture_overrides(), async {
+        let first_provider = LongTaskProvider::new(Work::RecoverAfterDenial);
+        let fixture = TestAgent::new(first_provider.clone()).await;
+        let first = fixture.run(fixture.config(), None).await;
+
+        assert_eq!(
+            first_provider.denial_feedback_calls.load(Ordering::SeqCst),
+            1
+        );
+        assert!(visible_text(&first).contains(FINISHED));
+        assert!(!is_tool_loop(&first));
+
+        let second_provider = LongTaskProvider::new(Work::RecoverAfterDenial);
+        fixture
+            .agent
+            .update_provider(
+                Arc::new(CurrentUserTurnProvider {
+                    inner: second_provider.clone(),
+                }),
+                &fixture.session_id,
+            )
+            .await
+            .unwrap();
+        let second = fixture.run(fixture.config(), None).await;
+
+        assert_eq!(
+            second_provider.denial_feedback_calls.load(Ordering::SeqCst),
+            1
+        );
+        assert_eq!(second_provider.calls.load(Ordering::SeqCst), 6);
+        assert!(visible_text(&second).contains(FINISHED));
+        assert!(!is_tool_loop(&second));
+        assert_eq!(
+            std::fs::read(fixture._work.path().join(REPETITION_DISPATCHES)).unwrap(),
+            b"........",
+            "each distinct user turn admits four calls and denies its own fifth"
+        );
+        let stored = fixture
+            .sessions
+            .get_session(&fixture.session_id, true)
+            .await
+            .unwrap()
+            .conversation
+            .unwrap();
+        assert_eq!(
+            stored
+                .messages()
+                .iter()
+                .filter(|message| {
+                    message.role == rmcp::model::Role::User
+                        && message.metadata.user_visible
+                        && message.as_concat_text() == "Finish every step of this task."
+                })
+                .count(),
+            2,
+            "the two replies must use one persisted session with two genuine user turns"
+        );
+    })
+    .await;
+}
+
+const HOOK_RETRY_ID: &str = "rewritten-blocked-retry";
+const HOOK_PROPOSED_COMMAND: &str =
+    "printf hook-proposal-547; printf B >> rewrite-proposal-dispatches";
+
+struct HookRewrittenRetryProvider {
+    inner: Arc<LongTaskProvider>,
+    proposals: AtomicUsize,
+}
+
+#[async_trait]
+impl Provider for HookRewrittenRetryProvider {
+    async fn complete_with_model(
+        &self,
+        model_config: &ModelConfig,
+        system_prompt: &str,
+        messages: &[Message],
+        tools: &[Tool],
+    ) -> Result<(Message, ProviderUsage), ProviderError> {
+        let (message, usage) = self
+            .inner
+            .complete_with_model(model_config, system_prompt, messages, tools)
+            .await?;
+        if message
+            .content
+            .iter()
+            .filter_map(|part| part.as_tool_request())
+            .any(|request| request.id == "blocked-retry")
+        {
+            self.proposals.fetch_add(1, Ordering::SeqCst);
+            return Ok((
+                with_shell_call(
+                    Message::assistant(),
+                    HOOK_RETRY_ID.to_string(),
+                    HOOK_PROPOSED_COMMAND.to_string(),
+                ),
+                usage,
+            ));
+        }
+        Ok((message, usage))
+    }
+
+    fn get_model_config(&self) -> ModelConfig {
+        self.inner.get_model_config()
+    }
+
+    fn metadata() -> ProviderMetadata {
+        LongTaskProvider::metadata()
+    }
+
+    fn get_name(&self) -> &str {
+        self.inner.get_name()
+    }
+}
+
+async fn install_retry_rewrite_hook(fixture: &TestAgent, command: &str) {
+    let rewrite = serde_json::json!({"hookSpecificOutput": {
+        "hookEventName": "PreToolUse", "updatedInput": {"command": command}
+    }});
+    fixture.agent.hooks_manager().set_session_hooks(
+        &fixture.session_id,
+        biorouter::hooks::HookEvent::PreToolUse,
+        vec![biorouter::hooks::HookDefinition::Command {
+            command: format!(
+                "payload=$(cat); case \"$payload\" in *hook-proposal-547*) \\\n                     printf r >> hook-547-rewrite-events; printf '%s\\n' '{rewrite}';; esac"
+            ),
+            timeout: Some(5),
+        }],
+    ).await;
+}
+
+#[tokio::test]
+#[cfg_attr(not(unix), ignore = "requires the POSIX shell fixture")]
+async fn a_pre_tool_use_rewrite_cannot_dispatch_a_retained_blocked_signature() {
+    biorouter::config::with_config_overrides(repetition_fixture_overrides(), async {
+        let inner = LongTaskProvider::new(Work::RetryBlockedAfterChangedSibling);
+        let fixture = TestAgent::new(inner.clone()).await;
+        let provider = Arc::new(HookRewrittenRetryProvider {
+            inner: inner.clone(),
+            proposals: AtomicUsize::new(0),
+        });
+        fixture
+            .agent
+            .update_provider(provider.clone(), &fixture.session_id)
+            .await
+            .unwrap();
+        install_retry_rewrite_hook(&fixture, REPEATED_COMMAND).await;
+        std::fs::write(fixture._work.path().join(REPETITION_DISPATCHES), b"").unwrap();
+        let events = fixture.run(fixture.config(), None).await;
+
+        assert!(
+            inner.denial_feedback_calls.load(Ordering::SeqCst) >= 1,
+            "the first repetition denial must reach provider feedback"
+        );
+        assert_eq!(provider.proposals.load(Ordering::SeqCst), 1);
+        assert_eq!(std::fs::read(fixture._work.path().join("hook-547-rewrite-events")).unwrap(), b"r");
+        let stored = fixture.sessions.get_session(&fixture.session_id, true).await.unwrap()
+            .conversation.unwrap();
+        let rewritten = stored.messages().iter().flat_map(|message| &message.content)
+            .filter_map(|part| part.as_tool_request()).find(|request| request.id == HOOK_RETRY_ID)
+            .expect("the actual hook-rewritten request must be persisted");
+        assert_eq!(rewritten.tool_call.as_ref().unwrap().arguments.as_ref().unwrap()["command"], REPEATED_COMMAND);
+        assert_eq!(std::fs::read(fixture._work.path().join(REPETITION_DISPATCHES)).unwrap(), b"....");
+        assert!(!fixture._work.path().join("rewrite-proposal-dispatches").exists());
+        assert!(is_tool_loop(&events));
+        assert!(!visible_text(&events).contains(FINISHED));
+        assert!(response_text(stored.messages(), "step-5-0").contains("automatic repetition guard"));
+        assert!(response_text(stored.messages(), "progress-before").contains("0 repetition-dispatches"));
+        assert!(response_text(stored.messages(), "progress-after").contains("4 repetition-dispatches"));
+        let denied = stored.messages().iter().flat_map(|message| &message.content)
+            .filter_map(|part| part.as_tool_response()).find(|response| response.id == HOOK_RETRY_ID)
+            .expect("the withheld rewritten retry must have a persisted response");
+        assert!(denied.tool_result.as_ref().is_ok_and(|result| result.is_error == Some(true)));
+        assert!(response_text(stored.messages(), HOOK_RETRY_ID).contains("automatic repetition guard"));
+        let refusal = events.iter().position(|event| match event {
+            AgentEvent::Message(message) => message.content.iter().any(|part| {
+                part.as_tool_response().is_some_and(|response| response.id == HOOK_RETRY_ID)
+                    && part.as_tool_response_text().is_some_and(|text| text.contains("automatic repetition guard"))
+            }),
+            _ => false,
+        }).expect("the client must receive the rewritten retry refusal");
+        let terminal = events.iter().position(|event| is_tool_loop(std::slice::from_ref(event))).unwrap();
+        assert!(refusal < terminal, "the typed stop must follow the refused tool response");
+        assert_eq!(inner.denial_feedback_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(inner.calls.load(Ordering::SeqCst), 7);
+    }).await;
+}
+
+#[tokio::test]
+#[cfg_attr(not(unix), ignore = "requires the POSIX shell fixture")]
+async fn a_pre_tool_use_rewrite_to_changed_arguments_remains_admitted_after_denial() {
+    biorouter::config::with_config_overrides(repetition_fixture_overrides(), async {
+        const CHANGED_COMMAND: &str =
+            "printf changed-after-hook; printf C >> rewrite-changed-dispatches";
+        let inner = LongTaskProvider::new(Work::RetryBlockedAfterChangedSibling);
+        let fixture = TestAgent::new(inner.clone()).await;
+        let provider = Arc::new(HookRewrittenRetryProvider {
+            inner: inner.clone(),
+            proposals: AtomicUsize::new(0),
+        });
+        fixture
+            .agent
+            .update_provider(provider.clone(), &fixture.session_id)
+            .await
+            .unwrap();
+        install_retry_rewrite_hook(&fixture, CHANGED_COMMAND).await;
+        std::fs::write(fixture._work.path().join(REPETITION_DISPATCHES), b"").unwrap();
+        let events = fixture.run(fixture.config(), None).await;
+
+        assert_eq!(inner.denial_feedback_calls.load(Ordering::SeqCst), 2);
+        assert_eq!(inner.calls.load(Ordering::SeqCst), 8);
+        assert_eq!(provider.proposals.load(Ordering::SeqCst), 1);
+        assert_eq!(std::fs::read(fixture._work.path().join("hook-547-rewrite-events")).unwrap(), b"r");
+        assert!(visible_text(&events).contains(FINISHED));
+        assert!(!is_tool_loop(&events));
+        assert_eq!(std::fs::read(fixture._work.path().join(REPETITION_DISPATCHES)).unwrap(), b"....");
+        assert_eq!(std::fs::read(fixture._work.path().join("rewrite-changed-dispatches")).unwrap(), b"C");
+        assert!(!fixture._work.path().join("rewrite-proposal-dispatches").exists());
+        let stored = fixture.sessions.get_session(&fixture.session_id, true).await.unwrap()
+            .conversation.unwrap();
+        assert!(response_text(stored.messages(), "step-5-0").contains("automatic repetition guard"));
+        let rewritten = stored.messages().iter().flat_map(|message| &message.content)
+            .filter_map(|part| part.as_tool_request()).find(|request| request.id == HOOK_RETRY_ID)
+            .expect("the changed hook-rewritten request must be persisted");
+        assert_eq!(rewritten.tool_call.as_ref().unwrap().arguments.as_ref().unwrap()["command"], CHANGED_COMMAND);
+        let response = stored.messages().iter().flat_map(|message| &message.content)
+            .filter_map(|part| part.as_tool_response()).find(|response| response.id == HOOK_RETRY_ID)
+            .expect("the changed request must have its real successful result");
+        assert!(response.tool_result.as_ref().is_ok_and(|result| result.is_error != Some(true)));
+        assert!(response_text(stored.messages(), HOOK_RETRY_ID).contains("changed-after-hook"));
+    }).await;
 }

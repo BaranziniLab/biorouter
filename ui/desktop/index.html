@@ -82,16 +82,26 @@
           }
         }
 
-        // Apply the text preference before the first paint.
+        // Apply the text preference before the first paint, read as loadFontSize in
+        // src/hooks/useFontSize.ts reads it: a size saved by 1.94.5 or earlier under the
+        // old key and names (Standard, Large, Larger) is the same size one name lower, and
+        // a person who never chose gets Standard, the middle size. Keep the two in step.
         try {
-          const sizes = { standard: 1, large: 1.07, larger: 1.15 };
-          const stored = localStorage.getItem('app_font_size');
-          const size = Object.prototype.hasOwnProperty.call(sizes, stored) ? stored : 'standard';
+          const own = Object.prototype.hasOwnProperty;
+          const sizes = { small: 1, standard: 1.07, large: 1.15 };
+          const renamed = { standard: 'small', large: 'standard', larger: 'large' };
+          const legacy = localStorage.getItem('app_font_size');
+          const stored = localStorage.getItem('biorouter:text-size');
+          const size = own.call(renamed, legacy)
+            ? renamed[legacy]
+            : own.call(sizes, stored)
+              ? stored
+              : 'standard';
           document.documentElement.dataset.fontSize = size;
           document.documentElement.style.setProperty('--app-font-scale', String(sizes[size]));
         } catch (error) {
           document.documentElement.dataset.fontSize = 'standard';
-          document.documentElement.style.setProperty('--app-font-scale', '1');
+          document.documentElement.style.setProperty('--app-font-scale', '1.07');
         }
 
         // Run immediately

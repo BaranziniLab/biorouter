@@ -1,5 +1,10 @@
 #!/usr/bin/env python3
-"""Verify the actual helper bytes inside a release package, after all signing."""
+"""Verify the Biorouter Copilot engine bytes inside a release package, after all signing.
+
+Prints one JSON line that scripts/release.sh records as the archive's `computer_use`
+provenance row: the payload manifest's digest, the engine release and the
+executable's own digest.
+"""
 import argparse
 import importlib.util
 import json
@@ -62,9 +67,12 @@ def verify_artifact(artifact, target, require_signed=False):
             manifests = [p for p in directory.rglob("manifest.json") if p.parent.name == "computer-use"]
             if len(manifests) != 1:
                 raise ValueError(f"Expected exactly one Biorouter Copilot payload, found {len(manifests)}")
-            runtime.verify(manifests[0].parent, target, require_signed)
+            payload = manifests[0].parent
+            manifest = runtime.verify(payload, target, require_signed)
             return {"artifact": artifact.name, "target": target, "manifest_sha256": runtime.digest(manifests[0]),
-                    "upstream_commit": runtime.PIN["upstream_commit"], "patches": runtime.patches()}
+                    "engine": manifest["engine"], "upstream_version": manifest["upstream_version"],
+                    "upstream_commit": manifest["upstream_commit"],
+                    "executable_sha256": runtime.digest(payload / manifest["executable"])}
         finally:
             if mounted:
                 runtime.run(["hdiutil", "detach", directory], stdout=subprocess.DEVNULL)

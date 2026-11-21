@@ -38,6 +38,7 @@ const electron = vi.hoisted(() => {
     if (!sessions.has(partition)) {
       sessions.set(partition, {
         setProxy: vi.fn().mockResolvedValue(undefined),
+        setUserAgent: vi.fn(),
         setPermissionRequestHandler: vi.fn(),
         setPermissionCheckHandler: vi.fn(),
         setDevicePermissionHandler: vi.fn(),
@@ -81,6 +82,8 @@ vi.mock('electron', () => ({
         return this.url;
       },
       getTitle: () => '',
+      getZoomFactor: () => 1,
+      setZoomFactor: vi.fn(),
       isLoading: () => false,
       isDestroyed: () => this.closed,
       loadURL: vi.fn(async (url: string) => {
@@ -284,7 +287,7 @@ describe('managed app preview handoff', () => {
     createEmbeddedBrowser(owner, 'gone', `${context.baseUrl}/apps/removed-app/`, onState, context);
     await vi.waitFor(() =>
       expect(onState).toHaveBeenCalledWith(
-        expect.objectContaining({ error: 'This app no longer exists.' })
+        expect.objectContaining({ error: 'This application no longer exists.' })
       )
     );
     expect(electron.views[0].webContents.loadURL).not.toHaveBeenCalled();
@@ -359,9 +362,12 @@ describe('managed app preview handoff', () => {
       );
       const pending = controlEmbeddedBrowser(owner, 'racing', 'reload-if-idle');
       if (change === 'navigation') contents.emit('did-navigate-in-page');
-      else if (change === 'replacement')
+      else if (change === 'replacement') {
+        // Creating again with the same id now ATTACHES to the tab (BB-01), so a replacement
+        // is a destroy followed by a create.
+        destroyEmbeddedBrowser(owner, 'racing');
         createEmbeddedBrowser(owner, 'racing', url, vi.fn(), context);
-      else if (change === 'hidden') setEmbeddedBrowserVisible(owner, 'racing', false);
+      } else if (change === 'hidden') setEmbeddedBrowserVisible(owner, 'racing', false);
       else lifetimes[lifetimes.length - 1].abort();
       resolve(true);
       expect(await pending).toBe(false);
@@ -518,7 +524,7 @@ describe('managed app preview handoff', () => {
 
   // W2-HRD-1: the preview holds the app's access cookie, set when it opened the
   // app's one-time launch link. "Clear site data" is followed by a reload, and a
-  // cleared cookie made that reload answer "Open this app from Biorouter".
+  // cleared cookie made that reload answer "Open this application from Biorouter".
   it('clears what the app stored but keeps its access cookie for the reload', async () => {
     const context = backend();
     const appUrl = `${context.baseUrl}/apps/queue-workbench/`;
@@ -643,11 +649,11 @@ describe('managed app preview handoff', () => {
 });
 
 /**
- * Dictate into this app (S15) asks the preview whether a text field is focused before main
+ * Dictate into this application (S15) asks the preview whether a text field is focused before main
  * inserts dictated text. World 0 is the page's own main world, where the app's script can
  * redefine `document.activeElement` or `instanceof` and answer for itself.
  */
-describe('the Dictate into this app focus check', () => {
+describe('the Dictate into this application focus check', () => {
   async function openApp(viewId: string) {
     const context = backend();
     createEmbeddedBrowser(

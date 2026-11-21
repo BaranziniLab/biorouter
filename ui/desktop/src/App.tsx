@@ -775,8 +775,8 @@ export function AppInner() {
                   bookmark and every `biorouter://` share link pointing at a
                   path nothing matched — i.e. at a blank white window.
 
-                  ⚠ NOT redirected to `/applications`. That is Built apps
-                  (Agent Drafter), a different feature that merely reads
+                  ⚠ NOT redirected to `/applications`. That is Applications
+                  (Application Drafter), a different feature that merely reads
                   alike — sending an MCP-apps link there would answer a
                   question nobody asked. Home is the honest destination.
 

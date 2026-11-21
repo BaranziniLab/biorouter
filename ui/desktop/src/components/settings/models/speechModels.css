@@ -11,6 +11,9 @@
 .br-speech-model-progress {
   inline-size: 96px;
   flex: none;
+  /* The row's trailing cluster is 4px apart (the `⋯` beside its control); a bar that ends 4px
+     from Cancel read as running into it, so it keeps the 8px two buttons keep. */
+  margin-inline-end: 4px;
 }
 
 /* Two controls that share one row: Show in Finder and Rescan; the microphone and its test. */
@@ -40,4 +43,10 @@
   inline-size: 160px;
   max-inline-size: 100%;
   margin-block: 4px 2px;
+}
+
+/* A failed install's sentence on its row. A command in it (MSG-OFFLINE) keeps the facts line's
+   16px line rather than the code role's 20px, so the lines holding one are not taller. */
+.br-speech-problem code {
+  line-height: inherit;
 }

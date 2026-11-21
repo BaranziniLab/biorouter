@@ -489,6 +489,14 @@
   --pane-min-width: 360px;
   --pane-min-height: 270px;
 
+  /* The width of the two popovers that open from the composer: the `+` popover
+     (Add, Extensions, Skills, Knowledge; composer.css) and the model menu
+     (`.br-model-menu`, pickers.css). One value, so the pair always reads as one
+     family (owner, 2026-11-19: the model menu's 288px is the right width).
+     `composer/composerPopovers.browser.test.tsx` measures both. Panel geometry,
+     so the Text size preference does not scale it. */
+  --composer-popover-width: 288px;
+
   /* The height of a scroller's top scroll-edge fade (`.biorouter-scroll-fade-top`,
      authored below). 10px is the middle of the 8-12px band: tall enough that a
      row clipped to its last pixel is gone rather than reduced to a hairline,
@@ -4184,12 +4192,42 @@ body:has(.biorouter-modal-surface [data-slot='select-content'][data-state='open'
   height: auto;
 }
 
+/* 8px between the band's controls, the bar's own gap. It was 4px while the icon buttons were 32px,
+   which put a glyph every 36px; at 28px the 8px keeps that rhythm, and a filled field and a filled
+   button side by side (Extensions' filter and "Add extension") read as two controls, not one. */
 .biorouter-page-header-actions {
   display: flex;
   flex-shrink: 0;
   align-items: center;
-  gap: 4px;
+  gap: 8px;
   margin-left: auto;
+}
+
+/* EVERY CONTROL IN THE BAND IS 28px, THE `sm` RUNG (owner, 2026-11-19). The primary ("New
+   schedule", "Add skill"), a secondary or ghost text button (Dictionary's "Export…"), an icon
+   button (`PageHeaderAction`, `PageHeaderMenu`, the drill-in's Back, a chat's Resume), the
+   Knowledge base switcher and the filter field are one height, one 8px radius, 12px of side
+   padding on a labelled button, a 16px glyph and a 6px glyph-to-label gap, on every page. The
+   primaries and icon buttons used to take the default 32px `md` rung beside the 28px filter, so
+   a cluster held two heights and the coral button nearly filled the band; 28px is the filter's
+   height, the titlebar controls' (which sit in this band's left end with the sidebar collapsed)
+   and the sidebar row's, and it leaves 7.5px of air above and below in the 43px bar.
+
+   Said ONCE, here, by pointing the `md` rung at `sm` for the band's own descendants: a Button,
+   an icon button, an Input or a trigger at the default size reads `--control-md` (`h-control-md`,
+   `w-control-md` are `var(--control-md)` through `@theme inline`), so it draws 28px in the band
+   and 32px everywhere else, and no view passes a size. A menu, popover or tooltip a band control
+   opens is portalled out of the bar, so it keeps the 32px rows. The Text size preference still
+   applies: `--control-sm` is scaled where it is declared. The gap is the `sm` rung's own
+   (`gap-1.5`), so a band button and a `size="sm"` button elsewhere are the same object. Unlayered,
+   so it beats the layered `gap-2` utility. Measured in Chromium, page by page, by
+   `Layout/pageBandGeometry.browser.test.tsx`. */
+.biorouter-page-header-bar {
+  --control-md: var(--control-sm);
+}
+
+.biorouter-page-header-bar [data-slot='button'] {
+  column-gap: 6px;
 }
 
 /* The deprecated `children` row under the band (Chat history's filter, until
@@ -4214,7 +4252,7 @@ body:has(.biorouter-modal-surface [data-slot='select-content'][data-state='open'
 
 /* @ws WS-VIEWS-A begin: busy action */
 /* AN ACTION WHOSE REQUEST IS OUT (`PageHeaderAction busy`, and the primary `IconAction` of a
-   Scheduler or Built apps row). It dims and shows the progress cursor, and it STAYS ENABLED:
+   Scheduler or Applications row). It dims and shows the progress cursor, and it STAYS ENABLED:
    `disabled` would dim it the same way, but Chromium hands focus to <body> the moment a focused
    button turns `disabled`, so a keyboard user who pressed Pause, Resume, Stop, Refresh or Launch
    lost their place after every press (vision round 2, V3-R2-1). The press is ignored in the
@@ -4317,7 +4355,7 @@ body:has(.biorouter-modal-surface [data-slot='select-content'][data-state='open'
    keeps its wash and its own focus edge. Forced colours repaint every fill as Canvas, so the wash
    that told a row from the next is gone there: the line comes back (a border, which forced colours
    draw), and the `:last-child` rule after this, at the same specificity, still leaves the last
-   row without one. One definition: Workflows, the Scheduler and its runs, Built apps and the
+   row without one. One definition: Workflows, the Scheduler and its runs, Applications and the
    Settings dialogs named this class before it lived here. */
 .br-rows-flat :is(.biorouter-list-row, .biorouter-settings-row)::after {
   content: none;
@@ -4795,7 +4833,44 @@ body:has(.biorouter-modal-surface [data-slot='select-content'][data-state='open'
 .biorouter-modal-surface.br-knowledge-drawer > .br-knowledge-pane-header {
   background-color: var(--sidebar);
 }
+/* The drawer keeps its rounded corners under that band. The modal surface rounds every corner on
+   `--radius-container`, but the header's ground is square and painted over the top-left one, so a
+   drawer was rounded at the foot and square at the head (owner, 2026-11-19). Clipping to the
+   surface's own shape is what the node and edge cards already do (`overflow-hidden` beside their
+   `rounded-container`); every list inside a drawer scrolls in its own box, so nothing needs to
+   overflow it. */
+.br-knowledge-drawer {
+  overflow: hidden;
+}
 /* @ws WS-KNOWLEDGE end: pane header */
+
+/* @ws WS-KNOWLEDGE begin: graph canvas */
+/* The graph canvas is an inset panel (owner, 2026-11-19): 16px in from the graph column's sides
+   and foot, on `--radius-container`, the Sources dropzone's own inset (the rail's `p-4`) and its
+   own corner, so the workspace reads as rounded panels on the page ground. It used to run flush to
+   the column's edges as a square fill with a hairline across its top, the one square shape on the
+   page. Under the facet strip (`data-below-strip`) it starts at the strip's foot, which centres
+   the 32px controls between the band and the canvas, 6px either side; with no strip above it (an
+   empty base, an error, the first load) it keeps 16px on all four sides, like the dropzone. The
+   `overflow: hidden` beside it (a utility on the element) clips the graph, the node and edge
+   cards and the loading layers to the corner.
+   Authored, because the inset and the corner are the fix and must not depend on class scanning.
+   Measured in `knowledge/knowledgeCanvas.browser.test.tsx`. */
+.br-knowledge-canvas {
+  margin: 16px;
+  border-radius: var(--radius-container);
+}
+
+.br-knowledge-canvas[data-below-strip='true'] {
+  margin-top: 0;
+}
+
+/* The canvas's focusable box (`ForceGraphCanvas`) takes the same corner, so its inset focus ring
+   runs round the corner instead of being cut off by the canvas's clip. */
+.br-knowledge-graph-surface {
+  border-radius: var(--radius-container);
+}
+/* @ws WS-KNOWLEDGE end: graph canvas */
 
 @container br-knowledge-pane (min-width: 860px) {
   .br-knowledge-tabs {
@@ -4959,6 +5034,26 @@ body:has(.biorouter-modal-surface [data-slot='select-content'][data-state='open'
    point; keeping it working would have preserved a fix for a defect that no
    longer exists. */
 
+/* THE WINDOW FLOOR, KNOWLEDGE'S PART (owner, 2026-11-19). The window may now
+   narrow to `WINDOW_MIN_WIDTH` (721px, Layout/yieldLadder.ts). Below rung 1 the
+   sidebar is folded and the band carries the titlebar reserve (172px on macOS,
+   the selector `.biorouter-page-header-bar` keys its margin on), and below the
+   860px step the Sources/Graph pair joins the band too. There, with the widest
+   labels (BioOKF, Private, four-digit counts), the counts painted over the
+   pair below an 830px window, even after the base's name had given way. So
+   while both hold, the counts fold: the title, the base's format and tier, the
+   pair and the actions keep their size, and the band fits down to about 700px.
+   A docked sidebar leaves the band its whole width, and the counts stay.
+   Measured in `Layout/windowFloor.browser.test.tsx`. */
+@container br-knowledge-pane (max-width: 859px) {
+  [data-slot='sidebar'][data-state='collapsed']
+    ~ [data-slot='sidebar-inset']
+    .br-knowledge-pane
+    [data-testid='knowledge-graph-summary'] {
+    display: none;
+  }
+}
+
 /* @ws WS-USAGE begin: home */
 .biorouter-home-content {
   container-name: biorouter-home-content;
@@ -5001,8 +5096,29 @@ body:has(.biorouter-modal-surface [data-slot='select-content'][data-state='open'
   text-wrap: balance;
 }
 
-/* The card is never folded away. As the window gets short only the hero
-   compacts, then yields, and below that Home scrolls. */
+/* THE CARD YIELDS BEFORE IT CAN TOUCH THE COMPOSER (owner, 2026-11-19). It
+   used to be "never folded away", and at the shortest window, with the Larger
+   text size or a greeting on two lines, the column outgrew the room above the
+   composer: the card ran down to the scroller's edge and read as sliding under
+   the composer. `sessions/homeUsageFit.ts` decides, from measured boxes, and
+   this is how each answer is drawn:
+     - 'compact': the heat map and its footnote fold away (the tiles stay);
+     - 'hidden': the card folds away (the greeting and the composer stay), and
+       also wherever the column is narrower than the card's measure.
+   A fold CLIPS, never unmounts or `display: none`s: the box inside keeps its
+   natural size, which is what the fit measures next time. `visibility` takes
+   the folded part out of sight and out of the tab order, and the hidden card is
+   also `inert` (SessionsInsights.tsx). Any card that shows leaves the column's
+   24px bottom padding as ground above the composer. */
+.biorouter-home-usage[data-fit='hidden'],
+.biorouter-home-usage[data-fit='compact'] .br-usage-card-extra {
+  block-size: 0;
+  overflow: clip;
+  visibility: hidden;
+}
+
+/* As the window gets short the hero compacts, then yields, and below that
+   Home scrolls. */
 @container biorouter-home-content (max-height: 720px) {
   .biorouter-home-hero {
     padding-block: 56px 16px;
@@ -6301,7 +6417,7 @@ body:has(.biorouter-modal-surface [data-slot='select-content'][data-state='open'
    describe, the root has nothing to scroll, and `ui/scroll-area.tsx` puts the root back if
    anything ever scrolls it again. The transcripts' viewports already ran this way after their
    first find (`SearchHighlighter` sets it inline, and never unsets it), and the component views
-   (Workflows, the Scheduler, Built apps, Extensions, Skills, Chat history) wrap their content in a
+   (Workflows, the Scheduler, Applications, Extensions, Skills, Chat history) wrap their content in a
    positioned box of their own, so neither moves. `settings/pageHeadroom.browser.test.tsx` opens
    Settings at a section and wheels back to the top. */
 .br-scroll-viewport {

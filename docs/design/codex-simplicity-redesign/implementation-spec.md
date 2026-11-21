@@ -180,7 +180,7 @@ mark.
     (for example the "dialling" sentence, `crew/onboarding/copy.ts:608`, pinned at
     `check-crew-manual.mjs:1111-1119` and quoted in `docs/crew/connections-and-troubleshooting.md:56`).
 - Strings the daemon serves and the locked privacy copy are outside these rules. Product names
-  (Agent Drafter, Auto Visualiser, Biorouter Copilot, Chat Recall) keep their capitals.
+  (Application Drafter, Auto Visualiser, Biorouter Copilot, Chat Recall) keep their capitals.
 
 ---
 
@@ -273,7 +273,7 @@ When a front-matter title exists, demote the first `# H1` to the h2 style.
 | Icons | 14 (chip and inline help glyph) / 16 (rows and controls) / 20 (banners and empty states) | Amend the `--icon-chip` comment (`main.css:371`) to allow "inline help glyph" |
 | Radii | 4 inner / 8 element / 12 container / 16 surface (the preview sheet only) / full | Unchanged. A nested radius is `outer − padding` (so a segment is 6px). `rounded-2xl` is banned outside `artifacts/`. |
 | `--measure-chat` | 760 flat | Unchanged (pinned by `measures.test.ts:202-222`) |
-| Sidebar width | 216 to 360, default 288 | Unchanged (`ui/sidebarWidth.ts`; `minWidth` 1048 = 288 + 760) |
+| Sidebar width | 216 to 360, default 288 | Unchanged (`ui/sidebarWidth.ts`; `minWidth` was 1048 = 288 + 760, and is 721 since 2026-11-19, see [narrow windows](../../desktop-ui/narrow-windows.md)) |
 
 ### 2.3 Colour and contrast additions (WS-TOKENS; light and dark in every family)
 
@@ -529,7 +529,7 @@ workstream and by Crew-like rows elsewhere):
   underline becomes one indicator that travels (`translate` plus `width`, 175ms; a named exception
   in principle 9). Its first placement does not animate, the same rule as the segmented thumb.
 - **Filter field** (new `ui/filter-input.tsx`, wave 0): the one list filter for every view band
-  (Workflows, Scheduler if it ever needs one, Built apps, Extensions, Skills, History). A 28px
+  (Workflows, Scheduler if it ever needs one, Applications, Extensions, Skills, History). A 28px
   `Input` with a leading 16px `Search` glyph, placeholder "Filter" (History: "Search history"),
   a Tooltip "Filter · ⌘F", and a `useFindShortcut(ref)` hook that focuses it on ⌘F/Ctrl+F while
   the view is mounted. It is `no-drag`. It replaces the views' use of `conversation/SearchView`
@@ -2004,7 +2004,7 @@ heatmap, and one stat style shared with Settings.
 
 ---
 
-### 3.10 WS-VIEWS-A: shared page chrome, Workflows, Scheduler, Built apps
+### 3.10 WS-VIEWS-A: shared page chrome, Workflows, Scheduler, Applications
 
 **Goal:** message 5. These pages take Crew's language: a 44px band, two-line rows, row actions
 revealed on intent, one accent per view and help in InfoTips.
@@ -2119,9 +2119,11 @@ revealed on intent, one accent per view and help in InfoTips.
     stays visible.
   - `CronPicker`: `w-[4.5rem]` becomes `w-20`, and the error is shown in danger ink.
 
-**Built apps** ([views-a §6]):
-- **The band** is fixed and does not scroll: "Built apps" with an InfoTip "Apps made with Agent
-  Drafter. Each runs its own agent and opens in your browser." The actions are the band
+**Applications** ([views-a §6]). Renamed 2026-11-19 (owner ruling): this view was "Built apps"
+and the extension "Agent Drafter" when this spec was written; the strings below are the current
+ones.
+- **The band** is fixed and does not scroll: "Applications" with an InfoTip "Applications made
+  with Application Drafter. Each runs its own agent and opens in your browser." The actions are the band
   `FilterInput` and Refresh. There is no primary. `SearchView` is no longer used here.
 - **Rows:**
   - The title plus a kind Badge, whose tooltip carries the surface summary ("2 actions · 1
@@ -2129,7 +2131,7 @@ revealed on intent, one accent per view and help in InfoTips.
   - The meta line is "{model} · {kb}" in sans.
   - The actions are **Launch** and `⋯` (Open the chat it was built in, Export…, then a separator
     and Delete). Delete lives only here.
-- **The empty state** reads "Ask Biorouter to build one with Agent Drafter."
+- **The empty state** reads "Ask Biorouter to build one with Application Drafter."
 - **The Export dialog** uses `ModalShell size="md"`:
   - Keep "Credentials are never included." visible.
   - The radio options are "Launcher" and "Full", each with one consequence line.
@@ -2164,7 +2166,7 @@ revealed on intent, one accent per view and help in InfoTips.
 - `ApplicationsView.test.tsx`.
 
 **Acceptance:**
-- Workflows, Scheduler and Built apps at 1440 and 1100, light and dark, show the first row within
+- Workflows, Scheduler and Applications at 1440 and 1100, light and dark, show the first row within
   about 56px of the window top, not 234px.
 - The band hairline meets the sidebar band at y=44.
 - The window drags from the band's empty space on each of these routes, with the sidebar open and
@@ -2443,7 +2445,8 @@ job.
     labels.
 - **Appearance:** Theme as a `SegmentedControl` (Light/Dark/System, with the test ids kept), Color
   palette as a `SegmentedControl` with swatches, and Text size as a `SegmentedControl`
-  (Standard/Large/Larger, replacing native radios).
+  (Standard/Large/Larger, replacing native radios; renamed Small/Standard/Large in 1.94.6, with
+  Standard, the middle option, the default).
 - **Privacy:**
   - **The locked content keeps its words and its placement.** That covers the DR-17 disclosure
     above the switch, the inline disable confirmation, the off strip and `data-privacy-panel`.
@@ -2577,7 +2580,7 @@ SDK):
 - **Contexts:** 9 `SettingRow`s with help. Optionally say "Loaded only for … tasks" once in the
   header InfoTip.
 - **App SDK:** 4 `SettingRow`s. Keep `px-3 py-2.5` on the row, because `BrsdkSection.test.tsx:37`
-  asserts it. "Agent Drafter" is spelled without a hyphen, and "stop hook" is lower case in prose.
+  asserts it. "Application Drafter" is spelled without a hyphen, and "stop hook" is lower case in prose.
 - **Memory:**
   - The header uses `SettingSection title="Memory" help=…`, and Refresh is a ghost round
     `RefreshCw` with a Tooltip.
@@ -2735,7 +2738,7 @@ coupling.
   |---|---|
   | Find in chat (`SearchBar`/`SearchView` in `BaseChat` and `SessionHistoryView`) | The overlay below |
   | The chat tab strip's overflow ▾ menu | Dropdown spec; **gains a filter field at the top when it lists 8 or more tabs** (type to filter, results replace instantly, the highlighted row moves instantly, the empty state "No tabs match" crossfades in over 175ms) [motion A2] |
-  | The band `FilterInput` on Workflows, Built apps, Extensions, Skills and History (2.6) | Instant results, empty state crossfades in over 175ms, no row FLIP [motion A4] |
+  | The band `FilterInput` on Workflows, Applications, Extensions, Skills and History (2.6) | Instant results, empty state crossfades in over 175ms, no row FLIP [motion A4] |
   | History's search | Same as the band filter |
   | Composer pickers (Tools popover search, mention popover) | Instant results; the menu does not resize while typing |
   | Knowledge's ⌘K base picker | Unchanged behaviour; menu motion from 2.6 |
@@ -2743,7 +2746,7 @@ coupling.
   A new ⌘K "Search chats" palette is **not** built in this round (decision 6.13).
   - **Find in chat** (`conversation/SearchBar.tsx`, `styles/search.css`) becomes an
     **overlay** pinned to the transcript's top right (`position:absolute`), so there is no layout
-    push. **It stops being a list filter**: Workflows, Built apps, Extensions, Skills and History
+    push. **It stops being a list filter**: Workflows, Applications, Extensions, Skills and History
     move to the band `FilterInput` in the same wave (their owners), so after this change
     `SearchView` is imported only by `BaseChat.tsx` and `sessions/SessionHistoryView.tsx`. Add a
     source assertion that says so. The positioned transcript cell is a BaseChat edit that
@@ -3061,7 +3064,7 @@ and 1100×760 in light and dark, plus one Alma Mater dark spot check.
 | WS-COMPOSER | Home composer; chat composer; Tools popover; model menu; queue with 2 items; attachments |
 | WS-PREVIEW | Harness `img/preview/01-15` at 600 and 380px, light and dark, plus the GUI artifact screens; a recording of open, switch and close |
 | WS-USAGE | Home both tabs, all three ranges; Settings usage dialog |
-| WS-VIEWS-A | Workflows, Scheduler (list and detail), Built apps, and the workflow editor |
+| WS-VIEWS-A | Workflows, Scheduler (list and detail), Applications, and the workflow editor |
 | WS-VIEWS-B | Extensions (with a failure notice), Skills, both BAAM dialogs, the extension modal |
 | WS-KNOWLEDGE | Knowledge at 1440, 1100 and a narrow pane; KB manager; format chooser; node preview |
 | WS-SETTINGS-A and B | Every tab, scrolled through (`settings-*-p1..pN`); the Reset dialog; the Permission dialog |
@@ -3069,8 +3072,9 @@ and 1100×760 in light and dark, plus one Alma Mater dark spot check.
 | WS-LANDING | Every page at 1440 and 390 (names from [landing], header) |
 
 **Type probe.** Run it in the renderer through CDP, with Settings > App > Text size on
-**Standard** (Large and Larger scale every px by design, `vite-plugins/fontScale.mjs`; at Large,
-check instead that nothing stayed unscaled, since inline `style={{fontSize}}` px is not scaled).
+**Small**, the unscaled size (called Standard before 1.94.6; Standard and Large scale every px by
+design, `vite-plugins/fontScale.mjs`; at Standard, check instead that nothing stayed unscaled,
+since inline `style={{fontSize}}` px is not scaled).
 Each workstream reports the size set for its screens. The set must be a subset of sans
 {12, 13, 14, 17, 24} plus mono {12, 13} (12 is the mono size for paths in tooltips, IDs and
 Crew's code-block language). Ignore `.katex` (math sizes are relative by design), text inside
@@ -3104,7 +3108,7 @@ The checklist:
 8. Row actions permanently visible on a hover-capable display, or more than one icon plus `⋯` per
    row.
 9. Title Case, an em or en dash, "...", "conversation", "BioRouter" in copy, or "Toggle …" names
-   on switches. Exempt: product names (Agent Drafter, Auto Visualiser, Biorouter Copilot, Chat
+   on switches. Exempt: product names (Application Drafter, Auto Visualiser, Biorouter Copilot, Chat
    Recall), text the daemon serves, the locked privacy copy, the wordmark lockup (decision 6.12),
    and Crew (judged only on its fix list, D1 to D12).
 10. A focus ring after a mouse click, or an invisible keyboard focus.

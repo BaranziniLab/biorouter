@@ -107,6 +107,28 @@ const REAL_TOOLS: Record<ToolGlyphKind, string[]> = {
     'computercontroller__press_key',
     'computercontroller__set_value',
     'computercontroller__screen_capture',
+    'computercontroller__find_elements',
+    'computercontroller__wait_for',
+    'computercontroller__open_app',
+  ],
+  // BB-09: every Biorouter Browser tool draws the browser's own glyph, never Copilot's or the web.
+  browser: [
+    'browser__browser_open',
+    'browser__browser_navigate',
+    'browser__browser_tabs',
+    'browser__browser_snapshot',
+    'browser__browser_read',
+    'browser__browser_screenshot',
+    'browser__browser_scroll',
+    'browser__browser_hover',
+    'browser__browser_wait',
+    'browser__browser_click',
+    'browser__browser_fill',
+    'browser__browser_type',
+    'browser__browser_press',
+    'browser__browser_select',
+    'browser__browser_dialog',
+    'browser__browser_drag',
   ],
   database: ['datasql__data_query', 'datasql__data_sources', 'datasql__data_table'],
   memory: [
@@ -144,7 +166,7 @@ describe('toolGlyphKind: every real tool draws its own glyph', () => {
 describe('the ladder', () => {
   /**
    * ⚠ The defect the full-name match exists for: `toolIconMapping.tsx` keyed on
-   * the bare name, so Agent Drafter's `list_apps` drew Copilot's Monitor.
+   * the bare name, so Application Drafter's `list_apps` drew Copilot's Monitor.
    */
   it('keeps two extensions with the same tool name apart', () => {
     expect(toolGlyphKind('agent_drafter__list_apps')).toBe('app');
@@ -362,7 +384,7 @@ describe('one glyph per concept', () => {
     expect(extensionGlyphFor('Biorouter Copilot').kind).toBe('copilot');
     expect(extensionGlyphFor('Web & Documents').kind).toBe('web');
     expect(extensionGlyphFor('Auto Visualiser').kind).toBe('figure');
-    expect(extensionGlyphFor('Agent Drafter').kind).toBe('app');
+    expect(extensionGlyphFor('Application Drafter').kind).toBe('app');
     expect(extensionGlyphFor('Workspace Control').kind).toBe('workspace');
     expect(extensionGlyphFor('Code Execution').kind).toBe('code');
     expect(extensionGlyphFor('Chat Recall').kind).toBe('recall');

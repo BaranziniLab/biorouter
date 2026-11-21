@@ -1,3 +1,12 @@
+/**
+ * The macOS System Settings panes Biorouter Copilot's setup opens (local backend only).
+ *
+ * ⚠ Both grants belong to the Biorouter Copilot bundle inside the app, never to Biorouter itself
+ * (AD-04 in docs/design/copilot-agent-desktop.md): the engine runs with responsibility disclaimed,
+ * so a command Biorouter's shell starts can never borrow them. A pane lists Biorouter Copilot only
+ * after the engine has asked, which is what setup's Request access does
+ * (`POST /agent/computer_use/setup/request`); these links are for a grant that was refused.
+ */
 export function copilotPermissionSettingsUrl(
   platform: string,
   externalBackend: boolean,

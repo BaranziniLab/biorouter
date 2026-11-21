@@ -110,11 +110,12 @@ contents:
 # that fails on first run.
 #
 # ⚠ Two groups, and the second is easy to mistake for a packaging error: a
-# HEADLESS package that depends on GTK3 and AT-SPI looks wrong until you know
-# the Biorouter Copilot helper drives a desktop THROUGH the accessibility bus. It is
-# not a GUI dependency — nothing here opens a window — it is the client side of
-# the same bus a screen reader uses. The names are pinned by
-# `vendor/computer-use/pin.json` and asserted against it by
+# HEADLESS package that depends on AT-SPI looks wrong until you know the
+# Biorouter Copilot helper (agent-desktop) drives a desktop THROUGH the
+# accessibility bus. It is not a GUI dependency — nothing here opens a window —
+# it is the client side of the same bus a screen reader uses. The engine is pure
+# Rust and links only glibc, so `at-spi2-core` is all it needs. The names are
+# pinned by `vendor/agent-desktop/pin.json` and asserted against it by
 # scripts/test-computer-use-packaging.py, so they cannot drift from the runtime
 # that needs them.
 overrides:
@@ -123,11 +124,7 @@ overrides:
       # Core: libxcb is linked for clipboard/terminal support, zlib through libgit2.
       - libxcb1
       - zlib1g
-      # Biorouter Copilot: the helper's Python bridge and the accessibility stack.
-      - python3
-      - python3-gi
-      - gir1.2-atspi-2.0
-      - gir1.2-gtk-3.0
+      # Biorouter Copilot: the accessibility bus the helper reads apps through.
       - at-spi2-core
     recommends:
       # Repository and knowledge-base features. `biorouter doctor` also checks
@@ -139,9 +136,6 @@ overrides:
       - libxcb
       - zlib
       # Biorouter Copilot.
-      - python3
-      - python3-gobject
       - at-spi2-core
-      - gtk3
     recommends:
       - git

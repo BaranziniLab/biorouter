@@ -615,7 +615,7 @@ function ToolCallWithResponseContent({
           }}
         />
       </div>
-      {/* A `ui://` resource — an Auto Visualiser figure, an Agent Drafter app
+      {/* A `ui://` resource — an Auto Visualiser figure, an application
           card. It is NEVER drawn here: MCPUIResourceRenderer emits a
           click-to-open card and the artifact side panel is the only surface
           that renders the thing itself. */}
@@ -754,7 +754,7 @@ const toolGraphNodeLabel = ({ tool, description }: ToolGraphNode): string => {
  * active KB", the way every other row reads (V2-R2-4). Models write steps as
  * imperatives, so the step's own verb is that verb ({@link stepActionPhrase}):
  * a "Running " put in front of one read "Ran run ls -la". A step named only by
- * its tool runs that tool ("Running Agent Drafter build app").
+ * its tool runs that tool ("Running Application Drafter build app").
  */
 const summarizeToolGraph = (graph: ToolGraphNode[]): string => {
   const steps = graph.map((node) => {
@@ -1545,6 +1545,71 @@ function CrewChangeLinks({
   );
 }
 
+/** The page a Biorouter Browser address names, without its scheme. */
+function browserPage(url: unknown): string | null {
+  if (typeof url !== 'string' || !url.trim()) return null;
+  const bare = url
+    .trim()
+    .replace(/^https?:\/\//i, '')
+    .replace(/\/$/, '');
+  return bare.length > 60 ? `${bare.slice(0, 59)}…` : bare;
+}
+
+/** BB-09: one row per Biorouter Browser call, in the words of what it did. */
+function summarizeBiorouterBrowserCall(
+  toolName: string,
+  args: Record<string, unknown>
+): string | null {
+  const ref = typeof args.ref === 'string' ? args.ref : null;
+  switch (toolName) {
+    case 'browser_open': {
+      const page = browserPage(args.url);
+      return page ? `Opening ${page}` : 'Opening a page';
+    }
+    case 'browser_navigate': {
+      const action = namedArgument(args, ['action']);
+      if (action === 'reload') return 'Reloading the page';
+      if (action === 'stop') return 'Stopping the page load';
+      return action === 'forward' ? 'Going forward a page' : 'Going back a page';
+    }
+    case 'browser_snapshot':
+      return 'Taking a snapshot of the page';
+    case 'browser_read':
+      return ref ? `Reading ${ref} on the page` : 'Reading the page';
+    case 'browser_screenshot':
+      return 'Capturing the page';
+    case 'browser_scroll': {
+      const direction = namedArgument(args, ['direction']);
+      return direction ? `Scrolling the page ${direction}` : `Scrolling ${ref ?? 'the page'}`;
+    }
+    case 'browser_hover':
+      return ref ? `Hovering ${ref}` : 'Hovering an element';
+    case 'browser_drag': {
+      const from = namedArgument(args, ['from']);
+      const to = namedArgument(args, ['to']);
+      return from && to ? `Dragging ${from} to ${to}` : 'Dragging on the page';
+    }
+    case 'browser_wait':
+      return 'Waiting for the page';
+    case 'browser_click':
+      return ref ? `Clicking ${ref}` : 'Clicking on the page';
+    case 'browser_fill':
+      return ref ? `Filling ${ref}` : 'Filling a field';
+    case 'browser_type':
+      return ref ? `Typing into ${ref}` : 'Typing on the page';
+    case 'browser_press': {
+      const key = namedArgument(args, ['key']);
+      return key ? `Pressing ${key}` : 'Pressing a key';
+    }
+    case 'browser_select':
+      return ref ? `Choosing in ${ref}` : 'Choosing an option';
+    case 'browser_dialog':
+      return 'Answering a page dialog';
+    default:
+      return null;
+  }
+}
+
 const summarizeBrowserTabs = (args: Record<string, unknown>): string => {
   const action = namedArgument(args, ['action']);
   if (action === 'list') return 'Listing browser tabs';
@@ -1710,6 +1775,12 @@ function describeToolCall(toolCall: ToolCallSummaryInput, toolResult?: unknown):
     }
   }
 
+  // BB-09: the Biorouter Browser's rows name the action and the page or element, so a reader can
+  // tell at a glance that the agent was on a web page, and where.
+  const browserSummary = toolCall.name.startsWith('browser__')
+    ? summarizeBiorouterBrowserCall(toolName, args)
+    : null;
+  if (browserSummary) return browserSummary;
   if (toolName === 'browser_tabs') return summarizeBrowserTabs(args);
 
   const figureSummary = toolCall.name.startsWith('autovisualiser__')

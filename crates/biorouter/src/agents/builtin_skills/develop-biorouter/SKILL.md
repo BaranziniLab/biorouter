@@ -43,7 +43,7 @@ just install-deps             # npm ci in ui/desktop (landing/video is a second,
 | `crates/biorouter` | Core agent library: agent loop, LLM providers, extension manager, session state, workflows, scheduler, privacy, context management |
 | `crates/biorouter-server` | Axum REST + WebSocket server, binary `biorouterd`; routes in `src/routes/` |
 | `crates/biorouter-cli` | Interactive CLI, binary `biorouter`; subcommands in `src/commands/` |
-| `crates/biorouter-mcp` | Built-in MCP servers (developer, Biorouter Copilot, web & documents, memory, auto visualiser, knowledge, agent drafter, datasql, files, compute) |
+| `crates/biorouter-mcp` | Built-in MCP servers (developer, Biorouter Copilot, web & documents, memory, auto visualiser, knowledge, application drafter, datasql, files, compute) |
 | `crates/biorouter-sandbox` | Capability-scoped sandboxed execution (docker, seatbelt, local) |
 | `crates/biorouter-acp` | Agent Communication Protocol for multi-agent orchestration |
 | `crates/biorouter-authprompt` | macOS auth prompt helper the background service cannot raise itself |
@@ -245,7 +245,8 @@ build.
   plain `BIOROUTER_PORT`).
 - Verify desktop UI behavior through the native Biorouter Copilot capability after its
   per-request approval. Inspect the target app and use the native window capture
-  when an image is needed; refresh state after app changes. Do not revive removed
+  when an image is needed; refresh state after app changes. Copilot never observes
+  the Biorouter app that hosts this chat, so drive a separately launched dev build. Do not revive removed
   script or Developer screenshot routes. Read
   `docs/desktop-ui/launching-the-dev-gui.md` before launching from a shell without a TTY.
 

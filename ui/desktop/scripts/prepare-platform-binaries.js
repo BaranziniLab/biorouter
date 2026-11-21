@@ -69,6 +69,14 @@ function cleanBinDirectory(targetPlatform, binDir = srcBinDir) {
       return;
     }
 
+    // The fn key helper is macOS-only (build-fn-key-helper.mjs); a Linux package left with one
+    // from an earlier Mac build would carry a program that cannot run there.
+    if (targetPlatform === 'linux' && file.name === 'biorouter-fnkey') {
+      console.log(`Removing macOS-only file: ${file.name}`);
+      fs.unlinkSync(filePath);
+      return;
+    }
+
     if (targetPlatform === 'darwin' || targetPlatform === 'linux') {
       // For macOS/Linux, remove Windows-specific files
       if (matchesPattern(file.name, windowsFiles)) {
@@ -369,7 +377,7 @@ function preparePlatformBinaries() {
   // Bundle the pinned llama-server sidecar for the Llama Server provider
   fetchLlamaServer(targetPlatform, targetArch);
 
-  // Bundle the pinned esbuild Agent Drafter builds apps with. The daemon looks
+  // Bundle the pinned esbuild Application Drafter builds applications with. The daemon looks
   // beside its own executable first; without it, a Finder-launched app found no
   // esbuild and no npx, and every app went through the fallback bundler.
   fetchEsbuild(targetPlatform, targetArch);

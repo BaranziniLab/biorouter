@@ -112,7 +112,7 @@
     { k: 'skills', label: 'Skills', icon: 'skills' },
     { k: 'knowledge', label: 'Knowledge', icon: 'knowledge' },
     { k: 'dictionary', label: 'Dictionary', icon: 'dictionary' },
-    { k: 'apps', label: 'Built apps', icon: 'apps' },
+    { k: 'apps', label: 'Applications', icon: 'apps' },
     { sep: true },
     { k: 'settings', label: 'Settings', icon: 'settings' },
   ];
@@ -498,7 +498,7 @@
       crow('Auto Visualiser', 'Interactive charts, diagrams, networks, maps and scientific plots, shown in the side panel.') +
       crow('Memory', 'Teach Biorouter your preferences so it remembers them as you go.') +
       crow('Knowledge', 'Personal knowledge bases Biorouter builds and maintains for you, stored as markdown with full history.') +
-      crow('Agent Drafter', 'Build interactive artifacts, static pages or apps with an embedded Biorouter agent, and export them as standalone projects.') +
+      crow('Application Drafter', 'Build static pages or interactive applications with an embedded Biorouter agent, and export them as standalone projects.') +
       '</div>';
     return win('settings', {}, main);
   };

@@ -5,7 +5,7 @@ import { InfoTip } from '../ui/info-tip';
 import { Note } from '../ui/note';
 import { Spinner } from '../ui/spinner';
 import { PermissionCheckButton } from './PermissionCheckButton';
-import { copilotSetup, type CopilotRuntime } from './copilotApi';
+import { copilotRequestPermissions, copilotSetup, type CopilotRuntime } from './copilotApi';
 import { copilotSetupCopy } from './copy';
 
 /** The panel's DOM id: the row's button controls it. */
@@ -57,13 +57,38 @@ export function runtimeFacts(runtime: CopilotRuntime): string {
  * buttons that do it. Behind an InfoTip beside the line it explains: which runtime answered, and
  * the second sentence of each remedy.
  */
-export function CopilotRuntimeDetails({ runtime }: { runtime: CopilotRuntime }) {
+export function CopilotRuntimeDetails({
+  runtime,
+  onRuntime,
+}: {
+  runtime: CopilotRuntime;
+  /** Takes the readiness read again after the person asked the system for access. */
+  onRuntime?: (runtime: CopilotRuntime) => void;
+}) {
   const [settingsError, setSettingsError] = useState('');
+  const [requesting, setRequesting] = useState(false);
+  const [requestError, setRequestError] = useState('');
   const localMac =
     window.electron?.platform === 'darwin' &&
     window.electron?.getConfig?.().BIOROUTER_LOCAL_BACKEND === true &&
     /darwin/.test(runtime.target ?? '') &&
     Boolean(window.electron?.openCopilotPermissionSettings);
+  // AD-04: the grants belong to the Biorouter Copilot bundle, which macOS lists only after it has
+  // asked. One press shows the system's own prompts, naming Biorouter Copilot, on this computer.
+  const requestAccess = async () => {
+    if (requesting) return;
+    setRequesting(true);
+    setRequestError('');
+    try {
+      const next = await copilotRequestPermissions();
+      if (next.request_error) setRequestError(next.request_error);
+      onRuntime?.(next);
+    } catch (error) {
+      setRequestError(error instanceof Error ? error.message : copilotSetupCopy.requestFailed);
+    } finally {
+      setRequesting(false);
+    }
+  };
   const openSettings = async (permission: 'accessibility' | 'screen_recording') => {
     setSettingsError('');
     try {
@@ -88,6 +113,9 @@ export function CopilotRuntimeDetails({ runtime }: { runtime: CopilotRuntime }) 
           )
           .join(' · ');
   const target = runtime.target ?? '';
+  const grantedCopy = /darwin/.test(target)
+    ? (runtime.app_bundle ?? runtime.executable)
+    : undefined;
   const verdict = runtimeVerdict(runtime);
   const facts = runtimeFacts(runtime);
   return (
@@ -101,21 +129,22 @@ export function CopilotRuntimeDetails({ runtime }: { runtime: CopilotRuntime }) 
       </p>
       {runtime.error && <p className="break-words">{runtime.error}</p>}
       <p>OS permissions: {permissionSummary || 'Not reported by this environment.'}</p>
-      {/* ⚠ NAME THE BINARY. macOS keys Screen Recording to a particular executable
-          PATH, not to the signing identity, so a machine holding more than one copy
-          of the helper — an installed Biorouter, a packaged build, a source build —
-          needs each copy granted separately. Without this line the panel says
-          "enable Screen Recording for BioRouter Computer Use" to someone who has
-          already done exactly that, for a different copy, and there is nothing on
-          screen to tell them so. Measured 2026-09-23: three copies on one machine,
-          two reporting `screen_recording: true` and the source build reporting
-          false, with an identical bundle id and the same Developer ID. */}
+      {/* ⚠ NAME THE BINARY. macOS can key a grant to a particular executable PATH, not
+          only to the signing identity, so a machine holding more than one copy of the
+          engine (an installed Biorouter, a packaged build, a source build) may need each
+          copy granted separately, and an ad hoc signed development build's grant follows
+          its code hash. Without this line the panel says "allow Biorouter Copilot" to
+          someone who has already done exactly that, for a different copy, and nothing on
+          screen tells them so. Measured 2026-09-23 with the previous engine: three copies
+          on one machine, two reporting `screen_recording: true` and the source build
+          reporting false, with an identical bundle id and the same Developer ID. */}
       {/* The path is data, read character by character against what System Settings lists, so
-          it is set as code (design.md D-42), not as a folder's place. */}
-      {runtime.executable && verdict !== 'ready' && (
+          it is set as code (design.md D-42), not as a folder's place. On macOS that is the
+          Biorouter Copilot app, not the engine inside it; a development payload outside any app
+          is granted by its own executable. Windows and Linux grant nothing per copy. */}
+      {grantedCopy && verdict !== 'ready' && (
         <p className="break-all">
-          Grant these to this exact copy:{' '}
-          <code className="font-mono text-code">{runtime.executable}</code>
+          Grant these to this exact copy: <code className="font-mono text-code">{grantedCopy}</code>
         </p>
       )}
       {runtime.message && <p>{runtime.message}</p>}
@@ -145,8 +174,8 @@ export function CopilotRuntimeDetails({ runtime }: { runtime: CopilotRuntime }) 
         <p className="flex items-start gap-1.5 text-text-success">
           <Check className="mt-0.5 size-3.5 shrink-0" aria-hidden="true" />
           <span>
-            Accessibility and Screen Recording are allowed on the backend computer. Nothing further
-            to set up.
+            Biorouter Copilot has the access it needs on the backend computer. Nothing further to
+            set up.
           </span>
         </p>
       ) : ['missing_runtime', 'incompatible_runtime', 'probe_failed'].includes(
@@ -183,14 +212,24 @@ export function CopilotRuntimeDetails({ runtime }: { runtime: CopilotRuntime }) 
             <p>
               {runtime.message?.includes('System Settings')
                 ? 'Use the app names in the permission details above.'
-                : 'For the bundled app, enable Accessibility for BioRouter Computer Use and Screen Recording for Biorouter.'}
-              <InfoTip
-                label="allowing permissions on macOS"
-                help="If macOS asks you to quit and reopen it, do so, then use Check again. Checking permissions does not grant them."
-              />
+                : copilotSetupCopy.macGrantOwner}
+              <InfoTip label="allowing permissions on macOS" help={copilotSetupCopy.macGrantHelp} />
             </p>
             {localMac ? (
-              <div className="flex flex-wrap gap-2">
+              <div className="flex flex-wrap items-center gap-2">
+                {/* One press does it (owner, 2026-11-19): the system's own prompts appear, naming
+                    Biorouter Copilot. Settings stay beside it for a grant that was refused. */}
+                <Button
+                  size="sm"
+                  aria-busy={requesting}
+                  aria-disabled={requesting || undefined}
+                  className="aria-disabled:pointer-events-none aria-disabled:opacity-50"
+                  onClick={() => void requestAccess()}
+                >
+                  {requesting && <Spinner />}
+                  {requesting ? copilotSetupCopy.requesting : copilotSetupCopy.request}
+                </Button>
+                <InfoTip label="requesting access" help={copilotSetupCopy.requestHelp} />
                 <Button
                   size="sm"
                   variant="secondary"
@@ -216,6 +255,7 @@ export function CopilotRuntimeDetails({ runtime }: { runtime: CopilotRuntime }) 
               </p>
             )}
             {settingsError && <p role="alert">{settingsError}</p>}
+            {requestError && <p role="alert">{requestError}</p>}
           </div>
         )}
       {runtime.development_override && (
@@ -249,6 +289,8 @@ export interface CopilotSetupState {
   toggle: () => void;
   /** Ask the backend again. */
   check: () => Promise<void>;
+  /** Show a readiness read elsewhere, such as after the person asked the system for access. */
+  adopt: (runtime: CopilotRuntime) => void;
 }
 
 export function useCopilotSetup(): CopilotSetupState {
@@ -292,6 +334,12 @@ export function useCopilotSetup(): CopilotSetupState {
     setOpen((current) => !current);
   };
 
+  const adopt = (next: CopilotRuntime) => {
+    setRuntime(next);
+    setChecked(true);
+    setError('');
+  };
+
   return {
     runtime,
     error,
@@ -300,6 +348,7 @@ export function useCopilotSetup(): CopilotSetupState {
     expanded: open && Boolean(runtime),
     toggle,
     check,
+    adopt,
   };
 }
 
@@ -355,14 +404,14 @@ export function CopilotSetupTrigger({
  * pressed the button, so it may glide; the rows below it snap down, they do not slide).
  */
 export function CopilotSetupPanel({ setup }: { setup: CopilotSetupState }) {
-  const { runtime, error, loading, checked, expanded, check } = setup;
+  const { runtime, error, loading, checked, expanded, check, adopt } = setup;
   if (!(expanded && runtime) && !error) return null;
   return (
     <>
       {expanded && runtime && (
         <Note id={COPILOT_SETUP_PANEL_ID} unclamped className="br-enter mx-3 mb-2 mt-1">
           <div className="space-y-2">
-            <CopilotRuntimeDetails runtime={runtime} />
+            <CopilotRuntimeDetails runtime={runtime} onRuntime={adopt} />
             <PermissionCheckButton
               label={copilotSetupCopy.checkAgain}
               checking={loading}

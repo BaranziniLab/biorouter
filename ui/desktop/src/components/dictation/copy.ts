@@ -43,6 +43,9 @@ export const DICTATION_MESSAGES = {
   'MSG-OFFLINE':
     "This computer cannot reach Biorouter's model repository. On a computer that can, run `biorouter dictation urls` and download the files it lists, copy them here, then run `biorouter dictation install --from <file>` (or put them in <folder> and choose Rescan).",
   'MSG-HASH': "The downloaded file did not match Biorouter's pin, so nothing was installed.",
+  // The installer's own sentence (`InstallError::Cancelled`), shown as the daemon sends it; held
+  // here so a surface can tell a cancel the person made from a failure (`isCancelledInstall`).
+  'MSG-INSTALL-CANCELLED': 'The install was canceled.',
   'MSG-DISK': 'Installing <model> needs <x> GB free on <volume>; <y> GB is available.',
   'MSG-TURBO-CPU':
     'This model takes about <t> s to transcribe <a> s of speech on this computer. Install it anyway?',
@@ -100,7 +103,7 @@ export const DICTATION_MESSAGES = {
   'MSG-INSECURE':
     'Dictation needs a secure address. Your browser blocks the microphone on http://<host>. Open Biorouter through an SSH tunnel (then it is localhost) or through an HTTPS address.',
   'MSG-SHARED-ORIGIN':
-    "Your browser's microphone permission covers every page at <origin>, including pages that code or an agent wrote there, such as Biorouter apps and notebook outputs. Choose Allow this time unless you trust every page there.",
+    "Your browser's microphone permission covers every page at <origin>, including pages that code or an agent wrote there, such as Biorouter applications and notebook outputs. Choose Allow this time unless you trust every page there.",
   'MSG-413':
     'The proxy in front of Biorouter refused the audio upload (413). Its request size limit is below 64 KB.',
   'MSG-WAIT': 'Waiting for a free connection to Biorouter',
@@ -115,7 +118,7 @@ export const DICTATION_MESSAGES = {
   'MSG-NO-AUDIO-YET': 'No audio detected. Check that your microphone is not muted.',
   'MSG-TOO-SHORT': 'That recording was under half a second, so nothing was transcribed.',
   'MSG-APPS':
-    "Apps cannot use the microphone themselves. Click into the app's text field, then use Dictate into this app, or use Dictate to clipboard in the Biorouter app (or `biorouter dictate --copy`) and paste. Your system's own dictation also works, without your Biorouter dictionary.",
+    "Applications cannot use the microphone themselves. Click into the application's text field, then use Dictate into this application, or use Dictate to clipboard in the Biorouter app (or `biorouter dictate --copy`) and paste. Your system's own dictation also works, without your Biorouter dictionary.",
   'MSG-GNOME':
     "GNOME on Wayland does not let Biorouter set a keyboard shortcut that works in other apps. Use Dictate to clipboard in Biorouter's tray menu (GNOME shows it with the AppIndicator extension), or the microphone button in Biorouter's own composer.",
   'MSG-WINDOW-OPEN':
@@ -125,6 +128,23 @@ export const DICTATION_MESSAGES = {
     "Biorouter's menu bar icon is off, so Dictate to clipboard is not in its menu. Choose a shortcut below, or turn on Show in menu bar in Settings > App.",
   'MSG-CLIPBOARD-EXPLAIN':
     'Dictate to clipboard puts the text on your system clipboard. After that it is outside Biorouter: any program on this computer can read it, including an agent with shell access in any chat; clipboard managers may keep it; Universal Clipboard or Windows cloud clipboard may sync it to your other devices; and the app you paste into decides where it goes. Your private dictionary terms are used only for a recording you start with Include my private terms.',
+  'MSG-FN-HELP':
+    'Hold fn to talk and let go to insert. Double-tap fn to dictate hands-free, and double-tap again to stop.',
+  'MSG-FN-PERMISSION':
+    'Allow Biorouter in Privacy & Security > Input Monitoring so fn can start dictation. Biorouter keeps only whether fn is held and drops every other key.',
+  'MSG-FN-CONFLICT':
+    'macOS also uses fn to <action>. To keep fn for dictation, set Press 🌐 key to Do Nothing in Keyboard settings.',
+  'MSG-FN-CONFLICT-UNKNOWN':
+    'macOS may also act when you press fn, for example by showing the emoji picker. To keep fn for dictation, set Press 🌐 key to Do Nothing in Keyboard settings.',
+  'MSG-FN-FAILED':
+    'The fn key listener stopped and could not start again. Turn the switch off and on to retry.',
+  'MSG-FN-MISSING': 'This build of Biorouter has no fn key listener, so fn cannot start dictation.',
+  'MSG-FN-OTHER-APPS':
+    'Hold or double-tap fn in any app while Biorouter is open. The text goes to the clipboard, as with Dictate to clipboard.',
+  'MSG-CHORD-HELP':
+    'In a message box, tap <chord> to start or stop, or hold it to talk. Windows and Linux do not let apps see the fn key, so Biorouter uses this key combination here.',
+  'MSG-SHORTCUT-HELP':
+    'A key combination that starts and stops Dictate to clipboard from any app. Leave it empty for none.',
   'MSG-CLIPBOARD-COPIED': 'Copied <n> words. Paste with <key>.',
   'MSG-CLIPBOARD-NOTHING': 'Nothing was heard, so the clipboard was not changed.',
   'MSG-CLIPBOARD-ECHO':
@@ -145,7 +165,7 @@ export const DICTATION_MESSAGES = {
   'MSG-DISCLOSE-HOST-DETAIL':
     'Biorouter does not save it or send it anywhere else. The text appears here for you to check before you send it.',
   'MSG-SETUP':
-    "Dictation turns your speech into text <where>. It needs a speech model: <name> (<size>), downloaded once from the Baranzini Lab's model repository on GitHub into <folder>. Audio is not saved.",
+    "Dictation turns your speech into text <where>. It needs a <size> speech model, <name>, downloaded once from the Baranzini Lab's model repository on GitHub into <folder>.",
   'MSG-SETUP-SUGGEST':
     'The agent can propose terms it sees in your chats. A term can go into your dictionary when you ask the agent to add it, or reply to its offer naming that term, even if you decline; everything else waits for you to accept it.',
   'MSG-PRIVATE-DRAFT':
@@ -205,10 +225,18 @@ export const DICTATION_ACTIONS = {
   include: 'Include',
   publicTermsOnly: 'Public terms only',
   includePrivateTerms: 'Include my private terms',
-  /** The live preview's toolbar button for a Biorouter app's focused field (S15). */
-  dictateIntoThisApp: 'Dictate into this app',
+  /** The live preview's toolbar button for a Biorouter application's focused field (S15). */
+  dictateIntoThisApp: 'Dictate into this application',
   /** The Settings switch for the tray item and the global shortcut (S18). */
   dictateIntoOtherApps: 'Dictate into other apps',
+  /** The macOS switch for the fn gestures (hold to talk, double-tap for hands-free). */
+  dictateWithFn: 'Dictate with the fn key',
+  /** Under **Dictate into other apps** on macOS: the fn gestures there too. */
+  useFnInOtherApps: 'Use fn in other apps',
+  openInputMonitoring: 'Open Input Monitoring',
+  openKeyboardSettings: 'Open Keyboard settings',
+  /** The Windows and Linux row that names the composer's key combination. */
+  keyboardShortcut: 'Keyboard shortcut',
   setUp: 'Set up dictation',
   showButton: 'Show the microphone button',
   reduceNoise: 'Reduce background noise',
@@ -236,6 +264,8 @@ export const DICTATION_LABELS = {
   arming: 'Starting microphone…',
   recording: 'Stop dictation, <time>',
   recordingTooltip: 'Stop and insert · Esc cancels',
+  /** After **Dictate** in the idle tooltip while the fn shortcut works (macOS). */
+  fnGesture: 'hold or double-tap fn',
   transcribing: 'Transcribing…',
   finishFirst: 'Finish dictating first',
   listening: 'Listening…',
@@ -277,3 +307,13 @@ export function formatDictationClock(seconds: number): string {
   const rest = whole % 60;
   return `${minutes}:${rest.toString().padStart(2, '0')}`;
 }
+
+/**
+ * MSG-FN-CONFLICT's `<action>`: what macOS does with fn, by `AppleFnUsageType` (System Settings >
+ * Keyboard > "Press 🌐 key to"), as the `biorouter-fnkey` helper reads it.
+ */
+export const FN_USAGE_ACTIONS: Readonly<Record<1 | 2 | 3, string>> = {
+  1: 'change the input source',
+  2: 'show emoji and symbols',
+  3: 'start its own dictation',
+};

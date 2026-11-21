@@ -47,10 +47,6 @@ jobs:
             throw 'Release version must be stable major.minor.patch without a v prefix'
           }
       - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
-        with:
-          go-version: '1.26.8'
-          cache: false
       - name: Parse the installed application smoke helper
         shell: pwsh
         run: |
@@ -222,12 +218,12 @@ jobs:
           $helper = Join-Path $app "resources/computer-use"
           python scripts/computer-use-runtime.py verify win32-x64 --directory $helper
           if ($LASTEXITCODE -ne 0) { throw "Packaged native helper integrity check failed" }
-          python scripts/test-computer-use-protocol.py $helper
-          if ($LASTEXITCODE -ne 0) { throw "Packaged native helper protocol check failed" }
-          python scripts/test-computer-use-windows-fixture.py $helper --report artifact/windows-fixture.json
-          if ($LASTEXITCODE -ne 0) { throw "Packaged native helper fixture check failed" }
-          python scripts/test-computer-use-packaged-windows-console.py --cli $cli --report artifact/windows-packaged-console.json
-          if ($LASTEXITCODE -ne 0) { throw "Packaged Rust-to-Go console check failed" }
+          # The packaged engine runs on Windows: it reports the pinned agent-desktop
+          # release and refuses a bare reference before delivering anything, with
+          # no desktop access. The WinForms fixture driven through Copilot's tools
+          # is a fixture job of its own (AD-21).
+          python scripts/computer-use-runtime.py contract win32-x64 --directory $helper
+          if ($LASTEXITCODE -ne 0) { throw "Packaged native helper contract check failed" }
           $cliVersion = & $cli --version
           if ($LASTEXITCODE -ne 0 -or $cliVersion -notmatch [regex]::Escape($env:VERSION)) {
             throw "Packaged CLI did not report $env:VERSION"

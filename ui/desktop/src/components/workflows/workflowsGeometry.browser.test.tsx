@@ -10,7 +10,7 @@
  *    time) and the actions cluster in one grid cell, and on hover the meta fades to
  *    `opacity: 0`. That makes it a stacking context, which paints ABOVE the opacity-1 cluster in
  *    normal flow, so the invisible time covered the right half of the `⋯` button: a click there
- *    opened the workflow editor (the row's own handler took it) or, on a Built apps row, did
+ *    opened the workflow editor (the row's own handler took it) or, on an Applications row, did
  *    nothing. `document.elementFromPoint` is the instrument; `pointer-events: none` on
  *    `.br-row-actions-meta` (WS-PRIMITIVES, from `requests/WS-PRIMITIVES/WS-VIEWS-A-3.md`) is the rule.
  * 2. **The editors' text areas are tall.** `.br-textarea` (main.css) sets its own three-row

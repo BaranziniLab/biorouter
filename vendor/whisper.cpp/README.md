@@ -6,8 +6,9 @@ commit `pin.json` names, unmodified, limited to the files the build reads plus
 four of upstream's test files. A build reads it with no network, so an upstream
 repository that is deleted, force pushed or changed cannot affect Biorouter,
 and the exact bytes compiled into `biorouter` and `biorouterd` are reviewable in
-this repository's history. It is laid out the way `vendor/computer-use/` is: a
-pristine tree, a patch folder, a pin and a hash manifest.
+this repository's history. It is laid out the way the retired Open Computer Use
+tree (`vendor/computer-use/`, removed in 1.94.6) was: a pristine tree, a patch
+folder, a pin and a hash manifest.
 
 | Path | What it is |
 |---|---|

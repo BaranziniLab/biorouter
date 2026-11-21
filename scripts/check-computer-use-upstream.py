@@ -1,28 +1,29 @@
 #!/usr/bin/env python3
-"""Report what has changed upstream since the vendored Open Computer Use commit.
+"""Report what has changed upstream since the vendored agent-desktop release.
 
 Read-only. It never writes to the tree, never changes the pin, and never applies
-anything — deciding to take an upstream change is a review, not a command.
+anything: deciding to take an upstream release is a review, not a command.
 
-    python3 scripts/check-computer-use-upstream.py            # summary
-    python3 scripts/check-computer-use-upstream.py --json     # machine-readable
-    python3 scripts/check-computer-use-upstream.py --limit 50
+    python3 scripts/check-computer-use-upstream.py              # against the latest release
+    python3 scripts/check-computer-use-upstream.py --tag v1.4.0 # against one tag
+    python3 scripts/check-computer-use-upstream.py --json
 
-⚠ The useful output is not "you are N commits behind". It is **which upstream
-files our patches also touch**, because those are the ones that will conflict
-when the tree is re-vendored. A patch that no longer applies is the whole cost of
-an upstream update, and this is what predicts it before anyone starts.
+Biorouter vendors agent-desktop unmodified (AD-02 in
+docs/design/copilot-agent-desktop.md), so there are no patches to conflict. What a
+pin move costs is in three places, and this report names each:
 
-Updating, once you have read this:
+  * files inside the vendored subset that changed (the build input);
+  * `Cargo.lock`, because a dependency change means re-reading licences
+    (`vendor-computer-use-source.py --dependencies`) and the network-crate check;
+  * the JSON contract and command line, because the wrapper in
+    crates/biorouter-mcp/src/computer_use/ builds every command from an allowlist:
+    changes under src/cli*, crates/core/src/commands and the json-output docs are
+    listed so they can be read before the wrapper's contract tests run.
 
-    1. git clone <repository> /tmp/ocu && git -C /tmp/ocu checkout <new commit>
-    2. edit vendor/computer-use/pin.json  (upstream_commit, upstream_version)
-    3. python3 scripts/vendor-computer-use-source.py --from /tmp/ocu
-    4. python3 scripts/computer-use-runtime.py build <target>   # patches re-apply here
-    5. resolve any patch that no longer applies, bump patch_revision in pin.json
-    6. rebuild every target and re-run the acceptance scripts
+The procedure for moving the pin is in vendor/agent-desktop/README.md.
 """
 import argparse
+import importlib.util
 import json
 import re
 import subprocess
@@ -31,8 +32,16 @@ import urllib.request
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-VENDOR = ROOT / "vendor/computer-use"
+VENDOR = ROOT / "vendor/agent-desktop"
 API = "https://api.github.com"
+
+_spec = importlib.util.spec_from_file_location("vendor_source", Path(__file__).with_name("vendor-computer-use-source.py"))
+vendor_source = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(vendor_source)
+
+CONTRACT_PATHS = ("src/cli", "src/cli_args", "src/dispatch", "crates/core/src/commands",
+                  "docs/json-output.md", "apps/docs/content/docs/json-output.mdx",
+                  "apps/docs/content/docs/errors-and-recovery.mdx")
 
 
 def owner_repo(url):
@@ -45,7 +54,7 @@ def owner_repo(url):
 def fetch(url):
     request = urllib.request.Request(url, headers={
         "Accept": "application/vnd.github+json",
-        "User-Agent": "biorouter-computer-use-upstream-check",
+        "User-Agent": "biorouter-copilot-upstream-check",
     })
     # A token lifts the 60/hour anonymous rate limit; it is optional and never required.
     token = subprocess.run(["gh", "auth", "token"], capture_output=True, text=True)
@@ -55,88 +64,88 @@ def fetch(url):
         return json.load(response)
 
 
-def patched_paths():
-    """Every upstream path our patches touch, read out of the patches themselves."""
-    paths = set()
-    for patch in sorted((VENDOR / "patches").glob("*.patch")):
-        for line in patch.read_text(errors="replace").splitlines():
-            if line.startswith(("--- a/", "+++ b/")):
-                path = line[6:].strip()
-                if path and path != "/dev/null":
-                    paths.add(path)
-    return paths
+def area(path):
+    parts = path.split("/")
+    if parts[0] == "crates" and len(parts) > 1:
+        return "crates/" + parts[1]
+    return parts[0] if len(parts) > 1 else path
+
+
+def classify(changed):
+    vendored = sorted(path for path in changed if vendor_source.included_reason(path))
+    areas = {}
+    for path in vendored:
+        areas[area(path)] = areas.get(area(path), 0) + 1
+    contract = sorted(path for path in changed if path.startswith(CONTRACT_PATHS))
+    return vendored, areas, contract
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--json", action="store_true", help="emit the report as JSON")
+    parser.add_argument("--tag", help="compare with this tag instead of the latest release")
     parser.add_argument("--limit", type=int, default=30, help="how many commits to list")
     args = parser.parse_args()
 
-    pin = json.loads((VENDOR / "pin.json").read_text())
+    pin = json.loads((VENDOR / "pin.json").read_text(encoding="utf-8"))
     owner, repo = owner_repo(pin["repository"])
     pinned = pin["upstream_commit"]
-
     try:
-        meta = fetch(f"{API}/repos/{owner}/{repo}")
-        branch = meta.get("default_branch", "main")
-        compare = fetch(f"{API}/repos/{owner}/{repo}/compare/{pinned}...{branch}")
+        tag = args.tag or fetch(f"{API}/repos/{owner}/{repo}/releases/latest")["tag_name"]
+        compare = fetch(f"{API}/repos/{owner}/{repo}/compare/{pinned}...{tag}")
     except urllib.error.HTTPError as error:
         raise SystemExit(
-            f"upstream check failed: {error.code} {error.reason}. "
-            "This is only a convenience — the vendored source in this repository "
-            "is what builds, and it does not need the network."
+            f"upstream check failed: {error.code} {error.reason}. This is only a convenience: the "
+            "vendored source in this repository is what builds, and it needs no network."
         ) from None
     except urllib.error.URLError as error:
         raise SystemExit(f"upstream check could not reach GitHub: {error.reason}") from None
 
     commits = compare.get("commits", [])
-    changed = {f["filename"] for f in compare.get("files", [])}
-    ours = patched_paths()
-    conflicts = sorted(changed & ours)
-
+    changed = {entry["filename"] for entry in compare.get("files", [])}
+    vendored, areas, contract = classify(changed)
     report = {
         "repository": pin["repository"],
+        "vendored_tag": pin["upstream_tag"],
         "vendored_commit": pinned,
-        "vendored_version": pin["upstream_version"],
-        "patch_revision": pin["patch_revision"],
-        "default_branch": branch,
-        "behind_by": compare.get("behind_by", 0),
+        "compared_with": tag,
+        "upstream_commit": commits[-1]["sha"] if commits else pinned,
         "ahead_by": compare.get("ahead_by", len(commits)),
-        "upstream_head": compare.get("commits", [{}])[-1].get("sha") if commits else pinned,
         "files_changed_upstream": len(changed),
-        "files_our_patches_touch": sorted(ours),
-        "likely_patch_conflicts": conflicts,
-        "commits": [
-            {"sha": c["sha"][:12], "subject": (c["commit"]["message"].splitlines() or [""])[0]}
-            for c in commits[-args.limit:]
-        ],
+        "files_changed_in_vendored_subset": len(vendored),
+        "vendored_areas": areas,
+        "cargo_lock_changed": "Cargo.lock" in changed,
+        "contract_files_changed": contract,
+        "truncated_file_list": len(compare.get("files", [])) >= 300,
+        "commits": [{"sha": c["sha"][:12], "subject": (c["commit"]["message"].splitlines() or [""])[0]}
+                    for c in commits[-args.limit:]],
     }
-
     if args.json:
         print(json.dumps(report, indent=2))
         return
-
-    print(f"vendored : {pinned[:12]}  (v{pin['upstream_version']}, patches {pin['patch_revision']})")
-    print(f"upstream : {report['upstream_head'][:12]}  on {branch}")
+    print(f"vendored : {pin['upstream_tag']} ({pinned[:12]})")
+    print(f"compared : {tag} ({report['upstream_commit'][:12]})")
     if not commits:
-        print("\nUp to date — nothing upstream since the vendored commit.")
+        print("\nUp to date: nothing upstream between the vendored release and that tag.")
         return
-    print(f"\n{len(commits)} commit(s) upstream, touching {len(changed)} file(s):\n")
+    print(f"\n{len(commits)} commit(s), {len(changed)} file(s) changed, {len(vendored)} inside the vendored subset:")
+    for name, count in sorted(areas.items()):
+        print(f"  {count:5d}  {name}")
+    if report["truncated_file_list"]:
+        print("  (GitHub lists at most 300 files per comparison; clone both tags to see every change)")
+    print()
+    if report["cargo_lock_changed"]:
+        print("Cargo.lock changed: regenerate DEPENDENCIES.txt and re-read the licences and the")
+        print("network-crate check before vendoring.")
+    if contract:
+        print(f"{len(contract)} file(s) on the command line or JSON contract changed; read them before")
+        print("running the wrapper's contract tests:")
+        for path in contract[:40]:
+            print(f"    {path}")
+    print("\nRecent commits:")
     for entry in report["commits"]:
         print(f"  {entry['sha']}  {entry['subject'][:96]}")
-    if len(commits) > len(report["commits"]):
-        print(f"  … {len(commits) - len(report['commits'])} older commit(s) not shown (--limit)")
-    print()
-    if conflicts:
-        print(f"⚠ {len(conflicts)} of those file(s) are ones OUR PATCHES ALSO TOUCH.")
-        print("  Re-vendoring will very likely need these patches reworked:")
-        for path in conflicts:
-            print(f"    {path}")
-    else:
-        print("No upstream change touches a file our patches touch, so the patches")
-        print("are likely to re-apply cleanly. Verify by building, not by assuming.")
-    print("\nSee this script's header for the update procedure.")
+    print("\nThe procedure for moving the pin is in vendor/agent-desktop/README.md.")
 
 
 if __name__ == "__main__":

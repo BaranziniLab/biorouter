@@ -11,7 +11,7 @@ import { isBrowserSurface } from '../../../utils/surface';
  *
  * ⚠ **It cannot be made to work here, and that is the ruling.** `POST /reset`
  * deletes every chat, knowledge base, schedule, skill, extension, workflow or
- * built app in the areas it names, private ones included, so it answers only a
+ * application in the areas it names, private ones included, so it answers only a
  * request carrying the `X-User-Action` proof. A `serve` daemon is started with
  * stdin closed and holds no digest to check that proof against (SD-7), so it
  * refuses every reset, for everyone. It used to refuse none: the route took no

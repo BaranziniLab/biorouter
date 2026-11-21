@@ -117,6 +117,7 @@ Configurable retry parameters for LLM providers.
 | `BEDROCK_INITIAL_RETRY_INTERVAL_MS` | How long to wait (in milliseconds) before the first retry | 2000 |
 | `BEDROCK_BACKOFF_MULTIPLIER` | The factor by which the retry interval increases after each attempt | 2 (doubles every time) |
 | `BEDROCK_MAX_RETRY_INTERVAL_MS` | The cap on the retry interval in milliseconds | 120000 |
+| `BEDROCK_PROMPT_CACHING` | Send Converse prompt-caching checkpoints for the Claude models AWS lists for prompt caching, on both Amazon Bedrock and Versa Bedrock. `false` turns them off | true |
 
 #### Databricks
 
@@ -137,6 +138,8 @@ These variables control how biorouter manages conversation sessions and context.
 | `BIOROUTER_MAX_TURNS` | Maximum number of turns allowed without user input | A whole number: `0` means Unlimited; a positive number sets a limit. Invalid values are ignored with a warning | 0 (Unlimited) |
 | `BIOROUTER_MAX_TOOL_CALLS` | Maximum number of tool calls allowed without user input | A whole number: `0` means Unlimited; a positive number sets a limit. Invalid values are ignored | 0 (Unlimited) |
 | `BIOROUTER_SUBAGENT_MAX_TURNS` | Sets the maximum turns allowed for a [subagent](../agent-loop/subagents.md) to complete before timeout | Integer (e.g. 25) | 25 |
+| `BIOROUTER_SYSTEM_PROMPT_FILE_PATH` | A prompt file that stands in for Biorouter's stock system prompt in CLI sessions (`biorouter session`, `run`, `term run`, `bench`). The file is a template with the same variables as the stock prompt. See [Custom system prompts](../agent-loop/custom-system-prompts.md) | Path to a UTF-8 text file | Unset |
+| `BIOROUTER_SYSTEM_PROMPT_OVERRIDE_MODE` | How the file above is applied. `compose` keeps Biorouter's core after the file: the tool roster with each capability's and extension's instructions, the task rules, what the tool-output frame means, and the safety rules. `replace` sends the file alone, as before 1.94.6. Any other value prints a warning and composes | `"compose"`, `"replace"` | `"compose"` |
 | `CONTEXT_FILE_NAMES` | Specifies custom filenames for hint/context files | JSON array of strings (e.g. `["CLAUDE.md", ".biorouterhints"]`) | `[".biorouterhints"]` |
 | `BIOROUTER_CLI_THEME` | [Theme](../cli/command-reference.md#themes) for CLI response markdown | `"light"`, `"dark"`, `"ansi"` | `"ansi"` |
 | `BIOROUTER_RANDOM_THINKING_MESSAGES` | Controls whether to show amusing random messages during processing | `"true"`, `"false"` | `"true"` |
@@ -200,9 +203,9 @@ These paths are prepended to the system `PATH` when extensions execute commands,
 
 | Variable | Purpose | Values | Default |
 |----------|---------|---------|---------|
-| `BIOROUTER_SHELL_FOREGROUND_TIMEOUT_SECS` | Wall-clock budget for a **foreground** Developer `shell` command. When it expires the command's whole process group is killed and the call fails with an error naming the command, its elapsed time, and the `background=true` alternative. | Whole seconds; `0` disables the watchdog | `240` |
+| `BIOROUTER_SHELL_FOREGROUND_TIMEOUT_SECS` | Wall-clock budget for a **foreground** Developer `shell` command. When it expires the command's whole process group is killed and the call fails with an error naming the command, its elapsed time, the `background=true` alternative and the last lines it printed. The error is marked not retryable. | Whole seconds; `0` disables the watchdog | `240` |
 
-This is deliberately shorter than the generic 300-second per-extension MCP timeout, so the shell's own error — which the model can act on — is what fires rather than an opaque transport timeout. It only applies to foreground commands: work started with `background=true` is unbounded and managed with `shell_wait` / `shell_output` / `shell_kill`. Raise it if your agents legitimately run long foreground builds; see [the Developer capability guide](../extensions/built-in/developer.md#foreground-and-background-commands).
+This is deliberately shorter than the generic 300-second per-extension MCP timeout, so the shell's own error — which the model can act on — is what fires rather than an opaque transport timeout. It only applies to foreground commands: work started with `background=true` is unbounded and managed with `shell_status` / `shell_kill`. Raise it if your agents legitimately run long foreground builds; see [the Developer capability guide](../extensions/built-in/developer.md#foreground-and-background-commands).
 
 ### Enhanced code editing
 
@@ -229,6 +232,10 @@ These variables control security-related features.
 >
 > * macOS/Linux: `~/.config/biorouter/secrets.yaml`
 > * Windows: `%APPDATA%\UCSF\biorouter\config\secrets.yaml`
+>
+> The system keychain is then not read at all, so a key saved in the desktop app's Settings reads
+> as missing; the error names the file it read and how to reach the key. See
+> [A missing key while the keychain is turned off](../security/secret-storage.md#a-missing-key-while-the-keychain-is-turned-off).
 
 ## Browser access
 
@@ -240,7 +247,7 @@ restart.
 | Variable | Purpose | Values | Default |
 |----------|---------|---------|---------|
 | `BIOROUTER_SERVE_UI` | Directory holding the built browser interface for the daemon to serve. When it is unset the daemon serves no interface and answers only its API, which is what the desktop app wants — Electron loads the interface itself. `biorouter serve` sets it on the daemon it starts, and reads it as well: without `--web-dir`, which takes precedence, a non-blank value is the directory `serve` uses, and one with no `index.html` stops `serve` with an error rather than being skipped. | Path to a directory containing an `index.html` | Unset (no interface served) |
-| `BIOROUTER_BROWSER_TOKEN` | The access token a browser presents to be handed the interface. Opening the address exchanges it for a session cookie — every time it is presented, until the daemon stops; it is not single-use — and it authenticates nothing else. When it is unset no token is required, which is only correct for a loopback bind — `biorouter serve` refuses to expose an untokened port. `biorouter serve` **reads it as well**: without `--token`, which takes precedence, a non-blank value (trimmed) is the token it uses and hands the daemon, and the banner says the token came from here rather than claiming it is new. With nothing named, `serve` mints one per launch. `--no-token` removes it from the daemon's environment, so a token this shell exports cannot leave the daemon demanding one the printed address does not carry. | Token string (`biorouter serve` mints 64 hexadecimal characters) | Unset (no token required) |
+| `BIOROUTER_BROWSER_TOKEN` | The access token a browser presents to be handed the interface. Opening the address exchanges it for a session cookie — every time it is presented, until the daemon stops; it is not single-use — and it authenticates nothing else. When it is unset no token is required, which is only correct for a loopback bind — `biorouter serve` refuses to expose an untokened port. `biorouter serve` **reads it as well**: without `--token`, which takes precedence, a non-blank value (trimmed) is the token it uses and hands the daemon, and the banner says the token came from here, without printing it (`--print-url` prints it; `biorouter serve url` shows the whole address to the account running `serve`). With nothing named, `serve` mints one per launch. `--no-token` removes it from the daemon's environment, so a token this shell exports cannot leave the daemon demanding one the printed address does not carry. | Token string (`biorouter serve` mints 64 hexadecimal characters) | Unset (no token required) |
 | `BIOROUTER_SERVE_UPDATE_FEED_URL` | Where a `biorouter serve` daemon reads releases for its browser update ([SD-19](../deployment/serve-decisions.md#sd-19-the-person-on-the-page-updates-serve-and-it-comes-back-on-the-same-address)): a mirror, or a test's local feed, serving `latest` and `tags/v<version>` documents in the shape of GitHub's release API. Read once when the daemon starts, from the environment `serve` runs in. A value that is not `https`, or `http` on this machine, turns browser updates off and logs why. | URL | Unset (GitHub's release API for BaranziniLab/biorouter) |
 | `BIOROUTER_SERVE_SUPERVISOR` | Set by `biorouter serve` (Unix only) on the daemon it starts, to `restart-v1`: `serve` restarts the daemon when it exits with status 75 after installing an update. A daemon without it never offers a browser update. Not for setting by hand. | `restart-v1` | Unset |
 | `BIOROUTER_SERVE_RESUME` | Set by `biorouter serve` on itself when it restarts in place after an update: the path of a record, readable by its account alone and deleted on read, carrying the launch token and approval digests across. Never passed to the daemon. Not for setting by hand. | Path | Unset |

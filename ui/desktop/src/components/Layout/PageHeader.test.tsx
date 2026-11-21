@@ -165,7 +165,7 @@ describe('PageHeader', () => {
 
   /** The band never sits in the reading column; only a view's body does. */
   it('does not put the band in a reading column', () => {
-    const { container } = render(<PageHeader title="Built apps" />);
+    const { container } = render(<PageHeader title="Applications" />);
 
     expect(container.querySelector('.biorouter-readable-content')).toBeNull();
     expect(screen.getByTestId('page-header')).toHaveClass('biorouter-page-header');

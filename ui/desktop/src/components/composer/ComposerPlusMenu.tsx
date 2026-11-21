@@ -363,8 +363,9 @@ export function ComposerPlusMenu({
               pickedWithPointer.current = false;
             }}
           >
+            {/* Not `fill`: four equal columns cannot hold "Knowledge" at the popover's width,
+                so each segment is its label plus an equal share of the room (composer.css). */}
             <SegmentedControl
-              fill
               aria-label={COPY.segmentsLabel}
               options={SEGMENTS}
               value={segment}

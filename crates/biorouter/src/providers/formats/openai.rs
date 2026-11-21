@@ -274,6 +274,172 @@ fn in_stream_server_fault(error: &Value) -> Option<ProviderError> {
     ))
 }
 
+/// What the user is told for a transient in-stream failure that is not
+/// llama-server's code-500 `server_error` (#542): OpenRouter's documented
+/// mid-stream error (a numeric `code`, `metadata.error_type`, no `type`), a
+/// 408, 429 or other 5xx, or an error finish with nothing to say why. Named by
+/// its code when the frame gave one, because "internal error" is wrong for a
+/// 429. The provider's own text is withheld, as for every in-stream error.
+fn in_stream_transient_fault(status: Option<u64>) -> ProviderError {
+    let code = status
+        .map(|code| format!(" (code {code})"))
+        .unwrap_or_default();
+    ProviderError::ServerError(format!(
+        "The provider reported a temporary failure{code} partway through its reply. Biorouter \
+         does not show the provider's own text, which can contain parts of the conversation; \
+         the daemon log records the error's code and type."
+    ))
+}
+
+/// The HTTP status an error frame's `code` carries, as a number or as a
+/// string of digits (OpenRouter documents a number; some relays quote it).
+fn in_stream_status(error: &Value) -> Option<u64> {
+    match error.get("code")? {
+        Value::Number(number) => number.as_u64(),
+        Value::String(text) if !text.is_empty() && text.bytes().all(|b| b.is_ascii_digit()) => {
+            text.parse().ok()
+        }
+        _ => None,
+    }
+}
+
+/// The plain identifiers an error frame states about itself: a non-numeric
+/// `code`, the `type`, and OpenRouter's `metadata.error_type`. Never the
+/// message, which can carry the prompt and must never decide a retry.
+fn in_stream_labels(error: &Value) -> Vec<&str> {
+    let code = error
+        .get("code")
+        .and_then(Value::as_str)
+        .filter(|code| !code.bytes().all(|b| b.is_ascii_digit()));
+    let kind = error.get("type").and_then(Value::as_str);
+    let error_type = error
+        .get("metadata")
+        .and_then(|metadata| metadata.get("error_type"))
+        .and_then(Value::as_str);
+    [code, kind, error_type].into_iter().flatten().collect()
+}
+
+/// Labels that say the request itself cannot succeed as sent. Each one wins
+/// over a server status, a `server_error` type and an error finish (#542).
+const IN_STREAM_AUTH_LABELS: &[&str] = &[
+    "authentication",
+    "authentication_error",
+    "permission_denied",
+    "permission_error",
+    "unauthorized",
+    "invalid_api_key",
+];
+const IN_STREAM_QUOTA_LABELS: &[&str] = &[
+    "payment_required",
+    "insufficient_quota",
+    "quota_exceeded",
+    "billing_hard_limit",
+    "insufficient_credits",
+];
+const IN_STREAM_POLICY_LABELS: &[&str] = &[
+    "content_filter",
+    "content_policy_violation",
+    "policy_violation",
+    "refusal",
+];
+const IN_STREAM_CONTEXT_LABELS: &[&str] = &[
+    "context_length_exceeded",
+    "context_length_error",
+    "context_window_exceeded",
+];
+/// Labels a retry can outlast: OpenRouter's documented transient
+/// `metadata.error_type` values and the error `type`s OpenAI-compatible and
+/// Anthropic-style relays use for the same failures.
+const IN_STREAM_TRANSIENT_LABELS: &[&str] = &[
+    "server",
+    "server_error",
+    "timeout",
+    "timeout_error",
+    "provider_overloaded",
+    "provider_unavailable",
+    "overloaded_error",
+    "rate_limit_exceeded",
+    "rate_limit_error",
+    "api_error",
+];
+
+/// One in-stream error frame, classified from its structured fields only
+/// (#542). `finish_error` says a choice in the same chunk ended with
+/// `finish_reason: "error"`.
+///
+/// The order is the contract: llama-server's overflow (which carries its two
+/// numbers), then the failures a retry cannot fix (credentials, quota,
+/// content policy), then the context window (so compaction runs), then
+/// anything the frame calls invalid, and only then the transient faults. A
+/// frame that is none of these stays the fatal [`UNRECOGNISED_IN_STREAM_ERROR`].
+fn in_stream_error(error: &Value, finish_error: bool) -> ProviderError {
+    if let Some(overflow) = in_stream_context_overflow(error) {
+        return overflow;
+    }
+    let status = in_stream_status(error);
+    let labels = in_stream_labels(error);
+    let says = |set: &[&str]| labels.iter().any(|label| set.contains(label));
+
+    if matches!(status, Some(401 | 403)) || says(IN_STREAM_AUTH_LABELS) {
+        let code = status
+            .map(|code| format!(" (code {code})"))
+            .unwrap_or_default();
+        return ProviderError::Authentication(format!(
+            "The provider refused this request's credentials or permissions{code} partway \
+             through its reply. Check the API key and the account's access, then try again."
+        ));
+    }
+    if status == Some(402) || says(IN_STREAM_QUOTA_LABELS) {
+        return ProviderError::RequestFailed(
+            "The provider stopped this reply because the account has no credit left (payment \
+             required). Check the account's billing, then try again."
+                .into(),
+        );
+    }
+    if says(IN_STREAM_POLICY_LABELS) {
+        return content_filter_stopped_reply();
+    }
+    if says(IN_STREAM_CONTEXT_LABELS) {
+        return ProviderError::ContextLengthExceeded(
+            "the request exceeds the available context size".to_string(),
+        );
+    }
+
+    let kind = error.get("type").and_then(Value::as_str);
+    let error_type = error
+        .get("metadata")
+        .and_then(|metadata| metadata.get("error_type"))
+        .and_then(Value::as_str);
+    // A `type` other than a transient one is the frame calling itself
+    // something a retry cannot fix (`invalid_request_error`), whatever its
+    // status, and so is a 4xx other than 408 and 429.
+    let fatal_type = kind.is_some_and(|kind| !IN_STREAM_TRANSIENT_LABELS.contains(&kind));
+    let fatal_status =
+        status.is_some_and(|code| (400..500).contains(&code) && code != 408 && code != 429);
+    if fatal_type || fatal_status {
+        return ProviderError::RequestFailed(UNRECOGNISED_IN_STREAM_ERROR.into());
+    }
+    // llama-server's code-500 frame keeps its own two sentences.
+    if let Some(fault) = in_stream_server_fault(error) {
+        return fault;
+    }
+    let transient_status =
+        status.is_some_and(|code| code == 408 || code == 429 || (500..600).contains(&code));
+    let transient_label = error_type
+        .is_some_and(|label| IN_STREAM_TRANSIENT_LABELS.contains(&label))
+        || kind.is_some_and(|label| IN_STREAM_TRANSIENT_LABELS.contains(&label));
+    // An error finish with nothing above to say the request is at fault:
+    // OpenRouter's frames recorded in the benchmark carried no string code and
+    // no type. A code that is a word we do not know, or an `error_type` we do
+    // not know, keeps it fatal.
+    let unexplained_error_finish =
+        finish_error && error.get("code").is_none_or(Value::is_number) && error_type.is_none();
+    if transient_status || transient_label || unexplained_error_finish {
+        return in_stream_transient_fault(status);
+    }
+    ProviderError::RequestFailed(UNRECOGNISED_IN_STREAM_ERROR.into())
+}
+
 /// An error object's `code` or `type`, when it is a short plain identifier
 /// (`500`, `server_error`). Anything else is provider prose and is not logged.
 fn loggable_error_label(value: Option<&Value>) -> Option<String> {
@@ -303,6 +469,9 @@ fn log_in_stream_error(error: &Value, mapped: &ProviderError) {
             .as_deref()
             .unwrap_or("-"),
         provider_type = loggable_error_label(error.get("type"))
+            .as_deref()
+            .unwrap_or("-"),
+        provider_error_type = loggable_error_label(error.pointer("/metadata/error_type"))
             .as_deref()
             .unwrap_or("-"),
         error_type = mapped.telemetry_type(),
@@ -688,10 +857,19 @@ fn parse_streaming_chunk_noting(
             error.column()
         ))
     })?;
+    // OpenRouter ends a failed stream with `finish_reason: "error"`, in the
+    // same chunk as its `error` object or, measured in the benchmark of #542,
+    // with none at all.
+    let finish_error = value
+        .get("choices")
+        .and_then(Value::as_array)
+        .is_some_and(|choices| {
+            choices
+                .iter()
+                .any(|choice| choice.get("finish_reason").and_then(Value::as_str) == Some("error"))
+        });
     if let Some(error) = value.get("error").filter(|error| !error.is_null()) {
-        let mapped = in_stream_context_overflow(error)
-            .or_else(|| in_stream_server_fault(error))
-            .unwrap_or_else(|| ProviderError::RequestFailed(UNRECOGNISED_IN_STREAM_ERROR.into()));
+        let mapped = in_stream_error(error, finish_error);
         log_in_stream_error(error, &mapped);
         return Err(mapped.into());
     }
@@ -728,6 +906,14 @@ fn parse_streaming_chunk_noting(
                 choice["delta"] = json!({});
             }
         }
+    }
+    // An error finish with no error object said nothing about its cause, and it
+    // is not a natural stop: decoded as one, it ended the turn as a success
+    // with the answer missing (#542). It is retried like the frame above.
+    if finish_error {
+        let mapped = in_stream_transient_fault(None);
+        log_in_stream_error(&Value::Null, &mapped);
+        return Err(mapped.into());
     }
     // A prefill-progress frame is a frame with nothing to decode, whichever way
     // a build spells "no choices"; reading a missing `choices` as `[]` only for
@@ -1441,6 +1627,114 @@ fn thinking_flush_due(pending: &str, last_flush: std::time::Instant) -> bool {
             || last_flush.elapsed() >= THINKING_FLUSH_INTERVAL)
 }
 
+/// Append one streamed `reasoning_details` delta to the reply's array (#548).
+///
+/// OpenRouter streams a reasoning block as many deltas, and storing each one
+/// as its own entry made a single reply's array tens of thousands of entries
+/// long; replay then sent every earlier array again on each request. Its docs
+/// say the complete sequence is the deltas concatenated in order, which is
+/// what a non-streamed reply returns, so adjacent fragments of one block are
+/// joined here.
+///
+/// The rule is deliberately narrow, because a wrong merge breaks replay for
+/// that model:
+/// - only `reasoning.text` (its `text`) and `reasoning.summary` (its
+///   `summary`) merge, and only into the entry just before with the same
+///   `type`, `id`, `index` and `format` (an absent field matches only an
+///   absent one, so `null` is never read as missing);
+/// - an entry with a `signature` is closed: a signed block's signature arrives
+///   on its last fragment, alone or with text, and is kept on that entry;
+/// - `reasoning.encrypted` never merges: its `data` is passed on byte for byte
+///   and in order, even beside an entry with the same keys;
+/// - a field this rule does not know, or content that is not a string, keeps
+///   the delta as its own entry rather than dropping what it carries.
+fn push_reasoning_detail(accumulated: &mut Vec<Value>, detail: &Value) {
+    if !merge_reasoning_detail(accumulated.last_mut(), detail) {
+        accumulated.push(detail.clone());
+    }
+}
+
+fn merge_reasoning_detail(previous: Option<&mut Value>, incoming: &Value) -> bool {
+    const KNOWN_KEYS: &[&str] = &[
+        "type",
+        "id",
+        "index",
+        "format",
+        "signature",
+        "text",
+        "summary",
+    ];
+    let (Some(previous), Some(incoming)) = (
+        previous.and_then(Value::as_object_mut),
+        incoming.as_object(),
+    ) else {
+        return false;
+    };
+    let (content_key, other_key) = match incoming.get("type").and_then(Value::as_str) {
+        Some("reasoning.text") => ("text", "summary"),
+        Some("reasoning.summary") => ("summary", "text"),
+        _ => return false,
+    };
+    if previous.get("type") != incoming.get("type")
+        || previous.contains_key("signature")
+        || previous.contains_key(other_key)
+        || incoming.contains_key(other_key)
+        || previous
+            .keys()
+            .any(|key| !KNOWN_KEYS.contains(&key.as_str()))
+        || incoming
+            .keys()
+            .any(|key| !KNOWN_KEYS.contains(&key.as_str()))
+        || ["id", "index", "format"]
+            .iter()
+            .any(|key| previous.get(*key) != incoming.get(*key))
+    {
+        return false;
+    }
+    let Some(previous_text) = previous.get(content_key).and_then(Value::as_str) else {
+        return false;
+    };
+    let signature = match incoming.get("signature") {
+        None => None,
+        Some(Value::String(signature)) => Some(signature.clone()),
+        Some(_) => return false,
+    };
+    match (incoming.get(content_key), signature) {
+        (Some(Value::String(fragment)), signature) => {
+            let merged = format!("{previous_text}{fragment}");
+            previous.insert(content_key.to_string(), Value::String(merged));
+            if let Some(signature) = signature {
+                previous.insert("signature".to_string(), Value::String(signature));
+            }
+            true
+        }
+        (None, Some(signature)) => {
+            previous.insert("signature".to_string(), Value::String(signature));
+            true
+        }
+        _ => false,
+    }
+}
+
+/// The readable text of a reply's `reasoning_details`: each `reasoning.text`
+/// entry's `text` and `reasoning.summary` entry's `summary`, in order, joined
+/// by a blank line. `None` when there is none (an encrypted-only array).
+fn reasoning_details_text(details: &[Value]) -> Option<String> {
+    let parts: Vec<&str> = details
+        .iter()
+        .filter_map(|detail| {
+            let key = match detail.get("type").and_then(Value::as_str)? {
+                "reasoning.text" => "text",
+                "reasoning.summary" => "summary",
+                _ => return None,
+            };
+            detail.get(key).and_then(Value::as_str)
+        })
+        .filter(|text| !text.trim().is_empty())
+        .collect();
+    (!parts.is_empty()).then(|| parts.join("\n\n"))
+}
+
 /// One unsigned thinking block for everything `pending` holds, emptying it.
 ///
 /// Batched rather than one block per delta, deliberately: a per-token block
@@ -1532,6 +1826,10 @@ where
         // Which of Azure's content-filter annotations this stream already
         // logged (a failed filter marks every later chunk).
         let mut filter_notes = StreamFilterNotes::default();
+        // Whether this reply produced any message at all: text, a tool call or
+        // thinking. A reply that produced none but captured structured
+        // reasoning says so at the end (#542).
+        let mut yielded_message = false;
 
         'outer: while let Some(response) = stream.next().await {
             let response_str = response?;
@@ -1566,7 +1864,9 @@ where
             if !chunk.choices.is_empty() {
                 chunk.choices[0].delta.append_mistral_content(&mut accumulated_mistral_content);
                 if let Some(details) = &chunk.choices[0].delta.reasoning_details {
-                    accumulated_reasoning.extend(details.iter().cloned());
+                    for detail in details {
+                        push_reasoning_detail(&mut accumulated_reasoning, detail);
+                    }
                 }
                 if let Some(reasoning) = chunk.choices[0].delta.reasoning_text() {
                     accumulated_reasoning_content.push_str(reasoning);
@@ -1588,6 +1888,7 @@ where
                 if let Some(thinking) = take_thinking(&mut pending_thinking, id) {
                     last_thinking_flush = std::time::Instant::now();
                     yield (Some(thinking), None, None);
+                    yielded_message = true;
                 }
             }
 
@@ -1665,7 +1966,9 @@ where
                                 if !tool_chunk.choices.is_empty() {
                                     tool_chunk.choices[0].delta.append_mistral_content(&mut accumulated_mistral_content);
                                     if let Some(details) = &tool_chunk.choices[0].delta.reasoning_details {
-                                        accumulated_reasoning.extend(details.iter().cloned());
+                                        for detail in details {
+                                            push_reasoning_detail(&mut accumulated_reasoning, detail);
+                                        }
                                     }
                                     if let Some(reasoning) = tool_chunk.choices[0].delta.reasoning_text() {
                                         accumulated_reasoning_content.push_str(reasoning);
@@ -1843,6 +2146,7 @@ where
                     tool_usage,
                     None,
                 );
+                yielded_message = true;
                 if terminal_seen {
                     break 'outer;
                 }
@@ -1871,7 +2175,8 @@ where
                     Some(msg),
                     usage,
                     None,
-                )
+                );
+                yielded_message = true;
             } else if usage.is_some() {
                 // Includes an EMPTY content delta that carries usage. The empty
                 // delta itself is dropped: Ollama's `/v1` sends
@@ -1886,6 +2191,30 @@ where
         // off): show what it thought rather than dropping it.
         if let Some(thinking) = take_thinking(&mut pending_thinking, last_chunk_id.as_ref()) {
             yield (Some(thinking), None, None);
+            yielded_message = true;
+        }
+
+        // A reply that was structured reasoning and nothing else (#542). The
+        // array is only ever attached to a tool call, so without this the
+        // reply decoded to nothing, and the agent could not tell a model that
+        // reasoned and stopped from a provider that sent an empty reply. Its
+        // readable text becomes one unsigned thinking block, which this
+        // module's `format_messages` drops on replay, as it does Surface
+        // mode's. The array is OpenRouter's field; no Databricks code path
+        // (whose formatter replays thinking) reads or expects it. An array
+        // with no readable text (only encrypted entries) adds nothing.
+        if !yielded_message {
+            if let Some(thinking) = reasoning_details_text(&accumulated_reasoning) {
+                let mut message = Message::new(
+                    Role::Assistant,
+                    chrono::Utc::now().timestamp(),
+                    vec![MessageContent::thinking(thinking, "")],
+                );
+                if let Some(id) = last_chunk_id.as_ref() {
+                    message = message.with_id(id.clone());
+                }
+                yield (Some(message), None, None);
+            }
         }
     }
 }
@@ -2780,6 +3109,92 @@ data: [DONE]
             );
             assert!(!error.to_string().contains("SECRET_PROVIDER_PAYLOAD"));
         }
+    }
+
+    /// #542: a reply that was structured reasoning and nothing else decodes to
+    /// one unsigned thinking block, so the agent can tell it from an empty
+    /// reply. Encrypted-only reasoning, and reasoning beside an answer, add
+    /// nothing.
+    #[tokio::test]
+    async fn a_reasoning_only_reply_is_not_an_empty_one() -> anyhow::Result<()> {
+        let frame = |details: Value, content: Option<&str>| {
+            format!(
+                "data: {}",
+                json!({"id":"r-1","choices":[{"index":0,"delta":{"content":content,"reasoning_details":details},"finish_reason":"stop"}]})
+            )
+        };
+        let summary = json!([
+            {"type":"reasoning.summary","summary":"weighed it","index":0,"format":"unknown"},
+            {"type":"reasoning.encrypted","data":"AAEC","index":1,"format":"unknown"}
+        ]);
+        for show in [false, true] {
+            let items = decode_lines(&frame(summary.clone(), None), show).await?;
+            let messages = decoded_messages(&items);
+            assert_eq!(messages.len(), 1, "show={show}");
+            assert!(matches!(
+                messages[0].content.as_slice(),
+                [MessageContent::Thinking(t)] if t.thinking == "weighed it" && t.signature.is_empty()
+            ));
+            assert_eq!(messages[0].id.as_deref(), Some("r-1"));
+        }
+        let encrypted_only = json!([{"type":"reasoning.encrypted","data":"AAEC","index":0}]);
+        let items = decode_lines(&frame(encrypted_only, None), false).await?;
+        assert!(decoded_messages(&items).is_empty());
+        let items = decode_lines(&frame(summary, Some("the answer")), false).await?;
+        let messages = decoded_messages(&items);
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0].as_concat_text(), "the answer");
+        Ok(())
+    }
+
+    /// #542: OpenRouter's documented mid-stream error, and a bare error
+    /// finish, are retryable server faults that name only the code; text that
+    /// streamed before them still arrives first.
+    #[tokio::test]
+    async fn an_error_finish_after_text_is_a_retryable_fault() {
+        let lines = [
+            json!({"id":"e-1","choices":[{"index":0,"delta":{"content":"partial"},"finish_reason":null}]}),
+            json!({"error":{"code":502,"metadata":{"error_type":"provider_unavailable"},"message":"SECRET_PROVIDER_PAYLOAD"},"choices":[{"index":0,"delta":{},"finish_reason":"error"}]}),
+        ]
+        .iter()
+        .map(|frame| Ok(format!("data: {frame}")))
+        .collect::<Vec<anyhow::Result<String>>>();
+        let stream = response_to_streaming_message(tokio_stream::iter(lines));
+        pin!(stream);
+        let (message, _, _) = stream.next().await.unwrap().unwrap();
+        assert_eq!(message.unwrap().as_concat_text(), "partial");
+        let error = stream.next().await.unwrap().unwrap_err();
+        let error = error.downcast_ref::<ProviderError>().unwrap();
+        assert!(crate::agents::mistakes::is_recoverable(error), "{error:?}");
+        assert!(error.to_string().contains("code 502"));
+        assert!(!error.to_string().contains("SECRET_PROVIDER_PAYLOAD"));
+
+        // An error object we do not recognise, with no error finish, stays
+        // the fatal, withheld frame it was.
+        let lines = format!("data: {}", json!({"error":{"code":"weird_thing"}}));
+        let error = decode_lines(&lines, false).await.unwrap_err();
+        assert!(matches!(
+            error.downcast_ref::<ProviderError>(),
+            Some(ProviderError::RequestFailed(message)) if message == UNRECOGNISED_IN_STREAM_ERROR
+        ));
+        // …and with an error finish, a word we do not know as its code keeps
+        // it fatal too; only a numeric or absent code is read as a fault.
+        let lines = format!(
+            "data: {}",
+            json!({"error":{"code":"weird_thing"},"choices":[{"index":0,"delta":{},"finish_reason":"error"}]})
+        );
+        let error = decode_lines(&lines, false).await.unwrap_err();
+        assert!(!crate::agents::mistakes::is_recoverable(
+            error.downcast_ref::<ProviderError>().unwrap()
+        ));
+        let lines = format!(
+            "data: {}",
+            json!({"error":{"message":"SECRET_PROVIDER_PAYLOAD"},"choices":[{"index":0,"delta":{},"finish_reason":"error"}]})
+        );
+        let error = decode_lines(&lines, false).await.unwrap_err();
+        let error = error.downcast_ref::<ProviderError>().unwrap();
+        assert!(crate::agents::mistakes::is_recoverable(error), "{error:?}");
+        assert!(!error.to_string().contains("SECRET_PROVIDER_PAYLOAD"));
     }
 
     #[test]

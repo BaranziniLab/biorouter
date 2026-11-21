@@ -259,12 +259,13 @@ date header is drawn anyway (one element). The lines in view are read from the d
 off a drawn row by `measuredLinePitch`, so no header, row or gap height is assumed), on every
 scroll, committed before the frame paints, and again after anything that moves lines without a
 scroll (a view drawn, a folder opened, rows arriving, the box growing). The pitch is read, not
-assumed, because the Text size preference scales the row and its 2px gap (34.5px a line under
-Larger text): read at a fixed 30px, the middle of a long list showed only placeholder. For the same
-reason the placeholder scales its own 2px. Some lines are kept drawn whatever the range: the focused
-line (a row, a folder header or a Show more), the current chat, so the single Tab stop stays on it, a
-row being renamed or just renamed, and a line whose right-click or ⋯ menu is open (a ⋯ opened with
-the pointer never takes focus, and the list scrolls under it). So neither focus, an open menu nor an
+assumed, because the Text size preference scales the row and its 2px gap (32.1px a line at
+Standard, the default, and 34.5px at Large): read at a fixed 30px, the middle of a long list
+showed only placeholder. For the same reason the placeholder scales its own 2px. Some lines are
+kept drawn whatever the range: the focused line (a row, a folder header or a Show more), the
+current chat, so the single Tab stop stays on it, a row being renamed or just renamed, and a line
+whose right-click or ⋯ menu is open (a ⋯ opened with the pointer never takes focus, and the list
+scrolls under it). So neither focus, an open menu nor an
 editor is ever unmounted under the person. Home and End scroll the list to its end before they move
 focus, so that end's row is drawn; ArrowUp and ArrowDown on a line the list was scrolled away from
 bring the list back to it first, so they reach the line next to it, not the first row drawn far down
@@ -504,6 +505,12 @@ filled control placed in the column is right without a rule of its own.
   scrolls under it), the pane divider, and the compact overlay's edge and shadow (a floating
   surface). Closing, the overlay keeps its shadow until it has slid out, so its edge never goes
   flat while it still covers the page (vision V1-R2-9).
+- On `/crew` the footer meets Crew's You row as one band: one hairline at one height and one
+  centre line for Settings and the You row. With Settings alone the footer is 45px (its rule, 8px
+  padding and a 28px row), and Crew's footer takes that same box whatever its row holds
+  (`crew/sidebar/crew-sidebar.css`, "The You row"). While the footer also holds the update row or
+  the daemon notice it is taller, so its rule sits above Crew's; the two rows still share a centre
+  line. `crew/sidebar/sidebarFooters.browser.test.tsx` measures the two side by side.
 - View options stays pressed on `--background-fill-strong` while its menu is open.
 - Crew's unread badge is the neutral badge, whose fill is the strong step. A lit row (hovered,
   current or focused) is that same fill, so there the badge steps back to the page ground; a fill

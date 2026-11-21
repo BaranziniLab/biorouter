@@ -40,6 +40,7 @@ function installBrowser(initial: EmbeddedBrowserState) {
     setBounds: vi.fn(async () => {}),
     setVisible: vi.fn(async () => {}),
     destroy: vi.fn(async () => {}),
+    release: vi.fn(async () => {}),
     control: vi.fn(async () => true),
     navigate: vi.fn(async () => {}),
     clearData: vi.fn(async () => true),
@@ -56,7 +57,13 @@ function installBrowser(initial: EmbeddedBrowserState) {
 
 afterEach(() => vi.clearAllMocks());
 
-describe('the live preview’s Open in browser', () => {
+/** "Open in default browser" lives in the bar's ⋯ menu (the design's simplicity rule). */
+async function openInDefaultBrowser() {
+  await userEvent.click(await screen.findByRole('button', { name: 'More browser actions' }));
+  await userEvent.click(await screen.findByRole('menuitem', { name: 'Open in default browser' }));
+}
+
+describe('the live preview’s Open in default browser', () => {
   it('opens the app a managed preview shows, not the address its page reports', async () => {
     const { browser, report } = installBrowser(stateAt(appA, true));
     const onOpenExternal = vi.fn();
@@ -66,7 +73,7 @@ describe('the live preview’s Open in browser', () => {
     expect(browser.create).toHaveBeenCalled();
 
     await report(stateAt(appB, true));
-    await userEvent.click(await screen.findByRole('button', { name: 'Open in browser' }));
+    await openInDefaultBrowser();
     expect(onOpenExternal).toHaveBeenCalledWith(appA);
   });
 
@@ -78,14 +85,13 @@ describe('the live preview’s Open in browser', () => {
       render(<WebPagePreview url={site} onOpenExternal={onOpenExternal} />);
     });
     expect(browser.create).toHaveBeenCalled();
-    const open = await screen.findByRole('button', { name: 'Open in browser' });
 
     await report(stateAt('https://example.org/next', false));
-    await userEvent.click(open);
+    await openInDefaultBrowser();
     expect(onOpenExternal).toHaveBeenLastCalledWith('https://example.org/next');
 
     await report(stateAt('http://127.0.0.1:1/apps/app-b/', false));
-    await userEvent.click(open);
+    await openInDefaultBrowser();
     expect(onOpenExternal).toHaveBeenLastCalledWith(site);
   });
 });

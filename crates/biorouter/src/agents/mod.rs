@@ -10,6 +10,9 @@ pub mod budget;
 // report, and -- only behind a proof-backed approval showing the exact body --
 // file it on the public issue tracker.
 pub mod bug_report;
+// The Biorouter Browser's agent tools (BB-09): drive the side panel browser of the chat on
+// screen through the workspace socket.
+pub mod browser_extension;
 pub(crate) mod chatrecall_extension;
 pub(crate) mod dictionary_extension;
 // The Chat summary's Code figure for a script's file edits, measured from the
@@ -120,6 +123,7 @@ mod tool_execution;
 pub mod tool_errors;
 pub mod turn_abort;
 pub mod turn_guard;
+pub mod turn_stop_record;
 pub mod types;
 // Per-chat, default per-chat and monthly usage limits, enforced before every
 // model request (`docs/agent-loop/usage-limits.md`).

@@ -22,6 +22,10 @@ import { GroupLayout } from '../chatGroups/chatGroupsTypes';
  *      its chat, and keeps the chat mounted behind it — paneFit. Rung 4 still
  *      merges on a width crossing; rung 5 covers the splits rung 4 leaves alone.
  *
+ * Under them all is the window's own floor, WINDOW_MIN_WIDTH (721): narrow
+ * enough that Home's composer narrows after the sidebar folds, wide enough to
+ * hold a two-pane split at the chat floor.
+ *
  * Nothing here is new chrome. Each rung is something the app could already do;
  * the decision is only WHAT ORDER they let go in.
  *
@@ -502,6 +506,29 @@ export function layoutMinWidth(layout: GroupLayout): number {
   if (layout.dir === 'col') return Math.max(...children);
   return children.reduce((a, b) => a + b, 0) + (children.length - 1) * GROUP_SPLITTER_WIDTH;
 }
+
+/**
+ * THE FLOOR UNDER THE LADDER: the main window's minimum width (`minWidth` in `main.ts`,
+ * pinned to this constant by `styles/measures.test.ts`).
+ *
+ * It was 1048, the 288px default sidebar plus the 760px chat measure, so that Home's usage card
+ * could never be squeezed. The cost was that nothing could narrow past rung 1: the sidebar
+ * folded at 1120 and Home's composer stayed 760px wide down to the floor. The owner changed the
+ * rule (2026-11-19): the sidebar folds first, and then the composer may narrow too, as a split
+ * pane's composer does, while Home's usage card steps aside (`sessions/homeUsageFit.ts`).
+ *
+ * DERIVED, not chosen: the narrowest window that still holds a two-pane split, each pane at the
+ * chat floor whose composer is the narrowest one the app ships (a 360px pane, a 304px composer
+ * card, every control on it usable). So rung 4 never has to merge a split at the floor, and
+ * Home's composer there (721 less its 2 x 24px gutters, 673px) is wider than a pane's.
+ *
+ * The pages that are not chats were measured against it with the sidebar folded and the 172px
+ * macOS titlebar reserve in force: every page band fits, the Knowledge band once its counts
+ * fold while that reserve and its Sources/Graph pair share the band (`main.css`, the window-floor
+ * block); with its widest labels it then fits down to about 700px. Below 930px the desktop keeps the overlay sidebar; the sheet is
+ * the browser's (`ui/sidebar.tsx`).
+ */
+export const WINDOW_MIN_WIDTH = 2 * CHAT_MIN_WIDTH + GROUP_SPLITTER_WIDTH;
 
 export function layoutFitsWidth(layout: GroupLayout, availableWidth: number): boolean {
   // Refuse to act on a width we have not really measured. A zero-width sample

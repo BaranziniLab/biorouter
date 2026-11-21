@@ -43,10 +43,11 @@ describe('BrsdkSection', () => {
     expect(container.querySelectorAll('p')).toHaveLength(0);
   });
 
-  it('writes Agent Drafter without a hyphen and stop hook in lower case', () => {
+  it('says application, never app or the retired extension name, and stop hook in lower case', () => {
     const prose = BRSDK_TOGGLES.map(({ help }) => help).join(' ');
-    expect(prose).toMatch(/Agent Drafter/);
-    expect(prose).not.toMatch(/Agent-Drafter/);
+    expect(prose).toMatch(/\bapplications?\b/);
+    expect(prose).not.toMatch(/\bapps?\b/i);
+    expect(prose).not.toMatch(/Agent[ -]Drafter/);
     expect(prose).not.toMatch(/Stop-hook/);
   });
 

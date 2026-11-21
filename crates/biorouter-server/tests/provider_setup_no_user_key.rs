@@ -249,6 +249,13 @@ async fn the_page_is_told_whether_it_may_choose_a_provider() {
         "a page with no Fetch Metadata at a network address is told about it: {body}"
     );
 
+    let reason = answer["reason"].as_str().unwrap();
+    assert!(reason.contains("HTTPS"), "{body}");
+    assert!(
+        reason.contains("loopback") && reason.to_ascii_lowercase().contains("tunnel"),
+        "{body}"
+    );
+
     // The same headers at a loopback address are not a browser page at all
     // (curl, or a model's shell): told so, not blamed on the address.
     for pairs in [COOKIE_ONLY, SECRET_ONLY] {

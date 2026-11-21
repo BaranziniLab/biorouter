@@ -19,31 +19,40 @@ one's own licence text ships with it at the path named here. This file is a
 summary, not a substitute for those texts.
 
 
-Open Computer Use
------------------
-  Used for:  the native desktop helper behind Biorouter Copilot
-  Licence:   MIT
-  Copyright: Copyright (c) 2026 Leo
-  Upstream:  https://github.com/iFurySt/open-codex-computer-use
-  Version:   0.3.5, pinned at commit 547b4ffb8ed731a8f16486e6d8a3b215484267d3
-  Licence text and notice:
-    in this repository   vendor/computer-use/{LICENSE,NOTICE}
-    in an installed app  beside the helper binary, inside the payload
+agent-desktop
+-------------
+  Used for:  the native desktop engine behind Biorouter Copilot
+  Licence:   Apache License 2.0
+  Copyright: published by Vercel Labs; upstream states no copyright line and
+             ships no NOTICE file
+  Upstream:  https://github.com/vercel-labs/agent-desktop
+  Version:   1.3.1, pinned at commit b0b7277bea09b770ef9d1fb45aad667bc432cd57
+  Licence text and dependency list:
+    in this repository   vendor/agent-desktop/{LICENSE,DEPENDENCIES.txt}
+    in an installed app  beside the helper binary, inside the payload, as
+                         LICENSE.agent-desktop and DEPENDENCIES.agent-desktop.txt
 
-  The upstream source is vendored in full at vendor/computer-use/source, so a
-  build needs no network. Biorouter's own changes are kept separately in
-  vendor/computer-use/patches and are applied to a throwaway copy at build
-  time, never to the vendored tree.
+  Biorouter ships agent-desktop unmodified. The upstream source the build
+  reads is vendored at vendor/agent-desktop/source, checked file by file
+  against a hash manifest before every build, and no Biorouter patch is
+  applied to it; Biorouter's own rules live in its own code around the
+  binary. On macOS the unmodified binary is placed in an app bundle named
+  Biorouter Copilot, with Biorouter's bundle identifier and signature.
 
-  The build copies LICENSE and NOTICE into the shipped payload and records
-  their checksums in the payload manifest, and the verify step fails the build
-  if the manifest and the files on disk disagree. The notice cannot be dropped
-  by a packaging change without the build noticing.
+  The build copies upstream's LICENSE and the dependency list into the
+  shipped payload and records their checksums in the payload manifest, and
+  the verify step fails the build if the manifest and the files on disk
+  disagree, or if the licence is not upstream's text.
 
-  Upstream's extracted cursor artwork is deliberately not vendored and not
-  distributed. It was extracted from another vendor's shipped application, and
-  MIT covers upstream's own work rather than somebody else's artwork. The
-  cursor Biorouter ships is drawn procedurally by its own build script.
+  The helper is compiled from crates.io crates locked in upstream's
+  Cargo.lock: 141 of the 160 it locks reach at least one shipped target. Their
+  licences, counted over those 141: MIT OR Apache-2.0 (and its other
+  spellings) 108, MIT 21, Apache-2.0 3, Unlicense OR MIT 2, MIT OR Zlib OR
+  Apache-2.0 2, Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT 2,
+  0BSD OR MIT OR Apache-2.0 1, (MIT OR Apache-2.0) AND Unicode-3.0 1, and
+  Zlib 1 (zlib-rs). DEPENDENCIES.txt lists every crate with its version,
+  licence and the targets that compile it; each crate's source, with its
+  licence text, is published at https://crates.io/crates/<crate>/<version>.
 
 
 llama.cpp

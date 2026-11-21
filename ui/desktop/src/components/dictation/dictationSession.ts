@@ -274,6 +274,15 @@ export function getDictationSnapshot(): DictationSnapshot {
 }
 
 /**
+ * The dictation that holds the microphone now, as an opaque token, or null: a later dictation is a
+ * different token. The fn gestures use it so a release stops only the recording its hold started
+ * (`fnGestureClient.ts`).
+ */
+export function activeDictationToken(): object | null {
+  return active;
+}
+
+/**
  * Whether dictated text is going into `key`'s field at this moment, so the
  * composer's change handler can tell the insert from typing: a spoken "@" or
  * "/" opens no menu (DD-63 step 5), and the edit moves no anchor.
@@ -1250,6 +1259,21 @@ function startDictationBody(options: StartDictationOptions): Promise<StartOutcom
     return active === dictation ? { kind: 'recording' } : { kind: 'cancelled' };
   };
   return run();
+}
+
+/**
+ * Whether a press now would start recording with nothing shown first: no dictation runs or waits,
+ * the speech model is ready, the status has loaded, and no notice, consent or permission prompt
+ * would come before the microphone opens. The fn gestures start capture the moment fn goes down
+ * only then (`fnGestureClient.ts`), so a press that turns out to be a tap never opens anything.
+ */
+export function canStartDictationQuietly(): boolean {
+  if (active || pendingRemoteStart) return false;
+  if (snapshot.activity !== 'idle' && snapshot.activity !== 'error') return false;
+  if (remoteHttpBackend() || needsSharedOriginNotice()) return false;
+  const status = deps.statusSnapshot();
+  if (status.load !== 'loaded' || deps.phase().phase !== 'idle') return false;
+  return !(window.electron?.platform === 'darwin' && status.micStatus === 'not-determined');
 }
 
 /** Stop and insert (the recording pill, Enter while recording). */

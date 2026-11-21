@@ -20,6 +20,9 @@ use super::platform_tools;
 /// a classifier that silently stops matching, and a scheduled run that stops
 /// matching is one that reports success for having done nothing.
 pub(crate) use super::tool_execution::EXPIRED_RESPONSE;
+/// Re-exported for [`crate::scheduler`] like [`EXPIRED_RESPONSE`]: an unattended
+/// run's prompt is now refused at once with this text instead of expiring (#543).
+pub(crate) use super::tool_execution::UNATTENDED_APPROVAL_RESPONSE;
 use super::tool_execution::{ToolCallResult, CHAT_MODE_TOOL_SKIPPED_RESPONSE};
 // The denial text itself is written by `tool_execution::denied_response_text`
 // now; the tests below still assert against the constant.
@@ -130,6 +133,40 @@ const MAX_ZERO_PROGRESS_TRUNCATION_CONTINUATIONS: u32 = 3;
 /// Injected when auto-continuing a length-truncated turn, so the model resumes
 /// instead of the agent ending the turn on a half-finished response.
 const TRUNCATION_CONTINUATION_MESSAGE: &str = "Your previous response was cut off because it reached the output length limit (finish_reason=\"length\"). Continue exactly where you left off, and do not repeat what you already wrote.";
+/// Corrective attempts one user reply gets for an empty provider reply (#542):
+/// a request that completed with no text, no thinking and no tool call. Never
+/// reset inside the reply, so a tool call between two empty replies does not
+/// buy a second attempt. `MistakeTracker`'s provider-error budget cannot bound
+/// this: an empty reply is a completed request, which resets that budget.
+const MAX_EMPTY_REPLY_RETRIES: u32 = 1;
+/// Model-only note for the corrective attempt. Without it the request is the
+/// one that just came back empty.
+const EMPTY_REPLY_NOTE: &str = "Your previous reply was empty: it had no text and no tool call, so nothing reached the person. Continue the task now. Answer in text, or call the tool you need.";
+/// Shown while the corrective attempt runs, as a transient notice.
+const EMPTY_REPLY_RETRY_NOTICE: &str = "The model sent an empty reply. Asking it once more…";
+/// Stored when the corrective attempt came back empty too, and the turn ends.
+const EMPTY_REPLY_STOP_NOTICE: &str = "The model sent an empty reply again, with no text and no tool call, so Biorouter stopped this turn. The conversation is saved. You can ask again, or switch to another model if this repeats.";
+
+/// Whether a reply message says anything: text that is not only whitespace,
+/// thinking, a tool call, an image, a record of work a coding agent already
+/// did. Only whitespace text and system notifications say nothing.
+fn message_says_something(message: &Message) -> bool {
+    message.content.iter().any(|content| match content {
+        MessageContent::Text(text) => !text.text.trim().is_empty(),
+        MessageContent::SystemNotification(_) => false,
+        _ => true,
+    })
+}
+
+/// Whether a natural-looking stop is one an empty reply can come back with.
+/// A refusal, a filtered reply or a length cut is not an upstream fault, and
+/// a retry would only repeat it.
+fn finish_allows_empty_reply_retry(finish_reason: Option<&str>) -> bool {
+    matches!(
+        finish_reason,
+        None | Some("stop" | "end_turn" | "tool_calls" | "tool_use" | "stop_sequence")
+    )
+}
 
 #[derive(Default)]
 struct MirroredCatalogRefresh {
@@ -501,6 +538,11 @@ mod persisted_ordering {
     {
         let published: Vec<PersistedMessage> = messages
             .into_iter()
+            // #549: a row a headless run holds in memory because its store is
+            // out of space is not durable, so it is not named.
+            .filter(|message| {
+                !crate::session::session_manager::deferred_writes::is_pending(message)
+            })
             .filter_map(PersistedMessage::of)
             .collect();
         (!published.is_empty()).then_some(AgentEvent::MessagesPersisted(published))
@@ -1200,6 +1242,27 @@ const CODING_AGENT_BRIDGE_ALLOWED_DICTIONARY_TOOLS: &[&str] = &[
 const CODING_AGENT_BRIDGE_ALLOWED_DECISIONS_TOOLS: &[&str] =
     &["decisions__decide", "decisions__decision_models"];
 
+/// BB-09: every Biorouter Browser tool. Without an entry the Claude Code and Codex providers
+/// silently lose them; each call still passes `admit_browser` on BioRouter's side.
+const CODING_AGENT_BRIDGE_ALLOWED_BROWSER_TOOLS: &[&str] = &[
+    "browser__browser_open",
+    "browser__browser_navigate",
+    "browser__browser_tabs",
+    "browser__browser_snapshot",
+    "browser__browser_read",
+    "browser__browser_screenshot",
+    "browser__browser_scroll",
+    "browser__browser_hover",
+    "browser__browser_wait",
+    "browser__browser_click",
+    "browser__browser_fill",
+    "browser__browser_type",
+    "browser__browser_press",
+    "browser__browser_select",
+    "browser__browser_dialog",
+    "browser__browser_drag",
+];
+
 const CODING_AGENT_BRIDGE_REQUIRED_COLLECTOR_TOOLS: &[&str] = &[
     "workspace__workspace_watch",
     "workspace__workspace_read_conversation",
@@ -1238,6 +1301,9 @@ const CODING_AGENT_BRIDGE_ALLOWED_COMPUTERCONTROLLER_TOOLS: &[&str] = &[
     "computercontroller__press_key",
     "computercontroller__set_value",
     "computercontroller__screen_capture",
+    "computercontroller__find_elements",
+    "computercontroller__wait_for",
+    "computercontroller__open_app",
 ];
 
 const CODING_AGENT_BRIDGE_ALLOWED_WEBDOCUMENTS_TOOLS: &[&str] = &[
@@ -1321,12 +1387,17 @@ const CODING_AGENT_BRIDGE_POLICIES: &[CodingAgentBridgePolicy] = &[
         tools: CODING_AGENT_BRIDGE_ALLOWED_COMPUTERCONTROLLER_TOOLS,
     },
     CodingAgentBridgePolicy {
+        capability_name: "Biorouter Browser",
+        target_name: "browser",
+        tools: CODING_AGENT_BRIDGE_ALLOWED_BROWSER_TOOLS,
+    },
+    CodingAgentBridgePolicy {
         capability_name: "Web & Documents",
         target_name: "webdocuments",
         tools: CODING_AGENT_BRIDGE_ALLOWED_WEBDOCUMENTS_TOOLS,
     },
     CodingAgentBridgePolicy {
-        capability_name: "Agent Drafter",
+        capability_name: "Application Drafter",
         target_name: "agent_drafter",
         tools: CODING_AGENT_BRIDGE_ALLOWED_AGENT_DRAFTER_TOOLS,
     },
@@ -1569,7 +1640,7 @@ fn prepare_coding_agent_bridge_tool(tool: &Tool) -> Tool {
                  Do not delegate SQLite/database creation, file creation, shell commands, or \
                  build/test execution without corresponding child tools. A child may instead review \
                  a specification or calculate expected results; label that reasoning-only, not \
-                 executed or verified. For an app-building task, if Agent Drafter is callable here, \
+                 executed or verified. For an application-building task, if Application Drafter is callable here, \
                  build directly in this parent rather than delegating to a child without that grant. Otherwise \
                  explain the limitation and ask for a supported alternative or provider before \
                  starting a child. Do not silently substitute analysis for a requested executable result."
@@ -2455,6 +2526,14 @@ pub struct ToolCategorizeResult {
     pub frontend_requests: Vec<ToolRequest>,
     pub remaining_requests: Vec<ToolRequest>,
     pub filtered_response: Message,
+    /// #545: refusals for bare tool names that match no offered tool or
+    /// several. Their requests are in `remaining_requests`; these join the
+    /// inspection results so the denial path answers them and nothing runs.
+    pub admission_denials: Vec<InspectionResult>,
+    /// #545: for a prefixed name nobody offered, by request id, the offered
+    /// names it may have meant. Added to the call's result only when dispatch
+    /// answers that the tool does not exist ([`Agent::integrate_tool_result`]).
+    pub unresolved_name_hints: HashMap<String, String>,
 }
 
 /// The per-batch lookup tables one round of tool calls needs, built in one
@@ -3888,9 +3967,9 @@ async fn dispatch_post_tool_hooks(
 
 /// The terminal abort a repetition-policy denial produces, if this batch has one.
 ///
-/// `RepetitionInspector` is the sole policy authority; `TurnToolGuard` only
-/// converts its exact-request `Deny` into a terminal event and has no
-/// independent counter or threshold.
+/// `RepetitionInspector` is the sole policy authority; `TurnToolGuard` records
+/// every valid denied signature, permits feedback for the first one this turn,
+/// and converts each later valid denial into a terminal event.
 ///
 /// Split out of the `reply_internal` generator to keep its `poll` frame small —
 /// see [`ToolBatchMaps`].
@@ -3899,34 +3978,171 @@ fn repetition_denial_abort(
     permission_check_result: &PermissionCheckResult,
     turn_guard: &mut super::turn_guard::TurnToolGuard,
 ) -> Option<(TurnAbortCode, String)> {
-    let (result, request) = inspection_results
-        .iter()
-        .filter(|result| {
-            result.inspector_name == crate::tool_monitor::REPETITION_INSPECTOR_NAME
-                && result.action == InspectionAction::Deny
-        })
-        .find_map(|result| {
-            permission_check_result
-                .denied
-                .iter()
-                .find(|request| request.id == result.tool_request_id)
-                .map(|request| (result, request))
-        })?;
-    let code = turn_guard.enforce_denial(request)?;
-    warn!(
-        tool_request_id = %request.id,
-        "repetition policy denied a tool signature; terminating this user turn"
-    );
-    // The turn's ending is read by the PERSON (the desktop's turn row, the
-    // CLI's last line); `result.reason` is the agent's and stays the denied
-    // call's tool result. See `repetition_stop_notice`.
-    let tool_name = request
-        .tool_call
-        .as_ref()
-        .map(|call| call.name.to_string())
-        .unwrap_or_default();
-    let notice = crate::tool_monitor::repetition_stop_notice(result, &tool_name);
-    Some((code, notice))
+    let mut seen_request_ids = HashSet::new();
+    let mut terminal = None;
+
+    for result in inspection_results.iter().filter(|result| {
+        result.inspector_name == crate::tool_monitor::REPETITION_INSPECTOR_NAME
+            && result.action == InspectionAction::Deny
+    }) {
+        let Some(request) = permission_check_result
+            .denied
+            .iter()
+            .find(|request| request.id == result.tool_request_id)
+        else {
+            continue;
+        };
+        if !seen_request_ids.insert(result.tool_request_id.clone()) {
+            continue;
+        }
+
+        let Some(code) = turn_guard.enforce_denial(request) else {
+            continue;
+        };
+        if terminal.is_some() {
+            continue;
+        }
+
+        warn!(
+            tool_request_id = %request.id,
+            "repetition policy denied a tool signature; terminating this user turn"
+        );
+        // The turn's ending is read by the PERSON (the desktop's turn row, the
+        // CLI's last line); `result.reason` is the agent's and stays the denied
+        // call's tool result. See `repetition_stop_notice`.
+        let tool_name = request
+            .tool_call
+            .as_ref()
+            .map(|call| call.name.to_string())
+            .unwrap_or_default();
+        let notice = crate::tool_monitor::repetition_stop_notice(result, &tool_name);
+        terminal = Some((code, notice));
+    }
+
+    terminal
+}
+
+#[cfg(test)]
+mod repetition_denial_feedback_tests {
+    use super::*;
+    use crate::agents::turn_guard::TurnToolGuard;
+    use serde_json::json;
+
+    fn request(id: &str, command: &str) -> ToolRequest {
+        ToolRequest {
+            id: id.to_string(),
+            tool_call: ToolResult::Ok(CallToolRequestParams {
+                task: None,
+                meta: None,
+                name: "fixture__probe".into(),
+                arguments: json!({"command": command}).as_object().cloned(),
+            }),
+            metadata: None,
+            tool_meta: None,
+        }
+    }
+
+    fn denial(request: &ToolRequest, inspector: &str) -> InspectionResult {
+        InspectionResult {
+            tool_request_id: request.id.clone(),
+            action: InspectionAction::Deny,
+            reason: "fixture policy denial".to_string(),
+            confidence: 1.0,
+            inspector_name: inspector.to_string(),
+            finding_id: None,
+        }
+    }
+
+    fn permissions(denied: Vec<ToolRequest>) -> PermissionCheckResult {
+        PermissionCheckResult {
+            approved: vec![],
+            needs_approval: vec![],
+            denied,
+        }
+    }
+
+    #[test]
+    fn first_repetition_denial_leaves_one_feedback_opportunity() {
+        let denied = request("first", "one");
+        let inspections = [denial(
+            &denied,
+            crate::tool_monitor::REPETITION_INSPECTOR_NAME,
+        )];
+        let mut guard = TurnToolGuard::new();
+
+        assert!(repetition_denial_abort(
+            &inspections,
+            &permissions(vec![denied.clone()]),
+            &mut guard,
+        )
+        .is_none());
+        assert!(guard.is_blocked(&denied));
+    }
+
+    #[test]
+    fn two_denied_requests_in_one_batch_are_terminal_and_both_remain_blocked() {
+        let first = request("first", "one");
+        let second = request("second", "two");
+        let inspections = [
+            denial(&first, crate::tool_monitor::REPETITION_INSPECTOR_NAME),
+            denial(&second, crate::tool_monitor::REPETITION_INSPECTOR_NAME),
+        ];
+        let mut guard = TurnToolGuard::new();
+
+        let abort = repetition_denial_abort(
+            &inspections,
+            &permissions(vec![first.clone(), second.clone()]),
+            &mut guard,
+        );
+
+        assert!(matches!(abort, Some((TurnAbortCode::ToolLoop { .. }, _))));
+        assert!(guard.is_blocked(&first));
+        assert!(guard.is_blocked(&second));
+    }
+
+    #[test]
+    fn duplicate_inspection_rows_do_not_consume_two_feedback_strikes() {
+        let denied = request("first", "one");
+        let inspection = denial(&denied, crate::tool_monitor::REPETITION_INSPECTOR_NAME);
+        let inspections = [inspection.clone(), inspection];
+        let mut guard = TurnToolGuard::new();
+
+        assert!(repetition_denial_abort(
+            &inspections,
+            &permissions(vec![denied.clone()]),
+            &mut guard,
+        )
+        .is_none());
+        assert!(guard.is_blocked(&denied));
+    }
+
+    #[test]
+    fn other_inspector_denials_never_block_a_repetition_signature() {
+        let denied = request("first", "one");
+        let inspections = [denial(&denied, "fixture_non_repetition")];
+        let mut guard = TurnToolGuard::new();
+
+        assert!(repetition_denial_abort(
+            &inspections,
+            &permissions(vec![denied.clone()]),
+            &mut guard,
+        )
+        .is_none());
+        assert!(!guard.is_blocked(&denied));
+    }
+
+    #[test]
+    fn an_inspection_for_a_request_not_in_denied_never_consumes_feedback() {
+        let denied = request("first", "one");
+        let inspections = [denial(
+            &denied,
+            crate::tool_monitor::REPETITION_INSPECTOR_NAME,
+        )];
+        let mut guard = TurnToolGuard::new();
+
+        assert!(repetition_denial_abort(&inspections, &permissions(vec![]), &mut guard).is_none());
+        assert!(!guard.is_blocked(&denied));
+    }
 }
 
 /// PAR-04: give every tool a cancel abandoned an explicit "cancelled" result.
@@ -5105,7 +5321,7 @@ pub struct Agent {
     pub(super) subagent_runtime_sessions: Mutex<HashSet<String>>,
     /// Whether the generic `subagent` tool is offered at all.
     ///
-    /// Default `true` (every existing caller). An Agent-Drafter app that declares
+    /// Default `true` (every existing caller). An application that declares
     /// worker profiles sets this `false`, because otherwise TWO delegation
     /// mechanisms are armed at once and the generic one is easier to reach: the
     /// `subagent` tool's description auto-lists the very worker names the author
@@ -5115,6 +5331,11 @@ pub struct Agent {
     /// A tool that is absent from the tool list cannot be called; prose competing
     /// with an available tool loses.
     pub(super) subagent_tool_enabled: AtomicBool,
+    /// #535: a done gate for one session, set by a headless caller
+    /// ([`Agent::set_session_done_gate`]), read once per reply in place of the
+    /// global one. On the Agent rather than in `SessionConfig`, which is built
+    /// as a literal at too many sites, and never in the generator frame.
+    session_done_gates: std::sync::Mutex<HashMap<String, crate::agents::done_gate::DoneGateConfig>>,
     dictionary_learning: AtomicBool,
     /// The provider each chat's current turn uses, as the chat extractor stamps an
     /// observation with it (DD-57). `reply_internal` pins it once it has chosen the
@@ -5258,6 +5479,10 @@ pub struct Agent {
     pub(super) live_acks: LiveAcks,
     /// How the last reply loop on this agent ended. See [`TurnExit`].
     pub(super) turn_exit: std::sync::Mutex<Option<TurnExit>>,
+    /// Why the last reply loop ended, with its counts (#540). See
+    /// [`crate::agents::turn_stop_record`].
+    pub(super) turn_stop_record:
+        std::sync::Mutex<Option<crate::agents::turn_stop_record::TurnStopRecord>>,
     /// Bumped on every accepted steer. A `watch` rather than the `Notify`
     /// above because several waits may be listening at once — the tool batch's
     /// status wake and a `workspace_watch` parked inside it — and `notify_one`
@@ -6579,6 +6804,9 @@ impl Agent {
         extension_manager
             .computer_use
             .set_mode(config.biorouter_mode);
+        extension_manager
+            .browser_use
+            .set_mode(config.biorouter_mode);
         Self {
             provider: provider.clone(),
             config,
@@ -6586,6 +6814,7 @@ impl Agent {
             sub_workflows: Mutex::new(HashMap::new()),
             subagent_runtime_sessions: Mutex::new(HashSet::new()),
             subagent_tool_enabled: AtomicBool::new(true),
+            session_done_gates: std::sync::Mutex::new(HashMap::new()),
             dictionary_learning: AtomicBool::new(true),
             dictionary_turn_origin: std::sync::Mutex::new(HashMap::new()),
             credentials_refused: AtomicBool::new(false),
@@ -6627,6 +6856,7 @@ impl Agent {
             usage_limit_reply: Default::default(),
             live_acks: Default::default(),
             turn_exit: std::sync::Mutex::new(None),
+            turn_stop_record: std::sync::Mutex::new(None),
             steer_arrivals: tokio::sync::watch::Sender::new(0),
             announced_steer_seq: std::sync::atomic::AtomicU64::new(0),
             pending_retry_note: std::sync::Mutex::new(None),
@@ -7490,6 +7720,71 @@ impl Agent {
             .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(exit);
     }
 
+    /// Record why the reply loop is ending (#540,
+    /// [`crate::agents::turn_stop_record`]), beside [`Self::record_turn_exit`].
+    /// Scalars only, so a call from the `reply_internal` generator adds nothing
+    /// to its frame.
+    pub(super) fn record_turn_stop(
+        &self,
+        reason: crate::agents::turn_stop_record::TurnStopReason,
+        actions: u32,
+        tool_calls: u32,
+        limit: Option<u32>,
+    ) {
+        *self
+            .turn_stop_record
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) =
+            Some(crate::agents::turn_stop_record::TurnStopRecord {
+                reason,
+                actions,
+                tool_calls,
+                limit,
+            });
+    }
+
+    /// Forget the last loop's stop: a new reply, or a new run of the loop, has
+    /// not stopped yet.
+    pub(super) fn clear_turn_stop(&self) {
+        *self
+            .turn_stop_record
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+    }
+
+    /// The loop is over and no site recorded why: it ended normally, or its
+    /// cancellation token tripped (a cancel seen mid-request leaves the loop
+    /// without passing the loop-top check).
+    fn record_turn_stop_unless_recorded(&self, cancelled: bool, actions: u32, tool_calls: u32) {
+        let mut record = self
+            .turn_stop_record
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if record.is_none() {
+            *record = Some(crate::agents::turn_stop_record::TurnStopRecord {
+                reason: if cancelled {
+                    crate::agents::turn_stop_record::TurnStopReason::Cancelled
+                } else {
+                    crate::agents::turn_stop_record::TurnStopReason::EndTurn
+                },
+                actions,
+                tool_calls,
+                limit: None,
+            });
+        }
+    }
+
+    /// Why this agent's last reply loop ended, and its counts (#540). `None`
+    /// when no loop ran since the reply began (a command answered in the
+    /// prologue, a reply that failed to start). Not consumed: a headless caller
+    /// reads it as often as it reports.
+    pub fn last_turn_stop(&self) -> Option<crate::agents::turn_stop_record::TurnStopRecord> {
+        *self
+            .turn_stop_record
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
     fn turn_exit_is_resumable(&self) -> bool {
         matches!(
             *self
@@ -7978,7 +8273,7 @@ impl Agent {
                     ) else {
                         continue;
                     };
-                    if crate::agents::mistakes::is_user_decline(&outcome) {
+                    if crate::agents::mistakes::is_approval_refusal(&outcome) {
                         continue;
                     }
                     outcomes.push(outcome);
@@ -8506,13 +8801,20 @@ impl Agent {
         tools: &[rmcp::model::Tool],
     ) -> ToolCategorizeResult {
         // Categorize tool requests
-        let (frontend_requests, remaining_requests, filtered_response) =
-            self.categorize_tool_requests(response, tools).await;
+        let (
+            frontend_requests,
+            remaining_requests,
+            filtered_response,
+            admission_denials,
+            unresolved_name_hints,
+        ) = self.categorize_tool_requests(response, tools).await;
 
         ToolCategorizeResult {
             frontend_requests,
             remaining_requests,
             filtered_response,
+            admission_denials,
+            unresolved_name_hints,
         }
     }
 
@@ -8608,14 +8910,17 @@ impl Agent {
     /// command). The rewrite is applied here — after the hooks ran, before
     /// anything is dispatched — and the requests the caller goes on to persist
     /// are the rewritten ones, so the transcript matches what actually executed.
+    #[allow(clippy::too_many_arguments)]
     async fn inspect_and_gate_tool_requests(
         &self,
         remaining_requests: &mut Vec<ToolRequest>,
+        admission_denials: Vec<InspectionResult>,
         conversation: &Conversation,
         biorouter_mode: BioRouterMode,
         session: &Session,
         request_to_response_map: &HashMap<String, Arc<Mutex<Message>>>,
         cancel_token: Option<CancellationToken>,
+        turn_guard: &super::turn_guard::TurnToolGuard,
     ) -> Result<(
         Vec<InspectionResult>,
         PermissionCheckResult,
@@ -8659,6 +8964,13 @@ impl Agent {
             inspection_results.append(&mut revalidated);
         }
 
+        // #545: a bare tool name that matched no offered tool, or several, was
+        // refused when the calls were first matched against the offered roster.
+        // First, so the denial text is that refusal (`denied_response_text`
+        // takes the first Deny), and after the rewrite revalidation above, which
+        // keeps only the hook inspector's results.
+        inspection_results.splice(0..0, admission_denials);
+
         // The planning gate's once-per-turn redirect, added as inspection
         // results so the permission merge, the denial path and the transcript
         // treat it like any other refusal. Deliberately NOT a registered
@@ -8670,6 +8982,27 @@ impl Agent {
             self.planning_gate_denials(&session.id, remaining_requests)
                 .await,
         );
+
+        for request in remaining_requests.iter() {
+            let already_denied = inspection_results.iter().any(|result| {
+                result.tool_request_id == request.id
+                    && result.inspector_name == crate::tool_monitor::REPETITION_INSPECTOR_NAME
+                    && result.action == InspectionAction::Deny
+            });
+            if turn_guard.is_blocked(request) && !already_denied {
+                inspection_results.push(InspectionResult {
+                    tool_request_id: request.id.clone(),
+                    action: InspectionAction::Deny,
+                    reason: "This exact tool call signature was already blocked by the automatic repetition guard earlier in this turn."
+                        .to_string(),
+                    confidence: 1.0,
+                    inspector_name: crate::tool_monitor::REPETITION_INSPECTOR_NAME.to_string(),
+                    finding_id: Some(
+                        crate::tool_monitor::REPETITION_HARD_FINDING_ID.to_string(),
+                    ),
+                });
+            }
+        }
 
         let permission_check_result = self
             .tool_inspection_manager
@@ -8734,6 +9067,7 @@ impl Agent {
         request_to_original_tool_call: &HashMap<String, CallToolRequestParams>,
         request_to_executed_tool_call: &HashMap<String, CallToolRequestParams>,
         request_metadata: &HashMap<String, Option<ProviderMetadata>>,
+        unresolved_name_hints: &HashMap<String, String>,
         catalog_changed: &mut bool,
         extension_state_changed: &mut bool,
         post_tool_results: &mut Vec<(String, Option<Value>, Option<String>)>,
@@ -8742,6 +9076,13 @@ impl Agent {
     ) {
         let _phase = super::phase_timing::Phase::start("agent.integrate_tool_result");
         let mut output = call_tool_result::validate(output);
+        // #545: a prefixed name nobody offered that dispatch could not route
+        // either gets the offered names, as a bare one does at admission.
+        if let (Err(error), Some(hint)) = (&mut output, unresolved_name_hints.get(&request_id)) {
+            if super::reply_parts::is_tool_not_found_error(&error.message) {
+                error.message = format!("{} {hint}", error.message).into();
+            }
+        }
         let diagnostics_receipt = output
             .as_mut()
             .ok()
@@ -9900,6 +10241,7 @@ impl Agent {
         let installed = DecisionBoundProvider::bind(inner, axes);
         let installed_public = !installed.tier().is_private();
         self.extension_manager.computer_use.revoke();
+        self.extension_manager.browser_use.revoke();
         *slot = Some(installed);
         // (Server package, DR-33.) A lowering's own observation, made while the
         // slot is still held so Gate B's cache store (after its post-ratchet
@@ -10520,6 +10862,11 @@ impl Agent {
         // is, so recovering one from it would offer a subagent or an app's chat a person tool
         // that dispatch then refuses.
         registry_tools.retain(|tool| !crate::agents::crew_extension::is_crew_tool(&tool.name));
+        // The same for the tools only a person's own chat is offered (the browser's and the
+        // Dictionary's): `tools` already went without them, and the registry would bring them
+        // back.
+        self.withhold_tools_only_a_persons_chat_is_offered(session_id, &mut registry_tools)
+            .await;
         let extension_targets = self
             .enabled_coding_agent_bridge_extension_targets(&registry_tools)
             .await;
@@ -10550,7 +10897,9 @@ impl Agent {
                 &extension_targets,
             )
             .await;
-        let (tools, granted) = self.keep_a_crew_grants_tool_limit(session_id, tools).await;
+        let (mut tools, granted) = self.keep_a_crew_grants_tool_limit(session_id, tools).await;
+        // The bridge's own roster decides how Copilot's `get_app_state` names the browser.
+        crate::agents::reply_parts::route_copilot_for_roster(&mut tools);
         // Gate B-1 refuses a granted chat both, so the plan holds neither.
         let delegation_available = delegation_available && !granted;
         let bug_report_available = bug_report_available && !granted;
@@ -11436,7 +11785,20 @@ impl Agent {
         let session_extensions =
             EnabledExtensionsState::from_extension_data(&session.extension_data);
         let enabled_configs = match session_extensions {
-            Some(state) => state.extensions,
+            Some(state) => {
+                // L6: a default-on capability added after this chat's roster was saved (the
+                // Biorouter Browser) joins it now, unless the person has it off for every chat.
+                // Only a person's own chat is offered it (`backfill` says why). Not persisted
+                // here, since opening a chat changes nothing in it; the roster records it, and
+                // marks it offered, the next time the roster is written.
+                let backfill = state.backfill(
+                    &crate::config::extensions::get_enabled_extensions(),
+                    session.session_type,
+                );
+                let mut extensions = state.extensions;
+                extensions.extend(backfill);
+                extensions
+            }
             None => {
                 tracing::warn!(
                     "No extensions found in session {}. This is unexpected.",
@@ -11552,11 +11914,56 @@ impl Agent {
 
     /// Offer (or withhold) the generic `subagent` tool.
     ///
-    /// Agent-Drafter apps with declared worker profiles call this with `false`, so
+    /// Applications with declared worker profiles call this with `false`, so
     /// `consult` is the ONE delegation mechanism. Two armed mechanisms is what let
     /// the main agent bypass the profiles the author declared.
     pub fn set_subagent_tool_enabled(&self, enabled: bool) {
         self.subagent_tool_enabled.store(enabled, Ordering::Relaxed);
+    }
+
+    /// #535: give `session_id` a done gate of its own (`biorouter run
+    /// --require-file`), used by its replies in place of the global
+    /// `BIOROUTER_DONE_GATE` one; `None` removes it. Keyed by session, so no
+    /// other chat on this agent, and no subagent it starts, is affected.
+    pub fn set_session_done_gate(
+        &self,
+        session_id: &str,
+        config: Option<crate::agents::done_gate::DoneGateConfig>,
+    ) {
+        let mut gates = self
+            .session_done_gates
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        match config {
+            Some(config) => {
+                gates.insert(session_id.to_string(), config);
+            }
+            None => {
+                gates.remove(session_id);
+            }
+        }
+    }
+
+    /// [`resolve_reply_loop_policy`] with this session's own done gate, when it
+    /// has one ([`Self::set_session_done_gate`]). Synchronous, and the lock is
+    /// released before it returns, so the generator holds nothing across an
+    /// await.
+    fn resolve_reply_loop_policy_for_session(
+        &self,
+        effort: ReasoningEffort,
+        session_config: &SessionConfig,
+    ) -> ReplyLoopPolicy {
+        let session_gate = self
+            .session_done_gates
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(&session_config.id)
+            .cloned();
+        let mut policy = resolve_reply_loop_policy(effort, session_config);
+        if let Some(gate) = session_gate {
+            policy.done_gate_config = gate;
+        }
+        policy
     }
 
     pub fn set_dictionary_learning(&self, enabled: bool) {
@@ -11738,8 +12145,15 @@ impl Agent {
     /// schemas. Every model-facing caller — the turn's tool list, a subagent's,
     /// the prompt builders — uses this one.
     pub async fn list_tools(&self, session_id: &str, extension_name: Option<String>) -> Vec<Tool> {
-        self.list_tools_for(session_id, extension_name, ToolAudience::Model)
-            .await
+        let whole_roster = extension_name.is_none();
+        let mut tools = self
+            .list_tools_for(session_id, extension_name, ToolAudience::Model)
+            .await;
+        // Only the whole list can say whether the browser is offered beside Copilot.
+        if whole_roster {
+            crate::agents::reply_parts::route_copilot_for_roster(&mut tools);
+        }
+        tools
     }
 
     /// The tool list as the PERMISSION EDITOR will show it — Settings →
@@ -11834,18 +12248,15 @@ impl Agent {
 
     /// The Dictionary's tools reach the model only in a person's own chat (a `User`
     /// session) outside a Crew scope, with dictionary learning on (DD-51); an unreadable
-    /// Crew registry fails closed, as dispatch does.
+    /// Crew registry fails closed, as dispatch does. `session_type` is `None` when the
+    /// chat's row could not be read, which withholds them too.
     async fn withhold_dictionary_tools_where_unavailable(
         &self,
         session_id: &str,
+        session_type: Option<&SessionType>,
         prefixed_tools: &mut Vec<Tool>,
     ) {
-        let dictionary_allowed = self
-            .config
-            .session_manager
-            .get_session(session_id, false)
-            .await
-            .is_ok_and(|session| session.session_type == SessionType::User);
+        let dictionary_allowed = session_type == Some(&SessionType::User);
         let crew_scoped = match crate::crew::manager() {
             Ok(crew) => crew.is_scoped_session(session_id).await,
             Err(_) => true,
@@ -11853,6 +12264,48 @@ impl Agent {
         if !dictionary_allowed || crew_scoped || !self.dictionary_learning_enabled() {
             prefixed_tools.retain(|tool| !tool.name.starts_with("dictionary__"));
         }
+    }
+
+    /// The Biorouter Browser's tools reach the model only in a person's own chat (BB-16).
+    /// A subagent, a scheduled run, a hidden or a terminal session is never the chat a
+    /// window shows, so no person could see the consent card or the page, and every call
+    /// would be refused. Offering them anyway cost every such roster sixteen tools that
+    /// could never work. The session kind never changes during a chat, so the roster stays
+    /// stable for prompt caching. A chat whose row could not be read (`None`) keeps them:
+    /// `ExtensionManager::admit_browser` refuses its calls, failing closed.
+    ///
+    /// ⚠ The model's list only. The permission editor still lists the tools, and the
+    /// dispatch refusals stay in place behind this, so a bridged or direct call is still
+    /// refused with its reason.
+    fn withhold_browser_tools_where_unattended(
+        session_type: Option<&SessionType>,
+        prefixed_tools: &mut Vec<Tool>,
+    ) {
+        if session_type.is_some_and(|kind| *kind != SessionType::User) {
+            prefixed_tools
+                .retain(|tool| !crate::security::browser_use::is_reserved_browser_name(&tool.name));
+        }
+    }
+
+    /// Both filters above, after one read of the chat's kind. The model's list asks it, and so
+    /// does the coding-agent bridge for the capability tools it recovers from the registry,
+    /// which no roster filter has narrowed: without it a Claude Code or Codex subagent or
+    /// scheduled run was offered every browser tool again, each refused at dispatch.
+    async fn withhold_tools_only_a_persons_chat_is_offered(
+        &self,
+        session_id: &str,
+        tools: &mut Vec<Tool>,
+    ) {
+        let session_type = self
+            .config
+            .session_manager
+            .get_session(session_id, false)
+            .await
+            .ok()
+            .map(|session| session.session_type);
+        self.withhold_dictionary_tools_where_unavailable(session_id, session_type.as_ref(), tools)
+            .await;
+        Self::withhold_browser_tools_where_unattended(session_type.as_ref(), tools);
     }
 
     async fn list_tools_for(
@@ -11900,7 +12353,7 @@ impl Agent {
         .unwrap_or_default();
 
         if matches!(audience, ToolAudience::Model) {
-            self.withhold_dictionary_tools_where_unavailable(session_id, &mut prefixed_tools)
+            self.withhold_tools_only_a_persons_chat_is_offered(session_id, &mut prefixed_tools)
                 .await;
         }
 
@@ -12233,6 +12686,13 @@ impl Agent {
             .extension_manager
             .bind_computer_use_task(&session_config.id)
             .await;
+        // BB-17: a request lifetime browser act grant ends with this reply; the chat's observe
+        // grant lives on.
+        let browser_task = self.extension_manager.browser_use.task_guard();
+        let _ = self
+            .extension_manager
+            .bind_browser_use_task(&session_config.id)
+            .await;
         // Every decision this reply causes (a monitor, a `decide` batch, a
         // phase gate, a decision chat) is logged under one fresh turn id, so
         // surfaces aggregate per turn instead of listing calls. The guard ends
@@ -12253,6 +12713,11 @@ impl Agent {
                     )
             )
         });
+        // #540: a new reply has not stopped yet. An elicitation answer belongs
+        // to a turn still running, whose stop is recorded when it ends.
+        if !answers_an_elicitation {
+            self.clear_turn_stop();
+        }
         let decision_turn = (!answers_an_elicitation).then(|| {
             crate::decision::monitor::DecisionTurnGuard::begin(
                 Arc::clone(&self.decisions.monitors),
@@ -12267,6 +12732,7 @@ impl Agent {
         .await?;
         Ok(Box::pin(async_stream::try_stream! {
             let _task = task;
+            let _browser_task = browser_task;
             let _decision_turn = decision_turn;
             while let Some(event) = replies.next().await {
                 yield event?;
@@ -13578,6 +14044,12 @@ impl Agent {
         let hit = self.usage_limit_hold(session_id).await?;
         self.usage_limit_reply.mark_interrupted();
         self.record_turn_exit(TurnExit::Final);
+        self.record_turn_stop(
+            crate::agents::turn_stop_record::TurnStopReason::UsageLimitStop,
+            0,
+            0,
+            None,
+        );
         emit_loop_safety(
             LoopSafetyKind::UsageLimitStop,
             session_id,
@@ -15166,6 +15638,9 @@ impl Agent {
             let mut mid_turn_compaction = MidTurnCompaction::default();
             let mut truncation_recovery = TruncationRecoveryBudget::default();
             let mut ever_made_user_visible_progress = false;
+            // #542: corrective attempts spent on empty replies, for the whole
+            // reply (see `MAX_EMPTY_REPLY_RETRIES`).
+            let mut empty_reply_retries = 0u32;
             // Everything this reply reads from config, resolved once — see
             // `ReplyLoopPolicy` for what each field is and why the resolution is
             // not written out here.
@@ -15180,7 +15655,7 @@ impl Agent {
                 stall_config,
                 mistake_config,
                 mut budget,
-            } = resolve_reply_loop_policy(effort, &session_config);
+            } = self.resolve_reply_loop_policy_for_session(effort, &session_config);
             // BR-47: consecutive post-edit reflections this reply. Bounded by
             // `post_edit_diag_config.max_reflections` so a file that never parses
             // clean cannot wedge the turn — mirrors the PostToolUse block cap. Reset
@@ -15226,6 +15701,7 @@ impl Agent {
             // with a warning instead of ambushing this one.
             let this_turn = self.open_or_reuse_prepared_turn();
             self.record_turn_exit(TurnExit::Final);
+            self.clear_turn_stop();
             crate::agents::subagent_handle::open_parent_continuation_admission(
                 &session_config.id,
             );
@@ -15305,6 +15781,15 @@ impl Agent {
                 }
                 if max_turns > 0 && turns_taken > max_turns {
                     self.record_turn_exit(TurnExit::ResumableForUserInput);
+                    // #540: this iteration's request is not sent, so the
+                    // completed actions are one fewer than the count that
+                    // tripped the limit.
+                    self.record_turn_stop(
+                        crate::agents::turn_stop_record::TurnStopReason::TurnLimit,
+                        turns_taken.saturating_sub(1),
+                        tool_calls_taken,
+                        Some(max_turns),
+                    );
                     crate::agents::subagent_handle::begin_parent_closing(&session_config.id);
                     native_supervision_required = true;
                     emit_loop_safety(
@@ -15342,6 +15827,12 @@ impl Agent {
                 }
                 if max_tool_calls > 0 && tool_calls_taken > max_tool_calls {
                     self.record_turn_exit(TurnExit::ResumableForUserInput);
+                    self.record_turn_stop(
+                        crate::agents::turn_stop_record::TurnStopReason::ToolCallLimit,
+                        turns_taken.saturating_sub(1),
+                        tool_calls_taken,
+                        Some(max_tool_calls),
+                    );
                     crate::agents::subagent_handle::begin_parent_closing(&session_config.id);
                     native_supervision_required = true;
                     emit_loop_safety(
@@ -15382,6 +15873,12 @@ impl Agent {
                 }
                 if stall_deadline.is_some_and(|deadline| turns_taken > deadline) {
                     self.record_turn_exit(TurnExit::ResumableForUserInput);
+                    self.record_turn_stop(
+                        crate::agents::turn_stop_record::TurnStopReason::StallStop,
+                        turns_taken.saturating_sub(1),
+                        tool_calls_taken,
+                        None,
+                    );
                     crate::agents::subagent_handle::begin_parent_closing(&session_config.id);
                     native_supervision_required = true;
                     let reason = stall_watch
@@ -15418,6 +15915,12 @@ impl Agent {
                     // A spend cap is not "actions without user input": a steer
                     // buys no extra model call here, and is stored unanswered.
                     self.record_turn_exit(TurnExit::Final);
+                    self.record_turn_stop(
+                        crate::agents::turn_stop_record::TurnStopReason::BudgetStop,
+                        turns_taken.saturating_sub(1),
+                        tool_calls_taken,
+                        None,
+                    );
                     crate::agents::subagent_handle::begin_parent_closing(&session_config.id);
                     native_supervision_required = true;
                     let snapshot = budget.snapshot_at(reply_started.elapsed());
@@ -15468,6 +15971,13 @@ impl Agent {
                     }
                     UsageLimitGate::Stop(events) => {
                         native_supervision_required = true;
+                        // Asked before this iteration's request, which is not sent.
+                        self.record_turn_stop(
+                            crate::agents::turn_stop_record::TurnStopReason::UsageLimitStop,
+                            turns_taken.saturating_sub(1),
+                            tool_calls_taken,
+                            None,
+                        );
                         for event in events {
                             yield event;
                         }
@@ -15840,6 +16350,10 @@ impl Agent {
                 // not: it is needed for model continuity, but gives the user no
                 // partial answer to read.
                 let mut made_user_visible_progress = false;
+                // #542: whether this request's reply carried anything at all
+                // (thinking, a tool call, a coding agent's record of work), so
+                // an empty reply can be told from a reply with nothing to show.
+                let mut reply_said_something = false;
                 // The turn's usage, recorded ONCE when the stream ends.
                 //
                 // It used to be written on every usage-bearing chunk, which (a) lost
@@ -16075,6 +16589,7 @@ impl Agent {
                                 made_user_visible_progress |=
                                     message_has_user_visible_progress(&response);
                                 ever_made_user_visible_progress |= made_user_visible_progress;
+                                reply_said_something |= message_says_something(&response);
                                 // #59: name the reply BEFORE it is yielded, so the
                                 // copy the client sees carries the id the row it
                                 // becomes is stored under. A provider that stamps
@@ -16140,7 +16655,18 @@ impl Agent {
                                     // persisted, and handed to the PostToolUse hooks.
                                     mut remaining_requests,
                                     filtered_response,
-                                } = self.categorize_tools(&response, &tools).await;
+                                    admission_denials,
+                                    unresolved_name_hints,
+                                } = self
+                                    .categorize_tools(
+                                        &response,
+                                        // #545: the roster this turn offered. The
+                                        // toolshim empties `tools` for transport and
+                                        // offers its own copy, so a shim turn is
+                                        // matched against `toolshim_tools`.
+                                        if tools.is_empty() { &toolshim_tools } else { &tools },
+                                    )
+                                    .await;
 
                                 yield AgentEvent::Message(filtered_response.clone());
                                 tokio::task::yield_now().await;
@@ -16272,11 +16798,13 @@ impl Agent {
                                     ) = {
                                         let gate = self.inspect_and_gate_tool_requests(
                                             &mut remaining_requests,
+                                            admission_denials,
                                             &conversation,
                                             biorouter_mode,
                                             &session,
                                             &request_to_response_map,
                                             cancel_token.clone(),
+                                            &turn_guard,
                                         );
                                         futures::pin_mut!(gate);
                                         self.loop_phase.enter(crate::agents::loop_phase::LoopPhase::Gating);
@@ -16471,6 +16999,7 @@ impl Agent {
                                                     &request_to_original_tool_call,
                                                     &request_to_executed_tool_call,
                                                     &request_metadata,
+                                                    &unresolved_name_hints,
                                                     &mut catalog_changed,
                                                     &mut extension_state_changed,
                                                     &mut post_tool_results,
@@ -17256,6 +17785,42 @@ impl Agent {
                         // manager, whose job is a *completed* response that failed
                         // validation). Bounded by `provider_error_retries`, and by
                         // `max_turns` like every other iteration.
+                        } else if !made_user_visible_progress
+                            && !reply_said_something
+                            && !is_token_cancelled(&cancel_token)
+                            && finish_allows_empty_reply_retry(last_finish_reason.as_deref())
+                        {
+                        // #542: the request completed with no text, no thinking and
+                        // no tool call. That is an upstream fault, not an answer:
+                        // ended as a normal finish, it exited 0 with the answer
+                        // missing. Nothing reached the person and nothing ran, so
+                        // one corrective attempt is safe; a second empty reply ends
+                        // the turn as the provider failure it is.
+                        if empty_reply_retries < MAX_EMPTY_REPLY_RETRIES {
+                            empty_reply_retries += 1;
+                            warn!(
+                                attempt = empty_reply_retries,
+                                limit = MAX_EMPTY_REPLY_RETRIES,
+                                finish_reason = ?last_finish_reason,
+                                "Provider returned an empty reply; asking once more"
+                            );
+                            yield AgentEvent::Message(thinking_notice(EMPTY_REPLY_RETRY_NOTICE));
+                            messages_to_add.push(named(model_only_user_text(EMPTY_REPLY_NOTE)));
+                        } else {
+                            warn!(
+                                finish_reason = ?last_finish_reason,
+                                "Provider returned an empty reply again; ending the turn"
+                            );
+                            let message = named(assistant_text(EMPTY_REPLY_STOP_NOTICE));
+                            yield AgentEvent::Message(message.clone());
+                            messages_to_add.push(message);
+                            pending_turn_abort = Some((
+                                TurnAbortCode::ProviderFailure {
+                                    kind: crate::providers::errors::ProviderErrorKind::Server,
+                                },
+                                EMPTY_REPLY_STOP_NOTICE.to_string(),
+                            ));
+                        }
                         } else {
                         match self.handle_retry_logic(&mut conversation, &session_config, initial_messages.messages()).await {
                             Ok(should_retry) => {
@@ -17388,6 +17953,12 @@ impl Agent {
 
                 if let Some((code, message)) = pending_turn_abort.take() {
                     self.record_turn_exit(TurnExit::Final);
+                    self.record_turn_stop(
+                        crate::agents::turn_stop_record::TurnStopReason::Aborted,
+                        turns_taken,
+                        tool_calls_taken,
+                        None,
+                    );
                     crate::agents::subagent_handle::begin_parent_closing(&session_config.id);
                     native_supervision_required = true;
                     deferred_turn_abort = Some((code, message));
@@ -17400,6 +17971,12 @@ impl Agent {
                 // call (monitors, done gate, self-critique, Stop hooks, `/goal`).
                 if self.usage_limit_reply.stopped() {
                     native_supervision_required = true;
+                    self.record_turn_stop(
+                        crate::agents::turn_stop_record::TurnStopReason::UsageLimitStop,
+                        turns_taken,
+                        tool_calls_taken,
+                        None,
+                    );
                     break;
                 }
 
@@ -17444,6 +18021,12 @@ impl Agent {
                         // is left in it is stored as unanswered, or a steer
                         // the person typed continues the turn.
                         self.record_turn_exit(TurnExit::ResumableForUserInput);
+                        self.record_turn_stop(
+                            crate::agents::turn_stop_record::TurnStopReason::MonitorStop,
+                            turns_taken,
+                            tool_calls_taken,
+                            None,
+                        );
                         crate::agents::subagent_handle::begin_parent_closing(&session_config.id);
                         native_supervision_required = true;
                         break;
@@ -17514,7 +18097,7 @@ impl Agent {
                                 let (feedback, published) = persist_steering_message(
                                     &session_manager,
                                     &session_config.id,
-                                    crate::agents::done_gate::gate_instruction(&failures),
+                                    done_gate_config.instruction(&failures),
                                 ).await?;
                                 if let Some(published) = published {
                                     yield published;
@@ -17591,6 +18174,12 @@ impl Agent {
                             // A safety stop, as at the post-iteration point:
                             // no commit point, the queue stays open.
                             self.record_turn_exit(TurnExit::ResumableForUserInput);
+                            self.record_turn_stop(
+                                crate::agents::turn_stop_record::TurnStopReason::MonitorStop,
+                                turns_taken,
+                                tool_calls_taken,
+                                None,
+                            );
                             crate::agents::subagent_handle::begin_parent_closing(
                                 &session_config.id,
                             );
@@ -17734,6 +18323,13 @@ impl Agent {
                 tokio::task::yield_now().await;
             }
 
+            // #540: every `break` above that is not a limit, a monitor's stop
+            // or an abort is an ordinary end, or a cancel seen mid-request.
+            self.record_turn_stop_unless_recorded(
+                is_token_cancelled(&cancel_token),
+                turns_taken,
+                tool_calls_taken,
+            );
             crate::agents::subagent_handle::begin_parent_closing(&session_config.id);
 
             // A turn that took the chat to its usage limit (or past 80% of
@@ -17934,6 +18530,7 @@ impl Agent {
             .check_provider_binding(session_id, provider.as_ref())
             .await?;
         self.extension_manager.computer_use.revoke();
+        self.extension_manager.browser_use.revoke();
         // DR-33 (design §3.1, Gate A): the incoming instance is UNWRAPPED before
         // its tier is read, so a parent's decision-bound wrapper handed to a
         // child never decides the child's bind. On a Private row names are inert
@@ -18391,10 +18988,18 @@ impl Agent {
         .await
     }
 
-    /// Override the system prompt with a custom template
+    /// Replace the base system prompt with a custom template
     pub async fn override_system_prompt(&self, template: String) {
         let mut prompt_manager = self.prompt_manager.lock().await;
         prompt_manager.set_system_prompt_override(template);
+    }
+
+    /// Put a custom template in place of the base system prompt and keep
+    /// Biorouter's core after it: the tool roster, tool instructions, task
+    /// rules, the tool-output frame and the safety rules (#544).
+    pub async fn compose_system_prompt(&self, template: String) {
+        let mut prompt_manager = self.prompt_manager.lock().await;
+        prompt_manager.set_composed_system_prompt_override(template);
     }
 
     pub async fn list_extension_prompts(&self) -> HashMap<String, Vec<Prompt>> {
@@ -19726,6 +20331,7 @@ mod tests {
                 &HashMap::from([(request_id.clone(), original)]),
                 &HashMap::from([(request_id.clone(), executed)]),
                 &HashMap::from([(request_id.clone(), None)]),
+                &HashMap::new(),
                 &mut install_ok,
                 &mut extension_state_changed,
                 &mut post_results,
@@ -24829,7 +25435,7 @@ mod tests {
             "SQLite",
             "file creation",
             "build/test execution",
-            "Agent Drafter",
+            "Application Drafter",
             "reasoning-only",
         ] {
             assert!(
@@ -26757,6 +27363,96 @@ mod tests {
         );
     }
 
+    /// BB-16: the Biorouter Browser's tools reach the model only in a person's own chat,
+    /// even on a desktop daemon where the browser is available. A subagent, a scheduled run,
+    /// a hidden or a terminal session is never the chat a window shows, so it was offered
+    /// sixteen tools whose every call was refused. The permission editor still lists them.
+    #[tokio::test]
+    #[serial_test::serial(workspace_services)]
+    async fn browser_tools_are_offered_only_in_a_persons_own_chat() {
+        struct Availability;
+        impl Drop for Availability {
+            fn drop(&mut self) {
+                crate::agents::browser_extension::set_available_for_tests(None);
+            }
+        }
+        crate::agents::browser_extension::set_available_for_tests(Some(true));
+        let _availability = Availability;
+
+        let temp = tempfile::TempDir::new().unwrap();
+        let sessions = Arc::new(crate::session::SessionManager::new(
+            temp.path().to_path_buf(),
+        ));
+        let agent = Agent::with_config(AgentConfig::new(
+            Arc::clone(&sessions),
+            Arc::new(crate::config::permission::PermissionManager::new(
+                temp.path().to_path_buf(),
+            )),
+            None,
+            crate::config::BioRouterMode::Auto,
+        ));
+        let target = crate::agents::extension_manager::resolve_bundled_extension("browser")
+            .expect("the Biorouter Browser is a bundled capability");
+        agent
+            .add_extension(target.into_config("browser session gate test".into()))
+            .await
+            .unwrap();
+        let offers_browser = |tools: &[Tool]| {
+            tools
+                .iter()
+                .any(|tool| tool.name.as_ref() == "browser__browser_open")
+        };
+
+        for kind in [
+            SessionType::User,
+            SessionType::SubAgent,
+            SessionType::Scheduled,
+            SessionType::Hidden,
+            SessionType::Terminal,
+        ] {
+            let session = sessions
+                .create_session(temp.path().to_path_buf(), format!("{kind} chat"), kind)
+                .await
+                .unwrap();
+            let model = agent.list_tools(&session.id, None).await;
+            if kind == SessionType::User {
+                assert!(
+                    offers_browser(&model),
+                    "a person's own chat is offered the browser"
+                );
+            } else {
+                assert!(
+                    !model
+                        .iter()
+                        .any(|tool| tool.name.starts_with("browser__browser_")),
+                    "a {kind} session was offered browser tools"
+                );
+            }
+            assert!(
+                offers_browser(
+                    &agent
+                        .list_tools_for_permission_settings(&session.id, None)
+                        .await
+                ),
+                "the permission editor still lists the browser's tools for a {kind} session"
+            );
+
+            // A Claude Code or Codex chat gets its tools through the bridge, which also
+            // recovers capability tools from the registry. That recovery must not bring the
+            // browser back where the model's list went without it.
+            let codex: Arc<dyn Provider> = Arc::new(BridgedChildProvider { name: "codex" });
+            let plan = agent
+                .prepare_coding_agent_bridge_plan(&session.id, &codex, &model)
+                .await
+                .expect("Codex needs a bridge plan");
+            assert_eq!(
+                offers_browser(&plan.tools),
+                kind == SessionType::User,
+                "a bridged {kind} session's browser tools must match the model's list"
+            );
+        }
+    }
+
     /// PR-24 (DD-57): a Crew scoped chat teaches the dictionary nothing. Such a chat's turn
     /// cannot reach a model here, because `check_provider_use` asks the workspace broker
     /// before the message is stored, so this drives the entry the reply path and
@@ -27857,7 +28553,7 @@ mod tests {
     /// Skipping the injection on a later turn is not enough: the extension is
     /// already loaded, and `get_prefixed_tools` reads the manager
     /// unconditionally. Without a revocation the grant is permanent — an
-    /// Agent-Drafter app that turns delegation off (so `consult` is the one
+    /// application that turns delegation off (so `consult` is the one
     /// delegation mechanism, the whole point of `set_subagent_tool_enabled`),
     /// a switch to a Gemini model, or a mode change to Chat all leave
     /// `workspace__subagent` advertised, and the dispatch gate keys on
@@ -31961,6 +32657,42 @@ mod max_turns_setting_tests {
         }
     }
 
+    /// #535: a session's own done gate replaces the global one for that
+    /// session's replies only; every other session keeps the global gate, and
+    /// clearing it restores the global gate.
+    #[tokio::test]
+    async fn a_session_done_gate_applies_to_its_session_only() {
+        crate::config::with_config_overrides(
+            HashMap::from([("BIOROUTER_DONE_GATE".to_string(), "false".to_string())]),
+            async {
+                let agent = Agent::new();
+                let mine = session_without_limit();
+                let mut other = session_without_limit();
+                other.id = "another-chat".to_string();
+                let gate =
+                    crate::agents::done_gate::DoneGateConfig::required_files(
+                        &["answer.txt".into()],
+                    );
+                agent.set_session_done_gate(&mine.id, Some(gate));
+
+                let policy =
+                    agent.resolve_reply_loop_policy_for_session(ReasoningEffort::Normal, &mine);
+                assert!(policy.done_gate_config.is_active());
+                assert!(policy.done_gate_config.required_files_mode);
+                let elsewhere =
+                    agent.resolve_reply_loop_policy_for_session(ReasoningEffort::Normal, &other);
+                assert!(!elsewhere.done_gate_config.is_active());
+                assert!(!elsewhere.done_gate_config.required_files_mode);
+
+                agent.set_session_done_gate(&mine.id, None);
+                let cleared =
+                    agent.resolve_reply_loop_policy_for_session(ReasoningEffort::Normal, &mine);
+                assert!(!cleared.done_gate_config.is_active());
+            },
+        )
+        .await;
+    }
+
     #[tokio::test]
     async fn a_stored_positive_limit_still_applies() {
         assert_eq!(resolved_with_stored("7").await, 7);
@@ -33490,3 +34222,7 @@ mod effort_tier_tests;
 #[cfg(test)]
 #[path = "agent_mid_turn_switch_tests.rs"]
 mod mid_turn_switch_tests;
+
+#[cfg(test)]
+#[path = "agent_issue545_tests.rs"]
+mod issue545_tests;

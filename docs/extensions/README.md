@@ -2,7 +2,7 @@
 
 This folder documents BioRouter's three kinds of add-on context: built-in **capabilities**, installed **extensions**, and reusable **skills**. Capabilities ship with BioRouter; extensions are user-installed or third-party MCP connectors; skills teach procedures without adding tools. It holds the end-user guide to all three, a reference page for each built-in capability, and an open investigation into a Slack integration that has not been built.
 
-Come here when you want to install an extension, understand a shipped capability, or author a skill. Agent Drafter is documented in [`docs/agent-drafter/`](../agent-drafter/README.md) and its typed app surface in [`docs/apps-sdk/`](../apps-sdk/README.md). If you are trying to restrict what any tool is allowed to do, go to [`docs/security/`](../security/README.md); for a scripted repeatable task, go to [`docs/workflows/`](../workflows/README.md).
+Come here when you want to install an extension, understand a shipped capability, or author a skill. Application Drafter is documented in [`docs/agent-drafter/`](../agent-drafter/README.md) and its typed app surface in [`docs/apps-sdk/`](../apps-sdk/README.md). If you are trying to restrict what any tool is allowed to do, go to [`docs/security/`](../security/README.md); for a scripted repeatable task, go to [`docs/workflows/`](../workflows/README.md).
 
 ## Documents in this folder
 
@@ -24,6 +24,6 @@ Two pages are worth knowing about before you go. [Developer](built-in/developer.
 
 - [Installation](../getting-started/installation.md) — the default-enabled capability list a new install starts from, before you add extensions
 - [Permission modes](../security/permission-modes.md) — how to decide whether BioRouter asks before `shell`, `text_editor` or native desktop actions acts on your machine
-- [Agent Drafter](../agent-drafter/README.md) — the built-in capability that builds interactive apps, documented separately because of its size
+- [Application Drafter](../agent-drafter/README.md) — the built-in capability that builds interactive applications, documented separately because of its size
 - [Integrations with other tools](../integrations/README.md) — the opposite direction: adapters that let another host application, such as JupyterLab's Jupyter AI chat, run a Biorouter agent with everything documented here already attached
 - [Workflows](../workflows/README.md) — the scripted alternative to a skill when you want deterministic steps rather than agent judgement

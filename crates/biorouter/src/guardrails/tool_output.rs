@@ -45,8 +45,9 @@
 //! The per-result frame is deliberately small (two short lines around the
 //! body), because unlike those three it is paid on *every* tool call rather
 //! than once per session. The prose that gives it meaning is stated once, in
-//! the system prompt (`prompts/system.md` and `prompts/subagent_system.md`),
-//! which names the `<tool-output>` tag. Keep the tag spelling here and the
+//! the system prompt (`prompts/system.md`, `prompts/subagent_system.md`, and
+//! `prompts/system_core.md` for a composed custom prompt), which names the
+//! `<tool-output>` tag. Keep the tag spelling here and the
 //! prompts in step; `system_prompt_names_the_tool_output_frame` fails if they
 //! drift.
 //!
@@ -1225,9 +1226,11 @@ mod tests {
     /// prompts drift apart, the model is told to distrust a tag it never sees
     /// and the control silently evaporates.
     ///
-    /// Both prompts are checked. A subagent gets a full system-prompt
+    /// All three base prompts are checked. A subagent gets a full system-prompt
     /// *override* (`subagent_handler.rs`), so it never sees `system.md` at all,
     /// and a subagent reading a hostile file is exactly the case that failed.
+    /// A composed custom prompt carries `system_core.md` in place of
+    /// `system.md` (#544).
     #[test]
     fn system_prompt_names_the_tool_output_frame() {
         for (name, prompt) in [
@@ -1236,6 +1239,7 @@ mod tests {
                 "subagent_system.md",
                 include_str!("../prompts/subagent_system.md"),
             ),
+            ("system_core.md", include_str!("../prompts/system_core.md")),
         ] {
             assert!(
                 prompt.contains(TOOL_OUTPUT_FRAME_OPEN),

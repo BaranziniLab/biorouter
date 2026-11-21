@@ -60,7 +60,28 @@ biorouter configure
 anywhere else without one, it changes nothing and exits with status `2`, naming
 the non-interactive route instead: choose the model with
 `biorouter models set --provider <provider> --model <model>` and pass the
-provider's API key in its environment variable (for example `OPENAI_API_KEY`).
+provider's API key in its environment variable (for example `OPENAI_API_KEY`),
+or save it with `--secret-stdin` below.
+
+**Entering a provider's key without echo:**
+
+```bash
+biorouter configure --provider <provider> --secret-stdin
+```
+
+Saves that provider's API key and nothing else, so a key is never typed at the shell's own prompt,
+put on a command line or kept in shell history. At a terminal it asks for each required key at a
+hidden prompt. Otherwise it reads `NAME=value` lines from stdin, for example from a file only your
+account can read (`< keys.env`); blank lines and lines starting with `#` are skipped, and at most
+64 KiB is read. It takes only the provider's secret settings: a setting that decides where a key is
+sent, such as an endpoint, is set with `biorouter configure`. A refused line is named by its number
+and never repeated. The key is checked with the provider before anything is written (a provider
+with no way to check a key until it is used is only set up with it), and a rejected, unreachable
+or slow provider (30 seconds) leaves the saved settings as they were. The
+provider and model choice does not change. Run it as the account that runs `biorouter serve`, and
+restart `serve` so it reads the new key. In an agent's shell (`BIOROUTER_TERMINAL` set) it refuses
+with status `2`, because a key typed for an agent would pass through its model. The two options
+are used together; either alone is a usage error.
 
 The provider list, and the provider list of the default worker model, leave out the two
 decision-model providers (`ollama_decision`, `baseten_decision`), as the desktop's provider
@@ -371,7 +392,7 @@ biorouter transcribe notes.flac --context-file abstract.txt --format json
 
 ### dictionary
 
-Manage your personal dictionary: the words dictation should spell your way, such as UCSF or EPAS1. Dictation steers recognition toward these terms and corrects close misses to them. There is one dictionary per account, in `<config>/dictionary/`; the commands work on it directly under its lock, with no daemon, and a term one terminal adds is listed by another at once. Each command prints the folder and account it acts on to stderr, so standard output stays clean for `list` and `export`.
+Manage your personal dictionary: the words dictation should spell your way, such as UCSF or Biorouter. Dictation steers recognition toward these terms and corrects close misses to them. There is one dictionary per account, in `<config>/dictionary/`; the commands work on it directly under its lock, with no daemon, and a term one terminal adds is listed by another at once. Each command prints the folder and account it acts on to stderr, so standard output stays clean for `list` and `export`.
 
 A term is public, used for dictation into any chat, or private (`--private`), used only for dictation into chats on private models. A term may hold up to 64 characters and six words, and cannot be a web or email address, a file path, digits alone or something that looks like a key.
 
@@ -566,7 +587,7 @@ Start or resume interactive chat sessions.
 - **`--path <path>`**: Legacy parameter for specifying session by file path
 - **`-r, --resume`**: Resume a previous session
 - **`--history`**: Show previous messages when resuming a session
-- **`--debug`**: Enable debug mode to output complete tool responses, detailed parameter values, and full file paths
+- **`--debug`**: Enable debug mode to output complete tool responses, detailed parameter values, and full file paths. An `execute_code` call also shows its script and every argument of each call the script made (see [Code Execution](../extensions/built-in/code-execution.md#what-the-terminal-shows))
 - **`--max-tool-repetitions <NUMBER>`**: Set the maximum number of times the same tool can be called consecutively with identical parameters. Helps prevent infinite loops.
 - **`--max-turns <NUMBER>`**: Set the maximum number of turns allowed without user input (`0` means Unlimited, the default)
 
@@ -1357,7 +1378,7 @@ Execute commands from an instruction file or stdin.
 
 - **`-i, --instructions <FILE>`**: Path to instruction file containing commands. Use `-` for stdin
 - **`-t, --text <TEXT>`**: Input text to provide to biorouter directly
-- **`--system <TEXT>`**: Provide additional system instructions to customize the agent's behavior
+- **`--system <TEXT>`**: Provide additional system instructions to customize the agent's behavior. The text is added after the system prompt, with `--text`, `--instructions FILE` and `--instructions -` alike. To stand in for the system prompt instead, see [Custom system prompts](../agent-loop/custom-system-prompts.md)
 - **`--workflow <WORKFLOW_NAME_OR_PATH> <OPTIONS>`**: Load a custom workflow in current session
 - **`--params <KEY=VALUE>`**: Key-value parameters to pass to the workflow file. Can be specified multiple times
 - **`--sub-workflow <WORKFLOW>`**: Specify sub-workflows to include alongside the main workflow. Can be specified multiple times
@@ -1378,13 +1399,14 @@ Execute commands from an instruction file or stdin.
 
 **Control Options:**
 
-- **`--debug`**: Output complete tool responses, detailed parameter values, and full file paths
+- **`--debug`**: Output complete tool responses, detailed parameter values, and full file paths. An `execute_code` call also shows its script and every argument of each call the script made (see [Code Execution](../extensions/built-in/code-execution.md#what-the-terminal-shows))
 - **`--max-tool-repetitions <NUMBER>`**: Maximum number of times the same tool can be called consecutively with identical parameters. Helps prevent infinite loops
 - **`--max-turns <NUMBER>`**: Maximum number of turns allowed without user input (`0` means Unlimited, the default)
+- **`--require-file <PATH>`**: Require `PATH` to be a non-empty regular file when the run ends. Can be specified multiple times. While a required file is missing, empty or not a regular file, the agent is sent back to work with an instruction to write it, up to `BIOROUTER_DONE_GATE_MAX_ITERATIONS` times (default `3`). A run that still ends without it exits with status `4` and lists it in `missing_files`. A relative `PATH` resolves against the session's working directory, and a symbolic link to a non-empty file counts. Only `run` takes it, and not with `--interactive` or `--shared-daemon`. Nothing checks what the file contains
 - **`--explain`**: Show a workflow's title, description, and parameters, and a "Supervision:" section when it declares monitors or a phase plan. It first runs the same checks `run` and an import run, so a workflow `run` would refuse is refused here too, with the same sentence after "This workflow would not start: ". `run` prints that sentence as it is, without a "Template rendering failed:" prefix. See [What `--explain` prints](#what---explain-prints)
 - **`--render-workflow`**: Print the rendered workflow instead of running it
 - **`-q, --quiet`**: Quiet mode. Suppress non-response output, printing only the model response to stdout
-- **`--output-format <FORMAT>`**: Output format (`text`, `json`, or `stream-json`). Default is `text`. Use JSON structured output for automation and scripting: `json` for results after completion, `stream-json` for events as they occur
+- **`--output-format <FORMAT>`**: Output format (`text`, `json`, or `stream-json`). Default is `text`. Use JSON structured output for automation and scripting: `json` for results after completion, `stream-json` for events as they occur. A run without `--interactive` tells the model that nobody can answer or approve and that its turn ends at a reply without a tool call; only `text` output also tells it to keep replies short for a terminal. See [What a non-interactive run is told](../agent-loop/custom-system-prompts.md#what-a-non-interactive-run-is-told)
 - **`--provider`**: Specify the provider to use for this session (overrides environment variable)
 - **`--model`**: Specify the model to use for this session (overrides environment variable)
 
@@ -1429,8 +1451,14 @@ on.
 | 0 | The run finished, including a run whose phase plan still has phases pending |
 | 1 | A failure, such as a workflow that was not started |
 | 2 | The command needs a terminal it does not have |
-| 3 | The chat's supervision ended the run short of its work: a monitor stopped the turn, or the plan ended with a phase its gate holds (its last check did not pass) or a phase left blocked |
+| 3 | The run ended short of its work: a monitor stopped the turn, the plan ended with a phase its gate holds (its last check did not pass) or a phase left blocked, or a limit stopped the turn (`--max-turns`, `BIOROUTER_MAX_TOOL_CALLS`, the stall stop, the per-reply budget or a usage limit) |
+| 4 | The run ended without a file it was given with `--require-file`, whatever ended its turn |
+| 5 | The run finished, but its session store ran out of space and some of its rows were never saved, so the stored chat is incomplete |
 | 70 and up | A turn that aborted: 70 a provider failure, 75 a provider that refused the credentials, 76 a tool loop, 77 a worker that never answered, 78 a session store failure, 79 to 81 a provider reply that could not be completed |
+
+When more than one applies, the status is the first that applies in this order: an abort (70 and
+up), then `4`, then `3`, then `5`. Every line that applies is still printed on stderr, and every
+field below is still in the output.
 
 On status 3, one line on stderr says what stopped the run and how to carry the chat on, with no
 "Error:" before it, because nothing failed:
@@ -1440,8 +1468,52 @@ Monitor 'Form reached' stopped this run (exit status 3). To carry on, send the c
 This run ended with phase "verify" held by its gate, which did not pass (exit status 3). See the gates with biorouter session gates 20261110_5. To carry on, …
 ```
 
+A limit stop prints a line of the same kind, naming the limit:
+
+```text
+This run stopped at its limit of 40 actions without user input (--max-turns or BIOROUTER_MAX_TURNS), not because the work was done (stop reason turn_limit, exit status 3). To carry on, …
+```
+
 A `--no-session` run has no chat to carry on and says so. Only `biorouter run` exits 3 for this:
 the debug chat for a failed extension and `biorouter bench` treat such a turn as completed.
+
+**Approvals in a run without `-s`.** Nobody can answer an approval in such a run, so a call that
+needs one is not run and no prompt is shown. The output has one line naming the tool, and the
+model is told that nobody could be asked and nobody declined, and to carry on with a call that
+does not need approval. To approve calls yourself, run with `-s` in a terminal. See
+[When nobody can be asked](../security/permission-modes.md#when-nobody-can-be-asked).
+
+**How the run ended.** With `--output-format stream-json`, the last line is the `complete` event;
+with `--output-format json`, the document's `metadata`. Both carry these fields beside
+`total_tokens` (and `status` in `json`):
+
+| Field | Meaning |
+|---|---|
+| `stop_reason` | Why the turn ended: `end_turn`, `turn_limit`, `tool_call_limit`, `stall_stop`, `budget_stop`, `usage_limit_stop`, `monitor_stop`, `aborted` or `cancelled`. The abort's own code stays in the `aborted` event and in `metadata.error` |
+| `actions` | Model requests the turn made, length continuations included. Provider retries and side requests (a title, a summary, a compaction) are not counted |
+| `tool_calls` | Tool calls the turn dispatched |
+| `wall_s` | Seconds from the start of the turn to its final output |
+| `missing_files` | Only with `--require-file`: each required file the run ended without, as `{"path": …, "reason": …}`, where the reason is `does not exist`, `is empty`, `is not a regular file` or `could not be read`. Empty when every file was there |
+| `store_degraded`, `unsaved_rows` | Only when the session store ran out of space during the run: `true`, and how many rows were still not saved at the end |
+
+`metadata.status` keeps its meaning: `failed` only for a turn that aborted. A run a limit stopped
+still says `completed`, and `stop_reason` and the exit status say why it stopped. Every
+stream-json line also carries `ts`, the time it was written in milliseconds since the Unix epoch,
+so a tool call's duration is the gap between its request line and its response line.
+
+**When the session store runs out of space.** A store write that fails because the disk or the
+database is full (SQLite `SQLITE_FULL` or `SQLITE_IOERR`, or a full file system) no longer ends a
+`biorouter run` with status `78`. The run prints one warning on stderr, keeps the rows it could
+not save in memory, and goes on to finish its answer. Before each later write it tries again to
+save them, oldest first, so a later row is never stored ahead of an earlier one, and it tries once
+more at the end. If space came back, everything is saved and the run exits as it would have;
+`store_degraded` is `true` and `unsaved_rows` is `0`. If rows are still unsaved at the end, it
+exits with status `5`, and resuming the chat will not show everything the run did. Other store
+errors still end the run with `78`, and so does a full store when a usage limit applies to the
+chat (an unrecorded request would hide spend from the limit), when more than 4096 rows or 64 MiB
+would wait, or when the turn needs to rewrite its history (a compaction) while rows still wait.
+Only a headless `run` behaves this way: interactive sessions, `biorouter session`, `biorouter
+bench`, the desktop app and subagents keep failing on the first store error.
 
 **Usage:**
 
@@ -1806,19 +1878,19 @@ biorouter kb query "what is known about HLA-DRB1*15:01?"
 
 ### apps
 
-List, open, and serve the Biorouter apps built by Agent Drafter. Apps open in a real browser; there is no in-terminal rendering.
+List, open, and serve the Biorouter applications built by Application Drafter. Applications open in a real browser; there is no in-terminal rendering.
 
 **Subcommands:**
 
-- **`list`**: List installed Biorouter apps. `--json` prints them as JSON
-- **`open <ID>`**: Open an app in your default browser. A daemon this command starts keeps running after it returns, so the app stays open
-- **`serve <ID>`**: Serve an app in the foreground until `Ctrl-C`, then stop the daemon it started. When a daemon it can use is already running, it prints a link and returns instead
+- **`list`**: List installed Biorouter applications. `--json` prints them as JSON
+- **`open <ID>`**: Open an application in your default browser. A daemon this command starts keeps running after it returns, so the application stays open
+- **`serve <ID>`**: Serve an application in the foreground until `Ctrl-C`, then stop the daemon it started. When a daemon it can use is already running, it prints a link and returns instead
 
 **Which daemon they use.** When this profile's shared daemon is running (the one the desktop app and `biorouter crew` use), both commands open the app there and start nothing. They reach it the way every `crew` command does, and send the browser to that daemon's own address. `serve` then prints the link and returns, because that daemon keeps running on its own. A shared daemon they cannot use, for example one an older Biorouter started, is passed over with a line saying why. A port you name in `BIOROUTER_PORT` keeps its meaning: with `BIOROUTER_PORT=8080` set, the shared daemon is used only if it listens on port 8080, and otherwise the commands work on port 8080 as described below. (`BIOROUTER_PORT=0` names no port.)
 
 Otherwise they look for a `biorouterd` from the configured port (`BIOROUTER_PORT`, default 3000) up, and start one on the first free port. Only a server whose `/status` answers `ok` counts as a Biorouter daemon; a port held by anything else, such as a web development server, is passed over for the next one, up to six ports. A daemon only opens an app for a caller holding its secret key, so they use a running daemon only when they know its key: a daemon `apps open` or `apps serve` started (they record its key in a file only your account can read), or one whose key `BIOROUTER_SERVER__SECRET_KEY` names. Any other daemon on the configured port, such as one you started by hand, is refused with a message saying so; set `BIOROUTER_SERVER__SECRET_KEY` to its key, or set `BIOROUTER_PORT` to a free port so the command starts its own. On Windows, the daemon `open` leaves running has no console of its own, so pressing `Ctrl-C` at that prompt later, or closing the window, does not stop it.
 
-**The link opens the app once.** The address is `http://127.0.0.1:<port>/apps/<id>/?t=<token>`. It works once and for five minutes: opening it gives that browser the app, and the plain `http://127.0.0.1:<port>/apps/<id>/` address keeps working in that browser until the daemon stops or the browser is closed. `open` never hands the link to a command line, where other accounts on the machine could read it and use it first. It writes the link into a page only your account can read and opens that page. It also prints the link, for a browser that cannot open the page (a snap packaged browser cannot read hidden folders).
+**The link opens the application once.** The address is `http://127.0.0.1:<port>/apps/<id>/?t=<token>`. It works once and for five minutes: opening it gives that browser the app, and the plain `http://127.0.0.1:<port>/apps/<id>/` address keeps working in that browser until the daemon stops or the browser is closed. `open` never hands the link to a command line, where other accounts on the machine could read it and use it first. It writes the link into a page only your account can read and opens that page. It also prints the link, for a browser that cannot open the page (a snap packaged browser cannot read hidden folders).
 
 For another link, run `apps open` again. While `apps serve` is running, run `apps open <ID>` (or a second `apps serve <ID>`) in another terminal; it mints a new link on the same daemon. A browser that follows a spent or expired link sees a page that says how to open the app again.
 
@@ -1879,9 +1951,10 @@ Run Biorouter and reach it from a browser. `serve` starts the `biorouterd` daemo
 - **`-p, --port <PORT>`**: Port to listen on. Default is `8765` — deliberately not `3000`, which is `biorouterd`'s own default
 - **`--token <TOKEN>`**: Use this access token instead of generating a fresh one. The flag stays on the command line while `serve` runs, where other accounts on the machine can read it, so `serve` prints a note saying so. To keep a token private, set `BIOROUTER_BROWSER_TOKEN` in the environment instead
 - **`--no-token`**: Serve without an access token. Refused for a non-loopback bind, and cannot be combined with `--token`
+- **`--print-url`**: Print the address with its access token wherever the output goes. Without it the token is printed only when it was made for this launch and the output is a terminal. When the output is not a terminal, `serve` prints a note that the token will be kept wherever the output goes
 - **`--no-dictation-install`**: Stop browsers on this daemon from installing speech models. The host can still run `biorouter dictation install`. `BIOROUTER_DICTATION_BROWSER_INSTALL=false` and managed policy also stop browser installs
 - **`--web-dir <DIR>`**: Directory holding the built interface. Takes precedence over `BIOROUTER_SERVE_UI`; whichever of the two is used must contain an `index.html`, or `serve` refuses to start. Located automatically when neither is set
-- **`--public-url <URL>`**: The `https://` address a reverse proxy serves the interface at, path prefix included, for example `https://hub.example.org/user/me/proxy/8765/`. The proxy must strip the prefix. It is printed with the access token and admitted by the live views' origin check. Takes precedence over `BIOROUTER_PUBLIC_URL`
+- **`--public-url <URL>`**: The `https://` address a reverse proxy serves the interface at, path prefix included, for example `https://hub.example.org/user/me/proxy/8765/`. The proxy must strip the prefix. It is printed as the address to open, with the access token only as `--print-url` describes, and admitted by the live views' origin check. Takes precedence over `BIOROUTER_PUBLIC_URL`
 - **`--computer-use-approval`**: Interactively set a Biorouter Copilot approval key for the browser session. Requires a terminal
 - **`--folder-access-approval`**: Interactively set a folder-access approval key, a separate key for external-folder decisions in the browser. Requires a terminal
 - **`--open`**: Open a browser once the server is ready. The browser is handed a page only your account can read, which carries the address, and never the address itself: the address holds the access token, and a browser's command line can be read by other accounts on the machine. The page is removed two minutes later, or when `serve` stops
@@ -1901,9 +1974,19 @@ biorouter serve --host 0.0.0.0
 
 # Reuse one address across restarts, for a bookmark or a service unit
 BIOROUTER_BROWSER_TOKEN="$(openssl rand -hex 32)" biorouter serve --host 0.0.0.0
+
+# Show the address of the serve running for this account, token included
+biorouter serve url --port 9000
 ```
 
-The printed URL carries an access token as `?t=<token>`, minted per launch and shown once. Opening it exchanges the token for a session cookie and answers a short page that moves on to the interface, so the token leaves the address bar. It is not used up, and opens the interface again for anyone who has it until the daemon stops. Use `Ctrl+C` to stop the server, or send `serve` `SIGTERM` (`kill <pid>`); either way it stops the daemon it started and frees the port.
+**`serve url [--port <PORT>]`**: Print the address, access token included, of the `serve` this
+account runs on that port (default `8765`). `serve` keeps it in a file only this account can read,
+and removes it when it stops. It takes no other option of `serve`.
+
+The URL carries an access token as `?t=<token>`, minted per launch unless `--token` or
+`BIOROUTER_BROWSER_TOKEN` names one. The banner prints the token only for a token minted for this
+launch when its output is a terminal, or with `--print-url`. Anywhere else, such as a service's
+journal, it prints the address without the token and says to run `biorouter serve url`. Opening it exchanges the token for a session cookie and answers a short page that moves on to the interface, so the token leaves the address bar. It is not used up, and opens the interface again for anyone who has it until the daemon stops. Use `Ctrl+C` to stop the server, or send `serve` `SIGTERM` (`kill <pid>`); either way it stops the daemon it started and frees the port.
 
 > **Note.** A browser session cannot move an open chat to another model, and a program that holds only the daemon's secret (such as an agent in a chat) cannot change the provider. The person in the served page can choose, add and edit the host's providers and default model, including on the first page when nothing is configured yet, but only over an `https` address or on the serving machine itself, and not with `--no-token` ([SD-18](../deployment/serve-decisions.md#sd-18-the-person-in-the-served-page-sets-up-providers-and-an-agent-still-cannot)). `biorouter configure` still works before or while `serve` runs; its changes reach new chats after `serve` restarts, while changes made in the browser apply at once. When a new release is out, the page can also update `serve` and restart it on the same address ([SD-19](../deployment/serve-decisions.md#sd-19-the-person-on-the-page-updates-serve-and-it-comes-back-on-the-same-address)). [Reaching Biorouter from a browser](../deployment/browser-access.md) covers the access token, remote access and troubleshooting.
 

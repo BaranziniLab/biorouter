@@ -21,7 +21,10 @@ export type WorkspaceCommand = {
     | 'annotate_tab'
     | 'observe'
     | 'read_panel'
-    | 'capture_panel';
+    | 'capture_panel'
+    // BB-10: one Biorouter Browser operation, and the daemon abandoning one.
+    | 'browser'
+    | 'browser_cancel';
   session_id?: string;
   placement?: 'tab' | 'split' | 'window';
   focus?: boolean;
@@ -32,6 +35,15 @@ export type WorkspaceCommand = {
   request_id?: string;
   /** `read_panel`: how much text to return. */
   max_chars?: number;
+  /** `browser`: the operation, its arguments, and what the daemon admitted it under. */
+  op?: string;
+  args?: Record<string, unknown>;
+  grant?: string;
+  tier?: string;
+  deadline_ms?: number;
+  download_dir?: string;
+  /** `browser_cancel`: the request id of the operation to abandon. */
+  cancel_request_id?: string;
 };
 
 /**
@@ -69,11 +81,24 @@ export function registerWorkspaceCommands(next: WorkspaceCommandHandler): () => 
   };
 }
 
+/** A browser operation is never queued: replayed later it would act on a page nobody watched. */
+export const BROWSER_CHAT_NOT_ON_SCREEN =
+  "Biorouter's browser runs in this chat's side panel, and the chat is not on screen. Ask the person to open the chat.";
+
 /** Apply now if a provider is mounted; otherwise queue and report deferral. */
 export function applyWorkspaceCommand(
   cmd: WorkspaceCommand
 ): WorkspaceCommandResult | Promise<WorkspaceCommandResult> {
   if (handler) return handler(cmd);
+  // BB-15: no chat surface is mounted (Settings is in front), so the chat is not on screen.
+  // Queueing would replay the operation, possibly a click, whenever a chat next mounts.
+  if (cmd.cmd === 'browser' || cmd.cmd === 'browser_cancel') {
+    return {
+      ok: false,
+      detail: BROWSER_CHAT_NOT_ON_SCREEN,
+      data: { error_kind: 'chat_not_on_screen' },
+    };
+  }
   pending.push(cmd);
   return { ok: false, detail: 'no chat surface mounted; queued' };
 }

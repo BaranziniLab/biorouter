@@ -168,4 +168,16 @@ describe('renderer session hooks', () => {
   it('does not blanket every session in the process', () => {
     expect(mainProcessCode()).not.toMatch(/app\.on\(\s*'session-created'/);
   });
+
+  /**
+   * The Biorouter Browser's partition holds third party cookies, logins and service workers
+   * (`docs/desktop-ui/built-in-browser.md`, "Session, partition and CSP hooks"). The app's own
+   * hooks, CSP included, must never be installed on it, and the app must never render in it.
+   */
+  it('never names the browser partition among the app’s own sessions', () => {
+    const body = functionBody(mainProcessCode(), 'appSessions');
+    expect(body).not.toContain('embedded-browser');
+    expect(body).not.toContain('EMBEDDED_PARTITION');
+    expect(mainProcessCode()).not.toContain("'persist:biorouter-embedded-browser'");
+  });
 });

@@ -1,11 +1,15 @@
 import { z } from 'zod';
 import {
   computerUseConsent as approveCopilot,
+  computerUseRequestPermissions as requestCopilotPermissions,
   computerUseRevoke as revokeCopilot,
   computerUseSetup as readCopilotSetup,
   computerUseStatus as readCopilotStatus,
 } from '../../api/sdk.gen';
-import type { ComputerUseStatus as ApiCopilotStatus } from '../../api/types.gen';
+import type {
+  ComputerUseGrantLevel,
+  ComputerUseStatus as ApiCopilotStatus,
+} from '../../api/types.gen';
 import { userActionHeaders } from '../../utils/userAction';
 
 const optionalText = z
@@ -21,6 +25,8 @@ const runtimeSchema = z.object({
   runtime_version: optionalText,
   target: optionalText,
   executable: optionalText,
+  /** On macOS, the Biorouter Copilot app around the executable: what System Settings grants. */
+  app_bundle: optionalText,
   development_override: optionalBoolean,
   permissions: z.union([
     z.string(),
@@ -31,6 +37,8 @@ const runtimeSchema = z.object({
   message: optionalText,
   host: optionalText,
   error: optionalText,
+  /** Why asking the system for permissions failed, when it did; the readiness is still fresh. */
+  request_error: optionalText,
 });
 
 export type CopilotRuntime = z.infer<typeof runtimeSchema>;
@@ -87,17 +95,26 @@ export async function copilotStatus(sessionId: string): Promise<CopilotStatus> {
   return statusForDisplay(result.data);
 }
 
+/**
+ * The person's answer on the card. `grant` is what Allow (`act`) or Only let it look (`observe`)
+ * allows for this request (AD-10); the daemon reads an absent grant as `act`.
+ */
 export async function copilotDecision(
   status: CopilotStatus,
   action: 'consent' | 'revoke',
-  approvalKey: string
+  approvalKey: string,
+  grant?: ComputerUseGrantLevel
 ): Promise<CopilotStatus> {
   const headers = await userActionHeaders();
   const response =
     action === 'consent'
       ? await approveCopilot({
           headers: { ...headers, ...(approvalKey ? { 'X-Computer-Use-Key': approvalKey } : {}) },
-          body: { session_id: status.session_id, challenge_id: status.challenge_id },
+          body: {
+            session_id: status.session_id,
+            challenge_id: status.challenge_id,
+            grant: grant ?? 'act',
+          },
           throwOnError: true,
         })
       : await revokeCopilot({
@@ -110,6 +127,20 @@ export async function copilotDecision(
 
 export async function copilotSetup(): Promise<CopilotRuntime> {
   const response = await readCopilotSetup({
+    headers: await userActionHeaders(),
+    throwOnError: true,
+  });
+  return parseRuntime(response.data);
+}
+
+/**
+ * Ask the operating system to let Biorouter Copilot in (AD-04). On macOS the system's own prompts
+ * appear on the backend computer and name Biorouter Copilot; the answer is the readiness read
+ * again afterwards. Only a person's press may call this: the daemon refuses it without the
+ * user-action proof.
+ */
+export async function copilotRequestPermissions(): Promise<CopilotRuntime> {
+  const response = await requestCopilotPermissions({
     headers: await userActionHeaders(),
     throwOnError: true,
   });

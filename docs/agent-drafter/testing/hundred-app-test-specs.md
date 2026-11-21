@@ -1,14 +1,14 @@
-# Hundred-app test specs for Agent Drafter
+# Hundred-app test specs for Application Drafter
 
-> **What this is.** A frozen corpus of 100 ambitious app briefs — concept, theme, layout, agent profiles, declared actions, signals, bidirectional loop, platform integration — used as the stress-test workload for Agent Drafter and the Apps SDK v2.
+> **What this is.** A frozen corpus of 100 ambitious app briefs — concept, theme, layout, agent profiles, declared actions, signals, bidirectional loop, platform integration — used as the stress-test workload for Application Drafter and the Apps SDK v2.
 > **Status:** Current. Written 2026-07-12 for a specific test campaign, but it is a reusable input rather than a record of work: every brief is expressed in real, still-shipping SDK v2 primitives (`ui_patch`, `app_call`, signals, `br.agent`, `br.kb`, the six theme packs), so it remains valid for future runs. The corpus is **locked** — specs are numbered and cited by number in run results, so amend a brief in place rather than renumbering, inserting or deleting entries.
-> **Audience:** agents and maintainers running an Agent Drafter test campaign.
+> **Audience:** agents and maintainers running an Application Drafter test campaign.
 
-Each entry is one project brief to point BioRouter's **Agent Drafter** at, one at a time, to build and stress-test the Apps SDK v2. Each brief is deliberately *ambitious* — it is not lowered to what a builder can do today. The value of every app is inseparable from its agentic layer: agents drive a rich screen, inform the user, and the user drives back, in a long interleaved loop.
+Each entry is one project brief to point BioRouter's **Application Drafter** at, one at a time, to build and stress-test the Apps SDK v2. Each brief is deliberately *ambitious* — it is not lowered to what a builder can do today. The value of every app is inseparable from its agentic layer: agents drive a rich screen, inform the user, and the user drives back, in a long interleaved loop.
 
-Specs are identified as `spec-NNN` (spec 1 is `spec-001`) and authored apps are named `spec-NNN-<slug>`. The procedure that consumes this corpus — environment setup, the per-app authoring loop, the functional and aesthetic rubrics, and the findings log — is the [Agent Drafter 100-app test-drive runbook](app-test-drive-runbook.md); read it before working through any of these briefs.
+Specs are identified as `spec-NNN` (spec 1 is `spec-001`) and authored apps are named `spec-NNN-<slug>`. The procedure that consumes this corpus — environment setup, the per-app authoring loop, the functional and aesthetic rubrics, and the findings log — is the [Application Drafter 100-app test-drive runbook](app-test-drive-runbook.md); read it before working through any of these briefs.
 
-> **Note.** Pixel dimensions ("Left 260px rail", "Bottom 64px transport") state *design intent*, not a normative requirement. Judge a built app on whether the named region exists in roughly the specified position and proportion, not on exact pixel equality.
+> **Note.** Pixel dimensions ("Left 260px rail", "Bottom 64px transport") state *design intent*, not a normative requirement. Judge an application on whether the named region exists in roughly the specified position and proportion, not on exact pixel equality.
 
 ## The hard criteria (every one of the 100 obeys these)
 
@@ -2505,8 +2505,8 @@ the [Apps SDK reference](../../apps-sdk/sdk-reference.md).
 
 ## Related documentation
 
-- [Agent Drafter 100-app test-drive runbook](app-test-drive-runbook.md) — the procedure that consumes this corpus: environment setup, authoring loop, rubrics and findings log.
+- [Application Drafter 100-app test-drive runbook](app-test-drive-runbook.md) — the procedure that consumes this corpus: environment setup, authoring loop, rubrics and findings log.
 - [100-app test-drive archive](../../history/agent-drafter-testdrive-100/README.md) — per-app results, screenshots and blockers from the campaign run against these specs.
 - [Apps SDK reference](../../apps-sdk/sdk-reference.md) — the signatures behind every `br.*`, `ui_*` and `app_call` term used in these briefs.
 - [Apps SDK v2 design](../../apps-sdk/v2-design.md) — why the SDK exposes the surface these briefs assume.
-- [Agent Drafter apps platform design](../apps-platform-design.md) — how an app, its manifest and its per-app agent fit together.
+- [Applications platform design](../apps-platform-design.md) — how an app, its manifest and its per-app agent fit together.

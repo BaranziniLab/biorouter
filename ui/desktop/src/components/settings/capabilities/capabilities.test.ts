@@ -7,6 +7,7 @@ import { CAPABILITIES, isCapabilityDefaultEnabled, isCapabilityExtension } from 
 const expectedDefaults = {
   developer: true,
   computercontroller: true,
+  browser: true,
   webdocuments: true,
   autovisualiser: true,
   code_execution: true,
@@ -17,7 +18,7 @@ const expectedDefaults = {
   knowledge: true,
   agent_drafter: true,
   chatrecall: false,
-  dictionary: false,
+  dictionary: true,
   workspace: true,
   crew: true,
   decisions: true,

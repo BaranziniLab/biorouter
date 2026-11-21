@@ -17,6 +17,7 @@ compile_error!(
 
 pub mod action_required_manager;
 pub mod agents;
+pub mod browser_key;
 pub mod catalog;
 pub mod catalog_search;
 pub mod checkpoint;

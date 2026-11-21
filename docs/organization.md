@@ -81,8 +81,8 @@ Current top-level areas:
 | `getting-started/` | installing, first run, choosing a provider, chat basics, usage habits |
 | `architecture/` | how the system is put together, across crates |
 | `agent-loop/` | the reasoning loop: accepted designs, hooks, subagents, context engineering |
-| `agent-drafter/` | the apps platform — the agent that builds apps |
-| `apps-sdk/` | the SDK those apps are built against |
+| `agent-drafter/` | the applications platform: Application Drafter, the extension that builds applications (the folder keeps the extension's legacy key) |
+| `apps-sdk/` | the SDK those applications are built against |
 | `extensions/` | the extension system, and `built-in/` for each shipped extension |
 | `integrations/` | adapters that let another host application run a Biorouter agent |
 | `knowledge-base/` | personal knowledge bases |
@@ -100,6 +100,7 @@ Current top-level areas:
 | `design/` | visual and interaction design, including HTML studios |
 | `research/` | studies of systems **outside** this repo; a document here links no BioRouter code (`tree/research-cites-repo` in `scripts/docs-lint.py`) |
 | `testing/` | the properties tests must hold, and the shared state they must not inherit |
+| `benchmarking/` | how Biorouter is configured and compared with other agent harnesses on external benchmarks such as BioRouterBench, and the results of those runs |
 | `contributing/` | how to work on the documentation itself |
 | `history/` | records of completed work (see [§3](#3-history-records-of-work-that-was-done)) |
 
@@ -112,7 +113,7 @@ the abstract. Some judgement calls already made, as worked examples:
 
 - *Permission modes* → `security/`, not `configuration/`. Someone reading it is deciding how
   much autonomy to grant, not editing a config file.
-- *The agent-drafter apps platform* and *the apps SDK* are separate folders. One is the map
+- *The Application Drafter platform* (`agent-drafter/`) and *the apps SDK* are separate folders. One is the map
   (how the platform behaves), the other the territory (the API surface). Each README states the
   boundary and links the other.
 - *Nine studies of external coding agents* → `research/`, not `history/`. They document other

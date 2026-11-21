@@ -10,6 +10,7 @@ import { resetDictationStoreForTests, readDictationViewer } from './dictationSto
 import {
   anchorOutsideWord,
   attachDictationComposer,
+  canStartDictationQuietly,
   cancelDictation,
   getDictationLevel,
   getDictationSnapshot,
@@ -1366,5 +1367,30 @@ describe('S17 plain HTTP confirmation', () => {
     expect(ask).toHaveBeenCalledTimes(1);
     expect(captures).toHaveLength(1);
     expect(readDictationViewer().ackHosts[0]).toMatch(/^remote-http:sha256:[0-9a-f]{64}$/);
+  });
+});
+
+describe('starting from fn down', () => {
+  it('is quiet only when a press would record with nothing shown first', async () => {
+    composer('tab:a');
+    expect(canStartDictationQuietly()).toBe(true);
+
+    phase = { phase: 'not-installed' };
+    expect(canStartDictationQuietly(), 'the setup popover would open').toBe(false);
+    phase = { phase: 'unavailable', reason: 'No speech model' };
+    expect(canStartDictationQuietly(), 'the reason would show').toBe(false);
+    phase = { phase: 'idle' };
+
+    status = { load: 'unloaded', status: null, micStatus: 'unknown' };
+    expect(canStartDictationQuietly(), 'the status is not known yet').toBe(false);
+    status = { load: 'loaded', status: null, micStatus: 'not-determined' };
+    expect(canStartDictationQuietly(), 'macOS would ask for the microphone').toBe(false);
+    status = { load: 'loaded', status: null, micStatus: 'granted' };
+
+    void startDictation({ key: 'tab:a', target: { target_kind: 'new_chat' } });
+    expect(canStartDictationQuietly(), 'a dictation already arms').toBe(false);
+    cancelDictation('tab:a');
+    await settle();
+    expect(canStartDictationQuietly()).toBe(true);
   });
 });

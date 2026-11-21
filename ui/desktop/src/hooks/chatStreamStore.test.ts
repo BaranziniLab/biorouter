@@ -165,7 +165,7 @@ describe('ChatStreamRegistry', () => {
     ]);
   });
 
-  it('does not auto-open Agent Drafter launch metadata', async () => {
+  it('does not auto-open Application Drafter launch metadata', async () => {
     const registry = new ChatStreamRegistry();
     vi.mocked(resumeAgent).mockResolvedValue({ data: { session: session('s1') } } as never);
     vi.mocked(reply).mockResolvedValue({

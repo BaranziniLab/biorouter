@@ -27,6 +27,31 @@ vi.mock('./dictionary/useDictionary', () => dictionaryCalls);
 vi.mock('../toasts', () => ({ toastError: dictionaryCalls.toastError }));
 
 describe('summarizeToolCall', () => {
+  it('names a Biorouter Browser action and its page or element (BB-09)', () => {
+    const row = (tool: string, args: Record<string, unknown>) =>
+      summarizeToolCall({ name: `browser__${tool}`, arguments: args });
+    expect(row('browser_open', { url: 'https://pubmed.ncbi.nlm.nih.gov/?term=ms' })).toBe(
+      'Opening pubmed.ncbi.nlm.nih.gov/?term=ms'
+    );
+    expect(toolRowLabel(row('browser_open', { url: 'https://example.org/' }), 'done')).toBe(
+      'Opened example.org'
+    );
+    expect(toolRowLabel(row('browser_snapshot', {}), 'done')).toBe('Took a snapshot of the page');
+    expect(toolRowLabel(row('browser_read', {}), 'done')).toBe('Read the page');
+    expect(toolRowLabel(row('browser_click', { ref: '@e12' }), 'done')).toBe('Clicked @e12');
+    expect(toolRowLabel(row('browser_fill', { ref: '@e3', value: 'Ada' }), 'done')).toBe(
+      'Filled @e3'
+    );
+    expect(toolRowLabel(row('browser_press', { key: 'Enter' }), 'failed')).toBe(
+      'Failed to press Enter'
+    );
+    expect(toolRowLabel(row('browser_select', { ref: '@e9', values: ['mx'] }), 'done')).toBe(
+      'Chose in @e9'
+    );
+    // A typed value never reaches the row.
+    expect(row('browser_type', { ref: '@e4', text: 'secret words' })).toBe('Typing into @e4');
+  });
+
   it('summarizes file editing tools as natural reading and editing actions', () => {
     expect(
       summarizeToolCall({
@@ -63,9 +88,9 @@ describe('summarizeToolCall', () => {
     expect(
       summarizeToolCall({
         name: 'web__search_query',
-        arguments: { search_query: [{ q: 'Biorouter agent drafter guardrails' }] },
+        arguments: { search_query: [{ q: 'Biorouter application drafter guardrails' }] },
       })
-    ).toBe('Searching for Biorouter agent drafter guardrails');
+    ).toBe('Searching for Biorouter application drafter guardrails');
 
     expect(
       summarizeToolCall({
@@ -743,7 +768,7 @@ describe('summarizeToolCall', () => {
           ],
         },
       })
-    ).toBe('Running Agent Drafter build app → Agent Drafter smoke app');
+    ).toBe('Running Application Drafter build app → Application Drafter smoke app');
   });
 
   it('does not repeat identical action descriptions in a coordinated label', () => {
@@ -1593,15 +1618,15 @@ describe('ToolCallWithResponse executed-call transparency', () => {
 
     fireEvent.click(
       screen
-        .getByText('Stopped running Agent Drafter build app → Agent Drafter smoke app')
+        .getByText('Stopped running Application Drafter build app → Application Drafter smoke app')
         .closest('button') as HTMLElement
     );
-    expect(screen.getByText('1. Agent Drafter build app')).toHaveAttribute(
+    expect(screen.getByText('1. Application Drafter build app')).toHaveAttribute(
       'title',
       'Tool: agent_drafter/build_app'
     );
-    expect(screen.getByText('2. Agent Drafter configure app (uses 1)')).toBeInTheDocument();
-    expect(screen.getByText('3. Agent Drafter smoke app (uses 2)')).toBeInTheDocument();
+    expect(screen.getByText('2. Application Drafter configure app (uses 1)')).toBeInTheDocument();
+    expect(screen.getByText('3. Application Drafter smoke app (uses 2)')).toBeInTheDocument();
     // "Steps" is the well's section label; a numbered placeholder is "Step 1".
     expect(screen.queryByText(/(?:Step \d|Update task|Operation no\.)/)).not.toBeInTheDocument();
     expect(screen.queryByText(/agent_drafter\//)).not.toBeInTheDocument();

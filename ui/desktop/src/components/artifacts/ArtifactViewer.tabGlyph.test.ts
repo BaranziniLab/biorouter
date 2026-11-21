@@ -65,7 +65,7 @@ describe('the glyph a preview tab draws (V2-R3-3)', () => {
     expect(iconForArtifact(null)).toBe(File);
   });
 
-  it('draws an Agent Drafter app with the application glyph its transcript card draws', () => {
+  it('draws an application with the application glyph its transcript card draws', () => {
     // One entity, one glyph (design.md §3.9): the app's card in the build chat
     // draws the registry's application glyph, so its preview tab draws the same
     // one rather than the figure glyph every other `ui://` resource takes.

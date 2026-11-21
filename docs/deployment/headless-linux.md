@@ -82,6 +82,43 @@ Run it as the user Biorouter will run as, because it writes into that user's con
 directory. If you are setting this up as a service, create the service account first — see
 [Run it as a service](#run-it-as-a-service) — and configure as that account.
 
+### Entering a key without echo
+
+To enter only a provider's API key on the host, name the provider and let Biorouter ask for the
+key:
+
+```bash
+biorouter configure --provider <provider> --secret-stdin
+```
+
+At a terminal it asks for each required key at a hidden prompt, so the key is never typed at the
+shell's own prompt, never shown, and never kept in shell history or on a command line. Without a
+terminal it reads `NAME=value` lines from stdin, for example from a file only you can read:
+
+```bash
+biorouter configure --provider openai --secret-stdin < ~/openai.env   # OPENAI_API_KEY=...
+```
+
+It takes only the provider's secret settings (an endpoint or a region is set with
+`biorouter configure`), checks the key with the provider, and writes it only when the check
+passes; a rejected key, an unreachable provider or a 30-second timeout leaves the saved settings as
+they were. It does not change which provider or model is the default. It prints where the key went
+(the system keychain, or the `secrets.yaml` file) and which settings folder that is, so a key saved
+for the wrong account is easy to see. Run it as the service account, then restart the service so
+the running `serve` reads the new key. It refuses in an agent's shell: a key typed for an agent
+would pass through its model.
+
+When a `biorouter serve` on the host runs as another account, both this command and the
+interactive `biorouter configure` say so before anything is typed: the account and process, where
+that server reads its settings (that account's `~/.config/biorouter` by default), that a key saved
+now goes to this account's settings folder instead, and the `sudo -H -u <account>` line to run.
+`--secret-stdin` repeats the point after saving. They find the server in the process list, from
+each process's owner and command line only, never another account's environment or files, so a
+host that hides other accounts' processes (`/proc` mounted with `hidepid`) shows nothing. Because
+they cannot read which settings folder or port a server uses, any other account's
+`biorouter serve` matches. On a shared host the server named may be someone else's, which the
+warning says: if it is not the server you mean, ignore it.
+
 ### Credentials on a host with no desktop keyring
 
 Biorouter stores secrets in the operating system's credential store. A Linux host with no desktop
@@ -114,8 +151,11 @@ Prove the deployment works interactively before wrapping it in a service:
 biorouter serve --host 0.0.0.0
 ```
 
-For a non-loopback bind, `serve` prints an SSH tunnel command and the local browser address with
-its `?t=` access token. It does not offer a plain HTTP network address to open. A token is
+For a non-loopback bind, `serve` prints an SSH tunnel command and the local browser address to
+open, `http://127.0.0.1:<port>/`. Its `?t=` access token is printed only to a terminal, for a token
+made for this launch; otherwise `biorouter serve url` prints the whole address (see
+[Where the token is printed](browser-access.md#where-the-token-is-printed)). It does not offer a
+plain HTTP network address to open. A token is
 mandatory for this bind; `--no-token` is refused. `Ctrl-C` stops it.
 
 If it cannot find the interface, pass `--web-dir /usr/share/biorouter/web` explicitly; the error
@@ -131,7 +171,10 @@ sudo useradd --create-home --shell /usr/sbin/nologin biorouter
 ```
 
 Then configure as that account — `sudo -u biorouter -H biorouter configure` — so the provider and
-credentials land in the home directory the service reads.
+credentials land in the home directory the service reads. To enter only a key, use
+`sudo -u biorouter -H env BIOROUTER_DISABLE_KEYRING=true biorouter configure --provider <provider> --secret-stdin`
+([Entering a key without echo](#entering-a-key-without-echo)); the variable matches the one the
+service's environment file sets, so the key lands in the store the service reads.
 
 For a service, the token must be stable across restarts — nobody is watching the terminal for a new
 one. Put it in an environment file rather than on the command line, where `ps` would show it to
@@ -149,7 +192,9 @@ sudo chmod 600 /etc/biorouter/env
 Generate the token with something that is actually random, for example `openssl rand -hex 32`.
 
 `serve` reads `BIOROUTER_BROWSER_TOKEN` from the environment the unit gives it and uses that token
-as the address's `?t=`, so the URL below is the one it prints. (Until 2026-09 it did not: it minted
+as the address's `?t=`, so the URL below is the one to open. It does not print the token: a
+service's output is the journal, which other accounts on the host can read (on Ubuntu, the `adm`
+group), so the banner there shows the address without it. (Until 2026-09 it did not: it minted
 a random token over the operator's own and answered the published address with 401. Pass `--token`
 only from an interactive shell — on a service's `ExecStart` it would be visible in `ps` to every
 user on the host.)
@@ -183,6 +228,18 @@ systemctl status biorouter.service
 Give users the HTTPS address from the reverse proxy, with `?t=<the token from the environment
 file>`, or have them use an SSH tunnel and open `http://127.0.0.1:8765/?t=<token>`. Do not hand
 out a plain HTTP network address. The token stays valid until you change it.
+
+To show the whole address on the host, token included, run `biorouter serve url` as the service
+account:
+
+```bash
+sudo -u biorouter -H biorouter serve url --port 8765
+```
+
+It reads a file only that account can read, which `serve` writes when it starts and removes when it
+stops. Never search the journal for the address: reading the service log should never be a way to
+hold the token, and nothing there carries it. Whatever prints the address puts it on your screen
+and in any recording of the session, so run it where you would type a password.
 
 > **Note.** `biorouter serve` starts `biorouterd` as a child process and stops it whenever it stops
 > itself — `systemctl stop` sends `serve` SIGTERM, and `serve` gives the daemon ten seconds to
@@ -262,10 +319,12 @@ uses its bundled native helper on the backend host. A headless service must repo
 `desktop_unavailable` without breaking chat or Web & Documents. Opening the browser client does
 not expose the browser user's desktop.
 
-Linux desktop operation requires a real user session, the declared AT-SPI/Python GI dependencies,
-and supported capture/input methods. Xvfb alone does not establish accessibility or Wayland
-support. Do not install the retired shell-automation stack as a fallback. See the
-[implementation status](../design/computer-use-implementation-status.md) for platform evidence.
+Linux desktop operation requires a real user session with the accessibility bridge
+(`at-spi2-core` 2.52 or newer, Ubuntu 24.04's) and, for pointer actions such as drag, an X11
+session: Wayland has no pointer input. Xvfb alone does not establish accessibility; the fixture
+acceptance runs one with a session bus and a window manager. Do not install the retired
+shell-automation stack as a fallback. See [Biorouter Copilot fixture
+acceptance](../testing/copilot-fixture-acceptance.md) for what was measured on Linux.
 Task approval and OS permissions are required before observing or controlling the desktop.
 
 ## Upgrading

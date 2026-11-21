@@ -209,8 +209,8 @@ A local tag exists only on the Docker host that built it. A separate CI job must
 
 ### Size and Optimization
 
-- **Multi-stage build**: the Go, Rust and Node builder stages are discarded; only the compiled artifacts are copied forward
-- **Base image**: `debian:bookworm-slim`, pinned by digest, plus eleven runtime packages (`ca-certificates`, `libssl3`, `libdbus-1-3`, `libxcb1`, `python3`, `python3-gi`, `gir1.2-atspi-2.0`, `gir1.2-gtk-3.0`, `at-spi2-core`, `curl`, `git`). The five in the middle are the Biorouter Copilot helper's AT-SPI runtime
+- **Multi-stage build**: the Rust and Node builder stages, including the `rust:1.92-bullseye` stage that builds the Biorouter Copilot helper (agent-desktop) from `vendor/agent-desktop`, are discarded; only the compiled artifacts are copied forward
+- **Base image**: `debian:bookworm-slim`, pinned by digest, plus seven runtime packages (`ca-certificates`, `libssl3`, `libdbus-1-3`, `libxcb1`, `at-spi2-core`, `curl`, `git`). `at-spi2-core` is the accessibility bus the Biorouter Copilot helper reads apps through
 - **Optimizations**: the `Dockerfile` overrides the release profile with thin LTO, one codegen unit, `opt-level=z`, and stripping, and builds only the two binaries it ships. Fat LTO needed 17 GB to 18 GB for each binary's link on linux/arm64, more than the 16 GB runners that build the image; `scripts/check-docker-build.sh` keeps both settings
 - **Contents**: the CLI (`/usr/local/bin/biorouter`), its sibling daemon (`/usr/local/bin/biorouterd`), the web bundle (`/usr/share/biorouter/web`), and the Biorouter Copilot helper (`/usr/libexec/biorouter/computer-use`). No model is stored in the image
 

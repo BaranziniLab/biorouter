@@ -26,7 +26,11 @@ static PROTECTED: LazyLock<Regex> = LazyLock::new(|| {
     .expect("protected regex")
 });
 static IN_FLIGHT: AtomicUsize = AtomicUsize::new(0);
-static ADMITTED_STAMP: AtomicU64 = AtomicU64::new(0);
+/// What [`ADMITTED_STAMP`] holds while nothing is admitted. Not 0: 0 is the version of a
+/// store with no file yet, whose settings are a new store's, and a new store has
+/// `learn_from_chats` on (owner, 2026-11-19).
+const NOT_ADMITTED: u64 = u64::MAX;
+static ADMITTED_STAMP: AtomicU64 = AtomicU64::new(NOT_ADMITTED);
 static WATCHER: OnceLock<()> = OnceLock::new();
 const MAX_IN_FLIGHT: usize = 2;
 /// How often the one watcher reads the store's settings.
@@ -74,13 +78,21 @@ pub fn person_wrote(message: &Message) -> bool {
             .is_none_or(|stamp| stamp.kind == ProvenanceKind::UserDirect)
 }
 
-/// The last ON version observed by the one background settings watcher. Zero
-/// means OFF, unreadable, or not yet observed. The reply path does no I/O.
+/// The version of the store the one background settings watcher last read with
+/// `learn_from_chats` on, or `None` while it is off, the store cannot be read, or the
+/// watcher has not read it yet. The reply path does no I/O.
+///
+/// A store with no file yet is version 0, and its settings are a new store's, which
+/// have `learn_from_chats` on (owner, 2026-11-19), so it answers `Some(0)`: a person who
+/// never wrote to the dictionary has the default the Settings switch shows, and the
+/// observation's write creates the file. The write checks that the file is still the
+/// version admitted, so a person who turns the switch off first (which writes the file)
+/// drops every observation admitted before.
 ///
 /// The watcher is a plain thread rather than a task, so it does not belong to the
 /// runtime that happened to ask first: a task would stop with that runtime (every
 /// `#[tokio::test]` has its own) and leave the stamp frozen for the rest of the
-/// process. A thread that cannot be started leaves the stamp at zero, so nothing is
+/// process. A thread that cannot be started leaves nothing admitted, so nothing is
 /// learned.
 pub fn admission_stamp() -> Option<u64> {
     WATCHER.get_or_init(|| {
@@ -97,14 +109,20 @@ pub fn admission_stamp() -> Option<u64> {
                                 .learn_from_chats
                                 .then_some(view.content_stamp())
                         })
-                        .unwrap_or(0);
+                        .unwrap_or(NOT_ADMITTED);
                     ADMITTED_STAMP.store(stamp, Ordering::Release);
                     std::thread::sleep(WATCH_INTERVAL);
                 }
             });
     });
-    let stamp = ADMITTED_STAMP.load(Ordering::Acquire);
-    (stamp != 0).then_some(stamp)
+    admitted(ADMITTED_STAMP.load(Ordering::Acquire))
+}
+
+/// What the watcher's stamp admits. A file whose version digest happens to be
+/// [`NOT_ADMITTED`] is read as not admitted: it fails closed, and so nothing is learned
+/// until the store's next write gives it another version.
+fn admitted(stamp: u64) -> Option<u64> {
+    (stamp != NOT_ADMITTED).then_some(stamp)
 }
 
 pub struct Permit;
@@ -306,6 +324,15 @@ pub fn observe(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A store with no file is version 0, admitted while its switch reads on, as a new
+    /// store's does (owner, 2026-11-19); only the watcher's own sentinel admits nothing.
+    #[test]
+    fn version_zero_is_admitted_and_only_the_sentinel_is_not() {
+        assert_eq!(admitted(0), Some(0));
+        assert_eq!(admitted(42), Some(42));
+        assert_eq!(admitted(NOT_ADMITTED), None);
+    }
 
     #[test]
     fn the_worker_queue_is_bounded() {

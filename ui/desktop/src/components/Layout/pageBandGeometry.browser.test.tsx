@@ -16,6 +16,7 @@
  * token values read from that file.
  */
 import { readFileSync } from 'node:fs';
+import { createRequire } from 'node:module';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { build } from 'esbuild';
@@ -23,7 +24,9 @@ import { chromium, type Browser, type Page } from 'playwright';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
 const here = dirname(fileURLToPath(import.meta.url));
-const MAIN_CSS = readFileSync(resolve(here, '../../styles/main.css'), 'utf8');
+const STYLES = resolve(here, '../../styles');
+const MAIN_CSS = readFileSync(resolve(STYLES, 'main.css'), 'utf8');
+const requireFromDesktop = createRequire(resolve(here, '../../../package.json'));
 
 const TOKEN_NAMES = ['--chrome-height', '--control-md', '--radius-full', '--radius-inner'];
 
@@ -431,6 +434,431 @@ describe('the page band in a real layout engine (spec 3.10, 5.7)', () => {
         near(t.ink.mid - m.title.mid, 3.5, 'the old label offset below the title');
         near(t.bottom - t.top, 36, 'the old trigger height');
       }
+    } finally {
+      await tab.close();
+    }
+  });
+});
+
+/**
+ * EVERY PAGE BAND'S CONTROLS ARE ONE SIZE (owner, 2026-11-19).
+ *
+ * The coral primaries ("New schedule", "Add extension") and the icon buttons were the default 32px
+ * rung beside the 28px filter, so a band held two heights and the primary nearly filled it. The band
+ * now points the `md` rung at `sm` for its own descendants (`.biorouter-page-header-bar` in
+ * `main.css`), so every control a view passes at its default size draws 28px.
+ *
+ * Each band below is one page's real action cluster, built from the primitives that page passes
+ * (`PageHeaderAction`, `PageHeaderMenu`, `FilterInput`, a `Button` primary, a `Button` inside a
+ * `DropdownMenuTrigger`, Extensions' own `AddExtensionMenu`, a ghost text button, a secondary round
+ * button, the drill-in's Back) with the page's own copy. Unlike the suite above, the stylesheet is
+ * the app's: `styles/main.css` compiled by Tailwind with the classes the bundle uses, so the
+ * buttons' `h-control-md`, `px-3`, `gap-2` and `rounded-element` are the real utilities and the
+ * cascade between them and the band's unlayered rule is the one the app has. Expected values are
+ * read from probes that paint the tokens, so a token change moves the expectation with it.
+ */
+const GALLERY = `
+import * as React from 'react';
+import { createRoot } from 'react-dom/client';
+import { PageHeader, PageHeaderAction, PageHeaderMenu } from './PageHeader';
+import { Button } from '../ui/button';
+import { FilterInput } from '../ui/filter-input';
+import { DropdownMenu, DropdownMenuContent, DropdownMenuTrigger } from '../ui/dropdown-menu';
+import { RowActionMenuItems } from '../ui/row-actions';
+import { ArrowRight, ClipboardList, Pause, Plus, RefreshCw, Share2, Upload } from '../icons/app-icons';
+import { AddExtensionMenu } from '../extensions/AddExtensionMenu';
+import { DICTIONARY_LABELS } from '../dictionary/copy';
+import { SKILLS_COPY } from '../skills/copy';
+import { scheduleCopy } from '../schedule/copy';
+import { workflowsCopy } from '../workflows/copy';
+
+const noop = () => {};
+const menu = [{ label: 'Delete…', onSelect: noop, destructive: true }];
+
+function Filter({ label, className }: { label: string; className?: string }) {
+  const [value, setValue] = React.useState('');
+  return <FilterInput value={value} onValueChange={setValue} label={label} className={className} />;
+}
+
+/** The Skills and Dictionary primary: a coral Button as a menu trigger. */
+function AddMenu({ label }: { label: string }) {
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <Button>
+          <Plus aria-hidden />
+          {label}
+        </Button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="end">
+        <RowActionMenuItems items={menu} />
+      </DropdownMenuContent>
+    </DropdownMenu>
+  );
+}
+
+const PAGES: Array<{ id: string; title: string; back?: boolean; actions: React.ReactNode }> = [
+  {
+    id: 'scheduler',
+    title: 'Scheduler',
+    actions: (
+      <>
+        <PageHeaderAction icon={RefreshCw} label="Refresh schedules" onClick={noop} />
+        <Button onClick={noop}>
+          <Plus />
+          {scheduleCopy.newSchedule}
+        </Button>
+      </>
+    ),
+  },
+  {
+    id: 'workflows',
+    title: 'Workflows',
+    actions: (
+      <>
+        <Filter label="Filter workflows" />
+        <PageHeaderAction icon={Upload} label="Import workflow" onClick={noop} />
+        <Button onClick={noop}>
+          <Plus />
+          {workflowsCopy.newWorkflow}
+        </Button>
+      </>
+    ),
+  },
+  {
+    id: 'extensions',
+    title: 'Extensions',
+    actions: (
+      <>
+        <Filter label="Filter extensions" />
+        <AddExtensionMenu onBrowse={noop} onFromFile={noop} onCustom={noop} />
+      </>
+    ),
+  },
+  {
+    id: 'skills',
+    title: 'Skills',
+    actions: (
+      <>
+        <Filter label="Filter skills" />
+        <AddMenu label={SKILLS_COPY.add} />
+      </>
+    ),
+  },
+  {
+    id: 'knowledge',
+    title: 'Knowledge',
+    actions: (
+      <>
+        <PageHeaderAction icon={ClipboardList} label="Check for problems" onClick={noop} />
+        <PageHeaderAction icon={RefreshCw} label="Refresh graph" onClick={noop} />
+        <PageHeaderMenu label="More knowledge base actions" items={menu} />
+      </>
+    ),
+  },
+  {
+    id: 'dictionary',
+    title: 'Dictionary',
+    actions: (
+      <>
+        <Filter label={DICTIONARY_LABELS.filter} />
+        <Button variant="ghost" onClick={noop}>
+          {DICTIONARY_LABELS.export}
+        </Button>
+        <AddMenu label={DICTIONARY_LABELS.add} />
+        <PageHeaderMenu label={DICTIONARY_LABELS.pageMenu} items={menu} />
+      </>
+    ),
+  },
+  {
+    id: 'applications',
+    title: 'Applications',
+    actions: (
+      <>
+        <Filter label="Filter apps" />
+        <PageHeaderAction icon={RefreshCw} label="Refresh" onClick={noop} />
+      </>
+    ),
+  },
+  {
+    id: 'history',
+    title: 'Chat history',
+    actions: (
+      <>
+        <Filter label="Search history" className="br-history-filter" />
+        <PageHeaderAction icon={Upload} label="Show subagent runs" aria-pressed={false} onClick={noop} />
+        <PageHeaderAction icon={Upload} label="Import chat" onClick={noop} />
+      </>
+    ),
+  },
+  {
+    id: 'schedule-detail',
+    title: 'nightly-cohort',
+    back: true,
+    actions: (
+      <>
+        <PageHeaderAction icon={Pause} label={scheduleCopy.pause} onClick={noop} />
+        <PageHeaderMenu items={menu} />
+        <Button onClick={noop}>{scheduleCopy.runNow}</Button>
+      </>
+    ),
+  },
+  {
+    id: 'saved-chat',
+    title: 'A saved chat',
+    actions: (
+      <>
+        <PageHeaderAction icon={Share2} label="Share" onClick={noop} />
+        <Button variant="secondary" shape="round" aria-label="Resume" onClick={noop}>
+          <ArrowRight aria-hidden="true" />
+        </Button>
+      </>
+    ),
+  },
+];
+
+function App() {
+  return (
+    <div style={{ width: 1200 }}>
+      {PAGES.map((page) => (
+        <div key={page.id} id={page.id} style={{ display: 'flex', flexDirection: 'column' }}>
+          <PageHeader
+            title={page.title}
+            info="Help."
+            onBack={page.back ? noop : undefined}
+            actions={page.actions}
+          />
+        </div>
+      ))}
+      {/* The same primary outside any band: the rule is the band's, not the button's. */}
+      <div style={{ padding: 16 }}>
+        <Button id="outside-primary">
+          <Plus />
+          {workflowsCopy.newWorkflow}
+        </Button>
+      </div>
+    </div>
+  );
+}
+
+createRoot(document.getElementById('root')!).render(<App />);
+`;
+
+const GALLERY_IDS = [
+  'scheduler',
+  'workflows',
+  'extensions',
+  'skills',
+  'knowledge',
+  'dictionary',
+  'applications',
+  'history',
+  'schedule-detail',
+  'saved-chat',
+];
+
+/** The band's re-pointing of the `md` rung and its glyph gap, as written in main.css. */
+const BAND_RUNG = /\.biorouter-page-header-bar \{\s*--control-md: var\(--control-sm\);\s*\}/;
+const BAND_GAP = /\.biorouter-page-header-bar \[data-slot='button'\] \{\s*column-gap: 6px;\s*\}/;
+
+type Control = {
+  page: string;
+  name: string;
+  tag: string;
+  labelled: boolean;
+  h: number;
+  w: number;
+  mid: number;
+  barMid: number;
+  radius: string;
+  padL: string;
+  padR: string;
+  gap: string;
+  icon: [number, number] | null;
+};
+
+describe('every page band control is one size (owner, 2026-11-19)', () => {
+  let browser: Browser | null = null;
+  let script = '';
+  let css = '';
+
+  beforeAll(async () => {
+    browser = await launchChromium();
+    if (!browser) {
+      console.warn('No Chromium found: skipping the page band control size tests.');
+      return;
+    }
+    const bundle = await build({
+      stdin: { contents: GALLERY, loader: 'tsx', resolveDir: here, sourcefile: 'gallery.tsx' },
+      bundle: true,
+      write: false,
+      format: 'iife',
+      jsx: 'automatic',
+      platform: 'browser',
+      define: { 'process.env.NODE_ENV': '"production"' },
+      loader: { '.css': 'empty', '.svg': 'dataurl', '.png': 'dataurl' },
+      logLevel: 'silent',
+    });
+    script = bundle.outputFiles[0].text;
+    const { compile } = await import(requireFromDesktop.resolve('@tailwindcss/node'));
+    const { Scanner } = requireFromDesktop('@tailwindcss/oxide');
+    const compiler = await compile(MAIN_CSS, { base: STYLES, onDependency() {} });
+    css = compiler.build(new Scanner({}).scanFiles([{ content: script, extension: 'js' }]));
+  }, 180_000);
+
+  afterAll(async () => {
+    await browser?.close();
+  }, 120_000);
+
+  async function openGallery(stylesheet: string): Promise<Page> {
+    const tab = await browser!.newPage({ viewport: { width: 1240, height: 900 } });
+    await tab.setContent(
+      `<!doctype html><html><head><style>${stylesheet}</style></head>` +
+        `<body style="margin:0"><div id="root"></div></body></html>`
+    );
+    await tab.addScriptTag({ content: script });
+    await tab.waitForSelector('#outside-primary');
+    return tab;
+  }
+
+  /** A length a probe paints for `value`, so the expectations follow the tokens. */
+  const probe = (tab: Page, property: 'height' | 'borderTopLeftRadius', value: string) =>
+    tab.evaluate(
+      ([p, v]) => {
+        const el = document.createElement('div');
+        (el.style as unknown as Record<string, string>)[p] = v;
+        document.body.append(el);
+        const out = getComputedStyle(el)[p as 'height'];
+        el.remove();
+        return out;
+      },
+      [property, value] as const
+    );
+
+  /** Every control in every band's bar, less the title's InfoTip (help, not an action). */
+  const controls = (tab: Page) =>
+    tab.evaluate((ids) => {
+      const out: Control[] = [];
+      for (const id of ids) {
+        const bar = document.querySelector(`#${id} .biorouter-page-header-bar`)!;
+        const b = bar.getBoundingClientRect();
+        for (const el of Array.from(bar.querySelectorAll('button, input'))) {
+          if (el.getAttribute('aria-label')?.startsWith('About ')) continue;
+          const r = el.getBoundingClientRect();
+          const cs = getComputedStyle(el);
+          const svg = el.tagName === 'BUTTON' ? el.querySelector('svg') : null;
+          const sr = svg?.getBoundingClientRect();
+          out.push({
+            page: id,
+            name: el.getAttribute('aria-label') || (el.textContent ?? '').trim(),
+            tag: el.tagName.toLowerCase(),
+            labelled: el.tagName === 'BUTTON' && (el.textContent ?? '').trim().length > 0,
+            h: r.height,
+            w: r.width,
+            mid: r.top + r.height / 2,
+            barMid: b.top + b.height / 2,
+            radius: cs.borderTopLeftRadius,
+            padL: cs.paddingLeft,
+            padR: cs.paddingRight,
+            gap: cs.columnGap,
+            icon: sr ? [sr.width, sr.height] : null,
+          });
+        }
+      }
+      return out;
+    }, GALLERY_IDS);
+
+  it('draws every control of every band at the sm rung, centred, with one radius', async (ctx) => {
+    if (!browser) return ctx.skip();
+    const tab = await openGallery(css);
+    try {
+      const sm = parseFloat(await probe(tab, 'height', 'var(--control-sm)'));
+      const md = parseFloat(await probe(tab, 'height', 'var(--control-md)'));
+      const radius = await probe(tab, 'borderTopLeftRadius', 'var(--radius-element)');
+      expect(sm, 'the rungs differ, or the test proves nothing').toBeLessThan(md);
+      const all = await controls(tab);
+      // Every page contributes, and each kind of control the bands carry is here.
+      expect(new Set(all.map((c) => c.page))).toEqual(new Set(GALLERY_IDS));
+      expect(all.some((c) => c.tag === 'input')).toBe(true);
+      expect(all.some((c) => c.labelled)).toBe(true);
+      expect(all.some((c) => !c.labelled && c.tag === 'button')).toBe(true);
+      for (const c of all) {
+        const what = `${c.page} / ${c.name}`;
+        near(c.h, sm, `${what} height`);
+        expect(c.radius, `${what} radius`).toBe(radius);
+        near(c.mid, c.barMid, `${what} vertical centre`);
+        // An icon button is square: its width follows the same rung as its height.
+        if (c.tag === 'button' && !c.labelled) near(c.w, sm, `${what} width`);
+      }
+      // One height and one radius across every page, not merely each within a tolerance.
+      expect(new Set(all.map((c) => Math.round(c.h * 2) / 2)).size).toBe(1);
+      expect(new Set(all.map((c) => c.radius)).size).toBe(1);
+    } finally {
+      await tab.close();
+    }
+  });
+
+  it('gives every labelled band button the same padding, glyph and gap', async (ctx) => {
+    if (!browser) return ctx.skip();
+    const tab = await openGallery(css);
+    try {
+      const labelled = (await controls(tab)).filter((c) => c.labelled);
+      // The primaries of five pages, the ghost Export… and Run now.
+      expect(labelled.length).toBeGreaterThanOrEqual(7);
+      for (const c of labelled) {
+        const what = `${c.page} / ${c.name}`;
+        expect(c.padL, `${what} leading padding`).toBe('12px');
+        expect(c.padR, `${what} trailing padding`).toBe('12px');
+        if (c.icon) {
+          near(c.icon[0], 16, `${what} glyph width`);
+          near(c.icon[1], 16, `${what} glyph height`);
+          expect(c.gap, `${what} glyph-to-label gap`).toBe('6px');
+        }
+      }
+      expect(labelled.filter((c) => c.icon).length).toBeGreaterThanOrEqual(5);
+      // Every icon button's glyph is the same 16px.
+      for (const c of (await controls(tab)).filter((x) => x.tag === 'button' && !x.labelled)) {
+        expect(c.icon, `${c.page} / ${c.name} glyph`).not.toBeNull();
+        near(c.icon![0], 16, `${c.page} / ${c.name} glyph width`);
+      }
+    } finally {
+      await tab.close();
+    }
+  });
+
+  it('leaves the same button at the md rung outside a band', async (ctx) => {
+    if (!browser) return ctx.skip();
+    const tab = await openGallery(css);
+    try {
+      const md = parseFloat(await probe(tab, 'height', 'var(--control-md)'));
+      const outside = await tab.evaluate(() => {
+        const el = document.getElementById('outside-primary')!;
+        return { h: el.getBoundingClientRect().height, gap: getComputedStyle(el).columnGap };
+      });
+      near(outside.h, md, 'a primary outside the band');
+      expect(outside.gap).toBe('8px');
+    } finally {
+      await tab.close();
+    }
+  });
+
+  // The instrument: without the band's two declarations the same measurement reads what the owner
+  // saw, a 32px primary and 32px icon buttons beside the 28px filter. A test that cannot fail
+  // says nothing.
+  it('measures two heights in one band when the band rule is removed', async (ctx) => {
+    if (!browser) return ctx.skip();
+    expect(css, 'the band re-points the md rung').toMatch(BAND_RUNG);
+    expect(css, 'the band sets the sm glyph gap').toMatch(BAND_GAP);
+    const tab = await openGallery(css.replace(BAND_RUNG, '').replace(BAND_GAP, ''));
+    try {
+      const sm = parseFloat(await probe(tab, 'height', 'var(--control-sm)'));
+      const md = parseFloat(await probe(tab, 'height', 'var(--control-md)'));
+      const all = await controls(tab);
+      const primary = all.find((c) => c.page === 'extensions' && c.labelled)!;
+      const filter = all.find((c) => c.page === 'extensions' && c.tag === 'input')!;
+      near(primary.h, md, 'the old primary height');
+      near(filter.h, sm, 'the filter, which was already sm');
+      expect(new Set(all.map((c) => Math.round(c.h * 2) / 2)).size).toBeGreaterThan(1);
     } finally {
       await tab.close();
     }

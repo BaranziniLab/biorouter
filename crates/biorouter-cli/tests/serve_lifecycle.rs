@@ -401,6 +401,53 @@ fn serve_hands_the_daemon_the_token_the_operator_set_in_its_environment() {
     );
 }
 
+/// Issue #524: under a service manager `serve`'s output is a log (the systemd
+/// journal), which other accounts can read, and the token opens the interface
+/// until the daemon stops. So the operator's token is not in that output, not
+/// as a query, and `biorouter serve url` shows the whole address to the
+/// account running `serve`, from a file only it can read. The address it shows
+/// is one the daemon accepts. (The banner's percent-encoding of a token is
+/// pinned by the unit tests in `commands::serve`.)
+///
+/// Fails the shipped command, whose banner printed `?t=<token>` to any stdout.
+#[test]
+fn the_token_stays_out_of_the_log_and_serve_url_shows_it() {
+    let token = "token-524-from-the-file";
+    let served = Served::start_with(&[], &[("BIOROUTER_BROWSER_TOKEN", token)]);
+    let log = served.log();
+    for leaked in [token, "?t="] {
+        assert!(!log.contains(leaked), "{leaked:?} reached the log:\n{log}");
+    }
+    assert!(
+        log.contains(&format!("biorouter serve url --port {}", served.port)),
+        "the banner names the command that shows the address:\n{log}"
+    );
+
+    let shown = Command::new(biorouter())
+        .args(["serve", "url", "--port", &served.port.to_string()])
+        .env("HOME", served.root.path().join("home"))
+        .env("BIOROUTER_PATH_ROOT", served.root.path().join("biorouter"))
+        .env("BIOROUTER_DISABLE_KEYRING", "true")
+        .stdin(Stdio::null())
+        .output()
+        .expect("run biorouter serve url");
+    assert!(
+        shown.status.success(),
+        "serve url failed: {}",
+        String::from_utf8_lossy(&shown.stderr)
+    );
+    let address = String::from_utf8(shown.stdout).unwrap();
+    assert_eq!(
+        address.trim(),
+        format!("http://127.0.0.1:{}/?t={token}", served.port)
+    );
+    assert_eq!(
+        exchange(served.port, token),
+        Some((200, true)),
+        "the address serve url shows opens the interface:\n{log}"
+    );
+}
+
 /// `--token` outranks the environment it runs in, as a command line does.
 #[test]
 fn the_token_flag_outranks_the_environment() {

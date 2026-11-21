@@ -68,8 +68,19 @@ describe('settings deep links', () => {
     const modelsTab = Object.entries(SETTINGS_SECTIONS)
       .filter(([, section]) => section.tab === 'models')
       .map(([key]) => key);
-    // Between the local model inventory and the danger zone, as the tab draws them.
-    expect(modelsTab).toEqual(['defaultModel', 'localModels', 'dictation', 'modelsDangerZone']);
+    // Between the local model inventory and the danger zone, as the tab draws them; the
+    // dictionary's rows sit at the end of Speech models (owner, 2026-11-19).
+    expect(modelsTab).toEqual([
+      'defaultModel',
+      'localModels',
+      'dictation',
+      'dictionary',
+      'modelsDangerZone',
+    ]);
+    expect(resolveSettingsDeepLink('dictionary')).toEqual({
+      tab: 'models',
+      sectionId: 'settings-dictionary',
+    });
   });
 
   it('ignores unknown, empty and prototype keys', () => {

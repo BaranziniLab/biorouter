@@ -16,6 +16,7 @@ import { isNavigableEmbeddedUrl } from './permissionPolicy';
 
 const source = readFileSync(join(__dirname, 'embeddedBrowser.ts'), 'utf8');
 const proxySource = readFileSync(join(__dirname, 'embeddedBrowserProxy.ts'), 'utf8');
+const downloadsSource = readFileSync(join(__dirname, '..', 'browser', 'downloads.ts'), 'utf8');
 
 describe('isNavigableEmbeddedUrl', () => {
   it.each(['https://www.ucsf.edu/', 'http://example.test/path?q=1', 'https://pubmed.gov'])(
@@ -87,51 +88,99 @@ describe('the embedded session is hardened, not inherited', () => {
     expect(proxySource).not.toContain('host: candidate');
   });
 
-  it('blocks page-created windows and auth navigation without opening native dialogs', () => {
+  it('opens page windows as tabs or popups only after a gesture, never as native dialogs (BB-04)', () => {
     expect(source).toContain('setWindowOpenHandler');
+    // No gesture in the last five seconds: denied, with a note offering a new tab.
+    expect(source).toContain('const USER_GESTURE_WINDOW_MS = 5_000;');
+    expect(source).toContain('Date.now() - record.lastUserInputAt <= USER_GESTURE_WINDOW_MS');
     expect(source).toContain("action: 'deny'");
-    expect(source).toContain("contents.on('will-navigate', guardNavigation)");
-    expect(source).toContain("contents.on('will-redirect', guardNavigation)");
-    const remoteNavigationHandlers = source.slice(
-      source.indexOf('contents.setWindowOpenHandler'),
-      source.indexOf("contents.on('did-start-loading'")
+    expect(source).toContain("kind: 'popup-blocked'");
+    // A tab is adopted into a view of its own; a popup is a hardened child window on the
+    // browser's own partition.
+    expect(source).toContain('createWindow: (options) =>');
+    expect(source).toContain(
+      'webPreferences: { ...HARDENED_PREFERENCES, session: embeddedSession() }'
     );
-    expect(remoteNavigationHandlers).not.toContain('requestAuthenticationConfirmation');
-    expect(remoteNavigationHandlers).not.toContain('dialog.');
-    expect(remoteNavigationHandlers).not.toContain('shell.openExternal');
+    expect(source).toContain("contents.on('did-create-window'");
+    const handler = source.slice(
+      source.indexOf('function installWindowOpenHandler'),
+      source.indexOf('function sendToOwnerByWindow')
+    );
+    expect(handler).toContain("target === 'about:blank' || isNavigableEmbeddedUrl(target)");
+    // A managed app preview still cannot leave its app through a window.
+    expect(handler).toContain('isManagedAppNavigation(entry.managed.scope, target)');
+    expect(handler).not.toContain('dialog.');
+    expect(handler).not.toContain('shell.openExternal');
+    // The input that counts as a gesture is the person's own (mouse, key, touch).
+    expect(source).toContain("contents.on('input-event'");
+  });
+
+  it('loads sign-in pages in the browser instead of diverting them (BB-03)', () => {
+    // The heuristic is only the wording of the default browser confirmation now.
+    expect(source.match(/isAuthenticationNavigation\(/g)).toHaveLength(1);
+    const external = source.slice(
+      source.indexOf('export async function openExternalBrowserNavigation'),
+      source.indexOf('function sourceRevision')
+    );
+    expect(external).toContain('isAuthenticationNavigation(candidate)');
+    expect(source).not.toContain('requestAuthenticationConfirmation');
+    const guard = source.slice(
+      source.indexOf('const guardNavigation'),
+      source.indexOf("contents.on('will-redirect', guardNavigation)")
+    );
+    expect(guard).not.toContain('isAuthenticationNavigation');
+    expect(guard).toContain('isNavigableEmbeddedUrl(url)');
+    expect(guard).not.toContain('shell.openExternal');
   });
 
   it('requires exact-host native confirmation and fresh validation for external navigation', () => {
     const confirmation = source.slice(
       source.indexOf('async function confirmPublicExternalNavigation'),
-      source.indexOf('async function confirmExternalAuthenticationNavigation')
+      source.indexOf('export async function openExternalBrowserNavigation')
     );
     expect(confirmation).toContain('dialog.showMessageBox');
     expect(confirmation.match(/validateExternalBrowserTarget/g)).toHaveLength(2);
     expect(confirmation).toContain('result.response !== 1');
     expect(confirmation).toContain('Destination hostname: ${validated.hostname}');
     expect(confirmation).toContain('revalidated.hostname !== validated.hostname');
-    const guard = source.slice(
-      source.indexOf('const guardNavigation'),
-      source.indexOf("contents.on('will-navigate'")
-    );
-    expect(guard).not.toContain('shell.openExternal');
   });
 
-  it('never loads initial or address-bar authentication URLs without native confirmation', () => {
-    const initialLoad = source.slice(
-      source.indexOf('const networkReady = managed?.ready ?? prepareEmbeddedNetwork(embedded)'),
-      source.indexOf('return readState(entry)')
-    );
-    expect(initialLoad).toContain('isAuthenticationNavigation(initialUrl)');
-    expect(initialLoad).toContain('entry.requestAuthenticationConfirmation(initialUrl)');
+  it('presents a plain Chrome user agent, never Electron (BB-07)', () => {
+    expect(source).toContain('embedded.setUserAgent(');
+    expect(source).toContain('chromeUserAgent(process.platform, process.versions.chrome');
+  });
 
-    const addressBarLoad = source.slice(
-      source.indexOf('export function navigateEmbeddedBrowser'),
-      source.indexOf('export function controlEmbeddedBrowser')
+  it('grants a site only the clipboard write its Copy button needs (BB-08)', () => {
+    const handlers = source.slice(
+      source.indexOf('embedded.setPermissionRequestHandler'),
+      source.indexOf('embedded.setDevicePermissionHandler')
     );
-    expect(addressBarLoad).toContain('isAuthenticationNavigation(url)');
-    expect(addressBarLoad).toContain('entry.requestAuthenticationConfirmation(url)');
+    expect(handlers.match(/callback\(true\)/g)).toHaveLength(1);
+    expect(handlers).toContain("permission === 'clipboard-sanitized-write'");
+    expect(handlers.match(/return true/g)).toHaveLength(1);
+  });
+
+  it('never picks a client certificate and cancels HTTP authentication (BB-08)', () => {
+    const guards = source.slice(
+      source.indexOf('function installContentsGuards'),
+      source.indexOf('function hardenPopupWindow')
+    );
+    expect(guards).toContain("contents.on('select-client-certificate'");
+    expect(guards).toContain("contents.on('login'");
+    expect(guards.match(/event\.preventDefault\(\)/g)?.length).toBeGreaterThanOrEqual(2);
+    expect(guards).toContain("setWebRTCIPHandlingPolicy('disable_non_proxied_udp')");
+  });
+
+  it('admits the PDF viewer’s own resources and nothing else outside the network schemes', () => {
+    const filter = source.slice(
+      source.indexOf('embedded.webRequest.onBeforeRequest'),
+      source.indexOf("embedded.on('will-download'")
+    );
+    expect(filter).toContain('isPdfViewerResourceUrl(details.url)');
+    expect(filter).toContain('if (!isAllowedEmbeddedRequestUrl(details.url))');
+    expect(filter).toContain('decideLocalRequest(');
+    // Every branch answers the request: a lost callback would hang the page.
+    expect(filter).toContain('() => callback({ cancel: true })');
   });
 
   it('routes every renderer-controlled system-browser open through the confirmation policy', () => {
@@ -151,9 +200,17 @@ describe('the embedded session is hardened, not inherited', () => {
     expect(legacyOpen).not.toContain('shell.openExternal');
   });
 
-  it('intercepts downloads rather than letting a page write to disk', () => {
-    expect(source).toContain("embedded.on('will-download'");
-    expect(source).toContain('event.preventDefault()');
+  it('routes downloads through the save dialog, and cancels one no tab owns (BB-05)', () => {
+    const downloads = source.slice(
+      source.indexOf("embedded.on('will-download'"),
+      source.indexOf('hardenedSession = embedded;')
+    );
+    expect(downloads).toContain('event.preventDefault()');
+    expect(downloads).toContain('handlePersonDownload(item');
+    expect(downloadsSource).toContain('item.setSaveDialogOptions(');
+    expect(downloadsSource).toContain("'com.apple.quarantine'");
+    // The test hook never applies to a packaged app (testHooks.ts).
+    expect(downloadsSource).toContain('if (testDownloadDir)');
   });
 });
 
@@ -190,14 +247,44 @@ describe('the panel keeps the native view honest', () => {
     expect(main).toContain('destroyEmbeddedBrowsersForWindow(mainWindow)');
   });
 
-  it('resolves the owning window from the event sender, not from the renderer', () => {
-    // Otherwise one window could drive another window's view.
+  it('resolves the owning window from the event sender, and only its own renderer', () => {
+    // Otherwise one window could drive another window's view, or a popup's page could.
     const main = readFileSync(join(__dirname, '..', 'main.ts'), 'utf8');
-    const embeddedHandlers = main.slice(main.indexOf("'embedded-browser:create'"));
-    expect(
-      embeddedHandlers.match(/BrowserWindow\.fromWebContents\(event\.sender\)/g)?.length
-    ).toBeGreaterThanOrEqual(9);
+    const owner = main.slice(
+      main.indexOf('function browserOwnerWindow'),
+      main.indexOf('function isViewId')
+    );
+    expect(owner).toContain('BrowserWindow.fromWebContents(event.sender)');
+    expect(owner).toContain('window.webContents === event.sender');
+    const handlers = main.slice(
+      main.indexOf('function isViewId'),
+      main.indexOf("ipcMain.handle('read-artifact-file'")
+    );
+    // The agent's two channels (BB-10) answer to the same rule as the bar's.
+    const channels =
+      handlers.match(/ipcMain\.handle\(\s*'(?:embedded-browser|biorouter-browser):[a-z-]+'/g) ?? [];
+    expect(channels.length).toBeGreaterThanOrEqual(22);
+    expect(channels).toContain("ipcMain.handle('biorouter-browser:agent'");
+    expect(handlers.match(/browserOwnerWindow\(event\)/g)?.length).toBe(channels.length);
     expect(source).toContain('views.get(viewKey(window, viewId))');
+  });
+
+  it('keeps a tab when the panel hides it, and ends it only on destroy (BB-01)', () => {
+    const release = source.slice(
+      source.indexOf('export function releaseEmbeddedBrowser'),
+      source.indexOf('export function claimEmbeddedBrowser')
+    );
+    expect(release).toContain('entry.view.setVisible(false)');
+    expect(release).not.toContain('close()');
+    // Attaching to a tab that exists keeps its page.
+    const create = source.slice(
+      source.indexOf('export function createEmbeddedBrowser'),
+      source.indexOf('if (!isNavigableEmbeddedUrl(initialUrl)) return null;')
+    );
+    expect(create).toContain('existing.onState = onState');
+    expect(create).toContain('return readState(existing)');
+    // A tab a page opened closes if no panel claims it.
+    expect(source).toContain('CLAIM_TIMEOUT_MS');
   });
 
   it('answers display-capture denial instead of leaving the page pending', () => {

@@ -85,7 +85,7 @@ GitHub: https://github.com/BaranziniLab/biorouter
 2. Scheduling: a workflow on a schedule, or a prompt looped at an interval
 3. Skills: teach the agent a method once; install research skills from BAAM or write your own
 4. Knowledge bases: a wiki the agent writes and reads, with typed links, sources and history; BioOKF adds a biomedical vocabulary
-5. Built apps: describe a tool and the agent builds it, then works inside it with you
+5. Applications: describe a tool and the agent builds it, then works inside it with you
 6. Crew: shared lab channels, where each person's agent runs on their own computer with their own model
 7. Subagents: hand parts of a task to subagents that run at the same time, watch each one in the side panel, and get the results back in the chat
 8. Decision models: fast models answer a yes or no question with a probability; screen many notes, then send only the unsure ones to a larger model
@@ -217,14 +217,14 @@ macOS 12 or newer on Apple silicon and Intel (local models need macOS 13.3 or ne
 | Build | Extensions and skills | `docs/website/pages/extensions.html` |
 | Build | Workflows and scheduling | `docs/website/pages/workflows.html` |
 | Build | Knowledge bases | `docs/website/pages/knowledge.html` |
-| Build | Built apps | `docs/website/pages/apps.html` |
+| Build | Applications | `docs/website/pages/apps.html` |
 | Build | Crew | `docs/website/pages/crew.html` |
 | How it works | The agent loop | `docs/website/pages/agentloop.html` |
 | How it works | Configuration | `docs/website/pages/config.html` |
 | How it works | Architecture | `docs/website/pages/architecture.html` |
 
 ### Built-in extensions
-The Extensions and skills page lists the seven bundled extensions, each on by default: Developer, Biorouter Copilot, Web & Documents, Auto Visualiser, Memory, Knowledge and Agent Drafter (`ui/desktop/src/components/settings/extensions/bundled-extensions.json`; `check-consistency.mjs` checks the docs table against it). Chat Recall is an optional platform capability that is off by default, as is Dictionary. The platform capabilities on by default are Workspace Control, Code Execution, Todo, Skills, Extension Manager, Decisions and Crew.
+The Extensions and skills page lists the seven bundled extensions, each on by default: Developer, Biorouter Copilot, Web & Documents, Auto Visualiser, Memory, Knowledge and Application Drafter (`ui/desktop/src/components/settings/extensions/bundled-extensions.json`; `check-consistency.mjs` checks the docs table against it). Chat Recall is an optional platform capability that is off by default, as is Dictionary. The platform capabilities on by default are Workspace Control, Code Execution, Todo, Skills, Extension Manager, Decisions and Crew.
 
 ---
 

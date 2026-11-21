@@ -387,10 +387,16 @@ export function HomeUsageCard({ window: activity }: { window: ActivityWindow }) 
             ) : null}
           </div>
 
-          <div className="br-usage-card-heatmap">
-            <UsageHeatmap window={activity} />
+          {/* What folds away first where Home is short (`homeUsageFit.ts`): the heat map and
+              its footnote, clipped by this box while the body inside keeps its size. */}
+          <div className="br-usage-card-extra">
+            <div className="br-usage-card-extra-body">
+              <div className="br-usage-card-heatmap">
+                <UsageHeatmap window={activity} />
+              </div>
+              <UsageFootnote activity={activity} />
+            </div>
           </div>
-          <UsageFootnote activity={activity} />
         </div>
       </Tabs>
     </section>
@@ -444,12 +450,16 @@ export function HomeUsageCardLoading() {
               </div>
             </div>
           </div>
-          <div className="br-usage-card-heatmap">
-            <UsageHeatmapLoading weeks={weeks} />
-          </div>
-          <div className="br-usage-card-foot" aria-hidden="true">
-            <span />
-            <span className="br-usage-skeleton biorouter-heatmap-loading-line h-3 w-24" />
+          <div className="br-usage-card-extra">
+            <div className="br-usage-card-extra-body">
+              <div className="br-usage-card-heatmap">
+                <UsageHeatmapLoading weeks={weeks} />
+              </div>
+              <div className="br-usage-card-foot" aria-hidden="true">
+                <span />
+                <span className="br-usage-skeleton biorouter-heatmap-loading-line h-3 w-24" />
+              </div>
+            </div>
           </div>
         </div>
       </Tabs>

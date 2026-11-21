@@ -47,7 +47,7 @@ describe('mintAppLaunchLink', () => {
   ])('opens nothing when the daemon answers %s', async (answer) => {
     await expect(
       mintAppLaunchLink(base, 'cohort-explorer', 'daemon-secret', daemonAnswering({ path: answer }))
-    ).rejects.toThrow('unexpected app address');
+    ).rejects.toThrow('unexpected application address');
   });
 
   it.each(['../sessions', 'a/b', '', 'x'.repeat(129)])(
@@ -55,7 +55,7 @@ describe('mintAppLaunchLink', () => {
     async (appId) => {
       const daemon = daemonAnswering({});
       await expect(mintAppLaunchLink(base, appId, 'daemon-secret', daemon)).rejects.toThrow(
-        'not an app name'
+        'not an application name'
       );
       expect(daemon).not.toHaveBeenCalled();
     }
@@ -113,7 +113,7 @@ describe('mintAppLaunchLink', () => {
         'daemon-secret',
         daemonAnswering({ code: 'other', message: '<script>' }, 502)
       )
-    ).rejects.toThrow('The app backend would not open this app.');
+    ).rejects.toThrow('The application backend would not open this application.');
   });
 
   it('says the backend did not answer when nothing did', async () => {
@@ -193,7 +193,7 @@ describe('requestAppLaunch: the daemon’s own listener', () => {
   ])('opens nothing when the listener’s link is %s', async (url) => {
     await expect(
       requestAppLaunch(proxy, 'cohort-explorer', 'daemon-secret', daemonAnswering({ path, url }))
-    ).rejects.toThrow('unexpected app address');
+    ).rejects.toThrow('unexpected application address');
   });
 });
 

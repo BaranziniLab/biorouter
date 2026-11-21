@@ -172,7 +172,7 @@ DOCTOR_TIMEOUT = sum(ATTEMPT_TIMEOUTS.values())
 
 # What a timeout report is looking for. A whole-machine snapshot buries the two
 # processes that matter in several hundred system daemons.
-RELEVANT = ('biorouter', 'ocu', 'OpenComputerUse', 'llama-server', 'powershell', 'node')
+RELEVANT = ('biorouter', 'agent-desktop', 'llama-server', 'powershell', 'node')
 
 
 def snapshot(fields):
@@ -386,7 +386,7 @@ def check(cli, helper, target, expected_status, expected_backends, report_path):
     agents = owned_app_agents(helper / manifest['executable']) if sys.platform == 'darwin' else nullcontext()
     with agents, tempfile.TemporaryDirectory(prefix='biorouter-installed-check-') as isolated:
         env = dict(os.environ, BIOROUTER_PATH_ROOT=isolated, BIOROUTER_DISABLE_KEYRING='true')
-        for key in ['BIOROUTER_COMPUTER_USE_DIR', 'OPEN_COMPUTER_USE_DISABLE_APP_AGENT_PROXY']:
+        for key in ['BIOROUTER_COMPUTER_USE_DIR']:
             env.pop(key, None)
         # `report_path.parent` is `target/package-acceptance/`, which the
         # workflow uploads with `if-no-files-found: error`. The isolated dir
@@ -399,8 +399,9 @@ def check(cli, helper, target, expected_status, expected_backends, report_path):
         tools = builtin_tools(cli, env)
         names = [tool['name'] for tool in tools]
         required = {'list_apps', 'get_app_state', 'click', 'perform_secondary_action', 'scroll',
-                    'drag', 'type_text', 'press_key', 'set_value', 'screen_capture'}
-        if set(names) != required or len(names) != 10:
+                    'drag', 'type_text', 'press_key', 'set_value', 'screen_capture',
+                    'find_elements', 'wait_for', 'open_app'}
+        if set(names) != required or len(names) != 13:
             raise ValueError(f'Installed builtin tool census mismatch: {names}')
     receipt = {'cli': str(cli), 'target': target, 'doctor': report, 'tools': sorted(names),
                'doctor_timings': doctor_timings,

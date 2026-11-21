@@ -264,7 +264,10 @@ export function LintDrawer({ open, onOpenChange }: Props) {
           )}
         </div>
 
-        <div className="br-rows-flat min-h-0 flex-1 overflow-y-auto">
+        {/* `py-2`: the group headings are rounded fills inset 8px like the rows under them (their
+            text on the same 16px edge), so the first one keeps clear of the counts row's rule
+            instead of butting a square slab against it (owner, 2026-11-19). */}
+        <div className="br-rows-flat min-h-0 flex-1 overflow-y-auto py-2">
           {/* Two different reasons for one null, and only the second is a gap
               in the user's setup. Sending a coding-agent user to the Sources
               rail is the dead end described above: that picker lists nothing
@@ -345,7 +348,7 @@ export function LintDrawer({ open, onOpenChange }: Props) {
               const Icon = SEVERITY_ICON[severity];
               return (
                 <section key={severity} aria-label={SEVERITY_LABEL[severity]}>
-                  <h3 className="flex items-center gap-2 bg-background-fill px-4 py-1.5 text-caps text-text-muted">
+                  <h3 className="mx-2 flex items-center gap-2 rounded-element bg-background-fill px-2 py-1.5 text-caps text-text-muted">
                     <Icon aria-hidden="true" className="h-icon-row w-icon-row" />
                     {SEVERITY_LABEL[severity]}
                     <span className="tabular-nums">{rows.length}</span>
@@ -396,7 +399,7 @@ export function LintDrawer({ open, onOpenChange }: Props) {
               {/* The count joins the caps run, and the one-line hint is the
                   heading's InfoTip (spec 3.12): a sibling of the `<h3>`, so the
                   heading's name stays the list's name. */}
-              <div className="flex items-center gap-1 bg-background-fill px-4 py-1.5">
+              <div className="mx-2 flex items-center gap-1 rounded-element bg-background-fill px-2 py-1.5">
                 <h3 className="flex items-center gap-2 text-caps text-text-muted">
                   {l.label}
                   <span className="tabular-nums">{l.entries.length}</span>

@@ -153,7 +153,7 @@ have every window connect to it.
   replace the per-window `retainBackend`/`releaseBackend` ref-count (`main.ts:831-849`)
   with a single app-lifetime backend. The daemon is killed only in `app.on('will-quit')`
   (there is already a sweep there, `main.ts:4644`), and on `window-all-closed` when the
-  app actually quits (`main.ts:4710`). Agent-Drafter launch-app windows that reuse the
+  app actually quits (`main.ts:4710`). Application Drafter launch-app windows that reuse the
   launching window's client (`main.ts:4551-4584`) become trivial — everyone shares the
   one backend. Keep the `externalBiorouterd` / `BIOROUTER_EXTERNAL_BACKEND` branches
   (`biorouterd.ts:105-112`) as-is: those already point all windows at one URL.

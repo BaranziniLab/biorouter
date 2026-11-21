@@ -632,7 +632,7 @@ fn mermaid_source(value: &Value, depth: usize) -> Option<String> {
 /// `render_mermaid` has four doors and only one of them used to reshape the
 /// payload: `render_figure` (which documents the payload as `data`), a dashboard
 /// panel naming `render_mermaid` outright, a `kind`-only dashboard panel that
-/// `DashboardFigure` resolves to `render_mermaid`, and Agent Drafter's
+/// `DashboardFigure` resolves to `render_mermaid`, and Application Drafter's
 /// `ui_figure`. Reshaping at a single door left the other three handing this
 /// struct a `{"data": …}` it refused, and — once the refusal was rephrased
 /// against `render_figure` — refused with advice to go and check a schema the

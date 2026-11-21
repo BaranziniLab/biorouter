@@ -87,6 +87,11 @@ export type AcknowledgeDevicesRequest = {
     fingerprints: Array<string>;
 };
 
+/**
+ * How long an act grant lasts.
+ */
+export type ActLifetime = 'request' | 'chat';
+
 export type ActionRequired = {
     data: ActionRequiredData;
 };
@@ -403,6 +408,57 @@ export type Author = {
 export type AuthorRequest = {
     contact?: string | null;
     metadata?: string | null;
+};
+
+/**
+ * Which grant a browser operation needs.
+ */
+export type BrowserGrant = 'observe' | 'act';
+
+export type BrowserUseConsentRequest = {
+    challenge_id: string;
+    grant: BrowserGrant;
+    lifetime?: ActLifetime | null;
+    session_id: string;
+};
+
+export type BrowserUseSessionRequest = {
+    session_id: string;
+};
+
+export type BrowserUseStatus = {
+    act?: ActLifetime | null;
+    /**
+     * The most recent request that used the browser in this chat.
+     */
+    activity_id?: string | null;
+    /**
+     * This daemon serves a desktop app that hosts the browser (BB-16).
+     */
+    available: boolean;
+    challenge_id: string;
+    destination: string;
+    /**
+     * The consent the card shows for `requested` (or for the active grant).
+     */
+    disclosure: string;
+    /**
+     * The capability is on for this chat.
+     */
+    enabled: boolean;
+    model: string;
+    /**
+     * Reading is allowed for this chat.
+     */
+    observe: boolean;
+    provider: string;
+    public_model: boolean;
+    requested?: BrowserGrant | null;
+    session_id: string;
+    /**
+     * `idle`, `approval_required`, `active` or `stopped`.
+     */
+    state: string;
 };
 
 export type CallToolRequest = {
@@ -844,8 +900,17 @@ export type CommitResponse = {
 
 export type ComputerUseConsentRequest = {
     challenge_id: string;
+    grant?: ComputerUseGrantLevel | null;
     session_id: string;
 };
+
+/**
+ * The person's answer on the card, as the status and the consent route carry it (AD-10).
+ *
+ * A typed twin of [`ComputerUseGrant`], which lives in `biorouter-mcp` and carries no schema, so
+ * the generated client names the two answers instead of an open string.
+ */
+export type ComputerUseGrantLevel = 'observe' | 'act';
 
 export type ComputerUseSessionRequest = {
     session_id: string;
@@ -860,6 +925,7 @@ export type ComputerUseStatus = {
     destination: string;
     disclosure: string;
     enabled: boolean;
+    grant?: ComputerUseGrantLevel | null;
     handoff_required: boolean;
     model: string;
     provider: string;
@@ -8553,6 +8619,12 @@ export type SuccessCheck = {
     type: 'FileExists';
 } | {
     /**
+     * The regular file that must hold at least one byte.
+     */
+    path: string;
+    type: 'FileNonEmpty';
+} | {
+    /**
      * The shell command whose output is inspected.
      */
     command: string;
@@ -9662,6 +9734,80 @@ export type AgentAddExtensionResponses = {
 
 export type AgentAddExtensionResponse = AgentAddExtensionResponses[keyof AgentAddExtensionResponses];
 
+export type BrowserUseConsentData = {
+    body: BrowserUseConsentRequest;
+    path?: never;
+    query?: never;
+    url: '/agent/browser/consent';
+};
+
+export type BrowserUseConsentErrors = {
+    /**
+     * Human proof required
+     */
+    403: unknown;
+    /**
+     * The request changed
+     */
+    409: unknown;
+};
+
+export type BrowserUseConsentResponses = {
+    200: BrowserUseStatus;
+};
+
+export type BrowserUseConsentResponse = BrowserUseConsentResponses[keyof BrowserUseConsentResponses];
+
+export type BrowserUseRevokeData = {
+    body: BrowserUseSessionRequest;
+    path?: never;
+    query?: never;
+    url: '/agent/browser/revoke';
+};
+
+export type BrowserUseRevokeErrors = {
+    /**
+     * Session out of reach
+     */
+    403: unknown;
+};
+
+export type BrowserUseRevokeResponses = {
+    200: BrowserUseStatus;
+};
+
+export type BrowserUseRevokeResponse = BrowserUseRevokeResponses[keyof BrowserUseRevokeResponses];
+
+export type BrowserUseStatusData = {
+    body?: never;
+    path?: never;
+    query: {
+        session_id: string;
+    };
+    url: '/agent/browser/status';
+};
+
+export type BrowserUseStatusErrors = {
+    /**
+     * Session out of reach
+     */
+    403: unknown;
+    /**
+     * Chat mode does not run the browser
+     */
+    409: unknown;
+    /**
+     * Chat not loaded
+     */
+    424: unknown;
+};
+
+export type BrowserUseStatusResponses = {
+    200: BrowserUseStatus;
+};
+
+export type BrowserUseStatusResponse = BrowserUseStatusResponses[keyof BrowserUseStatusResponses];
+
 export type CallToolData = {
     body: CallToolRequest;
     path?: never;
@@ -9830,6 +9976,24 @@ export type ComputerUseSetupData = {
 };
 
 export type ComputerUseSetupResponses = {
+    200: unknown;
+};
+
+export type ComputerUseRequestPermissionsData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/agent/computer_use/setup/request';
+};
+
+export type ComputerUseRequestPermissionsErrors = {
+    /**
+     * Human proof required
+     */
+    403: unknown;
+};
+
+export type ComputerUseRequestPermissionsResponses = {
     200: unknown;
 };
 

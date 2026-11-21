@@ -2404,7 +2404,9 @@ impl SensitiveOpsInspector {
             let Ok(tool_call) = &request.tool_call else {
                 continue;
             };
-            if crate::security::computer_use::is_computer_use_tool(&tool_call.name) {
+            if crate::security::computer_use::is_computer_use_tool(&tool_call.name)
+                || crate::security::browser_use::is_browser_tool(&tool_call.name)
+            {
                 continue;
             }
             let Some(args) = tool_call.arguments.as_ref() else {
@@ -5104,6 +5106,52 @@ record_result("ok");"#;
             assert!(
                 results.is_empty(),
                 "{mode:?} must be inert for criterion 7, got {results:?}"
+            );
+        }
+    }
+}
+
+#[cfg(test)]
+mod issue543_redirect_consumer_tests {
+    use super::*;
+    use crate::security::policy::target::Platform;
+
+    fn finding(command: &str) -> Option<String> {
+        let env =
+            EnvFacts::for_platform(Platform::Linux, "/home/issue543/project", "/home/issue543");
+        let mut found = Findings::default();
+        command_writes_sensitively(command, &env, &mut found);
+        found.into_reasons().into_iter().next()
+    }
+
+    #[test]
+    fn issue543_sensitive_writes_accept_only_complete_benign_device_targets() {
+        for command in [
+            "x=$(ls 2>/dev/null)",
+            "ls 2>/dev/null|head",
+            "ls 2>/dev/null&& echo ok",
+        ] {
+            assert!(
+                finding(command).is_none(),
+                "benign redirect was escalated: {command}"
+            );
+        }
+        for command in [
+            "echo x >/etc/passwd",
+            "echo x >|/etc/passwd",
+            "echo x >>/dev/shm/issue543",
+            "echo x 2>/opt/issue543",
+            "echo x &>/usr/issue543",
+            "echo x >~/.ssh/config",
+            r#"echo x > "/tmp/name)/../../etc/passwd""#,
+            r#"echo x > '/tmp/name|/../../etc/passwd'"#,
+            r#"echo x > "/tmp/name)"/../../etc/passwd"#,
+            r#"echo x > /tmp/name\)/../../etc/passwd"#,
+            "echo x >/dev/null|echo y >/etc/passwd",
+        ] {
+            assert!(
+                finding(command).is_some(),
+                "protected redirect was hidden: {command}"
             );
         }
     }

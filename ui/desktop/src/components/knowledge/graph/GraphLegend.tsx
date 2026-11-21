@@ -165,7 +165,9 @@ export function GraphLegend({ model, mode, facets, onChange, variant = 'rail' }:
             // wrapper's 1px top and bottom border are spent twice. Measured, not
             // padded for luck — 522px of content in a 521.5px cap.
             'flex max-h-[calc(var(--radix-popover-content-available-height,26rem)-2px)] flex-col overflow-y-auto'
-          : 'br-knowledge-detail flex min-h-0 flex-col overflow-y-auto border-l border-border-subtle bg-background-default'
+          : // No left rule: the canvas beside it is an inset rounded fill with 16px of air on
+            // this side, so a hairline here stood alone in that gap (owner, 2026-11-19).
+            'br-knowledge-detail flex min-h-0 flex-col overflow-y-auto bg-background-default'
       }
     >
       {/* ⚠ **The rail must fit its own height, and measured it did not.** At a

@@ -4,7 +4,7 @@
 > **Status:** Current.
 > **Audience:** People using Biorouter dictation.
 
-The Dictionary capability starts off. At your first speech model install, **Suggest dictionary words from my chats** lets you turn it on for new chats. You can change that choice later on the Dictionary page. Existing chats keep their current tools.
+The Dictionary capability is on for new chats in a new configuration. A configuration that already saved it off keeps it off. At your first speech model install, **Suggest dictionary words from my chats** shows your choice beside **Install**, ticked. You can change it later in **Settings > Models > Speech models**, where the dictionary's options are; the settings icon in the Dictionary page's top bar, **Dictionary settings**, opens them. Existing chats keep their current tools.
 
 ## What the agent can do
 
@@ -20,15 +20,15 @@ The agent cannot add aliases, activate a suggestion, change your words, import o
 
 ## Your choices
 
-**Agent's terms** on the Dictionary page controls what an agent write does:
+**Agent's terms** in **Settings > Models > Speech models** controls what an agent write does:
 
-- **Add when I ask** is the default. A word in your latest message, or in an agent offer that your latest message directly answers, becomes active and awaits your review when the agent marks it requested by you. Other words are suggestions. The store checks whether the word was named, but does not judge whether your reply agreed with the offer.
-- **Suggest for review** keeps every agent word suggested until you accept it.
-- **Add at once** makes agent words active and unreviewed until the per-tier cap is reached; further words become suggestions.
+- **Add when I ask, suggest otherwise** is the default. A word in your latest message, or in an agent offer that your latest message directly answers, becomes active and awaits your review when the agent marks it requested by you. Other words are suggestions. The store checks whether the word was named, but does not judge whether your reply agreed with the offer.
+- **Wait for my review** keeps every agent word suggested until you accept it.
+- **Add without asking** makes agent words active and unreviewed until the per-tier cap is reached; further words become suggestions.
 
 An active unreviewed word shapes dictation. Its tool row has **Keep** and **Undo**, and the Dictionary page places it under **Added by the agent**. A suggested word has **Add to dictionary** on the tool row and appears under **Suggested**. **Review in Dictionary** opens the page. An agent word uses exact matching and carries no spoken forms or misrecognitions.
 
-The capability is separate from **Suggest words from my messages**, the person's own switch for the chat extractor, which suggests terms the person types in chats on public models without any agent turn ([Measured by the person](../../dictation/dictionary.md#measured-by-the-person)).
+The capability is separate from **Suggest words from my messages**, the person's own switch for the chat extractor in the same Settings rows, on in a new dictionary, which suggests terms the person types in chats on public models without any agent turn ([Measured by the person](../../dictation/dictionary.md#measured-by-the-person)).
 
 ## Example
 

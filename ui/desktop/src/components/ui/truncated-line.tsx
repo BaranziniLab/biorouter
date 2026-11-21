@@ -44,7 +44,7 @@ export interface TruncatedLineProps {
  * cannot be read, and the detail behind a hover rather than on the page).
  *
  * A list row shows its description on one line with an ellipsis. Until this, the clipped part of
- * a marketplace, workflow or built app description could not be read anywhere. The tooltip opens
+ * a marketplace, workflow or application description could not be read anywhere. The tooltip opens
  * only while the line is really cut off: over a line that fits it would only say the same thing
  * again, over the next row (the provider catalog's rule, `ProviderCard`). A screen reader already
  * hears the whole line, since the ellipsis is drawn, not written.

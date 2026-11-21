@@ -1,4 +1,5 @@
 use std::sync::LazyLock;
+pub mod browser_use;
 pub mod computer_use;
 
 use axum::http::HeaderMap;
@@ -1073,6 +1074,7 @@ pub fn configure(state: Arc<crate::state::AppState>, secret_key: String) -> Rout
         .merge(session_meta::routes(state.clone()))
         .merge(agent::routes(state.clone()))
         .merge(computer_use::routes(state.clone()))
+        .merge(browser_use::routes(state.clone()))
         .merge(apps::routes(state.clone()))
         .merge(config_management::routes(state.clone()))
         .merge(workflow::routes(state.clone()))

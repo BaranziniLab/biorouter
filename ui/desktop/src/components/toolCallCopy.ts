@@ -17,6 +17,7 @@ export type ToolRowState = 'running' | 'done' | 'failed' | 'stopped';
 const VERB_FORMS: Record<string, readonly [past: string, base: string]> = {
   Adding: ['Added', 'add'],
   Analyzing: ['Analyzed', 'analyze'],
+  Answering: ['Answered', 'answer'],
   Applying: ['Applied', 'apply'],
   Attaching: ['Attached', 'attach'],
   Authenticating: ['Authenticated', 'authenticate'],
@@ -28,7 +29,9 @@ const VERB_FORMS: Record<string, readonly [past: string, base: string]> = {
   Canceling: ['Canceled', 'cancel'],
   Capturing: ['Captured', 'capture'],
   Checking: ['Checked', 'check'],
+  Choosing: ['Chose', 'choose'],
   Clearing: ['Cleared', 'clear'],
+  Clicking: ['Clicked', 'click'],
   Closing: ['Closed', 'close'],
   Completing: ['Completed', 'complete'],
   Configuring: ['Configured', 'configure'],
@@ -40,13 +43,17 @@ const VERB_FORMS: Record<string, readonly [past: string, base: string]> = {
   Describing: ['Described', 'describe'],
   Detaching: ['Detached', 'detach'],
   Downloading: ['Downloaded', 'download'],
+  Dragging: ['Dragged', 'drag'],
   Editing: ['Edited', 'edit'],
   Executing: ['Executed', 'execute'],
   Exporting: ['Exported', 'export'],
   Fetching: ['Fetched', 'fetch'],
+  Filling: ['Filled', 'fill'],
   Finding: ['Found', 'find'],
   Generating: ['Generated', 'generate'],
   Getting: ['Got', 'get'],
+  Going: ['Went', 'go'],
+  Hovering: ['Hovered', 'hover'],
   Importing: ['Imported', 'import'],
   Ingesting: ['Ingested', 'ingest'],
   Inspecting: ['Inspected', 'inspect'],
@@ -62,10 +69,12 @@ const VERB_FORMS: Record<string, readonly [past: string, base: string]> = {
   Opening: ['Opened', 'open'],
   Parsing: ['Parsed', 'parse'],
   Posting: ['Posted', 'post'],
+  Pressing: ['Pressed', 'press'],
   Previewing: ['Previewed', 'preview'],
   Querying: ['Queried', 'query'],
   Reading: ['Read', 'read'],
   Recalling: ['Recalled', 'recall'],
+  Reloading: ['Reloaded', 'reload'],
   Removing: ['Removed', 'remove'],
   Renaming: ['Renamed', 'rename'],
   Rendering: ['Rendered', 'render'],
@@ -75,6 +84,7 @@ const VERB_FORMS: Record<string, readonly [past: string, base: string]> = {
   Running: ['Ran', 'run'],
   Saving: ['Saved', 'save'],
   Scheduling: ['Scheduled', 'schedule'],
+  Scrolling: ['Scrolled', 'scroll'],
   Searching: ['Searched', 'search'],
   Selecting: ['Selected', 'select'],
   Sending: ['Sent', 'send'],
@@ -86,7 +96,9 @@ const VERB_FORMS: Record<string, readonly [past: string, base: string]> = {
   Storing: ['Stored', 'store'],
   Summarizing: ['Summarized', 'summarize'],
   Syncing: ['Synced', 'sync'],
+  Taking: ['Took', 'take'],
   Testing: ['Tested', 'test'],
+  Typing: ['Typed', 'type'],
   Unloading: ['Unloaded', 'unload'],
   Updating: ['Updated', 'update'],
   Uploading: ['Uploaded', 'upload'],
@@ -123,7 +135,9 @@ const NAME_ACRONYMS = new Set([
 
 /** Product names keep their capitals (copy rules), whatever the identifier spelled. */
 const PRODUCT_NAMES: ReadonlyArray<readonly [RegExp, string]> = [
-  [/\bagent drafter\b/g, 'Agent Drafter'],
+  // `agent_drafter` is Application Drafter's legacy config key, so its tools' words read
+  // "agent drafter"; the product is named for what it builds.
+  [/\b(?:agent|application) drafter\b/g, 'Application Drafter'],
   [/\bauto ?visualiser\b/g, 'Auto Visualiser'],
   [/\bbiorouter\b/g, 'Biorouter'],
   [/\bcodex\b/g, 'Codex'],
@@ -146,7 +160,7 @@ export function toolNameWords(identifier: string): string[] {
 /**
  * A tool identifier as words that read inside a sentence: lowercase, with
  * acronyms and product names in capitals ("text editor", "UCSF OMOP query",
- * "Agent Drafter build app"). The transcript never shows Title Case.
+ * "Application Drafter build app"). The transcript never shows Title Case.
  */
 export function toolNamePhrase(identifier: string | readonly string[]): string {
   const words = typeof identifier === 'string' ? toolNameWords(identifier) : identifier;
@@ -165,7 +179,7 @@ export function sentenceStart(text: string): string {
  * Words written mid-sentence: a step a model described in its own words opens
  * in lowercase ("Read the manifest" → "read the manifest") so it can follow a
  * verb. Only a plainly capitalized first word moves: "KBs", "SQL" and a
- * product name ("Biorouter", "Agent Drafter") keep their capitals.
+ * product name ("Biorouter", "Application Drafter") keep their capitals.
  */
 export function inSentence(text: string): string {
   if (!/^[A-Z][a-z]+(?![A-Za-z0-9])/.test(text)) return text;
@@ -678,7 +692,7 @@ export const ARTIFACT_CARD_COPY = {
   kind: {
     figure: 'Figure',
     report: 'Report',
-    app: 'App',
+    app: 'Application',
     page: 'Page',
     resource: 'Resource',
   },

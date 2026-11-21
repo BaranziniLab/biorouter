@@ -121,6 +121,8 @@ describe('artifact title helpers', () => {
     expect(titleFromResourceUri('ui://histogram/chart')).toBe('Histogram Chart');
     expect(titleFromResourceUri('ui://chart/interactive')).toBe('Interactive Chart');
     expect(titleFromResourceUri('ui://map/visualization')).toBe('Map Visualization');
+    // An application's card is titled by the application, not by the legacy address host.
+    expect(titleFromResourceUri('ui://agent-drafter/lab-notebook')).toBe('Lab Notebook');
   });
 
   it('uses descriptive UI resource titles for embedded artifacts', () => {
@@ -308,11 +310,11 @@ describe('ArtifactViewer', { timeout: 20_000 }, () => {
     await userEvent.click(await screen.findByTestId('artifact-open-here'));
     const share = await screen.findByRole('button', { name: 'Share with agent' });
     expect(onShare).not.toHaveBeenCalledWith(
-      expect.objectContaining({ viewId: expect.stringContaining('embedded-browser') })
+      expect.objectContaining({ viewId: expect.stringMatching(/^browser-artifact-tab-/) })
     );
     await userEvent.click(share);
     expect(onShare).toHaveBeenCalledWith(
-      expect.objectContaining({ viewId: expect.stringContaining('embedded-browser') })
+      expect.objectContaining({ viewId: expect.stringMatching(/^browser-artifact-tab-/) })
     );
     await userEvent.click(screen.getByRole('button', { name: 'Stop sharing with agent' }));
     expect(onShare).toHaveBeenLastCalledWith(null);
@@ -353,7 +355,7 @@ describe('ArtifactViewer', { timeout: 20_000 }, () => {
     await userEvent.click(await screen.findByTestId('artifact-open-here'));
     await userEvent.click(await screen.findByRole('button', { name: 'Share with agent' }));
     const sharedViewId = onShare.mock.calls.find(([value]) => value?.viewId)?.[0].viewId;
-    expect(sharedViewId).toEqual(expect.stringContaining('embedded-browser'));
+    expect(sharedViewId).toEqual(expect.stringMatching(/^browser-artifact-tab-/));
 
     act(() => {
       publishState?.({

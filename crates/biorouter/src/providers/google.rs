@@ -37,6 +37,9 @@ pub const GOOGLE_KNOWN_MODELS: &[&str] = &[
     "gemini-4-hydrogen",
     "gemini-4-argon",
     "gemini-4-carbon",
+    // Gemini 4 Neon: offered, not the default. $3/$15 per MTok, implicit
+    // caching only (https://aistudio.google.com/docs/pricing, 2026-11-19).
+    "gemini-4-neon",
     // Gemini 3.x models (all GA except the two -preview ids)
     "gemini-3.8-flash",
     "gemini-3.7-flash",

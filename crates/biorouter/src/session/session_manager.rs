@@ -70,6 +70,7 @@ macro_rules! side_request_sql {
     };
 }
 
+pub mod deferred_writes;
 pub mod side_usage;
 mod spend;
 pub use spend::{compaction_event_key, RequestUsage, SpendSnapshot, COMPACTION_EVENT_KEY_PREFIX};
@@ -2322,6 +2323,28 @@ impl SessionManager {
         &self.storage
     }
 
+    /// #549: let `session_id`'s message and usage writes outlive a store that
+    /// is out of space, for as long as the returned guard lives. Only a
+    /// headless `biorouter run` asks, for its own chat; every other chat, of
+    /// this store or any other, keeps the strict store. See [`deferred_writes`].
+    pub fn defer_writes_when_full(&self, session_id: &str) -> deferred_writes::DeferredWritesGuard {
+        deferred_writes::register(&self.storage, session_id)
+    }
+
+    /// The #549 deferral registered for `id`, if any.
+    fn deferral(&self, id: &str) -> Option<Arc<deferred_writes::DeferredWrites>> {
+        deferred_writes::lookup(&self.storage.session_dir, id)
+    }
+
+    /// Before a whole-history rewrite of `id`: rows a #549 deferral holds are
+    /// saved first, and the rewrite is refused while any still wait.
+    async fn settle_deferred_before_rewrite(&self, id: &str) -> Result<()> {
+        match self.deferral(id) {
+            Some(deferral) => deferral.settle_before_rewrite(&self.storage).await,
+            None => Ok(()),
+        }
+    }
+
     pub async fn create_session(
         &self,
         working_dir: PathBuf,
@@ -2404,7 +2427,11 @@ impl SessionManager {
     }
 
     pub async fn get_session(&self, id: &str, include_messages: bool) -> Result<Session> {
-        self.storage.get_session(id, include_messages).await
+        let mut session = self.storage.get_session(id, include_messages).await?;
+        if let Some(deferral) = self.deferral(id) {
+            deferral.overlay(&mut session);
+        }
+        Ok(session)
     }
 
     /// The `sub_agent` sessions whose `parent_session_id` is `parent_session_id`,
@@ -2666,6 +2693,9 @@ impl SessionManager {
     }
 
     pub async fn add_message(&self, id: &str, message: &Message) -> Result<String> {
+        if let Some(deferral) = self.deferral(id) {
+            return deferral.add_message(&self.storage, message).await;
+        }
         self.storage.add_message(id, message).await
     }
 
@@ -2677,7 +2707,7 @@ impl SessionManager {
     /// of being recognized as a replay. Use this on every path that both
     /// persists a message AND keeps/yields it.
     pub async fn add_message_adopting_uid(&self, id: &str, message: &mut Message) -> Result<()> {
-        let effective_uid = self.storage.add_message(id, message).await?;
+        let effective_uid = self.add_message(id, message).await?;
         if message.id.as_deref() != Some(effective_uid.as_str()) {
             message.id = Some(effective_uid);
         }
@@ -2748,6 +2778,7 @@ impl SessionManager {
     /// writer appended in between is destroyed here, silently, after that
     /// writer was already told its append succeeded.
     pub async fn replace_conversation(&self, id: &str, conversation: &Conversation) -> Result<()> {
+        self.settle_deferred_before_rewrite(id).await?;
         self.storage.replace_conversation(id, conversation).await
     }
 
@@ -2768,7 +2799,12 @@ impl SessionManager {
     /// loss. The ordering is load-bearing.
     pub async fn snapshot_for_rewrite(&self, id: &str) -> Result<(Session, ConversationRevision)> {
         let revision = self.storage.conversation_revision(id).await?;
-        let session = self.storage.get_session(id, true).await?;
+        let mut session = self.storage.get_session(id, true).await?;
+        // #549: rows a deferral holds are part of the view, never of the
+        // revision, which describes only what is stored.
+        if let Some(deferral) = self.deferral(id) {
+            deferral.overlay(&mut session);
+        }
         Ok((session, revision))
     }
 
@@ -2807,6 +2843,7 @@ impl SessionManager {
         basis: ConversationRevision,
         known: &Conversation,
     ) -> Result<(ReplaceOutcome, Conversation)> {
+        self.settle_deferred_before_rewrite(id).await?;
         self.storage
             .replace_conversation_preserving_tail(id, replacement, basis, known)
             .await
@@ -3063,6 +3100,9 @@ impl SessionManager {
     /// the session's lifetime counters. Reusing `event_key` is a no-op, which
     /// makes retrying an ambiguous database result safe.
     pub async fn apply_usage_event(&self, entry: UsageLedgerEntry) -> Result<bool> {
+        if let Some(deferral) = self.deferral(&entry.session_id) {
+            return deferral.apply_usage(self, entry).await;
+        }
         self.storage.apply_usage_event(entry).await
     }
 
@@ -3571,6 +3611,7 @@ impl SessionManager {
     /// [`Self::truncate_conversation_bounded`], which cuts only as far as that
     /// view reached.
     pub async fn truncate_conversation(&self, session_id: &str, timestamp: i64) -> Result<()> {
+        self.settle_deferred_before_rewrite(session_id).await?;
         self.storage
             .truncate_conversation(session_id, timestamp)
             .await
@@ -3594,6 +3635,7 @@ impl SessionManager {
         timestamp: i64,
         basis: ConversationRevision,
     ) -> Result<TruncateOutcome> {
+        self.settle_deferred_before_rewrite(session_id).await?;
         self.storage
             .truncate_conversation_bounded(session_id, timestamp, basis)
             .await
@@ -24043,5 +24085,994 @@ mod public_basis_tests {
                 "session_manager.rs names the public basis key outside its one writer"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod issue549_storage_full_tests {
+    use super::*;
+    use crate::agents::turn_abort::{classify_agent_error, TurnAbortCode};
+
+    const RESTORED_PAGES: i64 = 1024;
+    const PAGE_BYTES: i64 = 4096;
+
+    async fn store() -> (tempfile::TempDir, SessionManager, String) {
+        let dir = tempfile::tempdir().unwrap();
+        let session_dir = dir.path().join(SESSIONS_FOLDER);
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .max_lifetime(None)
+            .idle_timeout(None)
+            .connect_lazy_with(
+                SqliteConnectOptions::new()
+                    .filename(session_dir.join(DB_NAME))
+                    .create_if_missing(true)
+                    .busy_timeout(std::time::Duration::from_secs(5))
+                    .journal_mode(sqlx::sqlite::SqliteJournalMode::Wal)
+                    .synchronous(sqlx::sqlite::SqliteSynchronous::Normal),
+            );
+        let sm = SessionManager {
+            storage: Arc::new(SessionStorage {
+                pool,
+                initialized: tokio::sync::OnceCell::new(),
+                session_dir,
+                ephemeral_prefix: None,
+            }),
+        };
+        let chat = sm
+            .create_session(
+                dir.path().to_path_buf(),
+                "Issue549 fixture".to_string(),
+                SessionType::Hidden,
+            )
+            .await
+            .unwrap();
+        let pool = sm.storage().pool().await.unwrap();
+        sqlx::query(
+            "CREATE TABLE issue549_fault (target TEXT PRIMARY KEY, enabled INTEGER NOT NULL)",
+        )
+        .execute(pool)
+        .await
+        .unwrap();
+        sqlx::query("INSERT INTO issue549_fault VALUES (?, 0)")
+            .bind(&chat.id)
+            .execute(pool)
+            .await
+            .unwrap();
+        sqlx::query("CREATE TABLE issue549_growth (payload BLOB NOT NULL)")
+            .execute(pool)
+            .await
+            .unwrap();
+        // The real writer has already inserted its ledger/message row when this runs.
+        sqlx::query("CREATE TRIGGER issue549_full BEFORE UPDATE ON sessions WHEN EXISTS (SELECT 1 FROM issue549_fault WHERE target = NEW.id AND enabled = 1) BEGIN INSERT INTO issue549_growth VALUES (zeroblob(1048576)); END")
+            .execute(pool).await.unwrap();
+        (dir, sm, chat.id)
+    }
+
+    async fn bind_private_quota(sm: &SessionManager) {
+        let pool = sm.storage().pool().await.unwrap();
+        sqlx::query("PRAGMA wal_checkpoint(TRUNCATE)")
+            .execute(pool)
+            .await
+            .unwrap();
+        let page_size: i64 = sqlx::query_scalar("PRAGMA page_size")
+            .fetch_one(pool)
+            .await
+            .unwrap();
+        let pages: i64 = sqlx::query_scalar("PRAGMA page_count")
+            .fetch_one(pool)
+            .await
+            .unwrap();
+        let free: i64 = sqlx::query_scalar("PRAGMA freelist_count")
+            .fetch_one(pool)
+            .await
+            .unwrap();
+        assert_eq!(page_size, PAGE_BYTES);
+        assert!(
+            pages > 0 && pages < 512,
+            "fixture schema must fit below 2MiB"
+        );
+        assert!(
+            free < 16,
+            "a fresh fixture must not hide a large reusable freelist"
+        );
+        let requested = pages + 16;
+        let effective: i64 = sqlx::query_scalar(&format!("PRAGMA max_page_count = {requested}"))
+            .fetch_one(pool)
+            .await
+            .unwrap();
+        assert_eq!(
+            effective, requested,
+            "quota must bind this same single connection"
+        );
+    }
+
+    async fn enable_fault(sm: &SessionManager) {
+        sqlx::query("UPDATE issue549_fault SET enabled = 1")
+            .execute(sm.storage().pool().await.unwrap())
+            .await
+            .unwrap();
+    }
+
+    async fn restore_private_quota(sm: &SessionManager) {
+        let pool = sm.storage().pool().await.unwrap();
+        let effective: i64 =
+            sqlx::query_scalar(&format!("PRAGMA max_page_count = {RESTORED_PAGES}"))
+                .fetch_one(pool)
+                .await
+                .unwrap();
+        assert_eq!(effective, RESTORED_PAGES);
+    }
+
+    fn usage(id: &str, key: &str) -> UsageLedgerEntry {
+        UsageLedgerEntry {
+            event_key: key.to_string(),
+            session_id: id.to_string(),
+            schedule_id: None,
+            current_total_tokens: Some(820),
+            current_input_tokens: Some(100),
+            current_output_tokens: Some(20),
+            billed_total_tokens: Some(900),
+            input_tokens: Some(100),
+            output_tokens: Some(20),
+            model_id: Some("issue549-model".to_string()),
+            provider: Some("synthetic".to_string()),
+            cache_read_tokens: Some(700),
+            cache_creation_tokens: Some(80),
+        }
+    }
+
+    fn sqlite_code(error: &anyhow::Error) -> Option<i32> {
+        error
+            .chain()
+            .find_map(|cause| match cause.downcast_ref::<sqlx::Error>()? {
+                sqlx::Error::Database(error) => error.code()?.parse().ok(),
+                _ => None,
+            })
+    }
+
+    async fn count(sm: &SessionManager, query: &str) -> i64 {
+        sqlx::query_scalar(query)
+            .fetch_one(sm.storage().pool().await.unwrap())
+            .await
+            .unwrap()
+    }
+
+    async fn close_bounded(sm: &SessionManager, dir: &std::path::Path) {
+        tokio::time::timeout(std::time::Duration::from_secs(5), sm.close())
+            .await
+            .expect("private pool close must finish within five seconds");
+        let bytes: u64 = std::fs::read_dir(dir.join(SESSIONS_FOLDER))
+            .unwrap()
+            .map(|entry| entry.unwrap().metadata().unwrap().len())
+            .sum();
+        assert!(
+            bytes <= (RESTORED_PAGES * PAGE_BYTES) as u64,
+            "closed fixture exceeds 4MiB: {bytes}"
+        );
+    }
+
+    #[tokio::test]
+    async fn issue549_real_full_rolls_back_usage_and_same_event_retry_charges_once() {
+        let (dir, sm, id) = store().await;
+        bind_private_quota(&sm).await;
+        assert!(
+            sm.apply_usage_event(usage(&id, "issue549-control"))
+                .await
+                .unwrap(),
+            "the real usage writer must succeed under the same quota with the fault disabled"
+        );
+        let before = sm.get_token_counts(&id).await.unwrap();
+        enable_fault(&sm).await;
+        let event = usage(&id, "issue549-pending");
+        let failed = sm.apply_usage_event(event.clone()).await;
+        let code = failed.as_ref().err().and_then(sqlite_code);
+        let abort = failed.as_ref().err().map(classify_agent_error);
+        let after = sm.get_token_counts(&id).await.unwrap();
+        let failed_rows = count(
+            &sm,
+            "SELECT count(*) FROM token_events WHERE event_key = 'issue549-pending'",
+        )
+        .await;
+        let failed_growth = count(&sm, "SELECT count(*) FROM issue549_growth").await;
+        restore_private_quota(&sm).await;
+        let replay = sm.apply_usage_event(event.clone()).await;
+        let duplicate = sm.apply_usage_event(event).await;
+        let final_counts = sm.get_token_counts(&id).await.unwrap();
+        let final_rows = count(
+            &sm,
+            "SELECT count(*) FROM token_events WHERE event_key = 'issue549-pending'",
+        )
+        .await;
+        let final_growth = count(&sm, "SELECT count(*) FROM issue549_growth").await;
+        close_bounded(&sm, dir.path()).await;
+
+        assert_eq!(
+            code,
+            Some(13),
+            "must be actual SQLITE_FULL, not inferred from prose"
+        );
+        assert_eq!(abort, Some(TurnAbortCode::SessionStore));
+        assert_eq!(after.total_tokens, before.total_tokens);
+        assert_eq!(
+            after.accumulated_total_tokens,
+            before.accumulated_total_tokens
+        );
+        assert_eq!(
+            after.accumulated_input_tokens,
+            before.accumulated_input_tokens
+        );
+        assert_eq!(
+            after.accumulated_output_tokens,
+            before.accumulated_output_tokens
+        );
+        assert_eq!(
+            failed_rows, 0,
+            "FULL after ledger insert must roll that insert back"
+        );
+        assert_eq!(failed_growth, 0);
+        assert!(replay.unwrap());
+        assert!(!duplicate.unwrap());
+        assert_eq!(final_rows, 1);
+        assert_eq!(
+            final_growth, 1,
+            "duplicate replay must not run the update twice"
+        );
+        assert_eq!(
+            final_counts.total_tokens,
+            Some(820),
+            "context gauge is not billed lifetime"
+        );
+        assert_eq!(final_counts.accumulated_total_tokens, Some(1800));
+        assert_eq!(final_counts.accumulated_input_tokens, Some(200));
+        assert_eq!(final_counts.accumulated_output_tokens, Some(40));
+        dir.close().unwrap();
+    }
+
+    #[tokio::test]
+    async fn issue549_real_full_rolls_back_message_and_same_uid_retry_is_exact() {
+        let (dir, sm, id) = store().await;
+        bind_private_quota(&sm).await;
+        sm.add_message(
+            &id,
+            &Message::user()
+                .with_text("opening")
+                .with_id("issue549-opening"),
+        )
+        .await
+        .expect(
+            "the real message writer must succeed under the same quota with the fault disabled",
+        );
+        sqlx::query("UPDATE sessions SET updated_at = '2000-01-01 00:00:00' WHERE id = ?")
+            .bind(&id)
+            .execute(sm.storage().pool().await.unwrap())
+            .await
+            .unwrap();
+        let read_touch = || async {
+            sqlx::query_scalar::<_, String>("SELECT updated_at FROM sessions WHERE id = ?")
+                .bind(&id)
+                .fetch_one(sm.storage().pool().await.unwrap())
+                .await
+                .unwrap()
+        };
+        let before_touch = read_touch().await;
+        let before_fts = count(&sm, "SELECT count(*) FROM messages_fts").await;
+        enable_fault(&sm).await;
+        let message = Message::assistant()
+            .with_text("issue549 exact replay marker")
+            .with_id("issue549-pending-message");
+        let failed = sm.add_message(&id, &message).await;
+        let code = failed.as_ref().err().and_then(sqlite_code);
+        let after_touch = read_touch().await;
+        let failed_rows = count(
+            &sm,
+            "SELECT count(*) FROM messages WHERE msg_uid = 'issue549-pending-message'",
+        )
+        .await;
+        let after_fts = count(&sm, "SELECT count(*) FROM messages_fts").await;
+        let failed_growth = count(&sm, "SELECT count(*) FROM issue549_growth").await;
+        restore_private_quota(&sm).await;
+        let replay = sm.add_message(&id, &message).await;
+        let duplicate = sm.add_message(&id, &message).await;
+        let stored = sm.get_session(&id, true).await.unwrap();
+        let final_rows = count(
+            &sm,
+            "SELECT count(*) FROM messages WHERE msg_uid = 'issue549-pending-message'",
+        )
+        .await;
+        let final_fts = count(&sm, "SELECT count(*) FROM messages_fts").await;
+        let final_growth = count(&sm, "SELECT count(*) FROM issue549_growth").await;
+        close_bounded(&sm, dir.path()).await;
+
+        assert_eq!(code, Some(13));
+        assert_eq!(after_touch, before_touch);
+        assert_eq!(failed_rows, 0);
+        assert_eq!(
+            after_fts, before_fts,
+            "FTS insert must roll back with the message"
+        );
+        assert_eq!(failed_growth, 0);
+        assert_eq!(replay.unwrap(), "issue549-pending-message");
+        assert_eq!(duplicate.unwrap(), "issue549-pending-message");
+        assert_eq!(final_rows, 1);
+        assert_eq!(final_fts, before_fts + 1);
+        assert_eq!(final_growth, 1);
+        let conversation = stored.conversation.unwrap();
+        assert_eq!(conversation.len(), 2);
+        assert_eq!(
+            conversation.messages()[1].id.as_deref(),
+            Some("issue549-pending-message")
+        );
+        assert_eq!(
+            conversation.messages()[1].as_concat_text(),
+            "issue549 exact replay marker"
+        );
+        dir.close().unwrap();
+    }
+
+    #[tokio::test]
+    async fn issue549_constraint_pool_closed_and_generic_io_stay_typed_store_failures() {
+        let (dir, sm, id) = store().await;
+        let pool = sm.storage().pool().await.unwrap();
+        sqlx::query("CREATE TRIGGER issue549_constraint BEFORE UPDATE ON sessions BEGIN SELECT RAISE(ABORT, 'issue549 deliberate constraint'); END")
+            .execute(pool).await.unwrap();
+        let rejected = sm.apply_usage_event(usage(&id, "issue549-rejected")).await;
+        let code = rejected.as_ref().err().and_then(sqlite_code);
+        let rows = count(
+            &sm,
+            "SELECT count(*) FROM token_events WHERE event_key = 'issue549-rejected'",
+        )
+        .await;
+        let affiliation = sm.storage().record_affiliation(&id, "synthetic").await;
+        let saved_affiliations = sm.session_affiliations(&id).await.unwrap();
+        close_bounded(&sm, dir.path()).await;
+        let closed = sm.apply_usage_event(usage(&id, "issue549-closed")).await;
+        let unknown_limit = crate::agents::usage_limit::monthly_state_with(
+            &sm,
+            &crate::config::usage::UsageLimits {
+                monthly_token_limit: Some(1000),
+                ..Default::default()
+            },
+        )
+        .await;
+        let generic_io = anyhow::Error::new(sqlx::Error::Io(std::io::Error::other(
+            "synthetic non-capacity I/O",
+        )))
+        .context("fixture writer failed");
+        close_bounded(&sm, dir.path()).await;
+
+        assert_eq!(
+            code.map(|code| code & 255),
+            Some(19),
+            "real SQLite constraint is not FULL/IOERR"
+        );
+        assert_eq!(rows, 0);
+        assert!(
+            affiliation.is_err(),
+            "the actual private affiliation writer must propagate its constraint"
+        );
+        assert!(saved_affiliations.is_empty());
+        assert!(
+            unknown_limit.is_err(),
+            "unavailable spend must not become a known zero monthly state"
+        );
+        for error in [
+            rejected.as_ref().err().unwrap(),
+            closed.as_ref().err().unwrap(),
+            affiliation.as_ref().err().unwrap(),
+            unknown_limit.as_ref().err().unwrap(),
+            &generic_io,
+        ] {
+            let abort = classify_agent_error(error);
+            assert_eq!(abort, TurnAbortCode::SessionStore);
+            assert_eq!(abort.exit_code(), 78);
+        }
+        assert!(closed.err().unwrap().chain().any(|cause| matches!(
+            cause.downcast_ref::<sqlx::Error>(),
+            Some(sqlx::Error::PoolClosed)
+        )));
+        dir.close().unwrap();
+    }
+
+    struct Issue549AnswerOnce {
+        manager: Arc<SessionManager>,
+        fail_after_answer_is_requested: bool,
+        calls: std::sync::atomic::AtomicUsize,
+    }
+
+    #[async_trait::async_trait]
+    impl crate::providers::base::Provider for Issue549AnswerOnce {
+        fn metadata() -> crate::providers::base::ProviderMetadata {
+            crate::providers::base::ProviderMetadata::empty()
+        }
+
+        fn get_name(&self) -> &str {
+            "issue549-answer-once"
+        }
+
+        fn get_model_config(&self) -> crate::model::ModelConfig {
+            crate::model::ModelConfig::new_or_fail("issue549-model")
+        }
+
+        async fn complete_with_model(
+            &self,
+            _model: &crate::model::ModelConfig,
+            _system: &str,
+            _messages: &[Message],
+            _tools: &[rmcp::model::Tool],
+        ) -> std::result::Result<
+            (Message, crate::providers::base::ProviderUsage),
+            crate::providers::errors::ProviderError,
+        > {
+            if self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst) != 0 {
+                return Err(crate::providers::errors::ProviderError::NotImplemented(
+                    "the finite fixture permits only one completion".to_string(),
+                ));
+            }
+            if self.fail_after_answer_is_requested {
+                sqlx::query("UPDATE issue549_fault SET enabled = 1")
+                    .execute(self.manager.storage().pool().await.map_err(|_| {
+                        crate::providers::errors::ProviderError::ExecutionError(
+                            "the private fixture pool was unavailable".to_string(),
+                        )
+                    })?)
+                    .await
+                    .map_err(|_| {
+                        crate::providers::errors::ProviderError::ExecutionError(
+                            "the private fixture trigger could not be enabled".to_string(),
+                        )
+                    })?;
+            }
+            let mut usage = crate::providers::base::ProviderUsage::new(
+                "issue549-model".to_string(),
+                crate::providers::base::Usage::new(Some(10), Some(5), Some(15)),
+            );
+            usage.finish_reason = Some("stop".to_string());
+            Ok((
+                Message::assistant().with_text("issue549 finite answer"),
+                usage,
+            ))
+        }
+    }
+
+    async fn characterize_agent_store_failure(fail_after_provider: bool) {
+        use crate::agents::{Agent, AgentConfig, AgentEvent, SessionConfig};
+        use crate::config::permission::PermissionManager;
+        use crate::config::BioRouterMode;
+        use futures::StreamExt;
+        use std::sync::atomic::Ordering;
+
+        let (dir, manager, id) = store().await;
+        let manager = Arc::new(manager);
+        manager
+            .update(&id)
+            .user_provided_name("Issue549 explicitly named fixture")
+            .apply()
+            .await
+            .unwrap();
+        let permissions = tempfile::tempdir().unwrap();
+        let agent = Agent::with_config(
+            AgentConfig::new(
+                manager.clone(),
+                Arc::new(PermissionManager::new(permissions.path().to_path_buf())),
+                None,
+                BioRouterMode::Auto,
+            )
+            .with_project_hooks(false),
+        );
+        let provider = Arc::new(Issue549AnswerOnce {
+            manager: manager.clone(),
+            fail_after_answer_is_requested: fail_after_provider,
+            calls: std::sync::atomic::AtomicUsize::new(0),
+        });
+        agent.update_provider(provider.clone(), &id).await.unwrap();
+        bind_private_quota(&manager).await;
+        let config = SessionConfig {
+            id: id.clone(),
+            schedule_id: None,
+            max_turns: Some(2),
+            max_tool_calls: Some(1),
+            budget: None,
+            retry_config: None,
+            reasoning_effort: None,
+        };
+        let observed = tokio::time::timeout(std::time::Duration::from_secs(20), async {
+            let mut stream = agent
+                .reply(Message::user().with_text("answer once"), config, None)
+                .await
+                .expect("the capacity fault is disabled throughout reply construction");
+            let mut events = Vec::new();
+            let mut failure = None;
+            while let Some(event) = stream.next().await {
+                match event {
+                    Ok(event) => {
+                        if events.len() == 64 {
+                            failure = Some(anyhow::anyhow!(
+                                "the finite fixture event bound was exceeded"
+                            ));
+                            break;
+                        }
+                        events.push(event);
+                    }
+                    Err(error) => {
+                        failure = Some(error);
+                        break;
+                    }
+                }
+            }
+            (events, failure)
+        })
+        .await;
+        let timed_out = observed.is_err();
+        let (events, failure) = observed.unwrap_or_else(|_| (Vec::new(), None));
+        let calls = provider.calls.load(Ordering::SeqCst);
+        let ledger_rows = count(&manager, "SELECT count(*) FROM token_events").await;
+        let growth = count(&manager, "SELECT count(*) FROM issue549_growth").await;
+        let answer_seen = events.iter().any(|event| match event {
+            AgentEvent::Message(message) => message.as_concat_text() == "issue549 finite answer",
+            _ => false,
+        });
+        restore_private_quota(&manager).await;
+        let stored = manager.get_session(&id, true).await.unwrap();
+        let conversation = stored.conversation.unwrap();
+        let assistant_rows = conversation
+            .messages()
+            .iter()
+            .filter(|message| message.role == rmcp::model::Role::Assistant)
+            .count();
+        let answer_rows = conversation
+            .messages()
+            .iter()
+            .filter(|message| message.as_concat_text() == "issue549 finite answer")
+            .count();
+        let mut published_row_counts = Vec::new();
+        for event in &events {
+            if let AgentEvent::MessagesPersisted(rows) = event {
+                for row in rows {
+                    let actual: i64 = sqlx::query_scalar(
+                        "SELECT count(*) FROM messages WHERE session_id = ? AND msg_uid = ?",
+                    )
+                    .bind(&id)
+                    .bind(&row.id)
+                    .fetch_one(manager.storage().pool().await.unwrap())
+                    .await
+                    .unwrap();
+                    published_row_counts.push(actual);
+                }
+            }
+        }
+        close_bounded(&manager, dir.path()).await;
+        drop(agent);
+        drop(provider);
+        drop(manager);
+        dir.close().unwrap();
+        assert!(
+            !timed_out,
+            "one finite provider request and the real store failure must settle"
+        );
+        assert_eq!(calls, 1);
+        assert!(
+            answer_seen,
+            "the real reply released the finite answer before storing its usage"
+        );
+        if fail_after_provider {
+            let error = failure
+                .as_ref()
+                .expect("ordinary Agent::reply retains strict store failure");
+            assert_eq!(sqlite_code(error), Some(13), "must be actual SQLITE_FULL");
+            let abort = classify_agent_error(error);
+            assert_eq!(abort, TurnAbortCode::SessionStore);
+            assert_eq!(abort.exit_code(), 78);
+            assert_eq!(
+                ledger_rows, 0,
+                "failed usage transaction must not leave a ledger row"
+            );
+            assert_eq!(growth, 0, "failed trigger allocation must roll back");
+        } else {
+            assert!(
+                failure.is_none(),
+                "fault-disabled same-quota reply failed: {failure:?}"
+            );
+            assert_eq!(ledger_rows, 1);
+            assert_eq!(growth, 0);
+        }
+        assert_eq!(assistant_rows, usize::from(!fail_after_provider));
+        assert_eq!(answer_rows, usize::from(!fail_after_provider));
+        assert!(
+            published_row_counts.iter().all(|count| *count == 1),
+            "every published persisted id must exist in the private store"
+        );
+    }
+
+    #[tokio::test]
+    async fn issue549_agent_same_quota_control_completes_one_real_reply() {
+        characterize_agent_store_failure(false).await;
+    }
+
+    #[tokio::test]
+    async fn issue549_agent_real_full_after_answer_stays_typed_and_non_durable() {
+        characterize_agent_store_failure(true).await;
+    }
+
+    async fn disable_fault(sm: &SessionManager) {
+        sqlx::query("UPDATE issue549_fault SET enabled = 0")
+            .execute(sm.storage().pool().await.unwrap())
+            .await
+            .unwrap();
+    }
+
+    async fn stored_ids(sm: &SessionManager, id: &str) -> Vec<String> {
+        sqlx::query_scalar("SELECT msg_uid FROM messages WHERE session_id = ? ORDER BY id")
+            .bind(id)
+            .fetch_all(sm.storage().pool().await.unwrap())
+            .await
+            .unwrap()
+    }
+
+    /// #549: a chat registered for a headless run holds a real SQLITE_FULL
+    /// usage write and the message writes behind it in memory, in order, shows
+    /// them to readers, refuses a whole-history rewrite while they wait, and
+    /// saves each exactly once, in order, when space comes back.
+    #[tokio::test]
+    async fn issue549_registered_chat_holds_full_writes_in_order_and_saves_them_once() {
+        let (dir, sm, id) = store().await;
+        bind_private_quota(&sm).await;
+        let deferral = sm.defer_writes_when_full(&id);
+        sm.add_message(
+            &id,
+            &Message::user()
+                .with_text("opening")
+                .with_id("issue549-held-m1"),
+        )
+        .await
+        .unwrap();
+        enable_fault(&sm).await;
+
+        assert!(
+            sm.apply_usage_event(usage(&id, "issue549-held-usage"))
+                .await
+                .unwrap(),
+            "a full usage write is held and reported as applied"
+        );
+        let mut answer = Message::assistant().with_text("answer without an id");
+        sm.add_message_adopting_uid(&id, &mut answer).await.unwrap();
+        let answer_id = answer
+            .id
+            .clone()
+            .expect("a held message adopts a stable uid");
+        let next = Message::user()
+            .with_text("next")
+            .with_id("issue549-held-m3");
+        assert_eq!(
+            sm.add_message(&id, &next).await.unwrap(),
+            "issue549-held-m3"
+        );
+
+        let held = deferral.status();
+        assert!(held.degraded);
+        assert_eq!(held.unsaved_rows, 3);
+        assert_eq!(held.deferred_rows, 3);
+        assert!(deferral.take_warning());
+        assert!(!deferral.take_warning(), "the warning is given once");
+        assert_eq!(
+            stored_ids(&sm, &id).await,
+            vec!["issue549-held-m1".to_string()]
+        );
+        assert_eq!(
+            count(
+                &sm,
+                "SELECT count(*) FROM token_events WHERE event_key = 'issue549-held-usage'"
+            )
+            .await,
+            0
+        );
+        assert!(deferred_writes::is_pending(&next));
+        assert!(!deferred_writes::is_pending(
+            &Message::user()
+                .with_text("opening")
+                .with_id("issue549-held-m1")
+        ));
+
+        let view = sm.get_session(&id, true).await.unwrap();
+        let viewed: Vec<_> = view
+            .conversation
+            .clone()
+            .unwrap()
+            .messages()
+            .iter()
+            .map(|message| message.id.clone().unwrap())
+            .collect();
+        assert_eq!(
+            viewed,
+            vec![
+                "issue549-held-m1".to_string(),
+                answer_id.clone(),
+                "issue549-held-m3".to_string()
+            ]
+        );
+        assert_eq!(view.total_tokens, Some(820), "the held request's gauge");
+
+        let rewrite = sm
+            .replace_conversation(&id, view.conversation.as_ref().unwrap())
+            .await;
+        let refusal = rewrite.expect_err("a rewrite waits for the held rows");
+        assert!(crate::agents::turn_abort::is_storage_exhausted(&refusal));
+        assert_eq!(classify_agent_error(&refusal), TurnAbortCode::SessionStore);
+        assert_eq!(
+            stored_ids(&sm, &id).await,
+            vec!["issue549-held-m1".to_string()]
+        );
+
+        restore_private_quota(&sm).await;
+        disable_fault(&sm).await;
+        deferral.flush(&sm).await.unwrap();
+        let saved = deferral.status();
+        assert!(saved.degraded, "the run still reports that it degraded");
+        assert_eq!(saved.unsaved_rows, 0);
+        assert_eq!(
+            stored_ids(&sm, &id).await,
+            vec![
+                "issue549-held-m1".to_string(),
+                answer_id,
+                "issue549-held-m3".to_string()
+            ]
+        );
+        assert!(!deferred_writes::is_pending(&next));
+        assert!(
+            !sm.apply_usage_event(usage(&id, "issue549-held-usage"))
+                .await
+                .unwrap(),
+            "the saved usage row is not applied twice"
+        );
+        let counts = sm.get_token_counts(&id).await.unwrap();
+        assert_eq!(counts.accumulated_total_tokens, Some(900));
+        assert_eq!(counts.total_tokens, Some(820));
+        drop(deferral);
+        close_bounded(&sm, dir.path()).await;
+        dir.close().unwrap();
+    }
+
+    /// #549: what a registration does NOT excuse. A constraint violation, a
+    /// full store under a usage limit, and a write past the queue's bound all
+    /// fail as before, and an unregistered chat of the same store is strict.
+    #[tokio::test]
+    async fn issue549_registration_still_fails_non_capacity_errors_limits_and_bounds() {
+        // A constraint violation is never held.
+        let (dir, sm, id) = store().await;
+        let deferral = sm.defer_writes_when_full(&id);
+        sqlx::query("CREATE TRIGGER issue549_constraint BEFORE UPDATE ON sessions BEGIN SELECT RAISE(ABORT, 'issue549 deliberate constraint'); END")
+            .execute(sm.storage().pool().await.unwrap()).await.unwrap();
+        let rejected = sm
+            .add_message(
+                &id,
+                &Message::user()
+                    .with_text("x")
+                    .with_id("issue549-constraint-1"),
+            )
+            .await;
+        assert_eq!(
+            rejected
+                .as_ref()
+                .err()
+                .and_then(sqlite_code)
+                .map(|code| code & 255),
+            Some(19)
+        );
+        assert_eq!(
+            deferral.status(),
+            crate::session::DeferredWritesStatus::default()
+        );
+        drop(deferral);
+        close_bounded(&sm, dir.path()).await;
+        dir.close().unwrap();
+
+        // A usage limit on the chat: an unrecorded request would hide spend.
+        let (dir, sm, id) = store().await;
+        crate::agents::usage_limit::set_for_session(
+            &sm,
+            &id,
+            Some(crate::agents::usage_limit::ChatLimitOverride::Limit {
+                max_tokens: Some(1_000_000),
+                max_usd: None,
+            }),
+        )
+        .await
+        .unwrap();
+        bind_private_quota(&sm).await;
+        let deferral = sm.defer_writes_when_full(&id);
+        enable_fault(&sm).await;
+        let limited = sm.apply_usage_event(usage(&id, "issue549-limited")).await;
+        assert_eq!(limited.as_ref().err().and_then(sqlite_code), Some(13));
+        assert_eq!(deferral.status().unsaved_rows, 0);
+        drop(deferral);
+        restore_private_quota(&sm).await;
+        close_bounded(&sm, dir.path()).await;
+        dir.close().unwrap();
+
+        // The bound: past it the write fails as a store failure.
+        let (dir, sm, id) = store().await;
+        bind_private_quota(&sm).await;
+        let deferral = deferred_writes::register_bounded(sm.storage(), &id, 2, usize::MAX);
+        enable_fault(&sm).await;
+        for uid in ["issue549-bound-1", "issue549-bound-2"] {
+            sm.add_message(&id, &Message::user().with_text(uid).with_id(uid))
+                .await
+                .unwrap();
+        }
+        let past = sm
+            .add_message(
+                &id,
+                &Message::user().with_text("b3").with_id("issue549-bound-3"),
+            )
+            .await;
+        let error = past.expect_err("a third row passes the bound");
+        assert!(crate::agents::turn_abort::is_storage_exhausted(&error));
+        assert_eq!(classify_agent_error(&error), TurnAbortCode::SessionStore);
+        assert_eq!(deferral.status().unsaved_rows, 2);
+
+        // Another chat of the same store is not registered: strict.
+        let other = sm
+            .create_session(
+                dir.path().to_path_buf(),
+                "other".into(),
+                SessionType::Hidden,
+            )
+            .await;
+        if let Ok(other) = other {
+            let strict = sm
+                .add_message(
+                    &other.id,
+                    &Message::user().with_text("o").with_id("issue549-other-1"),
+                )
+                .await;
+            assert!(strict.is_ok() || strict.as_ref().err().and_then(sqlite_code) == Some(13));
+            assert!(!deferred_writes::is_pending(
+                &Message::user().with_text("o").with_id("issue549-other-1")
+            ));
+        }
+        drop(deferral);
+        restore_private_quota(&sm).await;
+        close_bounded(&sm, dir.path()).await;
+        dir.close().unwrap();
+    }
+
+    /// #549, through the real agent loop: the same finite reply whose usage
+    /// write meets a real SQLITE_FULL (the strict characterization above
+    /// aborts with exit 78) finishes when its chat is registered. The answer is
+    /// shown, no `MessagesPersisted` names a row the store does not hold, and
+    /// the held rows are saved once when space comes back.
+    #[tokio::test]
+    async fn issue549_registered_agent_reply_finishes_through_a_full_store() {
+        use crate::agents::{Agent, AgentConfig, AgentEvent, SessionConfig};
+        use crate::config::permission::PermissionManager;
+        use crate::config::BioRouterMode;
+        use futures::StreamExt;
+        use std::sync::atomic::Ordering;
+
+        let (dir, manager, id) = store().await;
+        let manager = Arc::new(manager);
+        manager
+            .update(&id)
+            .user_provided_name("Issue549 explicitly named fixture")
+            .apply()
+            .await
+            .unwrap();
+        let permissions = tempfile::tempdir().unwrap();
+        let agent = Agent::with_config(
+            AgentConfig::new(
+                manager.clone(),
+                Arc::new(PermissionManager::new(permissions.path().to_path_buf())),
+                None,
+                BioRouterMode::Auto,
+            )
+            .with_project_hooks(false),
+        );
+        let provider = Arc::new(Issue549AnswerOnce {
+            manager: manager.clone(),
+            fail_after_answer_is_requested: true,
+            calls: std::sync::atomic::AtomicUsize::new(0),
+        });
+        agent.update_provider(provider.clone(), &id).await.unwrap();
+        bind_private_quota(&manager).await;
+        let deferral = manager.defer_writes_when_full(&id);
+        let config = SessionConfig {
+            id: id.clone(),
+            schedule_id: None,
+            max_turns: Some(2),
+            max_tool_calls: Some(1),
+            budget: None,
+            retry_config: None,
+            reasoning_effort: None,
+        };
+        let observed = tokio::time::timeout(std::time::Duration::from_secs(20), async {
+            let mut stream = agent
+                .reply(Message::user().with_text("answer once"), config, None)
+                .await
+                .expect("the capacity fault is disabled throughout reply construction");
+            let mut events = Vec::new();
+            let mut failure = None;
+            while let Some(event) = stream.next().await {
+                match event {
+                    Ok(event) => {
+                        if events.len() == 64 {
+                            failure = Some(anyhow::anyhow!("event bound exceeded"));
+                            break;
+                        }
+                        events.push(event);
+                    }
+                    Err(error) => {
+                        failure = Some(error);
+                        break;
+                    }
+                }
+            }
+            (events, failure)
+        })
+        .await
+        .expect("one finite provider request must settle");
+        let (events, failure) = observed;
+        assert!(
+            failure.is_none(),
+            "a registered chat outlives the full store: {failure:?}"
+        );
+        assert_eq!(provider.calls.load(Ordering::SeqCst), 1);
+        assert!(events.iter().any(|event| matches!(
+            event,
+            AgentEvent::Message(message) if message.as_concat_text() == "issue549 finite answer"
+        )));
+        let held = deferral.status();
+        assert!(held.degraded);
+        assert!(
+            held.unsaved_rows >= 2,
+            "the usage row and the answer wait: {held:?}"
+        );
+        assert_eq!(
+            count(&manager, "SELECT count(*) FROM token_events").await,
+            0
+        );
+        assert_eq!(
+            manager.get_session(&id, false).await.unwrap().total_tokens,
+            Some(15),
+            "the final gauge is the reply's own, not the stale stored one"
+        );
+        for event in &events {
+            if let AgentEvent::MessagesPersisted(rows) = event {
+                for row in rows {
+                    let stored: i64 = sqlx::query_scalar(
+                        "SELECT count(*) FROM messages WHERE session_id = ? AND msg_uid = ?",
+                    )
+                    .bind(&id)
+                    .bind(&row.id)
+                    .fetch_one(manager.storage().pool().await.unwrap())
+                    .await
+                    .unwrap();
+                    assert_eq!(stored, 1, "a named row is a stored row: {}", row.id);
+                }
+            }
+        }
+
+        restore_private_quota(&manager).await;
+        disable_fault(&manager).await;
+        deferral.flush(&manager).await.unwrap();
+        assert_eq!(deferral.status().unsaved_rows, 0);
+        assert_eq!(
+            count(&manager, "SELECT count(*) FROM token_events").await,
+            1
+        );
+        let stored = manager.get_session(&id, true).await.unwrap();
+        let answers = stored
+            .conversation
+            .unwrap()
+            .messages()
+            .iter()
+            .filter(|message| message.as_concat_text() == "issue549 finite answer")
+            .count();
+        assert_eq!(answers, 1, "the held answer is saved exactly once");
+        drop(deferral);
+        close_bounded(&manager, dir.path()).await;
+        drop(agent);
+        drop(provider);
+        drop(manager);
+        dir.close().unwrap();
     }
 }

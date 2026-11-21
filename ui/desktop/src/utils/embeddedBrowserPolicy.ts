@@ -128,6 +128,27 @@ function normalizedHost(hostname: string): string {
     .toLowerCase();
 }
 
+/** Chromium's built in PDF viewer, which Electron ships as a component extension. */
+export const PDF_VIEWER_EXTENSION_ID = 'mhjfbmdgcfjbbpaeojofohoefgiehjai';
+
+/**
+ * The PDF viewer's own resources: its extension page and the shared `chrome://resources` it
+ * loads. Measured on Electron 39.8.10, opening a PDF in the browser requests exactly these two
+ * schemes besides the PDF itself. A web page cannot load either (Chromium refuses web origins
+ * access to them), so admitting them here adds nothing a page can reach.
+ */
+export function isPdfViewerResourceUrl(candidate: string): boolean {
+  try {
+    const parsed = new URL(candidate);
+    return (
+      (parsed.protocol === 'chrome-extension:' && parsed.hostname === PDF_VIEWER_EXTENSION_ID) ||
+      (parsed.protocol === 'chrome:' && parsed.hostname === 'resources')
+    );
+  } catch {
+    return false;
+  }
+}
+
 export function isAllowedEmbeddedRequestUrl(candidate: string): boolean {
   try {
     const parsed = new URL(candidate);
@@ -179,7 +200,16 @@ export async function assertPublicEmbeddedUrl(candidate: string): Promise<URL> {
   return parsed;
 }
 
-/** Same-tab sign-in cannot complete reliably in the isolated browser partition. */
+/**
+ * Whether a URL looks like a sign-in page. Used ONLY for the wording of the confirmation shown
+ * before the default browser opens a link ("Open this sign-in page in your browser?").
+ *
+ * ⚠ It no longer keeps any page out of the Biorouter Browser (BB-03): login pages load in the
+ * panel like any other page. It used to block every navigation whose host or path contained
+ * `auth`, `login`, `sso` and similar words, which made login gated sites unusable and caught
+ * ordinary URLs too. What protects a login now is that the agent can never type into a password
+ * or verification code field.
+ */
 export function isAuthenticationNavigation(candidate: string): boolean {
   try {
     const url = new URL(candidate);

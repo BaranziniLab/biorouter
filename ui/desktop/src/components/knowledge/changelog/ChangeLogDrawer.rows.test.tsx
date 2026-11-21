@@ -133,7 +133,7 @@ describe('ChangeLogDrawer entry times', () => {
 
   afterEach(() => vi.useRealTimers());
 
-  // V3-22: the Workflows and Built apps rows read "2m", "3h", "4d", "Oct 7"; the change log
+  // V3-22: the Workflows and Applications rows read "2m", "3h", "4d", "Oct 7"; the change log
   // used to read "11m ago". One format, `rowTime`, with the full date in the tooltip.
   it('reads in the compact form every list meta uses, never "ago"', () => {
     vi.useFakeTimers({ toFake: ['Date'], now: NOW });

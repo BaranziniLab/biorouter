@@ -5,7 +5,7 @@ import path from 'node:path';
 import { browserLaunchLink, requestAppLaunch } from './appLaunchLink';
 
 /**
- * Opening a built app in the system browser (W2-HRD-1), from the main process.
+ * Opening an application in the system browser (W2-HRD-1), from the main process.
  *
  * The daemon serves an app's page only to a browser holding that app's access
  * cookie, set by opening a one-time launch link that it hands out to a caller
@@ -92,8 +92,8 @@ export async function writeAppLaunchPage(
     page,
     '<!doctype html><meta charset=utf-8><meta name=referrer content=no-referrer>' +
       `<meta http-equiv="refresh" content="0;url=${target}">` +
-      '<title>Opening Biorouter app</title>' +
-      `<p>Opening the app. If nothing happens, <a href="${target}">open it here</a>. ` +
+      '<title>Opening Biorouter application</title>' +
+      `<p>Opening the application. If nothing happens, <a href="${target}">open it here</a>. ` +
       'The address works once.</p>\n',
     { mode: 0o600, flag: 'wx' }
   );

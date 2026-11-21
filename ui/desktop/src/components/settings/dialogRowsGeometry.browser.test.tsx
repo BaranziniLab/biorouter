@@ -227,7 +227,7 @@ const EXTENSIONS = [
   {
     type: 'builtin',
     name: 'agent_drafter',
-    display_name: 'Agent Drafter',
+    display_name: 'Application Drafter',
     description:
       'Build interactive artifacts — static pages or apps with an embedded BioRouter agent — and export them to share with the people you work with.',
     enabled: true,
@@ -323,7 +323,7 @@ describe('Settings dialog rows and the settings select in a real layout engine',
           lines: row.querySelectorAll('.br-setting-row-label').length,
         }))
       );
-      expect(rows.map((row) => row.text)).toEqual(['Agent Drafter', 'Developer', 'Memory']);
+      expect(rows.map((row) => row.text)).toEqual(['Application Drafter', 'Developer', 'Memory']);
       for (const row of rows) near(row.height, 40, `${row.text} row`);
     } finally {
       await tab.close();

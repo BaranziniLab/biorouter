@@ -366,7 +366,7 @@ describe('what each row offers', () => {
   });
 
   it('does not bring a failed install back after the model, installed since, is removed', async () => {
-    const cancelled = { ...job(16_278_622, 'failed', 'The install was cancelled.'), model: TURBO };
+    const cancelled = { ...job(16_278_622, 'failed', 'The install was canceled.'), model: TURBO };
     const installed = status({
       models: [model(TURBO, { installed: true, location: 'user' }), model(SMALL)],
       active_model: TURBO,
@@ -385,7 +385,7 @@ describe('what each row offers', () => {
     // A new install that fails is reported again.
     const failedAgain = { ...cancelled, bytes_done: 2_000_000 };
     expect(speechModelRows(status({ install_job: failedAgain }))[0].failure).toBe(
-      'The install was cancelled.'
+      'The install was canceled.'
     );
   });
 

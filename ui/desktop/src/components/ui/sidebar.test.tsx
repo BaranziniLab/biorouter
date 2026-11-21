@@ -44,6 +44,7 @@ vi.mock('../ExtensionUpdateReporter', () => ({ default: () => null }));
 vi.mock('../../hooks/useNavigation', () => ({ useNavigation: () => vi.fn() }));
 
 import { AppLayout } from '../Layout/AppLayout';
+import { BROWSER_SURFACE_MARKER } from '../../utils/surface';
 import {
   SIDEBAR_OVERLAY_BODY_CLASS,
   Sidebar,
@@ -63,9 +64,19 @@ afterEach(() => {
   isMobile.value = false;
 });
 
+/** The drawer is the BROWSER's narrow layout (`biorouter serve`), so its tests stand on that surface. */
+function onBrowserSurface() {
+  document.documentElement.dataset.biorouterSurface = BROWSER_SURFACE_MARKER;
+}
+
+afterEach(() => {
+  delete document.documentElement.dataset.biorouterSurface;
+});
+
 describe('responsive Sidebar', () => {
   beforeEach(() => {
     isMobile.value = true;
+    onBrowserSurface();
   });
 
   it('keeps the mobile drawer at the canonical width instead of sizing to its content', () => {
@@ -92,10 +103,10 @@ describe('responsive Sidebar', () => {
     // resizable. Writing `` `${SIDEBAR_DEFAULT_WIDTH}px` `` here reads as the
     // same assertion and is not one: the drawer's width IS that constant, so
     // both sides move together and the expectation can never fail because the
-    // shipped width changed. The number is load-bearing outside this file — the
-    // OS window's `minWidth` is derived from it (`main.ts`, pinned in
-    // `styles/measures.test.ts`) — so moving it must be a deliberate act that
-    // trips a test, not a silent one.
+    // shipped width changed. The number is load-bearing outside this file (the
+    // docked sidebar every install ships with, and the summary rail's worked
+    // table in `Layout/yieldLadder.ts`), so moving it must be a deliberate act
+    // that trips a test, not a silent one.
     expect(drawer.style.getPropertyValue('--sidebar-width')).toBe('288px');
     expect(SIDEBAR_DEFAULT_WIDTH).toBe(288);
   });
@@ -121,6 +132,34 @@ describe('responsive Sidebar', () => {
 
     expect(screen.getByRole('dialog').style.getPropertyValue('--sidebar-width')).toBe(
       `${SIDEBAR_DEFAULT_WIDTH}px`
+    );
+  });
+
+  /**
+   * The desktop window narrows below 930px now (`WINDOW_MIN_WIDTH`, owner 2026-11-19), and there
+   * it keeps the overlay it has below rung 1: one way to fold, the titlebar controls in place, and
+   * the reserve every band keys on (`[data-slot='sidebar'][data-state='collapsed']`). A drawer
+   * there would have dropped that reserve and put page titles under the traffic lights.
+   */
+  it('keeps the desktop overlay, never the drawer, in a narrow desktop window', () => {
+    delete document.documentElement.dataset.biorouterSurface;
+    const { container } = render(
+      <SidebarProvider defaultOpen={false}>
+        <Sidebar>
+          <div>chats</div>
+        </Sidebar>
+        <SidebarTrigger />
+      </SidebarProvider>
+    );
+    const panel = container.querySelector('[data-slot="sidebar"]');
+    expect(panel).toHaveAttribute('data-state', 'collapsed');
+    expect(panel).not.toHaveAttribute('data-mobile');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Toggle sidebar' }));
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    expect(container.querySelector('[data-slot="sidebar"]')).toHaveAttribute(
+      'data-state',
+      'expanded'
     );
   });
 });
@@ -475,6 +514,7 @@ describe('the sidebar toggle and ⌘B, for a keyboard user', () => {
 
   it('says whether the mobile drawer is open', () => {
     isMobile.value = true;
+    onBrowserSurface();
     renderSidebar(true);
     expect(toggle()).toHaveAttribute('aria-expanded', 'false');
 

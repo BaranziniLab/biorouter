@@ -153,8 +153,13 @@ pub async fn handle_doctor(format: &str, check_update: bool) -> Result<()> {
     if let Some(error) = computer_use["error"].as_str() {
         println!("    {error}");
     }
-    if let Some(executable) = computer_use["executable"].as_str() {
-        println!("    Helper: {executable}");
+    // On macOS the app System Settings grants, not the engine inside it; `--format json` keeps
+    // the exact executable.
+    if let Some(helper) = computer_use["app_bundle"]
+        .as_str()
+        .or(computer_use["executable"].as_str())
+    {
+        println!("    Helper: {helper}");
     }
     println!("    OS permissions: {}", computer_use["permissions"]);
     if let Some(message) = computer_use["message"].as_str() {

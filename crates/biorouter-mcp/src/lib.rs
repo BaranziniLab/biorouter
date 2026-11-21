@@ -36,6 +36,7 @@ mod test_sandbox;
 /// Test binaries only; see the module docs.
 #[doc(hidden)]
 pub mod test_tracing;
+pub mod untrusted_text;
 pub mod webdocuments;
 
 /// Sandbox-helper entry point (BR-69). Call this as the **first line of

@@ -85,6 +85,17 @@ pub enum SuccessCheck {
         /// The file (or directory) that must exist.
         path: String,
     },
+    /// #535: pass when `path` names a regular file of at least one byte (a
+    /// symbolic link is followed). A missing path, an empty file, a directory
+    /// and anything else that is not a regular file each fail with their own
+    /// reason. A relative `path` resolves as for
+    /// [`FileExists`](SuccessCheck::FileExists). Says nothing about what the
+    /// file contains.
+    #[serde(alias = "file_non_empty", alias = "filenonempty")]
+    FileNonEmpty {
+        /// The regular file that must hold at least one byte.
+        path: String,
+    },
     /// BR-48: run `command` and pass when its combined stdout+stderr contains
     /// `substring`. Unlike [`Shell`](SuccessCheck::Shell), the exit status is
     /// ignored — this checks the *content* of the output (e.g. `0 failed`,

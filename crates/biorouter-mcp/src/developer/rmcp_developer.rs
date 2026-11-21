@@ -57,7 +57,7 @@ use std::time::Duration;
 /// The `_meta` key Biorouter's MCP client writes the dispatching chat's id
 /// under, on every tool call (`McpMeta` / `session_context::SESSION_ID_HEADER`
 /// in the `biorouter` crate, which this crate cannot name). The knowledge and
-/// Agent Drafter servers read the same key.
+/// Application Drafter servers read the same key.
 const SESSION_ID_META_KEY: &str = "biorouter-session-id";
 
 /// The chat a tool call was dispatched from, when a Biorouter client sent it.
@@ -146,7 +146,7 @@ fn streamed_shell_line(line: &str) -> Option<&str> {
 /// The `data` of one live `shell_output` logging notification.
 ///
 /// `type`, `stream` and `output` are the shape every client already reads;
-/// `seq` is additive (see `DeveloperServer::stream_shell_output`), and so is
+/// `seq` is additive (see [`read_foreground_output`]), and so is
 /// `progress_token` (see [`with_progress_token`]).
 fn shell_output_notification_data(
     stream: &str,
@@ -294,7 +294,10 @@ pub struct ShellParams {
     /// Run the command in the background instead of waiting for it to finish.
     /// Use this for long-lived commands (dev servers, builds, test suites,
     /// training runs) you need to keep running and observe. Returns a job_id
-    /// immediately; then use shell_status / shell_kill. Do NOT
+    /// and a log file that receives the job's output and, once it ends, a last
+    /// line with its exit status; read the file with `tail`. shell_status /
+    /// shell_kill also watch and stop the job when you have them. A job that
+    /// ends within 2 seconds reports its exit status and output at once. Do NOT
     /// append `&` yourself for this — set background=true.
     #[serde(default)]
     pub background: Option<bool>,
@@ -326,6 +329,11 @@ const SHELL_INLINE_MAX_CHARS: usize = 40_000;
 /// however long its last lines are.
 const SHELL_PREVIEW_MAX_CHARS: usize = 8_000;
 
+/// How long a `background=true` call waits before answering, so a job that
+/// fails at once reports its exit status and output instead of "Started"
+/// (issue #538). A job still running at the end of it costs this much once.
+const BACKGROUND_EARLY_EXIT_WINDOW: std::time::Duration = std::time::Duration::from_secs(2);
+
 /// The last `max_chars` characters of `text`, and whether anything was cut.
 /// Char-based, so it never splits a multibyte character.
 fn tail_chars(text: &str, max_chars: usize) -> (&str, bool) {
@@ -340,6 +348,426 @@ fn tail_chars(text: &str, max_chars: usize) -> (&str, bool) {
         .map(|(i, _)| i)
         .unwrap_or(text.len());
     (text.get(byte..).unwrap_or_default(), true)
+}
+
+/// How long a foreground call waits for its output pipes to close once the
+/// shell itself has exited (issue #536).
+///
+/// The call used to wait for end of file on both pipes and only then for the
+/// shell, so a process the shell left behind holding them (`cd x && nohup job
+/// > log 2>&1 &` under bash, `nohup job &` under any shell) blocked the call
+/// until the job ended or the foreground budget killed it with its group. The
+/// shell's own output follows its exit within milliseconds; this is the same
+/// grace the background supervisor gives its readers (`finish_output` in
+/// `background.rs`).
+const FOREGROUND_PIPE_GRACE: Duration = Duration::from_secs(2);
+
+/// How long a foreground call's pipes are still read, and what is read thrown
+/// away, after the call stopped listening while some process held them
+/// (issue #536). Counted from the moment the shell's exit (or its kill) was
+/// observed.
+///
+/// Closing the read ends at once would make that process's next write fail,
+/// which by default kills it (SIGPIPE), so they are drained for a while. Not
+/// for ever: a process that keeps writing would keep a task of a finished call
+/// alive with it. After this the pipes are closed.
+const FOREGROUND_QUIET_DRAIN: Duration = Duration::from_secs(30);
+
+/// The most quiet drains one server keeps at once. A call that would be one
+/// more closes its pipes at once and says so.
+const FOREGROUND_QUIET_DRAINS_MAX: usize = 16;
+
+/// What a foreground command has printed so far, shared by the task that reads
+/// its pipes and `execute_shell_command`, which can stop listening before the
+/// pipes close.
+#[derive(Clone, Default)]
+struct ForegroundCapture(Arc<std::sync::Mutex<CapturedOutput>>);
+
+#[derive(Default)]
+struct CapturedOutput {
+    text: String,
+    /// Set once the call stopped listening. Lines read after this are dropped.
+    frozen: bool,
+}
+
+impl ForegroundCapture {
+    fn lock(&self) -> std::sync::MutexGuard<'_, CapturedOutput> {
+        self.0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// Keep `line` unless the call has stopped listening. `false` when it has.
+    fn append(&self, line: &str) -> bool {
+        let mut captured = self.lock();
+        if captured.frozen {
+            return false;
+        }
+        captured.text.push_str(line);
+        true
+    }
+
+    /// Stop keeping lines and take what was kept. Under the same lock as
+    /// [`Self::append`], so no line lands after the take.
+    fn freeze(&self) -> String {
+        let mut captured = self.lock();
+        captured.frozen = true;
+        std::mem::take(&mut captured.text)
+    }
+}
+
+/// Owns the quiet drains (see [`FOREGROUND_QUIET_DRAIN`]) of one developer
+/// server's foreground calls, so none outlives the server, and bounds how many
+/// run at once.
+#[derive(Default)]
+struct ForegroundDrains(std::sync::Mutex<Vec<tokio::task::JoinHandle<std::io::Result<()>>>>);
+
+impl ForegroundDrains {
+    /// Keep `reader` until it ends on its own. `false` when too many are
+    /// already kept: `reader` is then aborted, which closes its pipes.
+    fn adopt(&self, reader: tokio::task::JoinHandle<std::io::Result<()>>) -> bool {
+        let mut drains = self
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        drains.retain(|drain| !drain.is_finished());
+        if drains.len() >= FOREGROUND_QUIET_DRAINS_MAX {
+            reader.abort();
+            return false;
+        }
+        drains.push(reader);
+        true
+    }
+}
+
+impl Drop for ForegroundDrains {
+    fn drop(&mut self) {
+        let drains = self
+            .0
+            .get_mut()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        for drain in drains.drain(..) {
+            drain.abort();
+        }
+    }
+}
+
+/// The task reading one foreground command's pipes, from the spawn to the end
+/// of its quiet drain (issue #536).
+///
+/// Every way out of `execute_shell_command`, including the future being
+/// dropped, ends in [`Self::release`]: the reader then either has finished, or
+/// is draining under an absolute deadline in the server's [`ForegroundDrains`],
+/// or was aborted. No reader is left running with nobody to stop it.
+struct ForegroundReader {
+    capture: ForegroundCapture,
+    /// Cancelled once nobody watches the live lines any more.
+    streaming: CancellationToken,
+    deadline: Option<tokio::sync::oneshot::Sender<tokio::time::Instant>>,
+    task: Option<tokio::task::JoinHandle<std::io::Result<()>>>,
+    drains: Arc<ForegroundDrains>,
+}
+
+impl ForegroundReader {
+    fn spawn(
+        stdout: tokio::process::ChildStdout,
+        stderr: tokio::process::ChildStderr,
+        peer: rmcp::service::Peer<RoleServer>,
+        progress_token: Option<ProgressToken>,
+        drains: Arc<ForegroundDrains>,
+    ) -> Self {
+        let capture = ForegroundCapture::default();
+        let streaming = CancellationToken::new();
+        let (deadline, quiet_until) = tokio::sync::oneshot::channel();
+        let read = read_foreground_output(
+            stdout,
+            stderr,
+            peer,
+            progress_token,
+            capture.clone(),
+            streaming.clone(),
+        );
+        let task = tokio::spawn(async move {
+            tokio::select! {
+                read = read => read,
+                () = quiet_drain_deadline(quiet_until) => Ok(()),
+            }
+        });
+        Self {
+            capture,
+            streaming,
+            deadline: Some(deadline),
+            task: Some(task),
+            drains,
+        }
+    }
+
+    fn stop_streaming(&self) {
+        self.streaming.cancel();
+    }
+
+    /// Wait up to `grace` for end of file on both pipes. `None` when some
+    /// process still held a pipe when the grace ran out.
+    async fn wait_for_eof(&mut self, grace: Duration) -> Option<Result<(), ErrorData>> {
+        let task = self.task.as_mut()?;
+        let joined = tokio::time::timeout(grace, task).await.ok()?;
+        self.task = None;
+        Some(match joined {
+            Ok(read) => {
+                read.map_err(|e| ErrorData::new(ErrorCode::INTERNAL_ERROR, e.to_string(), None))
+            }
+            Err(e) => Err(ErrorData::new(
+                ErrorCode::INTERNAL_ERROR,
+                e.to_string(),
+                None,
+            )),
+        })
+    }
+
+    /// Stop streaming and keeping lines, and take what was kept. A command
+    /// whose pipes reached end of file within the grace has streamed every
+    /// line by then.
+    fn freeze(&self) -> String {
+        self.stop_streaming();
+        self.capture.freeze()
+    }
+
+    /// Hand a reader that has not finished to the server's quiet drains, to
+    /// stop at `deadline`. `false` only when it could not be kept and its pipes
+    /// were closed instead.
+    fn release(&mut self, deadline: tokio::time::Instant) -> bool {
+        self.stop_streaming();
+        let quiet_until = self.deadline.take();
+        let Some(task) = self.task.take() else {
+            return true;
+        };
+        if task.is_finished() {
+            return true;
+        }
+        if let Some(quiet_until) = quiet_until {
+            // Fails only when the task has just ended, which needs no deadline.
+            let _ = quiet_until.send(deadline);
+        }
+        self.drains.adopt(task)
+    }
+
+    /// The output of a command whose shell exited at `exited`. If some
+    /// process still holds a pipe after the grace, the output ends with a
+    /// note saying so, and the reader drains until `exited` plus
+    /// [`FOREGROUND_QUIET_DRAIN`].
+    async fn finish_after_exit(
+        &mut self,
+        exited: tokio::time::Instant,
+    ) -> Result<String, ErrorData> {
+        if let Some(read) = self.wait_for_eof(FOREGROUND_PIPE_GRACE).await {
+            read?;
+            return Ok(self.freeze());
+        }
+        let mut out = self.freeze();
+        let draining = self.release(exited + FOREGROUND_QUIET_DRAIN);
+        if !out.is_empty() && !out.ends_with('\n') {
+            out.push('\n');
+        }
+        out.push_str(&foreground_pipe_note(draining));
+        out.push('\n');
+        Ok(out)
+    }
+
+    /// What a command printed before its group was killed at `killed`.
+    ///
+    /// The group is gone, so end of file normally follows at once, but a
+    /// descendant that left the group can hold the pipe with no end of file,
+    /// so the wait is bounded.
+    async fn finish_after_kill(&mut self, killed: tokio::time::Instant) -> String {
+        let _ = self.wait_for_eof(FOREGROUND_PIPE_GRACE).await;
+        let printed = self.freeze();
+        self.release(killed + FOREGROUND_QUIET_DRAIN);
+        printed
+    }
+
+    /// Stop listening now, keeping nothing.
+    fn abandon(&mut self) {
+        self.freeze();
+        self.release(tokio::time::Instant::now() + FOREGROUND_QUIET_DRAIN);
+    }
+}
+
+impl Drop for ForegroundReader {
+    fn drop(&mut self) {
+        self.abandon();
+    }
+}
+
+/// Resolves when a released reader's quiet drain is over. Pending while the
+/// call still listens; resolves at once if the call vanished without saying.
+async fn quiet_drain_deadline(quiet_until: tokio::sync::oneshot::Receiver<tokio::time::Instant>) {
+    if let Ok(deadline) = quiet_until.await {
+        tokio::time::sleep_until(deadline).await;
+    }
+}
+
+/// Stream a foreground command's output in real time and keep it in `capture`.
+///
+/// Merges stdout and stderr and sends each line as a logging notification
+/// until `streaming` is cancelled, and keeps each line until the capture is
+/// frozen. After that it goes on reading to end of file, keeping nothing, so a
+/// process that still holds a pipe is not stopped by a closed one; the task
+/// around it bounds how long (see [`ForegroundReader::release`]).
+///
+/// Each notification carries the line as the command printed it — leading
+/// whitespace intact, only the line terminator removed (see
+/// [`streamed_shell_line`]) — and a `seq` that counts this command's
+/// streamed lines from 0. The `seq` exists because rmcp hands every
+/// incoming notification to its own tokio task on the client side, so
+/// adjacent lines reach a client in nondeterministic order; a client that
+/// wants the command's own order puts them back by `seq`. It is additive:
+/// a client that ignores it sees exactly the shape it always did.
+///
+/// `progress_token` is the tool call's own, echoed on every line (see
+/// [`with_progress_token`]) so the client routes the line to this call.
+async fn read_foreground_output(
+    stdout: tokio::process::ChildStdout,
+    stderr: tokio::process::ChildStderr,
+    peer: rmcp::service::Peer<RoleServer>,
+    progress_token: Option<ProgressToken>,
+    capture: ForegroundCapture,
+    streaming: CancellationToken,
+) -> std::io::Result<()> {
+    // Counts the lines this command streamed, so it is contiguous over
+    // exactly the notifications a client can receive. Advanced for a
+    // send that fails too: that only happens once the transport is
+    // gone, when no later line reaches the client either.
+    let mut seq: u64 = 0;
+
+    // Merge stdout and stderr streams
+    // ref https://blog.yoshuawuyts.com/futures-concurrency-3
+    let stdout = SplitStream::new(BufReader::new(stdout).split(b'\n')).map(|v| ("stdout", v));
+    let stderr = SplitStream::new(BufReader::new(stderr).split(b'\n')).map(|v| ("stderr", v));
+    let mut merged = stdout.merge(stderr);
+
+    while let Some((stream_type, line)) = merged.next().await {
+        let mut line = line?;
+        // Re-add newline as clients expect it
+        line.push(b'\n');
+        // Convert to UTF-8 to avoid corrupted output. A line ends at a
+        // newline byte, which never occurs inside a multibyte character.
+        let line_str = String::from_utf8_lossy(&line);
+
+        if !capture.append(&line_str) || streaming.is_cancelled() {
+            continue;
+        }
+
+        // Stream each line back to the client in real-time
+        if let Some(output) = streamed_shell_line(&line_str) {
+            let data =
+                shell_output_notification_data(stream_type, output, seq, progress_token.as_ref());
+            seq += 1;
+            let notification = peer.notify_logging_message(LoggingMessageNotificationParam {
+                level: LoggingLevel::Info,
+                data,
+                logger: Some("shell_tool".to_string()),
+            });
+            tokio::select! {
+                biased;
+                // The call has stopped listening: no line reaches the client
+                // after its result.
+                () = streaming.cancelled() => {}
+                sent = notification => {
+                    if let Err(e) = sent {
+                        // Don't break execution if streaming fails, just log it
+                        eprintln!("Failed to stream output line: {}", e);
+                    }
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+/// The line a foreground call adds when it returned while a process the shell
+/// started still held its output pipe (issue #536). It does not name
+/// `shell_status`: that leftover process is not a background job.
+fn foreground_pipe_note(draining: bool) -> String {
+    let closing = if draining {
+        format!(
+            "Anything it prints there is discarded, and the pipe is closed {}s after the shell \
+             exited, which can stop a process that writes to it later.",
+            FOREGROUND_QUIET_DRAIN.as_secs()
+        )
+    } else {
+        "Too many earlier commands are still holding pipes, so this pipe was closed now, which \
+         can stop that process if it writes to it again."
+            .to_string()
+    };
+    format!(
+        "[shell: the shell exited, but a process it started in the background still holds its \
+         output pipe, so this call returned without waiting for that process, which keeps \
+         running. {closing} Start long work with background=true, or send its output to a file \
+         (`cmd > log 2>&1 &`) and read the file.]"
+    )
+}
+
+/// The error a foreground command gets when its budget kills it (issue #537):
+/// the actionable message, the tail of what the command printed before the
+/// kill, and an explicit error envelope.
+///
+/// The envelope matters because without one the agent's error taxonomy
+/// classified the kill from its text, found "timeout" inside the name of the
+/// budget's environment variable and called it `retryable=true`, with advice
+/// that one retry is reasonable. An identical retry is killed again.
+fn foreground_timeout_error(
+    command: &str,
+    elapsed: Duration,
+    limit: Duration,
+    printed: &str,
+) -> ErrorData {
+    let message = foreground_timeout_message(command, elapsed, limit);
+    let summary = message.lines().next().unwrap_or_default().to_string();
+    ErrorData::new(
+        ErrorCode::INTERNAL_ERROR,
+        format!("{message}\n{}", printed_before_kill(printed)),
+        Some(serde_json::json!({
+            "error": {
+                "kind": "timeout",
+                "retryable": false,
+                // Short on purpose: the taxonomy persists this message, and
+                // the model reads the full one.
+                "message": summary,
+            }
+        })),
+    )
+}
+
+/// The last lines a killed command printed, bounded the way a spilled
+/// foreground output's preview is: the last [`SHELL_INLINE_MAX_LINES`] lines,
+/// at most [`SHELL_PREVIEW_MAX_CHARS`] characters of them, cut between
+/// characters. A partial last line with no newline (a `\r` progress bar) never
+/// reached the capture.
+fn printed_before_kill(printed: &str) -> String {
+    let printed = printed.trim_end_matches(['\n', '\r']);
+    if printed.trim().is_empty() {
+        return "It printed nothing before it was killed.".to_string();
+    }
+    // From the end, so a long output is not split into lines in full.
+    let start = printed
+        .rmatch_indices('\n')
+        .nth(SHELL_INLINE_MAX_LINES - 1)
+        .map_or(0, |(newline, _)| newline + 1);
+    let (tail, clipped) = tail_chars(
+        printed.get(start..).unwrap_or_default(),
+        SHELL_PREVIEW_MAX_CHARS,
+    );
+    let shown = if clipped {
+        format!("the last {} characters", tail.chars().count())
+    } else if start > 0 {
+        format!(
+            "the last {SHELL_INLINE_MAX_LINES} of {} lines",
+            printed.split('\n').count()
+        )
+    } else {
+        "all of it".to_string()
+    };
+    format!("Output before the kill ({shown}):\n{tail}")
 }
 
 /// Parameters for the `shell_status` tool.
@@ -482,6 +910,9 @@ pub struct DeveloperServer {
     /// watchdog. Distinct from the generic per-extension MCP timeout — see
     /// `shell::FOREGROUND_TIMEOUT_DEFAULT`.
     foreground_timeout: Option<Duration>,
+    /// Pipe readers of foreground calls that returned while a process the
+    /// shell left behind still held their output (issue #536).
+    foreground_drains: Arc<ForegroundDrains>,
 }
 
 #[tool_handler(router = self.tool_router)]
@@ -644,8 +1075,9 @@ impl ServerHandler for DeveloperServer {
 
             A command run in the foreground has a wall-clock budget (240 seconds by default). When it
             expires the command's whole process group is killed and the call fails, and nothing is left
-            running. Work that may legitimately take longer belongs in background=true, where
-            shell_status / shell_kill let you watch it without blocking the turn.
+            running. Work that may legitimately take longer belongs in background=true, where its log
+            file (and shell_status / shell_kill, when you have them) let you watch it without blocking
+            the turn.
 
             Use this shell tool directly for filesystem operations (ls, cp, mv, rm, mkdir, rg) rather than
             wrapping them in a code-execution script. To read or write a file's contents, prefer the
@@ -682,10 +1114,12 @@ impl ServerHandler for DeveloperServer {
         let unix_specific = indoc! {r#"
             For a long-lived command (dev server, build, test suite, training run) that you need to
             keep running and observe, run shell with `background=true` rather than appending `&`. That
-            returns a job_id and keeps the process alive across tool calls; then call `shell_status` to
-            wait for it to finish (it returns the moment it exits, or after a timeout still running, so
-            it never blocks your turn or kills the job), `shell_status` with no timeout to peek at new output, and
-            `shell_kill` to stop it. Completion is decided by the command's exit status.
+            returns a job_id and the path of a log file, and keeps the process alive across tool calls.
+            Read the log with `tail`; its last line gives the exit status once the job ends. If you have
+            them, call `shell_status` to wait for it to finish (it returns the moment it exits, or after
+            a timeout still running, so it never blocks your turn or kills the job), `shell_status` with
+            no timeout to peek at new output, and `shell_kill` to stop it. Completion is decided by the
+            command's exit status.
 
             **Important**: Use ripgrep - `rg` - exclusively when you need to locate a file or a code reference,
             other solutions may produce too large output because of hidden files! For example *do not* use `find` or `ls -r`
@@ -918,6 +1352,7 @@ impl DeveloperServer {
             skill_read_root: Self::bind_skill_read_root(&crate::paths::in_config_dir("skills")),
             skill_anchor: Self::bind_skill_anchor(&crate::paths::in_config_dir("skills")),
             foreground_timeout: super::shell::foreground_timeout_from_env(),
+            foreground_drains: Arc::default(),
         }
     }
 
@@ -1343,10 +1778,10 @@ impl DeveloperServer {
     ///
     /// Avoid commands that produce a large amount of output, and consider piping those outputs to files.
     /// For long-lived commands (dev servers, builds, test suites), set `background=true` instead of
-    /// appending `&`; this returns a job_id you can watch with shell_status / shell_kill.
+    /// appending `&`; this returns a job_id and a log file you can read with `tail`.
     #[tool(
         name = "shell",
-        description = "Execute a command in the shell.This will return the output and error concatenated into a single string, as you would see from running on the command line. There will also be an indication of if the command succeeded or failed. Avoid commands that produce a large amount of output, and consider piping those outputs to files. For a long-lived command (dev server, build, test suite, training run) that you need to keep running and observe, set background=true instead of appending `&`: it returns a job_id immediately, and you then use shell_status to peek or wait, or shell_kill to stop it. A foreground command has a wall-clock budget (240s by default): if it exceeds it, its whole process group is killed and the call fails, so anything that may run longer belongs in background=true."
+        description = "Execute a command in the shell.This will return the output and error concatenated into a single string, as you would see from running on the command line. There will also be an indication of if the command succeeded or failed. Avoid commands that produce a large amount of output, and consider piping those outputs to files. For a long-lived command (dev server, build, test suite, training run) that you need to keep running and observe, set background=true instead of appending `&`: it returns a job_id and the path of a log file that receives the job's output and ends with its exit status, which you can read with `tail`; if you have shell_status and shell_kill, they also peek at, wait for and stop the job. A foreground command has a wall-clock budget (240s by default): if it exceeds it, its whole process group is killed and the call fails, so anything that may run longer belongs in background=true. Keep each foreground command, any sleep included, under about 200s at the default budget; one that starts with a sleep as long as the budget is refused without running."
     )]
     pub async fn shell(
         &self,
@@ -1380,22 +1815,54 @@ impl DeveloperServer {
         // in, so a relative path is judged where it resolves (H1).
         self.validate_shell_command(command, working_dir.as_deref())?;
 
+        // Issue #537: a foreground command that opens with a sleep as long as
+        // the budget would only spend the budget to be killed inside it.
+        if !params.background.unwrap_or(false) {
+            if let (Some(limit), Some(secs)) = (
+                self.foreground_timeout,
+                super::shell::leading_sleep_secs(command),
+            ) {
+                if secs >= limit.as_secs_f64() {
+                    return Err(ErrorData::new(
+                        ErrorCode::INVALID_PARAMS,
+                        super::shell::sleep_over_budget_message(secs, limit),
+                        None,
+                    ));
+                }
+            }
+        }
+
         // Snapshot the pre-command content of any file this command redirects
         // to (`>`/`>>`), so `undo_edit` can revert shell-driven writes, not just
         // text_editor edits (BR-44).
         self.snapshot_shell_redirect_targets(command, working_dir.as_deref());
 
         // Background mode: start the command in its own process group, register
-        // it, and return a job_id immediately instead of waiting for it.
+        // it, and return a job_id without waiting for it to finish. A job that
+        // ends inside a short window reports how it ended instead (issue #538).
         if params.background.unwrap_or(false) {
             let id = self
                 .background_jobs
                 .spawn(command, params.label.clone(), working_dir, session_id)
                 .await
                 .map_err(|e| ErrorData::new(ErrorCode::INTERNAL_ERROR, e, None))?;
-            return Ok(CallToolResult::success(vec![Content::text(format!(
-                "Started background job {id}. It keeps running across tool calls. Use shell_status with this job_id to peek at new output, add timeout_secs to wait for completion, omit job_id to see every background job, or shell_kill to stop it."
-            ))]));
+            // A cancelled call stops waiting; the job itself keeps running.
+            let report = tokio::select! {
+                report = self.background_jobs.start_report(&id, BACKGROUND_EARLY_EXIT_WINDOW) => report,
+                _ = request_ct.cancelled() => {
+                    self.background_jobs.start_report(&id, std::time::Duration::ZERO).await
+                }
+            }
+            .map_err(|e| ErrorData::new(ErrorCode::INTERNAL_ERROR, e, None))?;
+            let (text, failure) = report.reply(&id, BACKGROUND_EARLY_EXIT_WINDOW);
+            let mut result = CallToolResult::success(vec![Content::text(text)]);
+            result.is_error = Some(failure.is_some());
+            if let Some(line) = failure {
+                result.structured_content = Some(serde_json::json!({
+                    "error": { "kind": "tool_failure", "message": line }
+                }));
+            }
+            return Ok(result);
         }
 
         let cancellation_token = CancellationToken::new();
@@ -1502,7 +1969,7 @@ impl DeveloperServer {
 
     #[tool(
         name = "shell_status",
-        description = "Look at background shell jobs (started by `shell` with background=true). Omit job_id to list every job with its id, label, status, runtime and command. Give job_id for one job's status and the output produced since your last look. Add timeout_secs to that to BLOCK until it exits instead of peeking: up to 270 seconds per call (the tool-call timeout is 300), and the job is never killed by waiting. Prefer one long blocking wait over repeated quick checks; each check costs a full model request."
+        description = "Look at background shell jobs (started by `shell` with background=true). Omit job_id to list every job with its id, label, status, runtime and command. Give job_id for one job's status and the output produced since your last look, as a terminal shows it; long output comes back as its first and last lines plus the path of a file holding all of it. Add timeout_secs to that to BLOCK until it exits instead of peeking: up to 270 seconds per call (the tool-call timeout is 300), and the job is never killed by waiting. Prefer one long blocking wait over repeated quick checks; each check costs a full model request."
     )]
     pub async fn shell_status(
         &self,
@@ -1729,37 +2196,47 @@ impl DeveloperServer {
             progress_token.clone(),
         ));
 
-        // Stream the output and wait for completion with cancellation support
-        let output_task = self.stream_shell_output(
+        // Stream the output in a task of its own, while waiting for the shell
+        // with cancellation support. The arms below read what it kept without
+        // waiting for end of file. Declared after `reaper`, so on a dropped
+        // future it is released before the group is reaped.
+        let mut reader = ForegroundReader::spawn(
             child.stdout.take().unwrap(),
             child.stderr.take().unwrap(),
             peer.clone(),
             progress_token,
+            self.foreground_drains.clone(),
         );
 
         let budget = self.foreground_timeout;
 
         tokio::select! {
-            output_result = output_task => {
-                // Wait for the process to complete. PAR-02: the status is the
-                // only signal that a silent command failed — carry it out.
-                let waited = child.wait().await;
-                // The pid has been reaped (or the wait failed and nothing more
-                // can be done with it); either way it is no longer ours to
-                // signal, and after reaping it can be recycled.
+            // Issue #536: the command is over when the shell exits, not when
+            // its pipes close, since a process it backgrounded can hold them
+            // for as long as it runs. Waiting on the shell, never on the pipes,
+            // also keeps the budget over a shell that closes its own output and
+            // runs on (`exec >&- 2>&-; sleep 600`).
+            waited = child.wait() => {
+                let ended = tokio::time::Instant::now();
+                // PAR-02: the status is the only signal that a silent command
+                // failed — carry it out. The pid has been reaped (or the wait
+                // failed and nothing more can be done with it); either way it
+                // is no longer ours to signal, and after reaping it can be
+                // recycled. A process the shell left behind keeps running, as
+                // after `job > log 2>&1 &` it always did.
                 reaper.disarm();
                 let exit_status = waited.map_err(|e| ErrorData::new(ErrorCode::INTERNAL_ERROR, e.to_string(), None))?;
+                let out = reader.finish_after_exit(ended).await?;
                 // BR-69: prepend the sandbox tier line when the gate is on.
-                output_result.map(|out| {
-                    let out = match sandbox_status_line {
-                        Some(line) => format!("{line}\n{out}"),
-                        None => out,
-                    };
-                    (out, exit_status.code())
-                })
+                let out = match sandbox_status_line {
+                    Some(line) => format!("{line}\n{out}"),
+                    None => out,
+                };
+                Ok((out, exit_status.code()))
             }
             _ = cancellation_token.cancelled() => {
                 tracing::info!("Cancellation token triggered! Attempting to kill process and all child processes");
+                reader.stop_streaming();
 
                 // Kill the process and its children using platform-specific approach
                 match kill_process_group(&mut child, pid).await {
@@ -1771,6 +2248,7 @@ impl DeveloperServer {
                     }
                 }
                 reaper.disarm();
+                reader.abandon();
 
                 Err(ErrorData::new(
                     ErrorCode::INTERNAL_ERROR,
@@ -1787,15 +2265,17 @@ impl DeveloperServer {
                 );
                 let _ = kill_process_group(&mut child, pid).await;
                 reaper.disarm();
+                // Issue #537: what the command printed goes back with the
+                // error; it used to be dropped with the reader.
+                let printed = reader
+                    .finish_after_kill(tokio::time::Instant::now())
+                    .await;
 
-                Err(ErrorData::new(
-                    ErrorCode::INTERNAL_ERROR,
-                    foreground_timeout_message(
-                        &command_text,
-                        elapsed,
-                        budget.unwrap_or_default(),
-                    ),
-                    None,
+                Err(foreground_timeout_error(
+                    &command_text,
+                    elapsed,
+                    budget.unwrap_or_default(),
+                    &printed,
                 ))
             }
         }
@@ -1845,92 +2325,6 @@ impl DeveloperServer {
                 }
             }
         })
-    }
-
-    /// Stream shell output in real-time and return the combined output.
-    ///
-    /// Merges stdout and stderr streams and sends each line as a logging notification.
-    ///
-    /// Each notification carries the line as the command printed it — leading
-    /// whitespace intact, only the line terminator removed (see
-    /// [`streamed_shell_line`]) — and a `seq` that counts this command's
-    /// streamed lines from 0. The `seq` exists because rmcp hands every
-    /// incoming notification to its own tokio task on the client side, so
-    /// adjacent lines reach a client in nondeterministic order; a client that
-    /// wants the command's own order puts them back by `seq`. It is additive:
-    /// a client that ignores it sees exactly the shape it always did.
-    ///
-    /// `progress_token` is the tool call's own, echoed on every line (see
-    /// [`with_progress_token`]) so the client routes the line to this call.
-    async fn stream_shell_output(
-        &self,
-        stdout: tokio::process::ChildStdout,
-        stderr: tokio::process::ChildStderr,
-        peer: rmcp::service::Peer<RoleServer>,
-        progress_token: Option<ProgressToken>,
-    ) -> Result<String, ErrorData> {
-        let stdout = BufReader::new(stdout);
-        let stderr = BufReader::new(stderr);
-
-        let output_task = tokio::spawn(async move {
-            let mut combined_output = String::new();
-            // Counts the lines this command streamed, so it is contiguous over
-            // exactly the notifications a client can receive. Advanced for a
-            // send that fails too: that only happens once the transport is
-            // gone, when no later line reaches the client either.
-            let mut seq: u64 = 0;
-
-            // Merge stdout and stderr streams
-            // ref https://blog.yoshuawuyts.com/futures-concurrency-3
-            let stdout = SplitStream::new(stdout.split(b'\n')).map(|v| ("stdout", v));
-            let stderr = SplitStream::new(stderr.split(b'\n')).map(|v| ("stderr", v));
-            let mut merged = stdout.merge(stderr);
-
-            while let Some((stream_type, line)) = merged.next().await {
-                let mut line = line?;
-                // Re-add newline as clients expect it
-                line.push(b'\n');
-                // Convert to UTF-8 to avoid corrupted output
-                let line_str = String::from_utf8_lossy(&line);
-
-                combined_output.push_str(&line_str);
-
-                // Stream each line back to the client in real-time
-                if let Some(output) = streamed_shell_line(&line_str) {
-                    let data = shell_output_notification_data(
-                        stream_type,
-                        output,
-                        seq,
-                        progress_token.as_ref(),
-                    );
-                    seq += 1;
-                    // Send the output line as a structured logging message
-                    if let Err(e) = peer
-                        .notify_logging_message(LoggingMessageNotificationParam {
-                            level: LoggingLevel::Info,
-                            data,
-                            logger: Some("shell_tool".to_string()),
-                        })
-                        .await
-                    {
-                        // Don't break execution if streaming fails, just log it
-                        eprintln!("Failed to stream output line: {}", e);
-                    }
-                }
-            }
-            Ok::<_, std::io::Error>(combined_output)
-        });
-
-        match output_task.await {
-            Ok(result) => {
-                result.map_err(|e| ErrorData::new(ErrorCode::INTERNAL_ERROR, e.to_string(), None))
-            }
-            Err(e) => Err(ErrorData::new(
-                ErrorCode::INTERNAL_ERROR,
-                e.to_string(),
-                None,
-            )),
-        }
     }
 
     /// Validate that shell output doesn't exceed size limits.
@@ -6304,6 +6698,418 @@ mod tests {
         });
     }
 
+    /// Issues #536 and #537: how a foreground call ends when the shell exits
+    /// while a pipe is still held, and what a killed call returns.
+    mod foreground_pipes {
+        use super::*;
+
+        #[cfg(unix)]
+        fn model_text(result: &CallToolResult) -> String {
+            result
+                .content
+                .first()
+                .and_then(|c| c.as_text())
+                .map(|t| t.text.clone())
+                .unwrap_or_default()
+        }
+
+        #[cfg(unix)]
+        async fn run_foreground(
+            server: &DeveloperServer,
+            peer: &rmcp::service::Peer<RoleServer>,
+            request: i64,
+            command: String,
+        ) -> Result<CallToolResult, ErrorData> {
+            server
+                .shell(
+                    Parameters(ShellParams {
+                        working_directory: None,
+                        command,
+                        background: None,
+                        label: None,
+                    }),
+                    RequestContext {
+                        ct: Default::default(),
+                        id: NumberOrString::Number(request),
+                        meta: Default::default(),
+                        extensions: Default::default(),
+                        peer: peer.clone(),
+                    },
+                )
+                .await
+        }
+
+        #[cfg(unix)]
+        async fn wait_for(path: &Path, max: Duration) -> bool {
+            let deadline = Instant::now() + max;
+            while !path.exists() && Instant::now() < deadline {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+            path.exists()
+        }
+
+        #[test]
+        fn a_kill_tail_says_how_much_of_the_output_it_shows() {
+            assert_eq!(
+                printed_before_kill(""),
+                "It printed nothing before it was killed."
+            );
+            assert_eq!(
+                printed_before_kill("one\ntwo\n"),
+                "Output before the kill (all of it):\none\ntwo"
+            );
+
+            let long: String = (1..=300).map(|i| format!("line-{i}\n")).collect();
+            let tail = printed_before_kill(&long);
+            assert!(
+                tail.starts_with("Output before the kill (the last 100 of 300 lines):\nline-201\n"),
+                "{tail}"
+            );
+            assert!(tail.ends_with("\nline-300"), "{tail}");
+            assert!(!tail.contains("line-200\n"), "{tail}");
+        }
+
+        /// The character bound cuts between characters, never inside one, and
+        /// keeps the end of the output.
+        #[test]
+        fn a_kill_tail_of_wide_characters_keeps_the_latest_whole_characters() {
+            let wide = format!("{}終端\n", "字".repeat(SHELL_PREVIEW_MAX_CHARS * 2));
+            let tail = printed_before_kill(&wide);
+            let (label, body) = tail.split_once('\n').unwrap();
+            assert_eq!(
+                label,
+                format!("Output before the kill (the last {SHELL_PREVIEW_MAX_CHARS} characters):")
+            );
+            assert_eq!(body.chars().count(), SHELL_PREVIEW_MAX_CHARS);
+            assert!(body.ends_with("字終端"), "{body}");
+        }
+
+        /// The drains a server keeps are bounded, and a server that goes away
+        /// takes its drains with it.
+        #[test]
+        fn quiet_drains_are_bounded_and_owned_by_the_server() {
+            run_shell_test(|| async {
+                let drains = ForegroundDrains::default();
+                let pending = || tokio::spawn(std::future::pending::<std::io::Result<()>>());
+
+                let mut kept = Vec::new();
+                for _ in 0..FOREGROUND_QUIET_DRAINS_MAX {
+                    let task = pending();
+                    kept.push(task.abort_handle());
+                    assert!(drains.adopt(task));
+                }
+                let refused = pending();
+                let refused_handle = refused.abort_handle();
+                assert!(!drains.adopt(refused), "one more than the bound is refused");
+                tokio::task::yield_now().await;
+                assert!(
+                    timeout(Duration::from_secs(2), async {
+                        while !refused_handle.is_finished() {
+                            tokio::task::yield_now().await;
+                        }
+                    })
+                    .await
+                    .is_ok(),
+                    "a refused reader is stopped, which closes its pipes"
+                );
+
+                // A finished drain frees its place.
+                kept.pop().unwrap().abort();
+                tokio::task::yield_now().await;
+                timeout(Duration::from_secs(2), async {
+                    while drains
+                        .0
+                        .lock()
+                        .unwrap()
+                        .iter()
+                        .all(|task| !task.is_finished())
+                    {
+                        tokio::task::yield_now().await;
+                    }
+                })
+                .await
+                .unwrap();
+                let task = pending();
+                kept.push(task.abort_handle());
+                assert!(drains.adopt(task));
+
+                drop(drains);
+                assert!(
+                    timeout(Duration::from_secs(2), async {
+                        while !kept.iter().all(|task| task.is_finished()) {
+                            tokio::task::yield_now().await;
+                        }
+                    })
+                    .await
+                    .is_ok(),
+                    "dropping the owner stops every drain"
+                );
+            });
+        }
+
+        /// A released reader keeps the pipe open until its deadline and closes
+        /// it then, even while the process holding it lives on.
+        #[test]
+        #[serial]
+        #[cfg(unix)]
+        fn a_quiet_drain_closes_the_pipe_at_its_deadline() {
+            run_shell_test(|| async {
+                let server = create_test_server();
+                let running_service = serve_directly(server.clone(), create_test_transport(), None);
+                let peer = running_service.peer().clone();
+                let dir = tempfile::tempdir().unwrap();
+
+                let mut child = tokio::process::Command::new("sh")
+                    .arg("-c")
+                    .arg(
+                        "trap '' PIPE; echo early; sleep 2; echo late || : > closed; \
+                         : > done",
+                    )
+                    .current_dir(dir.path())
+                    .stdout(std::process::Stdio::piped())
+                    .stderr(std::process::Stdio::piped())
+                    .stdin(std::process::Stdio::null())
+                    .kill_on_drop(true)
+                    .spawn()
+                    .unwrap();
+                let drains = Arc::new(ForegroundDrains::default());
+                let mut reader = ForegroundReader::spawn(
+                    child.stdout.take().unwrap(),
+                    child.stderr.take().unwrap(),
+                    peer.clone(),
+                    None,
+                    drains.clone(),
+                );
+                timeout(Duration::from_secs(10), async {
+                    while !reader.capture.lock().text.contains("early") {
+                        tokio::time::sleep(Duration::from_millis(10)).await;
+                    }
+                })
+                .await
+                .expect("the first line is read while the call listens");
+                assert!(
+                    reader
+                        .wait_for_eof(Duration::from_millis(100))
+                        .await
+                        .is_none(),
+                    "the child still holds the pipe"
+                );
+                assert_eq!(reader.freeze(), "early\n");
+                assert!(reader.release(tokio::time::Instant::now() + Duration::from_millis(200)));
+
+                assert!(wait_for(&dir.path().join("done"), Duration::from_secs(10)).await);
+                let _ = child.wait().await;
+                assert!(
+                    dir.path().join("closed").exists(),
+                    "the write after the deadline must find the pipe closed"
+                );
+                assert!(drains
+                    .0
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .all(|task| task.is_finished()));
+
+                cleanup_test_service(running_service, peer);
+            });
+        }
+
+        /// The study's idiom (#536): under bash, the subshell running an
+        /// asynchronous `&&` list holds the call's pipes for as long as the job
+        /// runs. Pinned to bash, because zsh, a developer Mac's `$SHELL`, does
+        /// not hold the pipe in this spelling.
+        #[test]
+        #[serial]
+        #[cfg(unix)]
+        fn a_backgrounded_and_list_under_bash_returns_when_the_shell_exits() {
+            run_shell_test(|| async {
+                let server =
+                    create_test_server().with_foreground_timeout(Some(Duration::from_secs(60)));
+                let running_service = serve_directly(server.clone(), create_test_transport(), None);
+                let peer = running_service.peer().clone();
+
+                let dir = tempfile::tempdir().unwrap();
+                let done = dir.path().join("done");
+                let script = dir.path().join("idiom.sh");
+                fs::write(
+                    &script,
+                    format!(
+                        "cd \"{}\" && nohup sh -c 'sleep 6; touch \"{}\"' > job.log 2>&1 &\necho started\n",
+                        dir.path().display(),
+                        done.display()
+                    ),
+                )
+                .unwrap();
+
+                let began = Instant::now();
+                let result = run_foreground(
+                    &server,
+                    &peer,
+                    5361,
+                    format!("bash \"{}\"", script.display()),
+                )
+                .await
+                .expect("the idiom must not fail");
+                let elapsed = began.elapsed();
+                let text = model_text(&result);
+                assert!(
+                    elapsed < Duration::from_secs(4),
+                    "the call must return when the shell exits, not when the 6 s job ends; \
+                     took {elapsed:?}: {text}"
+                );
+                assert!(text.contains("started"), "{text}");
+                assert!(text.contains("still holds its output pipe"), "{text}");
+                assert!(text.contains("closed 30s after the shell exited"), "{text}");
+                assert_eq!(result.is_error, Some(false), "{text}");
+                assert!(
+                    wait_for(&done, Duration::from_secs(15)).await,
+                    "the backgrounded job must keep running after the call returned"
+                );
+
+                // A spelling that never held the pipe returns at once, with no note.
+                let began = Instant::now();
+                let result = run_foreground(
+                    &server,
+                    &peer,
+                    5362,
+                    "sleep 3 > /dev/null 2>&1 &\necho quick".to_string(),
+                )
+                .await
+                .unwrap();
+                let text = model_text(&result);
+                assert!(began.elapsed() < Duration::from_secs(2), "{text}");
+                assert_eq!(text, "quick\n");
+
+                cleanup_test_service(running_service, peer);
+            });
+        }
+
+        /// #537: a killed command's own output comes back with the error, and
+        /// the header the agent builds from it no longer advises a retry.
+        #[test]
+        #[serial]
+        #[cfg(unix)]
+        fn a_killed_command_returns_what_it_printed_and_is_not_retryable() {
+            run_shell_test(|| async {
+                let server =
+                    create_test_server().with_foreground_timeout(Some(Duration::from_secs(1)));
+                let running_service = serve_directly(server.clone(), create_test_transport(), None);
+                let peer = running_service.peer().clone();
+
+                let error = run_foreground(&server, &peer, 5371, "echo start; sleep 5".to_string())
+                    .await
+                    .expect_err("a command over its budget must fail");
+                let message = error.message.to_string();
+                assert!(message.contains("foreground limit"), "{message}");
+                assert!(
+                    message.ends_with("Output before the kill (all of it):\nstart"),
+                    "{message}"
+                );
+                let envelope = &error.data.as_ref().expect("an envelope")["error"];
+                assert_eq!(envelope["kind"], "timeout", "{envelope}");
+                assert_eq!(envelope["retryable"], false, "{envelope}");
+                assert_eq!(
+                    envelope["message"].as_str(),
+                    message.lines().next(),
+                    "the persisted summary is the first line only"
+                );
+
+                cleanup_test_service(running_service, peer);
+            });
+        }
+
+        /// #537 step 5: a foreground command that opens with a sleep as long as
+        /// the budget is refused before anything runs; a shorter poll, the same
+        /// sleep in the background, and a background call are left alone.
+        #[test]
+        #[serial]
+        #[cfg(unix)]
+        fn a_leading_sleep_over_the_budget_is_refused_before_it_runs() {
+            run_shell_test(|| async {
+                let server =
+                    create_test_server().with_foreground_timeout(Some(Duration::from_secs(3)));
+                let running_service = serve_directly(server.clone(), create_test_transport(), None);
+                let peer = running_service.peer().clone();
+
+                let dir = tempfile::tempdir().unwrap();
+                let ran = dir.path().join("ran");
+                let began = Instant::now();
+                let error = run_foreground(
+                    &server,
+                    &peer,
+                    5381,
+                    format!("sleep 3; touch \"{}\"", ran.display()),
+                )
+                .await
+                .expect_err("a 3 s sleep under a 3 s budget is refused");
+                assert!(began.elapsed() < Duration::from_secs(2));
+                assert_eq!(error.code, ErrorCode::INVALID_PARAMS);
+                assert!(error.message.starts_with("Not run"), "{}", error.message);
+                assert!(
+                    error.message.contains("3s foreground limit"),
+                    "{}",
+                    error.message
+                );
+                assert!(!ran.exists());
+
+                let result =
+                    run_foreground(&server, &peer, 5382, "sleep 1; echo polled".to_string())
+                        .await
+                        .expect("a poll under the budget runs");
+                assert_eq!(model_text(&result), "polled\n");
+
+                let result = run_foreground(
+                    &server,
+                    &peer,
+                    5383,
+                    "sleep 30 > /dev/null 2>&1 &\necho detached".to_string(),
+                )
+                .await
+                .expect("a backgrounded sleep is not a leading sleep");
+                assert_eq!(model_text(&result), "detached\n");
+
+                // The job ends on its own a second after the call returns.
+                let result = server
+                    .shell(
+                        Parameters(ShellParams {
+                            working_directory: None,
+                            command: "sleep 3".to_string(),
+                            background: Some(true),
+                            label: None,
+                        }),
+                        RequestContext {
+                            ct: Default::default(),
+                            id: NumberOrString::Number(5384),
+                            meta: Default::default(),
+                            extensions: Default::default(),
+                            peer: peer.clone(),
+                        },
+                    )
+                    .await
+                    .expect("background=true has no foreground budget to refuse by");
+                assert_ne!(result.is_error, Some(true));
+
+                cleanup_test_service(running_service, peer);
+            });
+        }
+
+        /// #537 step 4: the description gives a margin under the budget, so a
+        /// poll is not sized to exactly the limit.
+        #[test]
+        fn the_shell_description_states_a_margin_under_the_budget() {
+            let tools = DeveloperServer::tool_router().list_all();
+            let shell = tools.iter().find(|tool| tool.name == "shell").unwrap();
+            let description = shell.description.as_deref().unwrap_or_default();
+            assert!(description.contains("240s by default"), "{description}");
+            assert!(description.contains("any sleep included"), "{description}");
+            assert!(description.contains("under about 200s"), "{description}");
+            assert!(
+                description.contains("refused without running"),
+                "{description}"
+            );
+        }
+    }
+
     /// Issue #72, the visibility half: a foreground command is listed as active
     /// work while it runs — the one kind of long-running work that had no entry,
     /// which is why an unexpectedly expensive one was invisible.
@@ -7002,5 +7808,440 @@ mod tests {
 
             cleanup_test_service(running_service, peer);
         });
+    }
+
+    #[cfg(unix)]
+    mod issues536_538 {
+        use super::*;
+
+        type ShellOutcome = Result<CallToolResult, ErrorData>;
+
+        fn text(result: &CallToolResult) -> String {
+            result
+                .content
+                .iter()
+                .filter_map(|content| content.as_text().map(|text| text.text.as_str()))
+                .collect::<Vec<_>>()
+                .join("\n")
+        }
+
+        async fn call(
+            server: DeveloperServer,
+            peer: rmcp::service::Peer<RoleServer>,
+            command: String,
+            background: bool,
+            ct: CancellationToken,
+        ) -> ShellOutcome {
+            server
+                .shell(
+                    Parameters(ShellParams {
+                        working_directory: None,
+                        command,
+                        background: Some(background),
+                        label: None,
+                    }),
+                    RequestContext {
+                        ct,
+                        id: NumberOrString::Number(536538),
+                        meta: Default::default(),
+                        extensions: Default::default(),
+                        peer,
+                    },
+                )
+                .await
+        }
+
+        async fn marker(path: &std::path::Path, seconds: u64) -> bool {
+            timeout(Duration::from_secs(seconds), async {
+                while !path.exists() {
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                }
+            })
+            .await
+            .is_ok()
+        }
+
+        async fn finish(
+            task: &mut tokio::task::JoinHandle<ShellOutcome>,
+            ct: &CancellationToken,
+        ) -> Option<ShellOutcome> {
+            if let Ok(result) = timeout(Duration::from_secs(20), &mut *task).await {
+                return result.ok();
+            }
+            ct.cancel();
+            if timeout(Duration::from_secs(5), &mut *task).await.is_err() {
+                task.abort();
+                let _ = task.await;
+            }
+            None
+        }
+
+        async fn group_absent(owner_file: &std::path::Path) -> bool {
+            let Some(pid) = fs::read_to_string(owner_file)
+                .ok()
+                .and_then(|value| value.trim().parse::<i32>().ok())
+                .filter(|pid| *pid > 1)
+            else {
+                return false;
+            };
+            timeout(Duration::from_secs(5), async {
+                loop {
+                    // The nonce-directory marker is written by our own group leader.
+                    let result = unsafe { libc::kill(-pid, 0) };
+                    if result == -1
+                        && std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH)
+                    {
+                        break;
+                    }
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                }
+            })
+            .await
+            .is_ok()
+        }
+
+        fn log_path(reply: &str) -> Option<PathBuf> {
+            reply.split_whitespace().find_map(|word| {
+                let path = PathBuf::from(word.trim_matches(|c: char| {
+                    matches!(c, '`' | '\'' | '"' | ',' | ';' | '(' | ')' | '.')
+                }));
+                (path.is_absolute() && path.is_file()).then_some(path)
+            })
+        }
+
+        fn terminal(log: &str, status: i32) -> bool {
+            log.contains(&format!("status {status}")) || log.contains(&format!("exited({status})"))
+        }
+
+        #[test]
+        #[serial]
+        fn issue536_shell_exit_returns_before_pipe_eof_without_breaking_the_late_writer() {
+            run_shell_test(|| async {
+                let dir = tempfile::tempdir().unwrap();
+                fs::write(
+                    dir.path().join("holder.sh"),
+                    "i=0\nwhile [ ! -f release ] && [ \"$i\" -lt 240 ]; do\n  sleep 0.05\n  i=$((i+1))\ndone\nprintf 'late-writer\\n' || exit 41\n: > writer-done\n",
+                )
+                .unwrap();
+                let server = create_test_server()
+                    .with_working_dir(dir.path().to_path_buf())
+                    .with_foreground_timeout(Some(Duration::from_secs(30)));
+                let service = serve_directly(server.clone(), create_test_transport(), None);
+                let peer = service.peer().clone();
+                let ct = CancellationToken::new();
+                let mut task = tokio::spawn(call(
+                    server,
+                    peer.clone(),
+                    "printf '%s\\n' $$ > owner; nohup sh holder.sh & printf 'foreground-ready\\n'; exit 0".to_string(),
+                    false,
+                    ct.clone(),
+                ));
+                let early = timeout(Duration::from_secs(4), &mut task).await;
+                let returned_before_release = early.is_ok();
+                fs::write(dir.path().join("release"), b"release").unwrap();
+                let result = match early {
+                    Ok(result) => result.ok(),
+                    Err(_) => finish(&mut task, &ct).await,
+                };
+                let writer_finished = marker(&dir.path().join("writer-done"), 15).await;
+                let absent = group_absent(&dir.path().join("owner")).await;
+                cleanup_test_service(service, peer);
+
+                assert!(
+                    writer_finished,
+                    "closing a held pipe must not kill its late writer"
+                );
+                assert!(
+                    absent,
+                    "the finite fixture's exact owned group must be gone"
+                );
+                assert!(
+                    returned_before_release,
+                    "the exited shell must not await pipe EOF"
+                );
+                let result = result.expect("bounded shell task must finish").unwrap();
+                assert_eq!(result.is_error, Some(false));
+                let reply = text(&result);
+                assert!(reply.contains("foreground-ready"));
+                assert!(!reply.contains("late-writer"));
+                assert!(reply.to_ascii_lowercase().contains("pipe"));
+                assert!(
+                    !reply.contains("shell_status"),
+                    "this leftover is not a registered job"
+                );
+            });
+        }
+
+        #[test]
+        #[serial]
+        fn issue536_closed_pipes_do_not_disable_the_live_shell_watchdog() {
+            run_shell_test(|| async {
+                let dir = tempfile::tempdir().unwrap();
+                let server = create_test_server()
+                    .with_working_dir(dir.path().to_path_buf())
+                    .with_foreground_timeout(Some(Duration::from_millis(500)));
+                let service = serve_directly(server.clone(), create_test_transport(), None);
+                let peer = service.peer().clone();
+                let ct = CancellationToken::new();
+                let started = Instant::now();
+                let mut task = tokio::spawn(call(
+                    server,
+                    peer.clone(),
+                    "printf '%s\\n' $$ > owner; exec 1>&- 2>&-; i=0; while [ \"$i\" -lt 100 ]; do sleep 0.05; i=$((i+1)); done; : > survived".to_string(),
+                    false,
+                    ct.clone(),
+                ));
+                let result = finish(&mut task, &ct).await;
+                let elapsed = started.elapsed();
+                let absent = group_absent(&dir.path().join("owner")).await;
+                cleanup_test_service(service, peer);
+
+                assert!(
+                    absent,
+                    "the exact owned group must be gone before assertions"
+                );
+                assert!(
+                    elapsed < Duration::from_secs(3),
+                    "EOF must not suspend the watchdog"
+                );
+                let error = result
+                    .expect("bounded shell task must finish")
+                    .expect_err("the live shell exceeded its budget");
+                assert!(error.message.contains("foreground limit"));
+                assert!(!dir.path().join("survived").exists());
+            });
+        }
+
+        #[test]
+        #[serial]
+        fn issue537_watchdog_returns_a_bounded_unicode_tail_and_nonretryable_envelope() {
+            run_shell_test(|| async {
+                let dir = tempfile::tempdir().unwrap();
+                let server = create_test_server()
+                    .with_working_dir(dir.path().to_path_buf())
+                    .with_foreground_timeout(Some(Duration::from_secs(2)));
+                let service = serve_directly(server.clone(), create_test_transport(), None);
+                let peer = service.peer().clone();
+                let ct = CancellationToken::new();
+                let mut task = tokio::spawn(call(
+                    server,
+                    peer.clone(),
+                    "printf '%s\\n' $$ > owner; i=1; while [ \"$i\" -le 300 ]; do printf 'stream-%05d-終\\n' \"$i\"; i=$((i+1)); done; printf 'tail-終-marker\\n'; : > output-ready; i=0; while [ \"$i\" -lt 160 ]; do sleep 0.05; i=$((i+1)); done; : > survived".to_string(),
+                    false,
+                    ct.clone(),
+                ));
+                let result = finish(&mut task, &ct).await;
+                let absent = group_absent(&dir.path().join("owner")).await;
+                cleanup_test_service(service, peer);
+
+                assert!(absent, "the exact watchdog-owned group must be gone");
+                assert!(dir.path().join("output-ready").exists());
+                assert!(!dir.path().join("survived").exists());
+                let error = result
+                    .expect("bounded shell task must finish")
+                    .expect_err("watchdog remains an Err(ErrorData)");
+                assert!(error.message.contains("stream-00300-終"));
+                assert!(error.message.contains("tail-終-marker"));
+                assert!(!error.message.contains("stream-00001-終"));
+                assert!(error.message.chars().count() <= SHELL_PREVIEW_MAX_CHARS + 2_400);
+                assert!(error.message.lines().count() <= SHELL_INLINE_MAX_LINES + 25);
+                assert!(error.message.contains("background=true"));
+                let envelope = error.data.as_ref().and_then(|data| data.get("error"));
+                assert_eq!(
+                    envelope
+                        .and_then(|value| value.get("kind"))
+                        .and_then(|value| value.as_str()),
+                    Some("timeout")
+                );
+                assert_eq!(
+                    envelope
+                        .and_then(|value| value.get("retryable"))
+                        .and_then(|value| value.as_bool()),
+                    Some(false)
+                );
+            });
+        }
+
+        #[test]
+        #[serial]
+        fn issue538_a_quick_background_failure_is_reported_inline_with_its_readable_log() {
+            run_shell_test(|| async {
+                let dir = tempfile::tempdir().unwrap();
+                let server = create_test_server().with_working_dir(dir.path().to_path_buf());
+                let service = serve_directly(server.clone(), create_test_transport(), None);
+                let peer = service.peer().clone();
+                let ct = CancellationToken::new();
+                let mut task = tokio::spawn(call(
+                    server.clone(),
+                    peer.clone(),
+                    "printf 'synthetic-failure-detail\\n' >&2; exit 7".to_string(),
+                    true,
+                    ct.clone(),
+                ));
+                let result = finish(&mut task, &ct).await;
+                // This private manager read is teardown, not a tool granted to the model.
+                let completed = server.background_jobs.wait("job-1", 5).await;
+                let reply = result
+                    .as_ref()
+                    .and_then(|result| result.as_ref().ok())
+                    .map(text);
+                let log = reply
+                    .as_deref()
+                    .and_then(log_path)
+                    .and_then(|path| fs::read_to_string(path).ok());
+                cleanup_test_service(service, peer);
+
+                assert!(completed.unwrap().contains("exited(7)"));
+                let result = result
+                    .expect("bounded background call must finish")
+                    .unwrap();
+                assert_eq!(result.is_error, Some(true));
+                let reply = reply.unwrap();
+                assert!(reply.contains("synthetic-failure-detail"));
+                assert!(terminal(&reply, 7));
+                let log = log.expect("the reply must expose the existing private bounded log");
+                assert!(log.contains("synthetic-failure-detail"));
+                assert!(terminal(&log, 7));
+            });
+        }
+
+        #[test]
+        #[serial]
+        fn issue538_a_running_job_exposes_its_unique_private_log_without_status_tool_access() {
+            use std::os::unix::fs::PermissionsExt;
+
+            run_shell_test(|| async {
+                let dir = tempfile::tempdir().unwrap();
+                let server = create_test_server().with_working_dir(dir.path().to_path_buf());
+                let service = serve_directly(server.clone(), create_test_transport(), None);
+                let peer = service.peer().clone();
+                let ct = CancellationToken::new();
+                let mut task = tokio::spawn(call(
+                    server.clone(),
+                    peer.clone(),
+                    "printf '%s\\n' $$ > owner; printf 'running-output\\n'; : > started; i=0; while [ ! -f release ] && [ \"$i\" -lt 240 ]; do sleep 0.05; i=$((i+1)); done; printf 'completed-output\\n'; exit 0".to_string(),
+                    true,
+                    ct.clone(),
+                ));
+                let early = timeout(Duration::from_secs(4), &mut task).await;
+                let returned_before_release = early.is_ok();
+                let result = match early {
+                    Ok(result) => result.ok(),
+                    Err(_) => {
+                        fs::write(dir.path().join("release"), b"release").unwrap();
+                        finish(&mut task, &ct).await
+                    }
+                };
+                let started = marker(&dir.path().join("started"), 2).await;
+                let reply = result
+                    .as_ref()
+                    .and_then(|result| result.as_ref().ok())
+                    .map(text);
+                let path = reply.as_deref().and_then(log_path);
+                let partial = if let Some(path) = &path {
+                    let _ = timeout(Duration::from_secs(2), async {
+                        while !fs::read_to_string(path)
+                            .unwrap_or_default()
+                            .contains("running-output")
+                        {
+                            tokio::time::sleep(Duration::from_millis(20)).await;
+                        }
+                    })
+                    .await;
+                    fs::read_to_string(path).ok()
+                } else {
+                    None
+                };
+                let mode = path
+                    .as_ref()
+                    .and_then(|path| fs::metadata(path).ok())
+                    .map(|meta| meta.permissions().mode() & 0o777);
+                fs::write(dir.path().join("release"), b"release").unwrap();
+                let completed = server.background_jobs.wait("job-1", 5).await;
+                let absent = group_absent(&dir.path().join("owner")).await;
+                let final_log = path.as_ref().and_then(|path| fs::read_to_string(path).ok());
+                let second_ct = CancellationToken::new();
+                let mut second_task = tokio::spawn(call(
+                    server.clone(),
+                    peer.clone(),
+                    "printf 'second-job\\n'".to_string(),
+                    true,
+                    second_ct.clone(),
+                ));
+                let second = finish(&mut second_task, &second_ct).await;
+                let second_completed = server.background_jobs.wait("job-2", 5).await;
+                let second_path = second
+                    .as_ref()
+                    .and_then(|result| result.as_ref().ok())
+                    .map(text)
+                    .as_deref()
+                    .and_then(log_path);
+                cleanup_test_service(service, peer);
+
+                assert!(started);
+                assert!(absent, "the finite job's exact owned group must be gone");
+                assert!(
+                    returned_before_release,
+                    "a running job must return while its finite child is held"
+                );
+                assert!(completed.unwrap().contains("exited(0)"));
+                assert!(second_completed.unwrap().contains("exited(0)"));
+                assert_eq!(
+                    result
+                        .expect("bounded background call must finish")
+                        .unwrap()
+                        .is_error,
+                    Some(false)
+                );
+                let partial =
+                    partial.expect("running output must be readable without shell_status");
+                assert!(partial.contains("running-output"));
+                assert!(!partial.contains("completed-output"));
+                assert!(
+                    !terminal(&partial, 0),
+                    "a held job must not claim an exit status"
+                );
+                assert_eq!(mode, Some(0o600));
+                let path = path.unwrap();
+                let temp_root = std::env::temp_dir().canonicalize().unwrap();
+                assert!(path.canonicalize().unwrap().starts_with(temp_root));
+                assert_ne!(
+                    path,
+                    second_path.expect("each new job must expose its own log")
+                );
+                let final_log = final_log.unwrap();
+                assert!(final_log.contains("completed-output"));
+                assert!(terminal(&final_log, 0));
+            });
+        }
+        #[test]
+        fn issue538_background_guidance_describes_a_shell_readable_log() {
+            let tools = DeveloperServer::tool_router().list_all();
+            let shell = tools.iter().find(|tool| tool.name == "shell").unwrap();
+            assert!(shell
+                .description
+                .as_deref()
+                .unwrap_or_default()
+                .contains("log"));
+            let schema = serde_json::to_value(&shell.input_schema).unwrap();
+            let background = schema
+                .get("properties")
+                .and_then(|value| value.get("background"));
+            let description = background
+                .and_then(|value| value.get("description"))
+                .and_then(|value| value.as_str())
+                .unwrap_or_default();
+            assert!(
+                description.contains("log"),
+                "background=true must describe an observable route without companion grants"
+            );
+            let timeout_message = crate::developer::shell::foreground_timeout_message(
+                "synthetic-command",
+                Duration::from_secs(2),
+                Duration::from_secs(2),
+            );
+            assert!(timeout_message.contains("background=true"));
+            assert!(timeout_message.contains("log") || timeout_message.contains("file"));
+        }
     }
 }

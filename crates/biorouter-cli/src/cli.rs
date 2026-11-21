@@ -10,7 +10,7 @@ use clap_complete::{generate, Shell as ClapShell};
 
 use crate::commands::apps::{handle_apps_list, handle_apps_open, handle_apps_serve};
 use crate::commands::bench::agent_generator;
-use crate::commands::configure::handle_configure;
+use crate::commands::configure::{handle_configure, handle_configure_command};
 use crate::commands::info::handle_info;
 use crate::commands::models::{
     handle_models_current, handle_models_list, handle_models_providers, handle_models_set,
@@ -381,6 +381,20 @@ pub struct RunBehavior {
         hide = true
     )]
     pub scheduled_job_id: Option<String>,
+
+    /// #535: files the run must leave behind. Only `run` flattens this struct,
+    /// so neither `biorouter session` nor an interactive continuation can see
+    /// it.
+    #[arg(
+        long = "require-file",
+        value_name = "PATH",
+        action = clap::ArgAction::Append,
+        value_parser = clap::builder::NonEmptyStringValueParser::new(),
+        conflicts_with = "interactive",
+        help = "Require a non-empty file when the run ends (repeatable)",
+        long_help = "Require PATH to be a non-empty regular file when the run ends. While it is missing or empty, the agent is sent back to work, up to BIOROUTER_DONE_GATE_MAX_ITERATIONS times (default 3). A run that still ends without it exits with status 4 and names it in missing_files. A relative PATH resolves against the session's working directory. Repeat the flag for several files."
+    )]
+    pub require_files: Vec<String>,
 }
 
 /// The provider and model a NEW session row would run with.
@@ -1342,7 +1356,7 @@ enum DictationCommand {
         #[arg(long, conflicts_with = "no_suggest_from_chats")]
         suggest_from_chats: bool,
 
-        /// Leave chat suggestions off after this verified install
+        /// Turn chat suggestions off after this verified install
         #[arg(long, conflicts_with = "suggest_from_chats")]
         no_suggest_from_chats: bool,
     },
@@ -1454,7 +1468,7 @@ enum DictionaryCommand {
         status: String,
     },
 
-    /// Add words dictation should spell your way, such as UCSF or EPAS1
+    /// Add words dictation should spell your way, such as UCSF or Biorouter
     #[command(about = "Add terms to the dictionary")]
     Add {
         #[arg(value_name = "TERM", required = true)]
@@ -2078,27 +2092,27 @@ enum KnowledgeCommand {
 
 #[derive(Subcommand)]
 enum AppsCommand {
-    /// List installed Biorouter apps
-    #[command(about = "List installed Biorouter apps")]
+    /// List installed Biorouter applications
+    #[command(about = "List installed Biorouter applications")]
     List {
         /// Emit machine-readable JSON instead of a table
         #[arg(long, help = "Emit machine-readable JSON instead of a table")]
         json: bool,
     },
 
-    /// Open an app in your default browser
-    #[command(about = "Open an app in your default browser")]
+    /// Open an application in your default browser
+    #[command(about = "Open an application in your default browser")]
     Open {
-        /// App id (see `biorouter apps list`)
-        #[arg(help = "App id (see `biorouter apps list`)")]
+        /// Application id (see `biorouter apps list`)
+        #[arg(help = "Application id (see `biorouter apps list`)")]
         id: String,
     },
 
-    /// Serve an app in the foreground until Ctrl-C
-    #[command(about = "Serve an app in the foreground until Ctrl-C")]
+    /// Serve an application in the foreground until Ctrl-C
+    #[command(about = "Serve an application in the foreground until Ctrl-C")]
     Serve {
-        /// App id (see `biorouter apps list`)
-        #[arg(help = "App id (see `biorouter apps list`)")]
+        /// Application id (see `biorouter apps list`)
+        #[arg(help = "Application id (see `biorouter apps list`)")]
         id: String,
     },
 }
@@ -2138,6 +2152,15 @@ struct ServeOptions {
     )]
     no_token: bool,
 
+    /// Print the address with its access token
+    #[arg(
+        long,
+        help = "Print the address with its access token, whatever the output is. Without it, \
+                the token is printed only when it was made for this launch and the output is a \
+                terminal; `biorouter serve url` shows it otherwise."
+    )]
+    print_url: bool,
+
     /// Keep model installation on the host, not in a served browser
     #[arg(
         long,
@@ -2159,8 +2182,9 @@ struct ServeOptions {
         value_name = "URL",
         help = "The https:// address a reverse proxy serves the interface at, path prefix \
                 included (for example https://hub.example.org/user/me/proxy/8765/). The proxy \
-                must strip the prefix. Printed with the access token, and admitted by the \
-                live views' origin check. Takes precedence over BIOROUTER_PUBLIC_URL."
+                must strip the prefix. Printed as the address to open (with the access token \
+                only as --print-url describes), and admitted by the live views' origin check. \
+                Takes precedence over BIOROUTER_PUBLIC_URL."
     )]
     public_url: Option<String>,
 
@@ -2191,15 +2215,43 @@ struct ServeOptions {
                 program holding its secret."
     )]
     allow_public_decision_models: bool,
+
+    /// Something to do instead of serving
+    #[command(subcommand)]
+    action: Option<ServeAction>,
+}
+
+/// What `biorouter serve` does instead of serving.
+#[derive(Subcommand)]
+enum ServeAction {
+    /// Show the address of a running `biorouter serve`, access token included (issue #524)
+    #[command(
+        about = "Show the address, access token included, of the biorouter serve running for \
+                 this account"
+    )]
+    Url {
+        /// The port that serve listens on
+        #[arg(
+            short,
+            long,
+            default_value_t = crate::commands::serve::DEFAULT_PORT,
+            help = "The port that biorouter serve listens on"
+        )]
+        port: u16,
+    },
 }
 
 impl ServeOptions {
     async fn run(self) -> anyhow::Result<()> {
+        if let Some(ServeAction::Url { port }) = self.action {
+            return crate::commands::serve::handle_serve_url(port);
+        }
         crate::commands::serve::handle_serve(
             self.host,
             self.port,
             self.token,
             self.no_token,
+            self.print_url,
             self.no_dictation_install,
             self.web_dir,
             self.public_url,
@@ -2218,7 +2270,27 @@ enum Command {
     Crew(crate::commands::crew::CrewOptions),
     /// Configure Biorouter settings
     #[command(about = "Configure Biorouter settings")]
-    Configure {},
+    Configure {
+        /// The provider whose API key `--secret-stdin` enters (issue #526)
+        #[arg(
+            long,
+            value_name = "PROVIDER",
+            requires = "secret_stdin",
+            help = "The provider whose API key --secret-stdin enters (`biorouter models \
+                    providers` lists them)"
+        )]
+        provider: Option<String>,
+
+        /// Enter the provider's API key with no echo, from a hidden prompt or from stdin
+        #[arg(
+            long,
+            requires = "provider",
+            help = "Enter --provider's API key and nothing else: at a hidden prompt on a \
+                    terminal, or as NAME=value lines on stdin. It is checked with the provider \
+                    before it is saved, and never appears on the command line."
+        )]
+        secret_stdin: bool,
+    },
 
     /// Display Biorouter configuration information
     #[command(about = "Display Biorouter information")]
@@ -2533,14 +2605,15 @@ enum Command {
         command: SkillCommand,
     },
 
-    /// List, open, and serve Biorouter apps (built by Agent Drafter)
+    /// List, open, and serve Biorouter applications (built by Application Drafter)
     #[command(
-        about = "List, open, and serve Biorouter apps",
-        long_about = "List, open, and serve the Biorouter apps built by Agent Drafter.\n\n\
+        about = "List, open, and serve Biorouter applications",
+        long_about = "List, open, and serve the Biorouter applications built by Application Drafter.\n\n\
                       `open`/`serve` reuse a `biorouterd` already listening on the configured\n\
                       port (BIOROUTER_PORT, default 3000) or start one for you, then open\n\
                       http://127.0.0.1:<port>/apps/<id>/ in your browser.\n\n\
-                      In-terminal rendering of an app is out of scope; apps open in a real browser."
+                      In-terminal rendering of an application is out of scope; applications open in a\n\
+                      real browser."
     )]
     Apps {
         #[command(subcommand)]
@@ -2616,7 +2689,8 @@ enum Command {
     /// lands in the right place.
     #[command(
         about = "Run Biorouter and open it in a browser",
-        visible_alias = "headless"
+        visible_alias = "headless",
+        args_conflicts_with_subcommands = true
     )]
     Serve(ServeOptions),
 
@@ -2775,7 +2849,7 @@ pub struct InputConfig {
 fn get_command_name(command: &Option<Command>) -> &'static str {
     match command {
         Some(Command::Crew(_)) => "crew",
-        Some(Command::Configure {}) => "configure",
+        Some(Command::Configure { .. }) => "configure",
         Some(Command::Info { .. }) => "info",
         Some(Command::Mcp { .. }) => "mcp",
         Some(Command::Acp { .. }) => "acp",
@@ -3186,6 +3260,7 @@ async fn handle_shared_run(
         ("--render-workflow", input.render_workflow),
         ("--no-session", behavior.no_session),
         ("--scheduled-job-id", behavior.scheduled_job_id.is_some()),
+        ("--require-file", !behavior.require_files.is_empty()),
     ])?;
     let mut options =
         shared_conversation_options(identifier, behavior.resume, session, extensions, model)?;
@@ -3578,7 +3653,7 @@ fn parse_run_input(
             Ok(Some((
                 InputConfig {
                     contents: Some(contents),
-                    additional_system_prompt: None,
+                    additional_system_prompt: input_opts.system.clone(),
                 },
                 None,
             )))
@@ -3731,6 +3806,10 @@ async fn handle_run_command(
     if run_behavior.interactive {
         session.interactive(input_config.contents).await
     } else if let Some(contents) = input_config.contents {
+        // #535: only a headless run, and only this run, gets the gate.
+        session.require_files(run_behavior.require_files).await?;
+        // #549: and only a headless run outlives a full session store.
+        session.defer_store_writes_when_full();
         let session_start = std::time::Instant::now();
         let session_type = if workflow.is_some() {
             "workflow"
@@ -3748,8 +3827,15 @@ async fn handle_run_command(
         let result = session.headless(contents).await;
         // A run its supervision stopped ended normally; only its exit
         // status says so (H-6).
+        // So did one that ended without a required file (#535) or with rows
+        // its store could not save (#549): the work or the record is
+        // incomplete, the run is not.
         let ended_normally = result.as_ref().map_or_else(
-            |e| e.is::<crate::commands::supervision_stop::SupervisionStopped>(),
+            |e| {
+                e.is::<crate::commands::supervision_stop::SupervisionStopped>()
+                    || e.is::<crate::commands::run_report::DeliverablesMissing>()
+                    || e.is::<crate::commands::run_report::StoreIncomplete>()
+            },
             |_| true,
         );
         log_session_completion(&session, session_start, session_type, ended_normally).await;
@@ -4330,7 +4416,7 @@ async fn dispatch(command: Option<Command>) -> anyhow::Result<()> {
             generate(shell, &mut cmd, bin_name, &mut std::io::stdout());
             Ok(())
         }
-        Some(Command::Configure {}) => handle_configure().await,
+        Some(Command::Configure { provider, .. }) => handle_configure_command(provider).await,
         Some(Command::Info { verbose }) => handle_info(verbose),
         Some(Command::Mcp { server }) => handle_mcp_command(server).await,
         Some(Command::Acp { builtins, ws }) => match ws {
@@ -5879,5 +5965,181 @@ mod local_model_help_tests {
             first_retired_name.is_none_or(|at| first_catalog_name < at),
             "{help}"
         );
+    }
+}
+
+#[cfg(test)]
+mod issue_539_input_tests {
+    use super::*;
+
+    #[test]
+    fn issue_539_file_input_keeps_system_and_file_contents() {
+        let directory = tempfile::tempdir().unwrap();
+        let file = directory.path().join("instructions.txt");
+        std::fs::write(&file, "FILE_INSTRUCTIONS").unwrap();
+        let options = InputOptions {
+            instructions: Some(file.to_string_lossy().into_owned()),
+            system: Some("CALLER_SYSTEM".into()),
+            ..Default::default()
+        };
+        let (input, workflow) = parse_run_input(&options, true).unwrap().unwrap();
+        assert_eq!(input.contents.as_deref(), Some("FILE_INSTRUCTIONS"));
+        assert_eq!(
+            input.additional_system_prompt.as_deref(),
+            Some("CALLER_SYSTEM")
+        );
+        assert!(workflow.is_none());
+    }
+
+    #[test]
+    fn issue_539_file_without_system_preserves_absence() {
+        let directory = tempfile::tempdir().unwrap();
+        let file = directory.path().join("instructions.txt");
+        std::fs::write(&file, "FILE_INSTRUCTIONS").unwrap();
+        let options = InputOptions {
+            instructions: Some(file.to_string_lossy().into_owned()),
+            ..Default::default()
+        };
+        let (input, _) = parse_run_input(&options, true).unwrap().unwrap();
+        assert_eq!(input.additional_system_prompt, None);
+    }
+
+    #[test]
+    fn issue_539_text_input_keeps_the_existing_system_contract() {
+        let options = InputOptions {
+            input_text: Some("TEXT_INSTRUCTIONS".into()),
+            system: Some("CALLER_SYSTEM".into()),
+            ..Default::default()
+        };
+        let (input, workflow) = parse_run_input(&options, true).unwrap().unwrap();
+        assert_eq!(input.contents.as_deref(), Some("TEXT_INSTRUCTIONS"));
+        assert_eq!(
+            input.additional_system_prompt.as_deref(),
+            Some("CALLER_SYSTEM")
+        );
+        assert!(workflow.is_none());
+    }
+}
+
+#[cfg(test)]
+mod issue_535_cli_tests {
+    use super::*;
+
+    /// #535: `--require-file` is a repeatable flag of `run` only, refused
+    /// beside `--interactive` (whose continuation reuses the agent), never a
+    /// `session` option, and never empty.
+    #[test]
+    fn require_file_is_a_repeatable_headless_run_flag() {
+        let parsed = Cli::try_parse_from([
+            "biorouter",
+            "run",
+            "--text",
+            "go",
+            "--require-file",
+            "answer.txt",
+            "--require-file",
+            "trace.md",
+        ])
+        .unwrap();
+        match parsed.command {
+            Some(Command::Run { run_behavior, .. }) => assert_eq!(
+                run_behavior.require_files,
+                vec!["answer.txt".to_string(), "trace.md".to_string()]
+            ),
+            _ => panic!("parsed as run"),
+        }
+        assert!(Cli::try_parse_from([
+            "biorouter",
+            "run",
+            "--text",
+            "go",
+            "--interactive",
+            "--require-file",
+            "answer.txt",
+        ])
+        .is_err());
+        assert!(Cli::try_parse_from(["biorouter", "session", "--require-file", "a.txt"]).is_err());
+        assert!(
+            Cli::try_parse_from(["biorouter", "run", "--text", "go", "--require-file", ""])
+                .is_err()
+        );
+    }
+}
+
+#[cfg(test)]
+mod issue_524_cli_tests {
+    use super::*;
+
+    #[test]
+    fn issue_524_print_url_is_an_explicit_serve_option() {
+        assert!(Cli::try_parse_from(["biorouter", "serve", "--print-url"]).is_ok());
+        assert!(Cli::try_parse_from(["biorouter", "run", "--print-url"]).is_err());
+    }
+}
+
+#[cfg(test)]
+mod issue_526_cli_tests {
+    use super::*;
+
+    #[test]
+    fn issue_526_provider_secret_stdin_is_explicit_and_not_a_run_option() {
+        assert!(Cli::try_parse_from([
+            "biorouter",
+            "configure",
+            "--provider",
+            "versa_azure",
+            "--secret-stdin"
+        ])
+        .is_ok());
+        assert!(Cli::try_parse_from(["biorouter", "configure", "--secret-stdin"]).is_err());
+        assert!(
+            Cli::try_parse_from(["biorouter", "configure", "--provider", "versa_azure"]).is_err()
+        );
+        assert!(Cli::try_parse_from(["biorouter", "run", "--secret-stdin"]).is_err());
+    }
+}
+
+#[cfg(test)]
+mod issue_524_serve_url_cli_tests {
+    use super::*;
+
+    /// `biorouter serve url` shows the address the banner leaves the token out
+    /// of. It takes its own port and nothing of `serve`'s, so `serve --port 9
+    /// url` is a mistake clap names rather than a server started by accident.
+    #[test]
+    fn issue_524_serve_url_is_a_subcommand_that_takes_only_its_port() {
+        let parsed = Cli::try_parse_from(["biorouter", "serve", "url"]).unwrap();
+        let Some(Command::Serve(options)) = parsed.command else {
+            panic!("serve command expected");
+        };
+        assert!(matches!(
+            options.action,
+            Some(ServeAction::Url { port }) if port == crate::commands::serve::DEFAULT_PORT
+        ));
+
+        let parsed =
+            Cli::try_parse_from(["biorouter", "headless", "url", "--port", "9001"]).unwrap();
+        let Some(Command::Serve(options)) = parsed.command else {
+            panic!("the alias selects serve");
+        };
+        assert!(matches!(
+            options.action,
+            Some(ServeAction::Url { port: 9001 })
+        ));
+
+        assert!(Cli::try_parse_from(["biorouter", "serve", "--port", "9001", "url"]).is_err());
+        assert!(Cli::try_parse_from(["biorouter", "serve", "--print-url", "url"]).is_err());
+
+        let parsed = Cli::try_parse_from(["biorouter", "serve", "--print-url"]).unwrap();
+        let Some(Command::Serve(options)) = parsed.command else {
+            panic!("serve command expected");
+        };
+        assert!(options.print_url && options.action.is_none());
+
+        let parsed = Cli::try_parse_from(["biorouter", "serve"]).unwrap();
+        let Some(Command::Serve(options)) = parsed.command else {
+            panic!("serve command expected");
+        };
+        assert!(!options.print_url && options.action.is_none());
     }
 }

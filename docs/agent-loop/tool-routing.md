@@ -104,8 +104,8 @@ edit files at all.
 - Private and public chats retain separate observations and grants. A shared physical desktop
   can expose content left visible; acknowledge a private-to-public handoff before capture.
 
-### `files_server` / `compute_server` (Agent Drafter app sandboxes)
-- **Use for:** file and shell/Python work **scoped to a built app's sandbox**.
+### `files_server` / `compute_server` (Application sandboxes)
+- **Use for:** file and shell/Python work **scoped to an application's sandbox**.
 - **Don't:** use them as general file/shell tools for the user's own workspace — that
   is `developer`'s job.
 
@@ -221,6 +221,28 @@ The previous script-driven desktop tools and Developer capture implementation ar
 There are no compatibility aliases. Current model guidance, nested imports and bridge policy
 must use the native Biorouter Copilot roster and independent Web & Documents identity. Existing
 script workflows need an explicit rewrite; they do not authorize the new desktop capability.
+
+## A tool name the model gets slightly wrong
+
+Every extension tool is offered under its full name, `<extension>__<tool>`, such as
+`developer__shell`. Some models drop the prefix and call `shell`. The agent matches each
+call against the tools this turn offered, before any inspector, hook or permission check
+sees it (`offered_tool_for_name` in `crates/biorouter/src/agents/reply_parts.rs`, issue #545):
+
+| The model calls | What happens |
+|---|---|
+| A name that is offered | It runs as before. An exact name is never renamed, even when another tool ends in it. |
+| A bare name (no `__`) that ends exactly one offered tool's name | It is that tool. The call is renamed before inspection, so a managed policy, a hook or a permission that names `developer__shell` judges it, and the arguments are coerced to that tool's schema. The tool result records both names (`providerAuthored` and `actuallyExecuted`). |
+| A bare name that ends several offered names | It does not run. The model is told the call was not run and given the offered names it could mean. |
+| A bare name that matches nothing offered, such as `developer_shell` | It does not run. The model is told so, with up to 20 offered names, the closest first. |
+| A prefixed name nobody offered, such as `developer__shel` | Dispatch decides, as before, because it may route a name the roster did not list. When it answers that no such tool exists (`Tool '…' not found`, or an MCP server's `tool not found`), the answer is followed by the same list: up to 20 offered names, the closest first, then the tools of the extension it names. |
+| A bare `subagent` | Unchanged: dispatch decides, as before. |
+
+The names listed always come from the roster this turn offered, never from every tool the
+extension manager holds, so a private server's tool hidden from a public model (Gate E) is never
+named. Under the toolshim, which sends the model no native tools, that roster is the shim's own
+copy. Calls that do not go through a chat turn (`/agent/call_tool`, a Code Execution script, the
+coding-agent bridge) keep the older, narrower repair for the Code Execution tool names.
 
 ## Tool-result logging (observability of every tool call)
 

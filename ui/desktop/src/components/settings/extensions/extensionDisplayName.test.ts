@@ -22,8 +22,10 @@ describe('extensionDisplayName', () => {
     expect(extensionDisplayName('webdocuments')).toBe('Web & Documents');
     expect(extensionDisplayName('autovisualiser')).toBe('Auto Visualiser');
     // The underscore and the space spell one key.
-    expect(extensionDisplayName('agent_drafter')).toBe('Agent Drafter');
-    expect(extensionDisplayName('Agent Drafter')).toBe('Agent Drafter');
+    expect(extensionDisplayName('agent_drafter')).toBe('Application Drafter');
+    expect(extensionDisplayName('Application Drafter')).toBe('Application Drafter');
+    // Its name before 2026-11, which saved chats and config files may still carry.
+    expect(extensionDisplayName('Agent Drafter')).toBe('Application Drafter');
   });
 
   it('keeps the platform names', () => {

@@ -7,7 +7,10 @@
 > 2026-09-11, fixing QA-C finding H1; the sections below describe that code. Seven well-known
 > password and token stores joined the floor on 2026-09-25 (Crew live QA round 4, Q4-56). On
 > 2026-11-17 the symlink budget began to fail closed (SG-30) and the served page's two file routes
-> began to apply the floor and the redaction (SG-27).
+> began to apply the floor and the redaction (SG-27). Since #546 (1.94.6) a quoted here-document
+> that only writes a file is read as data; see "Here-documents" below. On 2026-11-19 conventional
+> `.env` templates were reopened, and the dispatch scan began to leave out the free text of the
+> Todo tools and the source of `execute_code` (issue #522).
 > **Audience:** developers working on tool dispatch, the Developer and Biorouter Copilot
 > extensions or the guardrails, and anyone reviewing what BioRouter promises about secrets.
 
@@ -44,6 +47,39 @@ starts the service writes it with mode 0600 in a 0700 directory, and the service
 it exits. The name stops a model's casual read. The computer belongs to its user, so the design
 does not try to stop an agent the user runs from acting as them. `runtime.json` is not on the floor.
 
+Since 2026-11-20 it also names the cookie and password stores of Google Chrome and of the
+Biorouter Browser (BB-25 in [the built-in browser](../desktop-ui/built-in-browser.md)): `Cookies`,
+`Login Data`, `Login Data For Account` and `Web Data` under a `Google/Chrome/` folder (macOS
+`~/Library/Application Support/Google/Chrome/`, Windows `…/Google/Chrome/User Data/`) or a
+`google-chrome/` folder (Linux `~/.config/google-chrome/`), at any profile depth, and `Cookies`
+under the browser's own partition, `Partitions/biorouter-embedded-browser/`. These hold a person's
+signed in sessions, saved passwords and payment data, which is what the browser's Chrome import
+takes care never to read (passwords) or to let leave the app (cookie values). Chrome's other
+files (`Bookmarks`, `Preferences`, `Local State`) and any file merely called `Cookies` elsewhere
+stay readable. Like the rest of the floor, this stops an accident, not a determined program.
+
+### The Chrome key helper (BB-23)
+
+One command is refused by what it runs rather than by a path: `biorouterd browser-key`, the
+hidden helper that reads the key Chrome encrypts its cookies with, for the desktop app's
+**Import from Chrome**. On macOS a person who once answers the Keychain prompt with **Always
+Allow** has allowed `biorouterd` to read that key silently from then on, and an agent's shell
+runs `biorouterd` as the same person. So the command scan refuses any command that names the
+helper, in every spelling the resolver can read: a path or another case (`BIOROUTERD`, `.exe`),
+quotes and backslashes, `env` and the other wrappers, variables and earlier assignments, `sh -c`,
+`eval`, here-documents, an `alias` body, a command substitution, and a list or string handed to
+`subprocess` or `system`. It judges words, not paths: the subcommand `browser-key` together with
+either the program `biorouterd` or the `--source` option the helper cannot run without, anywhere
+in one tool call, so a renamed copy (`/tmp/x browser-key --source chrome`) is refused too, while
+`rg browser-key` (searching this code) is not. The refusal tells the model to ask the person to
+import from Chrome themselves (`HelperSighting` in `secret_guard/resolve.rs`).
+
+This is the first of two layers. A static scan cannot see a command assembled at run time
+(`printf` pieces, base64), so the helper itself also refuses any caller but the desktop app's
+main process, and answers that one only masked with a one-time request on its standard input
+(`crates/biorouter/src/browser_key.rs`; [the built-in browser](../desktop-ui/built-in-browser.md),
+"The macOS Keychain prompt (BB-23)").
+
 The floor is not only the agent's. Crew's local file registration
 ([`crates/biorouter-server/src/crew/local_files.rs`](../../crates/biorouter-server/src/crew/local_files.rs))
 refuses an upload source or a download destination the floor names (Q3-01), consulting only the
@@ -56,11 +92,36 @@ slash is anchored, so reopening a store at any depth takes `**/`: `!**/.kube/con
 file reopens every kubeconfig, for the agent and for Crew, and leaves the rest of the floor
 standing (`q4_56_a_negation_reopens_one_store`).
 
+### Templates
+
+`.env.*` also matches the templates a repository commits next to its `.env`, which hold variable
+names and no values. Since issue #522 the floor reopens them by exact name
+(`DEFAULT_SECRET_TEMPLATE_EXCEPTIONS`): `.env.example`, `.env.sample`, `.env.template`,
+`.env.dist`, `.env.tpl`, `.env.defaults` and `.env.<anything>.example`, at any depth. Both guard
+constructors add these negations right after the floor and before any `.biorouterignore`, so a
+project or the global file can deny a template again with an ordinary pattern
+(`issue522_explicit_project_policy_can_still_deny_a_template`). A template is read in any case:
+`.env.Example` and `.ENV.EXAMPLE` both open the template on APFS and NTFS. The floor's patterns are
+case-sensitive, so `.env.Example` matched `**/.env.*` and missed the lowercase exceptions, and was
+refused until `SecretGuard::is_denied` reopened it. It reopens such a name only when the floor's
+own `**/.env.*` line is the only one that denied it, and the whole path in lowercase is not denied,
+so a `.biorouterignore` line that names the template in either case still holds
+(`a_template_spelled_in_another_case_is_readable_and_nothing_else_is`). What stays refused:
+
+- every other `.env` name, including `.env.local`, `.env.production` and `.env.example.bak`;
+- a template that is a symlink, which is judged as the file it reaches, so a link from
+  `.env.example` to `.env` is refused (`issue522_template_alias_cannot_reopen_a_real_secret`);
+- a glob that could reach a secret beside the template: with `.env.local` in the folder,
+  `cat config/.e*` is refused, while `cat config/.[e]nv.example` is not;
+- the destination of `cp config/.env.example config/.env`, which the refusal names on its own;
+- a real `.env` name in another case, such as `.Env.local` or `.env.Production`, which folds to a
+  name that is no template.
+
 ## Where it runs
 
 | Place | What it checks |
 |---|---|
-| `ExtensionManager::dispatch_tool_call` (`secret_guard_denial`) | Every tool call's arguments, for every extension. The one choke point every call passes. |
+| `ExtensionManager::dispatch_tool_call` (`secret_guard_denial`) | Every tool call's arguments, for every extension. The one choke point every call passes. The free text of the shipped Todo tools and the source of `execute_code` are left out; see "Free text" below. |
 | Developer server, `validate_shell_command` | `developer__shell`'s command, from the directory it will actually run in. |
 | Developer server, `is_ignored` | `text_editor` and `image_processor` paths, after symlinks are resolved. |
 | `call_tool_withholding_secrets`, inside the dispatched future | Every tool **result** and error, before any model sees it. |
@@ -130,6 +191,13 @@ worth knowing:
   always refused that; the shell now agrees with it.
 - A command that merely *names* a protected file — a commit message, an `echo` into
   `.gitignore`, `ls -l ~/.ssh/id_ed25519` — is refused, because the literal pass sees the name.
+  The literal pass judges each word of a value, and the whole value as one more path, except
+  for a command line of several words, whose words the resolver reads: until issue #522 it took
+  a whole command line as one path too, so `cat config/.env.example | head` was refused because
+  the text after its last `/` matches `.env.*`. Prose keeps the whole-value candidate, because an
+  unknown tool may take a path with spaces (`/keys/My Server.pem`) under a key that does not
+  look like one, so a template mentioned in prose and followed by more words is still refused
+  there unless the tool is one of those under "Free text" below.
 - A project `.biorouterignore` rule applies to files that do not exist yet: with `*.log` in it,
   `cmd > build.log` is refused.
 
@@ -151,15 +219,110 @@ unaffected: `cat .git/config`, `cat src/config.json`, `cat inventory/hosts.yml` 
 recognises the `gh[pousr]_` token it can hold, and is the entry to revisit first if the collateral
 proves expensive.
 
+### Free text
+
+The scan cannot tell which tool a key belongs to, so a slash path in prose (`text`, `content`,
+`message`, `code`, any key it does not know) is judged as a possible file access. That has to
+hold for `code`: under Compute or an external runner it is a program that can open the path.
+
+The dispatch boundary does know the tool, and since issue #522 it leaves out the free text of
+two shipped Platform extensions (`FreeTextFields` in
+[`crates/biorouter/src/agents/extension_manager.rs`](../../crates/biorouter/src/agents/extension_manager.rs)):
+
+- **Todo**: `todo_write`'s `content`, the `items` of `todo_add` and `todo_expand`,
+  `todo_update`'s `text` (top level and in each `updates` entry), and `plan_write`'s `plan`.
+  The text is stored in the checklist and shown back to the model; the Todo handlers never
+  open it. A todo item such as "configuration/.env copy still needs the user" is admitted.
+- **Code Execution**: `execute_code`'s `code`, and the `description` of each `tool_graph`
+  node. The script runs in a sandbox with no file or process access of its own. Every tool
+  call it makes is dispatched back through `dispatch_tool_call` with its evaluated arguments
+  and judged there, which is also the only place a path the script assembles at run time
+  (`"configuration/" + ".env"`) can be seen.
+
+Only a string in exactly those places is left out, and only from the copy the scan reads; the
+tool receives the original arguments. Every other field of those calls, a value of the wrong
+JSON type, a client injected under the same name instead of built by the Platform registry,
+a nested key such as `todo__x`, and every other extension, Compute included, is scanned as
+before.
+
 ### Paths that cannot be known before the command runs
 
 - When part of a path is a hole, the path is refused if the directory it would be read from
   directly holds a protected file (`cat ~/.ssh/$(ls ~/.ssh | head -1)`), or if its known end could
-  complete a deny pattern (`cd "$(…)" && cat credentials`).
+  complete a deny pattern (`cd "$(…)" && cat credentials`). A known final name that is a
+  template the guard reopens is not such an end, so
+  `cat "$(git rev-parse --show-toplevel)/config/.env.example"` runs.
 - A glob that cannot be expanded — too many entries, or a walk past its budget — is refused if
   the directory it would expand in holds a protected file.
 - A word that is *entirely* unknown (`cat "$(ls *.csv)"`) is not refused: refusing it would
   refuse every command substitution. That residue is what the output redaction is for.
+
+### Here-documents
+
+Every here-document body used to be read three ways: as a script, as code, and again inside the
+whole command's code pass. That is right when something runs the body (`bash <<'EOF'`,
+`cat <<'EOF' | sh`, `python3 - <<'EOF'`), and it refused ordinary file writes (#546).
+`res$IHS[is.finite(res$IHS)]` in an R script read as a path with an unknown middle whose end
+could spell `credentials`; a backquoted R expression in Markdown read as a command substitution;
+and a 600-word prose body spent the 512 symlink resolutions on words that name nothing, then
+failed closed as too complex.
+
+The lexer (`lex.rs`) now records four facts about each here-document: whether the delimiter was
+quoted, whether every POSIX shell reads that delimiter the same way, whether a line equal to it
+ended the body, and the body's byte range in the input. The delimiter word is always read with
+POSIX quote removal, under the Windows grammar as well, because `<<` is POSIX syntax: otherwise
+the Windows reading of `\EOF` keeps the backslash, never meets the `EOF` line, and turns the
+rest of the input into body. Only that word is read this way; the next word gets the pass's own
+grammar back.
+
+A body is **data** when all of this holds:
+
+- Every command in the input is a plain file write, `cat > FILE <<'EOF'` (or `>>`, `>|`, `<<-`,
+  redirections in any order), joined only by newlines, `;`, `&&`, `||` or `&`. `FILE` is literal
+  text.
+- The delimiter is quoted (`'EOF'`, `"EOF"`, `\EOF`, `'E'OF`) and made only of letters, digits,
+  `_`, `.` and `-`.
+- A line equal to the delimiter ends the body.
+
+Anything else keeps the three readings: an unquoted delimiter, `$'EOF'` (bash and zsh decode it
+and dash does not, so the shells disagree on which line ends the body), a missing or empty
+delimiter, a carriage return straight after the delimiter (the shell reads it as part of the
+delimiter, so its body ends at an earlier `EOF\r` line and the lines after that run), a body
+that runs to the end of the input, a pipe, a subshell, a wrapper such as
+`sudo`, an extra argument, a target with a variable in it, and any other command in the same
+input, including the `bash x.sh` that would run the file just written. Only a scan's top-level
+command is classified. A body inside `bash -c`, `eval` or a command substitution stays a script,
+because its output can be captured and run.
+
+A data body is still read as a script and as code, one level deeper and with its own copy of the
+directory set, because a file written now can run later where the guard cannot look inside it.
+A protected path in any spelling, a link into a secret store, an unknown name in a folder that
+holds a secret, nesting past four levels and a link past the symlink budget are all refused as
+before. Two refusals are dropped, and both are guesses about text this command does not run:
+
+- The known end of a partly unknown word is not matched against the floor.
+- A literal path that `lstat` reports as not found is not resolved, so prose does not spend the
+  symlink budget. The question is asked of the path as written, through the same lookup `open`
+  makes, so a link on the way or a spelling the disk folds still finds the file and is resolved.
+  Only "not found" skips; any other answer is resolved, and past the budget fails closed.
+
+A zsh `(D)` or a `shopt -s dotglob` inside a data body applies to that body only. The command's
+own code pass and dot-glob check read the command with data bodies blanked, because the body has
+already been read.
+
+A body that is not data is also read for quoted strings, each judged as one literal path:
+`python3 - <<'EOF'` with `open('.env')` names the file by a string with no `/`, which the code
+pass does not look for, and the script reading sees `print(open('.env').read())` as one word. A
+data body skips this, because writing a file that mentions `.env` reads nothing. The literal
+whitespace pass over the whole command still runs, so a protected path written out in full, such
+as `~/.aws/credentials`, is refused inside a data body too.
+
+A refusal for a word inside a body says so, and says how the body was read. A body read as a
+script adds that the guard reads it as a script this command may run, and that file content goes
+in a call of its own as `cat > FILE <<'EOF'` with the delimiter quoted. A data body adds that the
+guard still reads a body written to a file, because the file can be run later. Without it, a model
+that wrote the body as text looked for the refused word among its commands and found nothing.
+When bodies nest, the outermost one is named, because that is the one the caller wrote.
 
 ### Cost
 
@@ -235,6 +398,10 @@ boundary against a determined adversary — the same ruling that governs
   `get_app_state` screenshot therefore reaches the model as it was taken, so a credential visible
   in a terminal or an editor is not withheld. The per-request Biorouter Copilot approval is the only
   control there.
+- **A file written by a here-document and run later** is beyond the check, as any script
+  written earlier is. A data body is still held to the floor (above), but a path in it whose end
+  only *could* name a secret, such as `cd "$(…)"` followed by `cat credentials`, is let through
+  when the body only writes a file.
 - **The deny set is editable by the agent**: a negation written into `.biorouterignore` reopens a
   file, as it always could.
 - **Windows shells**: `\` is read as a path separator (not a POSIX escape), so a native
@@ -247,10 +414,14 @@ boundary against a determined adversary — the same ruling that governs
 ## Tests
 
 ```bash
-BIOROUTER_DISABLE_KEYRING=true cargo test -p biorouter-mcp --lib -- secret_guard h1_
+BIOROUTER_DISABLE_KEYRING=true cargo test -p biorouter-mcp --lib -- secret_guard h1_ bb_23_
+BIOROUTER_DISABLE_KEYRING=true cargo test -p biorouter-mcp --test developer_guard_execution
 BIOROUTER_DISABLE_KEYRING=true cargo test -p biorouter --lib -- secret_output extension_manager guardrails::tool_output
 BIOROUTER_DISABLE_KEYRING=true cargo test -p biorouter-server --lib -- crew::local_files
 BIOROUTER_DISABLE_KEYRING=true cargo test -p biorouter-server --lib -- routes::shell
+BIOROUTER_DISABLE_KEYRING=true cargo test -p biorouter-mcp --lib issue522
+BIOROUTER_DISABLE_KEYRING=true cargo test -p biorouter-mcp --test developer_guard_execution issue522
+BIOROUTER_DISABLE_KEYRING=true cargo test -p biorouter --features local-dictation --lib issue522
 ```
 
 The H1 tables run every measured spelling — and the families around them — against a throwaway
@@ -259,7 +430,17 @@ HOME holding made-up credentials, through the dispatch scan, through the resolve
 name, by case and through the H1 spellings (`~`, `$HOME`, a glob, `cd`, `bash -c`,
 `find -name`), keep their neighbours readable, and prove a negation still reopens one;
 `crew::local_files` holds Crew's registration to the same floor, and `routes::shell` holds the
-served page's two file routes to it and to the redaction. The fake key material is
+served page's two file routes to it and to the redaction. The `issue546_` tests (in
+`secret_guard.rs`, `secret_guard/lex.rs` and the `developer_guard_execution` integration binary)
+hold the here-document rules: the four quoted delimiters as data on both hosts, every form that is
+not a plain file write, links, spellings and budgets inside data bodies, and the real shell ending
+each body where the guard does. The `issue522` tests hold the
+templates open through both guard constructors, the resolver and the real Developer tools, keep
+their symlinked, globbed and differently named neighbours refused, and, at the dispatch boundary,
+admit the Todo and `execute_code` free text while every other field, lookalike client and
+Compute's `code` stay refused. `bb_23_` runs the Chrome key helper's
+spellings through the dispatch scan, `developer__shell`'s check and the code scan, and keeps a
+search for the helper's name allowed. The fake key material is
 assembled at run time so no key-shaped literal sits in the source. None of the tests reads the
 real `~/.aws`, `~/.ssh` or `~/.config/biorouter`.
 

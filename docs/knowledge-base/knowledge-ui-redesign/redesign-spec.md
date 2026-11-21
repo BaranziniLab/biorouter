@@ -23,6 +23,18 @@
 > wash, no longer a solid accent fill. The Public tier badge, the drawers' rows and the lint
 > group heads follow the same rule; the lines that remain are structural or on a floating card.
 
+> **Superseded in part (2026-11).** One shape across the page (owner, 2026-11-19). The graph
+> canvas is no longer a flush, square fill: it is an inset panel, 16px in from the graph column's
+> sides and foot on the container radius, which is the Sources dropzone's own inset and corner
+> (`.br-knowledge-canvas` in `main.css`). The facet strip lost its bottom rule and the legend rail
+> its left rule, because the canvas's fill and the air around it divide them now. The canvas's
+> border probe no longer carries a border width, which had drawn a 2px dot at the canvas's
+> top-left corner. The read-only commit preview is a rounded `Note` on the same 16px edge rather
+> than a full-bleed strip, the Sources footer's rule is inset to the dropzone's width, the
+> drawers clip their header band to their rounded corners, and the lint drawer's group headings
+> are rounded fills inset like their rows. Measured in
+> `ui/desktop/src/components/knowledge/knowledgeCanvas.browser.test.tsx`.
+
 The companion mockup is [`knowledge-redesign-studio.html`](knowledge-redesign-studio.html) — open it
 in a browser, no server needed. It renders **the same page markup at four real pane sizes** (760,
 946, 1040, 1626 px), laid out by the very `@container` queries R-08 specifies; its pop-up section is

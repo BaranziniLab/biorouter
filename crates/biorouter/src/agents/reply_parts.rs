@@ -1,5 +1,5 @@
 use anyhow::Result;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use async_stream::try_stream;
@@ -28,6 +28,208 @@ const SUBAGENT_STEERING_INSTRUCTIONS: &str = "A human can send a new user messag
 use crate::session::session_manager::UsageLedgerEntry;
 use rmcp::model::Tool;
 
+/// The inspector name on the refusal [`offered_tool_for_name`] writes for a bare
+/// tool name that names no offered tool, or more than one. It is not a
+/// registered inspector: the refusal is decided when the model's calls are first
+/// matched against the tools this turn offered, and it joins the inspection
+/// results only so the denial path writes it like any other refusal.
+pub(crate) const OFFERED_ROSTER_INSPECTOR_NAME: &str = "offered_roster";
+
+/// How many offered tool names the refusal for an unknown bare name lists.
+const UNKNOWN_NAME_LISTED_TOOLS: usize = 20;
+
+/// What a model's tool name means against the tools this turn offered.
+#[derive(Debug)]
+pub(crate) enum OfferedToolName<'a> {
+    /// The tool offered under exactly this name, or, for a bare name (no `__`),
+    /// the one offered tool whose name ends in `__<name>`.
+    Offered(&'a Tool),
+    /// Not resolved here: a name with an extension prefix that no offered tool
+    /// carries, or the bare spawn tool, which has its own refusals. Dispatch
+    /// decides, as it always has.
+    Unresolved,
+    /// A bare name that matches no offered tool, or more than one. Never run;
+    /// the text is what the model is told, and it names only offered tools.
+    Refused(String),
+}
+
+/// Match a model's tool name against the tools this turn offered (#545).
+///
+/// Models that know only the unprefixed tool names (`shell` for
+/// `developer__shell`) used to get "Tool 'shell' not found" and nothing to pick
+/// from. A bare name that ends exactly one offered tool's name is that tool, and
+/// is renamed BEFORE inspection, so managed policy, hooks and permissions judge
+/// the name that will run. A bare name that matches none or several is refused
+/// with the offered names it could mean.
+///
+/// ⚠ `tools` must be the roster this turn OFFERED (Gate E filtered, Code
+/// Execution narrowed, the toolshim's roster when the native one is empty), never
+/// the extension manager's full roster: the refusal lists names, and a hidden
+/// private server's tool names must never reach a public model.
+pub(crate) fn offered_tool_for_name<'a>(tools: &'a [Tool], name: &str) -> OfferedToolName<'a> {
+    if let Some(tool) = tools.iter().find(|tool| tool.name == name) {
+        return OfferedToolName::Offered(tool);
+    }
+    if name.contains("__") {
+        return OfferedToolName::Unresolved;
+    }
+    let suffix = format!("__{name}");
+    let matches: Vec<&Tool> = tools
+        .iter()
+        .filter(|tool| tool.name.ends_with(suffix.as_str()))
+        .collect();
+    match matches.as_slice() {
+        [tool] => OfferedToolName::Offered(tool),
+        [] if crate::agents::agent::is_spawn_tool_call(name) => OfferedToolName::Unresolved,
+        [] => OfferedToolName::Refused(unknown_bare_name_refusal(name, tools)),
+        several => OfferedToolName::Refused(format!(
+            "`{name}` matches more than one tool offered for this turn, so the call was not \
+             run. Call one of them by its full name: {}.",
+            quoted_tool_names(several.iter().map(|tool| tool.name.as_ref()))
+        )),
+    }
+}
+
+/// The refusal for a bare name no offered tool ends in, listing up to
+/// [`UNKNOWN_NAME_LISTED_TOOLS`] offered names, closest first.
+fn unknown_bare_name_refusal(name: &str, tools: &[Tool]) -> String {
+    match offered_names_listing(name, tools) {
+        Some(listing) => format!(
+            "No tool named `{name}` is offered for this turn, so the call was not run. \
+             {listing}"
+        ),
+        None => {
+            format!("No tool named `{name}` is offered for this turn, so the call was not run.")
+        }
+    }
+}
+
+/// "Tools offered for this turn include …" for a name nobody offered: up to
+/// [`UNKNOWN_NAME_LISTED_TOOLS`] names from `tools` (the roster this turn
+/// offered, never a wider one), closest to `name` first, then the tools of the
+/// extension it names, then roster order. `None` when nothing was offered.
+fn offered_names_listing(name: &str, tools: &[Tool]) -> Option<String> {
+    if tools.is_empty() {
+        return None;
+    }
+    // Close first: `developer_shell` reads as `developer__shell`, `shell_status`
+    // or `status` sits beside `developer__shell_status`, and `developer__shel`
+    // beside `developer__shell`.
+    let wanted = name.to_ascii_lowercase();
+    let (wanted_prefix, wanted_bare) = match wanted.rsplit_once("__") {
+        Some((prefix, bare)) => (Some(prefix), bare),
+        None => (None, wanted.as_str()),
+    };
+    let close = |tool: &Tool| {
+        let full = tool.name.to_ascii_lowercase();
+        let bare = full
+            .rsplit_once("__")
+            .map_or(full.as_str(), |(_, bare)| bare);
+        full.replace("__", "_") == wanted.replace("__", "_")
+            || (!bare.is_empty()
+                && !wanted_bare.is_empty()
+                && (bare.contains(wanted_bare) || wanted_bare.contains(bare)))
+    };
+    let same_extension = |tool: &Tool| {
+        wanted_prefix.is_some_and(|prefix| {
+            tool.name
+                .to_ascii_lowercase()
+                .rsplit_once("__")
+                .is_some_and(|(owner, _)| owner == prefix)
+        })
+    };
+    let mut ranked: Vec<&Tool> = tools.iter().collect();
+    ranked.sort_by_key(|tool| (!close(tool), !same_extension(tool)));
+    let listed = quoted_tool_names(
+        ranked
+            .iter()
+            .take(UNKNOWN_NAME_LISTED_TOOLS)
+            .map(|tool| tool.name.as_ref()),
+    );
+    let more = tools.len().saturating_sub(UNKNOWN_NAME_LISTED_TOOLS);
+    let more = if more > 0 {
+        format!(" (and {more} more)")
+    } else {
+        String::new()
+    };
+    Some(format!(
+        "Tools offered for this turn include {listed}{more}. Call a tool by its full name."
+    ))
+}
+
+/// What a not-found answer for a prefixed name nobody offered (`developer__shel`)
+/// gets appended (#545), so it lists real names as the bare-name refusal does.
+/// The call still goes to dispatch, which may route a name the roster did not
+/// list (a frontend or platform tool, an extension enabled this turn); the hint
+/// is added only when dispatch answers that no such tool exists.
+fn unoffered_prefixed_name_hint(name: &str, tools: &[Tool]) -> Option<String> {
+    if !name.contains("__") || tools.iter().any(|tool| tool.name == name) {
+        return None;
+    }
+    let listing = offered_names_listing(name, tools)?;
+    Some(format!(
+        "No tool named `{name}` is offered for this turn. {listing}"
+    ))
+}
+
+/// Whether a failed call's error says its tool does not exist: the extension
+/// manager's `Tool '…' not found`, or an MCP server's `tool not found`.
+pub(crate) fn is_tool_not_found_error(message: &str) -> bool {
+    let message = message.to_ascii_lowercase();
+    message.contains("tool") && message.contains("not found")
+}
+
+/// `req` as it will be inspected and run: renamed to the offered tool it means,
+/// its arguments coerced to that tool's schema and the tool's `_meta` attached.
+/// A bare name that means no offered tool, or several, is left as written and
+/// its refusal is added to `admission_denials`.
+fn offered_request(
+    req: &ToolRequest,
+    tools: &[Tool],
+    admission_denials: &mut Vec<crate::tool_inspection::InspectionResult>,
+    unresolved_name_hints: &mut HashMap<String, String>,
+) -> ToolRequest {
+    let mut coerced_req = req.clone();
+    if let Ok(ref mut tool_call) = coerced_req.tool_call {
+        if let Some(hint) = unoffered_prefixed_name_hint(tool_call.name.as_ref(), tools) {
+            unresolved_name_hints.insert(req.id.clone(), hint);
+        }
+        match offered_tool_for_name(tools, tool_call.name.as_ref()) {
+            OfferedToolName::Offered(tool) => {
+                // The provider-authored name stays in the raw response, so the
+                // execution audit records both.
+                tool_call.name = tool.name.clone();
+                let schema_value = Value::Object(tool.input_schema.as_ref().clone());
+                tool_call.arguments =
+                    coerce_tool_arguments(tool_call.arguments.clone(), &schema_value);
+
+                if let Some(ref meta) = tool.meta {
+                    coerced_req.tool_meta = serde_json::to_value(meta).ok();
+                }
+            }
+            OfferedToolName::Unresolved => {}
+            OfferedToolName::Refused(reason) => {
+                admission_denials.push(crate::tool_inspection::InspectionResult {
+                    tool_request_id: req.id.clone(),
+                    action: crate::tool_inspection::InspectionAction::Deny,
+                    reason,
+                    confidence: 1.0,
+                    inspector_name: OFFERED_ROSTER_INSPECTOR_NAME.to_string(),
+                    finding_id: None,
+                });
+            }
+        }
+    }
+    coerced_req
+}
+
+fn quoted_tool_names<'a>(names: impl Iterator<Item = &'a str>) -> String {
+    names
+        .map(|name| format!("`{name}`"))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
 fn attach_skill_inventory(
     extensions_info: &mut [crate::agents::extension::ExtensionInfo],
     inventory: &str,
@@ -50,6 +252,7 @@ pub(super) fn attach_effective_tool_rosters(
     available_tools: &[Tool],
     directly_callable_tools: &[Tool],
 ) {
+    let browser_offered = browser_tools_offered(available_tools);
     for info in extensions_info {
         info.tool_roster_known = true;
         let prefix = format!("{}__", info.name);
@@ -96,7 +299,7 @@ pub(super) fn attach_effective_tool_rosters(
         // Same idiom, third capability. Skills' prose names seven operations,
         // and `get_extensions_info` — which is what puts that prose in EVERY
         // turn's system prompt — is filtered by `allowed_extension_keys` and
-        // never by the conversation's effective roster. An Agent-Drafter app
+        // never by the conversation's effective roster. An application
         // agent is granted `searchSkills` + `loadSkill` and read instructions
         // for five more that answer with a refusal.
         //
@@ -118,6 +321,45 @@ pub(super) fn attach_effective_tool_rosters(
         {
             info.instructions =
                 crate::agents::skills_extension::instructions_for_operations(&info.available_tools);
+        }
+        // AD-16: Copilot's instructions send web pages to the Biorouter Browser's tools, which
+        // this roster may not offer (a subagent, a scheduled run, the CLI, `serve`, a chat that
+        // switched the browser off). Worded for the roster, as the arms above are.
+        if info.name == COPILOT_EXTENSION_KEY {
+            info.instructions = biorouter_mcp::computer_use::contract::routing_for_roster(
+                &info.instructions,
+                browser_offered,
+            );
+        }
+    }
+}
+
+/// Biorouter Copilot's extension key, kept from its legacy name for saved configuration.
+const COPILOT_EXTENSION_KEY: &str = "computercontroller";
+
+fn browser_tools_offered(tools: &[Tool]) -> bool {
+    tools
+        .iter()
+        .any(|tool| crate::security::browser_use::is_reserved_browser_name(&tool.name))
+}
+
+/// AD-16 for the tool list itself: Copilot's `get_app_state` description points at
+/// `browser_open`. Worded for the roster the model is given, so a roster with no browser tool
+/// does not name one. Pass the whole roster, never one extension's slice.
+pub(crate) fn route_copilot_for_roster(tools: &mut [Tool]) {
+    let browser_offered = browser_tools_offered(tools);
+    let prefix = format!("{COPILOT_EXTENSION_KEY}__");
+    for tool in tools
+        .iter_mut()
+        .filter(|tool| tool.name.starts_with(&prefix))
+    {
+        let routed = tool.description.as_deref().map(|description| {
+            biorouter_mcp::computer_use::contract::routing_for_roster(description, browser_offered)
+        });
+        if let Some(routed) = routed {
+            if tool.description.as_deref() != Some(routed.as_str()) {
+                tool.description = Some(routed.into());
+            }
         }
     }
 }
@@ -282,6 +524,9 @@ pub(crate) fn survives_code_execution_filter(
 ) -> bool {
     tool_name.starts_with(code_exec_prefix)
         || crate::security::computer_use::is_computer_use_tool(tool_name)
+        // BB-09: like Copilot's, the browser's tools stay direct, so their per-call grants and
+        // visible driving are never hidden inside a script.
+        || crate::security::browser_use::is_browser_tool(tool_name)
         || tool_name == SUBAGENT_TOOL_NAME
         || tool_name == SUBAGENT_TOOL_PREFIXED
         // Nested scripts always refuse Dictionary writes because they bypass the
@@ -1171,36 +1416,46 @@ impl Agent {
     /// - frontend_requests: Tool requests that should be handled by the frontend
     /// - other_requests: All other tool requests (including requests to enable extensions)
     /// - filtered_message: The original message with frontend tool requests removed
+    /// - admission_denials: refusals for bare names that match no offered tool or
+    ///   several (#545), for the inspection results; their requests stay in
+    ///   `other_requests` so the denial path answers them
+    ///
+    /// `tools` is the roster this turn offered (see [`offered_tool_for_name`]).
     pub(crate) async fn categorize_tool_requests(
         &self,
         response: &Message,
         tools: &[Tool],
-    ) -> (Vec<ToolRequest>, Vec<ToolRequest>, Message) {
-        // First collect all tool requests with coercion applied
+    ) -> (
+        Vec<ToolRequest>,
+        Vec<ToolRequest>,
+        Message,
+        Vec<crate::tool_inspection::InspectionResult>,
+        HashMap<String, String>,
+    ) {
+        // First collect all tool requests with the offered name and coercion applied
+        let mut admission_denials = Vec::new();
+        let mut unresolved_name_hints = HashMap::new();
         let tool_requests: Vec<ToolRequest> = response
             .content
             .iter()
             .filter_map(|content| {
                 if let MessageContent::ToolRequest(req) = content {
-                    let mut coerced_req = req.clone();
-
-                    if let Ok(ref mut tool_call) = coerced_req.tool_call {
-                        if let Some(tool) = tools.iter().find(|t| t.name == tool_call.name) {
-                            let schema_value = Value::Object(tool.input_schema.as_ref().clone());
-                            tool_call.arguments =
-                                coerce_tool_arguments(tool_call.arguments.clone(), &schema_value);
-
-                            if let Some(ref meta) = tool.meta {
-                                coerced_req.tool_meta = serde_json::to_value(meta).ok();
-                            }
-                        }
-                    }
-
-                    Some(coerced_req)
+                    Some(offered_request(
+                        req,
+                        tools,
+                        &mut admission_denials,
+                        &mut unresolved_name_hints,
+                    ))
                 } else {
                     None
                 }
             })
+            .collect();
+
+        // A refused name is answered by the denial path, never by a frontend.
+        let refused: HashSet<&str> = admission_denials
+            .iter()
+            .map(|denial| denial.tool_request_id.as_str())
             .collect();
 
         // Create a filtered message with frontend tool requests removed
@@ -1214,7 +1469,9 @@ impl Agent {
                         let coerced_req = &tool_requests[tool_request_index];
                         tool_request_index += 1;
 
-                        let should_include = if let Ok(tool_call) = &coerced_req.tool_call {
+                        let should_include = if refused.contains(coerced_req.id.as_str()) {
+                            true
+                        } else if let Ok(tool_call) = &coerced_req.tool_call {
                             !self.is_frontend_tool(&tool_call.name).await
                         } else {
                             true
@@ -1248,7 +1505,9 @@ impl Agent {
         let mut other_requests = Vec::new();
 
         for request in tool_requests {
-            if let Ok(tool_call) = &request.tool_call {
+            if refused.contains(request.id.as_str()) {
+                other_requests.push(request);
+            } else if let Ok(tool_call) = &request.tool_call {
                 if self.is_frontend_tool(&tool_call.name).await {
                     frontend_requests.push(request);
                 } else {
@@ -1260,7 +1519,13 @@ impl Agent {
             }
         }
 
-        (frontend_requests, other_requests, filtered_message)
+        (
+            frontend_requests,
+            other_requests,
+            filtered_message,
+            admission_denials,
+            unresolved_name_hints,
+        )
     }
 
     pub(crate) async fn update_session_metrics(
@@ -1607,10 +1872,60 @@ mod tests {
     ///
     /// `get_extensions_info` — which is what puts that prose in the system
     /// prompt of every turn — is filtered by `allowed_extension_keys` and never
-    /// by `available_tools`, so an Agent-Drafter app agent granted
+    /// by `available_tools`, so an application agent granted
     /// `searchSkills` + `loadSkill` read instructions for five more operations
     /// and called tools that answer with a refusal. Nothing else catches it:
     /// the roster is correct, the dispatch is correct, and only the prompt lies.
+    /// AD-16: Copilot's instructions and its `get_app_state` description send web pages to the
+    /// Biorouter Browser's tools. Where the roster offers none (a subagent, a scheduled run, the
+    /// CLI, `serve`, a chat that switched the browser off), both say the same rule without
+    /// naming them; where it offers them, both are unchanged.
+    #[test]
+    fn copilot_names_browser_tools_only_where_the_roster_offers_them() {
+        use crate::agents::extension::ExtensionInfo;
+        use biorouter_mcp::computer_use::contract;
+
+        let copilot_tools = || {
+            contract::tools()
+                .into_iter()
+                .map(|mut tool| {
+                    tool.name = format!("computercontroller__{}", tool.name).into();
+                    tool
+                })
+                .collect::<Vec<Tool>>()
+        };
+        let browser = Tool::new("browser__browser_open", "open", object!({"type": "object"}));
+        let prose = |tools: &[Tool]| {
+            let mut entries = vec![ExtensionInfo::capability(
+                "computercontroller",
+                &contract::instructions(),
+                false,
+            )];
+            attach_effective_tool_rosters(&mut entries, tools, tools);
+            entries.remove(0).instructions
+        };
+        let description = |tools: &[Tool]| {
+            let mut tools = tools.to_vec();
+            route_copilot_for_roster(&mut tools);
+            tools
+                .into_iter()
+                .find(|tool| tool.name == "computercontroller__get_app_state")
+                .and_then(|tool| tool.description)
+                .unwrap()
+                .to_string()
+        };
+
+        let without = copilot_tools();
+        let mut with = copilot_tools();
+        with.push(browser);
+        assert!(!prose(&without).contains("browser_"), "{}", prose(&without));
+        assert!(prose(&without).contains(contract::ROUTING_SENTENCE_WITHOUT_BROWSER));
+        assert!(!description(&without).contains("browser_"));
+        assert_eq!(prose(&with), contract::instructions());
+        assert!(description(&with).contains("for a web page use browser_open"));
+        assert!(description(&with).contains(contract::ROUTING_SENTENCE));
+    }
+
     #[test]
     fn the_skills_capability_advertises_only_the_operations_this_conversation_can_call() {
         use crate::agents::extension::ExtensionInfo;
@@ -3560,5 +3875,163 @@ mod todo_sidecar_tests {
         ));
         assert!(!call_has_todo_sidecar("some_mcp__tool", with.as_object()));
         assert!(!call_has_todo_sidecar("developer__shell", None));
+    }
+}
+
+#[cfg(test)]
+mod offered_name_tests {
+    //! #545: a model's tool name matched against the tools this turn offered.
+    use super::*;
+
+    fn tool(name: &str) -> Tool {
+        Tool::new(
+            name.to_string(),
+            "test tool",
+            json!({"type": "object", "properties": {"background": {"type": "boolean"}}})
+                .as_object()
+                .unwrap()
+                .clone(),
+        )
+    }
+
+    fn offered(names: &[&str]) -> Vec<Tool> {
+        names.iter().map(|name| tool(name)).collect()
+    }
+
+    fn resolved<'a>(tools: &'a [Tool], name: &str) -> Option<&'a str> {
+        match offered_tool_for_name(tools, name) {
+            OfferedToolName::Offered(tool) => Some(tool.name.as_ref()),
+            _ => None,
+        }
+    }
+
+    fn refusal(tools: &[Tool], name: &str) -> String {
+        match offered_tool_for_name(tools, name) {
+            OfferedToolName::Refused(reason) => reason,
+            other => panic!("{name} was not refused: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_unique_bare_name_is_the_offered_tool_and_an_exact_name_wins() {
+        let tools = offered(&["developer__shell", "developer__text_editor"]);
+        assert_eq!(resolved(&tools, "shell"), Some("developer__shell"));
+        assert_eq!(
+            resolved(&tools, "developer__shell"),
+            Some("developer__shell")
+        );
+
+        // A tool whose exact name is the bare one is never renamed.
+        let tools = offered(&["shell", "developer__shell"]);
+        assert_eq!(resolved(&tools, "shell"), Some("shell"));
+    }
+
+    #[test]
+    fn an_ambiguous_bare_name_is_refused_with_only_its_offered_candidates() {
+        let tools = offered(&["developer__shell", "docker__shell", "memory__remember"]);
+        let reason = refusal(&tools, "shell");
+        assert!(reason.contains("`developer__shell`"), "{reason}");
+        assert!(reason.contains("`docker__shell`"), "{reason}");
+        assert!(!reason.contains("memory__remember"), "{reason}");
+        assert!(reason.contains("was not run"), "{reason}");
+    }
+
+    #[test]
+    fn a_prefixed_name_is_left_to_dispatch_and_the_bare_spawn_tool_too() {
+        let tools = offered(&["developer__shell"]);
+        // A prefix nobody offered is not guessed at; dispatch decides.
+        assert!(matches!(
+            offered_tool_for_name(&tools, "docker__shell"),
+            OfferedToolName::Unresolved
+        ));
+        assert!(matches!(
+            offered_tool_for_name(&tools, "developer_shell__x"),
+            OfferedToolName::Unresolved
+        ));
+        // The bare spawn tool has refusals of its own at dispatch.
+        assert!(matches!(
+            offered_tool_for_name(&tools, crate::agents::subagent_tool::SUBAGENT_TOOL_NAME),
+            OfferedToolName::Unresolved
+        ));
+        // ...unless it is offered under the workspace prefix.
+        let tools = offered(&[crate::agents::subagent_tool::SUBAGENT_TOOL_PREFIXED]);
+        assert_eq!(
+            resolved(&tools, crate::agents::subagent_tool::SUBAGENT_TOOL_NAME),
+            Some(crate::agents::subagent_tool::SUBAGENT_TOOL_PREFIXED)
+        );
+    }
+
+    #[test]
+    fn an_unknown_bare_name_lists_offered_tools_closest_first_and_capped() {
+        let mut names: Vec<String> = (0..30).map(|i| format!("aaa{i:02}__tool")).collect();
+        names.push("developer__shell".to_string());
+        names.push("developer__shell_status".to_string());
+        let tools: Vec<Tool> = names.iter().map(|name| tool(name)).collect();
+
+        // `developer_shell` (one underscore) is not a suffix match: it is
+        // refused, and the tool it reads as is listed first.
+        let reason = refusal(&tools, "developer_shell");
+        let listed = reason.matches("`").count() / 2 - 1;
+        assert_eq!(listed, UNKNOWN_NAME_LISTED_TOOLS, "{reason}");
+        assert!(reason.contains("(and 12 more)"), "{reason}");
+        let first = reason
+            .find("`developer__shell`")
+            .expect("closest tool listed");
+        assert!(
+            first < reason.find("`aaa00__tool`").unwrap_or(usize::MAX),
+            "{reason}"
+        );
+
+        // `status` sits beside `developer__shell_status`.
+        let reason = refusal(&tools, "status");
+        assert!(reason.contains("`developer__shell_status`"), "{reason}");
+
+        // Nothing offered: nothing to list.
+        let reason = refusal(&[], "shell");
+        assert!(reason.contains("No tool named `shell`"), "{reason}");
+    }
+
+    /// #545: a prefixed name nobody offered still goes to dispatch, but carries
+    /// the offered names it may have meant, closest first, then its own
+    /// extension's tools, from the offered roster alone.
+    #[test]
+    fn an_unoffered_prefixed_name_gets_the_offered_names_closest_first() {
+        let mut names: Vec<String> = (0..30).map(|i| format!("aaa{i:02}__tool")).collect();
+        names.push("developer__text_editor".to_string());
+        names.push("developer__shell".to_string());
+        let tools: Vec<Tool> = names.iter().map(|name| tool(name)).collect();
+
+        let hint = unoffered_prefixed_name_hint("developer__shel", &tools).expect("a hint");
+        assert!(
+            hint.starts_with("No tool named `developer__shel` is offered for this turn."),
+            "{hint}"
+        );
+        let shell = hint.find("`developer__shell`").expect("{hint}");
+        let editor = hint.find("`developer__text_editor`").expect("{hint}");
+        let other = hint.find("`aaa00__tool`").expect("{hint}");
+        assert!(shell < editor && editor < other, "{hint}");
+        assert!(hint.contains("(and 12 more)"), "{hint}");
+        assert!(hint.ends_with("Call a tool by its full name."), "{hint}");
+
+        // Offered, bare, or nothing offered: no hint.
+        assert_eq!(
+            unoffered_prefixed_name_hint("developer__shell", &tools),
+            None
+        );
+        assert_eq!(unoffered_prefixed_name_hint("shel", &tools), None);
+        assert_eq!(unoffered_prefixed_name_hint("developer__shel", &[]), None);
+        // The bare spawn tool keeps its own refusals and gets no hint.
+        assert_eq!(
+            unoffered_prefixed_name_hint(crate::agents::subagent_tool::SUBAGENT_TOOL_NAME, &tools),
+            None
+        );
+    }
+
+    #[test]
+    fn both_not_found_answers_are_recognised_and_other_errors_are_not() {
+        assert!(is_tool_not_found_error("Tool 'absent__x' not found"));
+        assert!(is_tool_not_found_error("tool not found"));
+        assert!(!is_tool_not_found_error("permission denied"));
+        assert!(!is_tool_not_found_error("File not found: /tmp/x"));
     }
 }

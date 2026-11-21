@@ -19,6 +19,7 @@ import {
   setDictationSnapshotForTests,
 } from './dictationSession';
 import { refreshDictationStatus, resetDictationStoreForTests } from './dictationStore';
+import { resetFnKeyStoreForTests } from './fnKeyStore';
 import { needsSharedOriginNotice, resetSharedOriginNoticeForTests } from './sharedOriginGate';
 import {
   DICTATION_CONTEXT_BYTES,
@@ -241,6 +242,55 @@ describe('phases and names', () => {
     expect(mic()).toHaveAttribute('aria-pressed', 'false');
   });
 
+  it('names the fn gestures, beside the chord, once the fn shortcut works on macOS', async () => {
+    resetFnKeyStoreForTests();
+    const working = {
+      settings: { enabled: true, otherApps: false },
+      status: {
+        supported: true,
+        active: true,
+        permission: 'granted',
+        listening: true,
+        fnUsage: 0,
+        failed: false,
+      },
+      anywhereOn: false,
+    };
+    Object.assign(window.electron, { dictationFnGet: vi.fn(async () => working) });
+    try {
+      render(<Host />);
+      fireEvent.focus(screen.getByTestId('field'));
+      await settle();
+      expect(mic()).toHaveAttribute('aria-keyshortcuts', 'Fn Meta+Shift+D');
+    } finally {
+      resetFnKeyStoreForTests();
+    }
+  });
+
+  it('keeps the chord alone while the fn listener does not run (no Input Monitoring yet)', async () => {
+    resetFnKeyStoreForTests();
+    const waiting = {
+      settings: { enabled: true, otherApps: false },
+      status: {
+        supported: true,
+        active: true,
+        permission: 'denied',
+        listening: false,
+        fnUsage: null,
+        failed: false,
+      },
+      anywhereOn: false,
+    };
+    Object.assign(window.electron, { dictationFnGet: vi.fn(async () => waiting) });
+    try {
+      render(<Host />);
+      await settle();
+      expect(mic()).toHaveAttribute('aria-keyshortcuts', 'Meta+Shift+D');
+    } finally {
+      resetFnKeyStoreForTests();
+    }
+  });
+
   it('arms, records with its timer, then transcribes and inserts nothing it was not given', async () => {
     render(<Host />);
     fireEvent.focus(screen.getByTestId('field'));
@@ -278,9 +328,34 @@ describe('phases and names', () => {
     fireEvent.pointerDown(mic(), { button: 0 });
     await settle();
     expect(screen.getByTestId('dictation-setup')).toHaveTextContent(
-      'It needs a speech model: Whisper small.en (Light) (264 MB)'
+      'It needs a 264 MB speech model, Whisper small.en (Light), downloaded once'
     );
     expect(captures).toHaveLength(0);
+  });
+
+  it('rests focus on the popover box after a pointer open, and on its first control after a key open', async () => {
+    status = speechStatus({ active_model: null }, { installed: false });
+    render(<Host />);
+    const field = screen.getByTestId('field');
+    field.focus();
+    fireEvent.focus(field);
+    await settle();
+    // A pointer press: the field kept its focus (and its ring), so a script focus on the first
+    // control would inherit the keyboard ring. Focus goes to the box, which draws none.
+    fireEvent.pointerDown(mic(), { button: 0 });
+    await settle();
+    const box = screen.getByRole('dialog', { name: 'Set up dictation' });
+    expect(box).toHaveClass('br-dictation-setup-popover');
+    expect(document.activeElement).toBe(box);
+    fireEvent.click(screen.getByRole('button', { name: 'Not now' }));
+    await settle();
+    expect(screen.queryByRole('dialog')).toBeNull();
+
+    // A key press on the microphone keeps Radix's first stop, where the ring is the point.
+    fireEvent.keyDown(mic(), { key: 'Enter' });
+    fireEvent.click(mic(), { detail: 0 });
+    await settle();
+    expect(document.activeElement).toBe(screen.getByRole('button', { name: 'More in Settings' }));
   });
 
   it('shows the daemon install lock after the first browser acknowledgement', async () => {

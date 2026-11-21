@@ -2750,7 +2750,7 @@ for line in sys.stdin:
                 .map(|tool| tool.name.as_ref())
                 .collect::<Vec<_>>()
         );
-        assert_eq!(names.len(), 10);
+        assert_eq!(names.len(), 13);
         let refused: Value = client.post(configured_url)
             .json(&json!({"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"not_granted","arguments":{}}}))
             .send().await.unwrap().json().await.unwrap();

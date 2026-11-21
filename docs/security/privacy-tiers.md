@@ -1,6 +1,6 @@
 # Privacy tiers
 
-> Computer-use references in historical investigations below are superseded by the [native Biorouter Copilot contract](../design/computer-use-integration-plan.md). Old script/control and Developer capture routes are removed; web/document tools now belong to `webdocuments`. Historical source paths and test receipts are not current executable guidance.
+> Computer-use references in historical investigations below are superseded by the [native Biorouter Copilot contract](../design/copilot-agent-desktop.md). Old script/control and Developer capture routes are removed; web/document tools now belong to `webdocuments`. Historical source paths and test receipts are not current executable guidance.
 
 
 > **What this is.** The design for a privacy-tier system that keeps conversations touched by
@@ -481,7 +481,9 @@ this section is the ledger.
     is sent to a public model, and MSG-PRIVATE-DRAFT-SWITCH before an unsent chat switches to one.
   - **Stamps follow the real tier with the master switch off**; only the filters go inert, so
     turning the switch back on restores them with correct rows.
-  - **The `dictionary` capability** (PR-23). It is off in a fresh configuration. The workspace
+  - **The `dictionary` capability** (PR-23). It is on in a fresh configuration since the owner's
+    request of 2026-11-19 (it was off as PR-23 built it), and a configuration that saved it off
+    keeps it off. Turning it on where it is off stays the person's act. The workspace
     doors (`workspace_set_tools`, `workspace_open` and `WorkspaceServices::start_session`) refuse
     it by name, and `manage_extensions` refuses it as it refuses every built in capability. It is
     absent from Crew scoped, app, ACP `--ws`, SubAgent, Scheduled, Hidden and Terminal sessions.
@@ -490,11 +492,11 @@ this section is the ledger.
     because it dispatches as `public_enforced()` and a private chat's term would land public
     there; an `execute_code` script refuses the same two tools from any chat (DD-42,
     `crates/biorouter/src/security/dictionary_store.rs`).
-  - **The ACP residual of DD-57.** Over ACP stdio the capability, when the person turned it on,
-    only ever suggests. The Jupyter AI persona delivers other people's messages to Biorouter as
+  - **The ACP residual of DD-57.** Over ACP stdio the capability, which is on in a fresh
+    configuration, only ever suggests. The Jupyter AI persona delivers other people's messages to Biorouter as
     user messages, so an agent there can take a term from a colleague's words. That term lands
     as a suggestion and shapes nothing until the person accepts it; the chat extractor (PR-24,
-    which ships off) skips every ACP session, stdio and `--ws` alike, so nothing is harvested from
+    on in a new store since 2026-11-19) skips every ACP session, stdio and `--ws` alike, so nothing is harvested from
     them on its own.
   - **Residuals, recorded rather than closed.** A shell can read `dictionary.json` (DR-17 left the
     filesystem open); the path inspector stops a cooperative agent's file tools and named paths.
@@ -671,7 +673,7 @@ this section is the ledger.
 - **Every open question in §17.** They are open questions, not resolved ones, and several
   (5 — institutional versus hosted Ollama; 9 — skills carry no classification) describe live
   permissiveness in the shipped system.
-- **Agent Drafter app routes have no reach gate.** `POST /apps/{id}/launch`, `GET
+- **Application routes have no reach gate.** `POST /apps/{id}/launch`, `GET
   /apps/{id}/export`, `DELETE /apps/{id}`, `POST /apps/{id}/vault` and `POST /apps/{id}/build`
   check only the daemon secret and that the app exists; nothing in
   `crates/biorouter-server/src/routes/apps.rs` asks `routes::session_reach`. A public chat's shell
@@ -789,7 +791,7 @@ External
 
 `versa_azure` and `versa_bedrock` match neither list nor either substring, so they fall through to
 **`External`** — while `azure`, `azure_openai`, `aws_bedrock`, `bedrock`, `databricks`, `vertex`
-are listed **`Institutional`**. Agent Drafter today refuses a Versa route for a sensitive app and
+are listed **`Institutional`**. Application Drafter today refuses a Versa route for a sensitive app and
 permits a direct Bedrock one. The function's own test table (`:6447`) never exercises a `versa_*`
 name, which is why the inversion is green.
 
@@ -826,7 +828,7 @@ Each verified by reading the code, each fixed as a by-product of this design:
    a private chat resolves through `restore_provider_from_session`'s `Config::global()` fallback
    (`agent.rs:4963-4978`) and runs private history on the user's default public model, with no
    prompt.
-4. **Agent Drafter's `ClientFrame::ModelSelect`** (`routes/apps.rs:3409-3428`) calls
+4. **Application Drafter's `ClientFrame::ModelSelect`** (`routes/apps.rs:3409-3428`) calls
    `create_provider` then `agent.update_provider` with no check whatsoever, over the
    `GET /apps/{id}/agent` WebSocket, which `auth.rs:52-77` exempts from secret-key auth.
 5. **`POST /agent/call_tool`** (`routes/agent.rs:1140-1163`) dispatches straight into
@@ -1361,7 +1363,7 @@ So classification moves at the two moments content actually appears:
 
 1. **Reply entry (Gate B).** Before a turn runs,
    `privacy_tier := max(privacy_tier, floor(tier(bound provider)))`, reason `turn:<provider>`.
-   `Agent::reply` is the single turn entry for every surface — GUI, CLI, subagent, Agent Drafter,
+   `Agent::reply` is the single turn entry for every surface — GUI, CLI, subagent, Application Drafter,
    scheduler, ACP.
 2. **Permitted private-extension dispatch (Gate C).** On a successful dispatch to an extension
    whose `tier == Private`, `privacy_tier := max(privacy_tier, Private)`, reason `mcp:<name>`.
@@ -1427,7 +1429,7 @@ deliberately no builder setter that accepts `Public`.
 - A private MCP call from a public-capability session — Gate C refuses, so there is no "it
   happened, now ratchet" path.
 - Reading a public session into a private one. Upward flow is safe.
-- Agent Drafter's transient per-turn switch-and-restore in `apply_route_for_turn`: it writes
+- Application Drafter's transient per-turn switch-and-restore in `apply_route_for_turn`: it writes
   `provider_name` twice per turn, but the ratchet keys on the tier of the provider a turn *runs
   under*, not on the column changing.
 
@@ -1508,7 +1510,7 @@ removes the temptation to then call `workspace_read_conversation` on the id.
 | Tool *discovery* (`filter_tools`) | Private extensions absent from a public model's tool list |
 | `active_work` registry (`ActiveWorkItem.title` is built from a subagent's task prompt) | VIS |
 | `GET /sessions`, the History list | **Not** filtered — this is the user's own UI, not a model. Badges instead. **Conditional on §9.1 being fixed;** see the bypass. |
-| Agent Drafter route / worker admission | The BIND predicate, replacing `provider_class` |
+| Application Drafter route / worker admission | The BIND predicate, replacing `provider_class` |
 
 ### 7.2 Delegation is not amplification
 
@@ -1632,7 +1634,7 @@ parent that later becomes Private does not raise its running children; every pay
 into a child born under its ceiling asks for the first crossing approval again
 (`crossing::needs_disclosure_to`), rather than once per pair.
 
-### 8.3 Agent Drafter workers violate R5 today
+### 8.3 Application Drafter workers violate R5 today
 
 `configure_worker_provider` has no branch that reads the main agent's provider — an unpinned
 profile falls through to `Config::global()`, so a worker under a `versa_azure` app runs on the
@@ -1678,8 +1680,8 @@ Every path terminates here, because `update_provider` is the sole writer:
 | CLI configure + session builder | `biorouter-cli/src/commands/configure.rs`, `session/builder.rs` |
 | Scheduler | `crates/biorouter/src/scheduler.rs:866` |
 | Subagent spawn (inherit and override) | `subagent_handler.rs` |
-| **Agent Drafter browser `ClientFrame::ModelSelect`** | `routes/apps.rs:3409-3428` — fixed with zero new code |
-| Agent Drafter per-turn route + restore, worker profiles | `apps.rs` |
+| **Application Drafter browser `ClientFrame::ModelSelect`** | `routes/apps.rs:3409-3428` — fixed with zero new code |
+| Application Drafter per-turn route + restore, worker profiles | `apps.rs` |
 | ACP | `biorouter-acp/src/server.rs` |
 | **BR-71 `workspace_set_tools { provider, model }`** | required to call `Agent::update_provider`, not reimplement the persist |
 
@@ -1789,7 +1791,7 @@ three §1 names — and each row is exact:
 | Inherit a private extension into a public child | The `TaskConfig` extension filter |
 | Diverge / copy / import to launder the transcript | All four builders carry the tier (§9.3) |
 | Lower the tier through any DB write | The monotone `CASE WHEN` |
-| Reach a private server through an Agent Drafter app | Already impossible — a manifest can only produce `Builtin`/`Platform` configs, so `Builtin { name: "ucsfomopagent" }` fails the `BUILTIN_EXTENSIONS` lookup. **Locked in with a test**, not added. |
+| Reach a private server through an application | Already impossible — a manifest can only produce `Builtin`/`Platform` configs, so `Builtin { name: "ucsfomopagent" }` fails the `BUILTIN_EXTENSIONS` lookup. **Locked in with a test**, not added. |
 | Disable enforcement from the agent | The opt-out is not env-readable and is gated in `/config/upsert` — but see §9.3 C1, SecretGuard alone is not sufficient |
 
 **Two hazards the implementation must respect.** `ToolInspectionManager::inspect_tools` logs and
@@ -1903,7 +1905,7 @@ session DB. **Correction to the reviewer's version of this finding:** the DB is 
 `.config` would not match.
 
 **This is bigger than `sessions.db`, and the fix is not a SecretGuard pattern.** The same reasoning
-reaches the knowledge tree, the global memory store and the Agent Drafter apps: all are files, all
+reaches the knowledge tree, the global memory store and the applications: all are files, all
 are readable by any tool that can run a command or open a path, and none of the five gates is on
 that path. `developer__shell` executes an arbitrary command (`rmcp_developer.rs:1307`) and is
 explicitly *not* jailed by the file tools' containment base (`:1950`); the OS sandbox that could
@@ -2177,7 +2179,7 @@ answering.** The ruling protects BioRouter's *private* data. A knowledge base cl
 session row classified public, an app built in a public chat: none of those is private data, and
 refusing them would be a general jail of exactly the kind §9.5's ruling forbids. What is not
 acceptable is a root whose contents are **undifferentiated** being handed over because no gate
-exists. That was the Agent Drafter root, which had no per-app classification at all, and §9.5.3 says
+exists. That was the Application Drafter root, which had no per-app classification at all, and §9.5.3 says
 what it gets instead.
 
 **Why an in-process check has to exist at all.** `webdocuments__cache` reads a caller-supplied path with
@@ -2284,7 +2286,7 @@ exemption from the ruling**, and it is closed at each root's own door:
 
 **Two consequences worth stating plainly.**
 
-1. **Agent Drafter apps gain a classification they do not have today.** Without one the root is
+1. **Applications gain a classification they do not have today.** Without one the root is
    undifferentiated, and the only rules available are "all readable from a public chat" (which is
    the hole) or "none readable from a public chat" (which takes a flagship feature out of every chat
    on a commercial model). Every app that exists at migration is classified **public** — there is no
@@ -2385,7 +2387,7 @@ sandbox this feature installs changes that.** What remains true, and what it cos
 One further residual, and it is larger than previously stated: `GET /apps/{id}` and
 `GET /apps/{id}/agent` are deliberately unauthenticated, and the served page carries the app's socket
 token, so a client that knows an **app id** can drive that app's agent — including any knowledge base
-the app's manifest granted it, private ones included. It was previously argued that denying the Agent
+the app's manifest granted it, private ones included. It was previously argued that denying the Application
 Drafter root removed the only local source of app ids. **That is false:** `agent_drafter__list_apps`
 is a Public tool that enumerates every id in-process, takes no path argument, and is therefore
 untouched by both layers. A public model does not need to already know an app id — it can ask for
@@ -2555,7 +2557,7 @@ Hence v2, opt-in, and never a correction to the ruling.
 Global, explicit, on by default: `BIOROUTER_PRIVACY_TIERS` (default `on`), and it is a **master**
 switch over the whole feature. With it off there is no bind gate, no turn gate, no dispatch gate, no
 discovery filter, no `chatrecall` filter and no `chatrecall` LOAD guard, no knowledge-base barrier,
-no scoping of the Agent Drafter catalog, no forced export location for a model's `.brkb`, **no
+no scoping of the Application Drafter catalog, no forced export location for a model's `.brkb`, **no
 refusal when a public session enables a private extension and no stripping of a private server's
 instructions from a public system prompt** (both of which are tool-call-shaped only by analogy and
 are the two channels an enumeration is most likely to miss), no spawn matrix, no classification on a
@@ -3369,7 +3371,7 @@ confirmation rather than a switch:
 
 > This turns off **every** privacy guardrail on this machine, for every conversation.
 > Commercial models will be able to call UCSF clinical extensions, read private chat history, read
-> and write your knowledge bases, and read your saved chats, memories and Biorouter apps straight
+> and write your knowledge bases, and read your saved chats, memories and Biorouter applications straight
 > off the disk through the shell.
 > **While it is off, Biorouter stops recording which conversations touched private material.**
 > Turning it back on will protect what is already marked private — but it cannot go back and mark
@@ -3685,7 +3687,7 @@ prediction stands for whatever the next narrowest reading of it turns out to be.
     content without running a tool, of which `GET /diagnostics/{id}` is the widest. A per-caller
     credential the daemon does not hand to its own children is the shape of the fix, and it is
     probably the same fix as the app socket's.
-13. **Should the Agent Drafter app socket be authenticated by something a local client cannot
+13. **Should the application socket be authenticated by something a local client cannot
     obtain?** §9.5.5: `agent_drafter__list_apps` hands a public model every app id, and an app id is
     all the unauthenticated `GET /apps/{id}/` page needs to yield that app's socket token. The
     alternative — reclassifying `agent_drafter` as Private in §10.3 — closes it at Gate C and takes

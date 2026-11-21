@@ -158,6 +158,24 @@ describe('LintDrawer', () => {
     expect(screen.getByText(/first 3 shown/i)).toBeInTheDocument();
   });
 
+  /**
+   * Owner, 2026-11-19: the page is rounded panels, and the group headings were square full-bleed
+   * slabs above rows that are rounded and inset 8px. A heading is now a rounded fill inset like
+   * its rows, with its text on the same 16px edge (8px of inset plus 8px of padding). jsdom runs
+   * no Tailwind, so this pins the classes the shape is written in.
+   */
+  it('draws every group heading as a rounded fill inset like its rows, not a square slab', () => {
+    render(<LintDrawer open onOpenChange={() => undefined} />);
+    for (const group of ['Errors', 'Warnings', 'Notes', 'Orphans']) {
+      const heading = screen.getByRole('region', { name: group }).firstElementChild!;
+      const cls = heading.className.split(/\s+/);
+      expect(cls, group).toEqual(
+        expect.arrayContaining(['mx-2', 'rounded-element', 'px-2', 'bg-background-fill'])
+      );
+      expect(cls, group).not.toContain('px-4');
+    }
+  });
+
   it('surfaces the hygiene lists the report carries beside the diagnostics', () => {
     render(<LintDrawer open onOpenChange={() => undefined} />);
     expect(

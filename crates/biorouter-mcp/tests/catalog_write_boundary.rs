@@ -1,7 +1,7 @@
 //! An id that does not exist cannot be saved.
 //!
 //! This is the regression corpus for the 100-app test drive's worst
-//! configuration failures. Across 18 authored apps, Agent Drafter configured 13
+//! configuration failures. Across 18 authored apps, Application Drafter configured 13
 //! knowledge-base ids and 7 skill lists that did not exist on the machine it was
 //! running on — including the literal string `br.kb`, which is the client API
 //! namespace, not an identifier. Every one of those apps then failed its first
@@ -18,7 +18,7 @@ use biorouter_mcp::agent_drafter::catalog::{Catalog, KbEntry, SkillEntry};
 use biorouter_mcp::agent_drafter::store::{Requirement, RequirementKind};
 use biorouter_mcp::agent_drafter::validate;
 
-/// The knowledge-base ids Agent Drafter invented during the test drive.
+/// The knowledge-base ids Application Drafter invented during the test drive.
 const INVENTED_KB_IDS: &[&str] = &[
     "br.kb",
     "clinvar",
@@ -28,7 +28,7 @@ const INVENTED_KB_IDS: &[&str] = &[
     "omop-vocab",
 ];
 
-/// The skill ids Agent Drafter configured against a runtime with zero installed
+/// The skill ids Application Drafter configured against a runtime with zero installed
 /// skills.
 const INVENTED_SKILL_IDS: &[&str] = &[
     "pathway-analysis",
@@ -72,7 +72,7 @@ fn every_invented_knowledge_base_from_the_test_drive_is_now_rejected() {
         let result = validate::check_knowledge_base(id, &install);
         assert!(
             result.is_err(),
-            "'{id}' was configured by Agent Drafter during the test drive and must now be rejected"
+            "'{id}' was configured by Application Drafter during the test drive and must now be rejected"
         );
         let err = result.unwrap_err();
         assert!(

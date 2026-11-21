@@ -82,7 +82,7 @@ config.yaml.bak.*
 
 # Packaged extension artifacts (build output, not product source)
 *.brxt
-# The Agent Drafter stress test writes generated apps here; the run is
+# The Application Drafter stress test writes generated apps here; the run is
 # resumable, so this stays even while the directory is absent.
 biorouter-testing-apps/
 
@@ -107,19 +107,17 @@ ui/desktop/src/computer-use/
 # this covers a vite run whose cwd is the repo root. Build output, never committed.
 /public/pdfjs/
 
-# ── Vendored Open Computer Use upstream ─────────────────────────────────────
-# `vendor/computer-use/source/` is a COMPLETE copy of the upstream
-# project at the pinned commit, and the whole point of vendoring it is that a
-# build needs neither the network nor that repository continuing to exist. So it
-# has to be committed in full.
+# ── Vendored agent-desktop upstream (Biorouter Copilot's engine, AD-02) ──────
+# `vendor/agent-desktop/source/` is a copy of the upstream project at the pinned
+# commit, hashed file by file, and the whole point of vendoring it is that a build
+# needs neither the network nor that repository continuing to exist. So it has to be
+# committed in full.
 #
-# ⚠ Repository-wide rules above would silently drop files out of it — `*.png`
-# took an app icon and two readme covers, `.agents/` took a plugin manifest, and
-# `.mcp.json` took another. Measured: 15 of 406 files, and `source-manifest.json`
-# would then fail to verify on a fresh clone with nothing explaining why.
-#
-# The directory line comes first on purpose: git cannot re-include a file whose
-# parent directory is excluded, so `.agents/` has to be re-admitted as a
-# directory before anything inside it can be.
-!vendor/computer-use/source/**/
-!vendor/computer-use/source/**
+# ⚠ Repository-wide rules above would silently drop files out of it: with the
+# retired Open Computer Use tree, `*.png`, `.agents/` and `.mcp.json` took 15 of 406
+# files, and the manifest then failed to verify on a fresh clone with nothing
+# explaining why. Nothing matches the agent-desktop tree today (measured
+# 2026-11-20); this keeps it that way. The directory line comes first on purpose:
+# git cannot re-include a file whose parent directory is excluded.
+!vendor/agent-desktop/source/**/
+!vendor/agent-desktop/source/**

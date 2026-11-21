@@ -180,3 +180,47 @@ function inBiorouterConfigDir(...sub: string[]): string {
 export function biorouterExtensionsDir(): string {
   return inBiorouterConfigDir('extensions');
 }
+
+/**
+ * Biorouter's state folder, as `Paths::state_dir` resolves it (`crates/biorouter/src/config/
+ * paths.rs`): `<BIOROUTER_PATH_ROOT>/state` in a sandbox; otherwise `$XDG_STATE_HOME/biorouter`
+ * (or `~/.local/state/biorouter`) on macOS and Linux, and on Windows the data folder, because
+ * etcetera's Windows strategy has no state folder and `Paths` falls back to data.
+ */
+export function biorouterStateDirFor(inputs: PlatformInputs): string {
+  const p = inputs.pathImpl ?? path;
+  const sandboxRoot = inputs.env.BIOROUTER_PATH_ROOT;
+  if (sandboxRoot && sandboxRoot.trim().length > 0) return p.join(sandboxRoot, 'state');
+  if (inputs.platform === 'win32') {
+    const { roaming } = windowsBases(inputs.env, inputs.homedir, p.join);
+    return p.join(resolveAppRoot(appRootUnder(roaming, p.join), inputs.presence), 'data');
+  }
+  const xdgStateHome = inputs.env.XDG_STATE_HOME;
+  const base =
+    xdgStateHome && p.isAbsolute(xdgStateHome)
+      ? xdgStateHome
+      : p.join(inputs.homedir, '.local', 'state');
+  return p.join(base, APP_STRATEGY_APP_NAME);
+}
+
+/**
+ * Where this process writes the PNGs an agent asked for (`browser_screenshot`, a
+ * `workspace_read_panel` capture), and the one folder the daemon reads them from:
+ * `panel_capture_root` in `crates/biorouter/src/agents/workspace_extension.rs`,
+ * `Paths::in_state_dir("captures")`. Both sides resolve it from the same inputs, so a
+ * sandboxed or relocated profile (`BIOROUTER_PATH_ROOT`, `--user-data-dir`, a development
+ * profile) no longer splits them: Electron's own temporary folder moves with those profiles and
+ * the daemon's does not, which is how every screenshot came back "no longer available".
+ */
+export function agentCaptureDirFor(inputs: PlatformInputs): string {
+  return (inputs.pathImpl ?? path).join(biorouterStateDirFor(inputs), 'captures');
+}
+
+/** {@link agentCaptureDirFor} for this process, resolved on every call. */
+export function agentCaptureDir(): string {
+  return agentCaptureDirFor({
+    platform: process.platform,
+    env: process.env,
+    homedir: os.homedir(),
+  });
+}

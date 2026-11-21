@@ -922,9 +922,9 @@ describe('ApplicationsView', () => {
     const { container } = renderView();
 
     expect(
-      await screen.findByRole('heading', { level: 1, name: 'Built apps' })
+      await screen.findByRole('heading', { level: 1, name: 'Applications' })
     ).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'About Built apps' })).toHaveAccessibleDescription(
+    expect(screen.getByRole('button', { name: 'About Applications' })).toHaveAccessibleDescription(
       appsCopy.info
     );
 
@@ -1058,7 +1058,7 @@ describe('ApplicationsView', () => {
       .fn()
       .mockRejectedValue(
         new Error(
-          "Error invoking remote method 'apps:open-in-browser': Error: This app no longer exists."
+          "Error invoking remote method 'apps:open-in-browser': Error: This application no longer exists."
         )
       );
     window.electron = { ...window.electron, openAppInBrowser } as typeof window.electron;
@@ -1071,7 +1071,7 @@ describe('ApplicationsView', () => {
     await waitFor(() =>
       expect(toastError).toHaveBeenCalledWith({
         title: 'Cohort Explorer',
-        msg: 'This app no longer exists.',
+        msg: 'This application no longer exists.',
       })
     );
   });

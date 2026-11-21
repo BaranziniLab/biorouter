@@ -4,7 +4,7 @@
 > **Status:** Current. The contract is maintained (the rail-or-popover form since October 2026); the evidence sections below it are a dated record and are not re-run.
 > **Audience:** developers and QA working on the Chat summary, its to-do list, or Auto Visualiser figures.
 
-> Computer-use references in historical investigations below are superseded by the [native Biorouter Copilot contract](../design/computer-use-integration-plan.md). Old script/control and Developer capture routes are removed; web/document tools now belong to `webdocuments`. Historical source paths and test receipts are not current executable guidance.
+> Computer-use references in historical investigations below are superseded by the [native Biorouter Copilot contract](../design/copilot-agent-desktop.md). Old script/control and Developer capture routes are removed; web/document tools now belong to `webdocuments`. Historical source paths and test receipts are not current executable guidance.
 
 
 ## Contract
@@ -692,7 +692,7 @@ resources or explicit informed user approval; no unrelated files were removed.
 - Meaningful Codex and Claude Code tasks, accepted steering of a still-running
   child, subsequent child work, and parent collection remain required. Use the
   child's actual audited Knowledge/Skills/Extension Manager tools; parent
-  Agent Drafter support does not grant a child native shell/editor access.
+  Application Drafter support does not grant a child native shell/editor access.
 - Current-source dashboard initialization, decoder recovery, file navigation and
   live preview behavior still need rebuilt-app Luna verification. Recorded
   successful Soul ingestion and Meditation (including pending/completion UI)
@@ -1480,4 +1480,4 @@ provider acceptance, rebuild, push or release occurred.
 
 - [The Chat summary rail](chat-summary-rail.md): where the summary appears, the width rule and the tests that pin it.
 - [Where a generated artifact is displayed](artifact-display-surfaces.md): the one surface a figure is shown on.
-- [Biorouter Copilot integration plan](../design/computer-use-integration-plan.md): the contract that supersedes the Computer Use references in the evidence above.
+- [Biorouter Copilot on agent-desktop](../design/copilot-agent-desktop.md): the contract that supersedes the Computer Use references in the evidence above.
