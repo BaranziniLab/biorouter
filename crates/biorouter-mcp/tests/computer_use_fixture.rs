@@ -202,12 +202,22 @@ fn references(observation: &str) -> Vec<(String, String, String)> {
         .collect()
 }
 
+/// The element named `name`, or, where the platform names it only by its value (a macOS table
+/// cell reads `[textfield] value="Alpha"`), the one whose value is exactly `name`.
 fn reference(observation: &str, name: &str) -> String {
-    references(observation)
+    if let Some((reference, _, _)) = references(observation)
         .into_iter()
         .find(|(_, _, found)| found == name)
-        .map(|(reference, _, _)| reference)
-        .unwrap_or_else(|| panic!("no reference named {name:?} in:\n{observation}"))
+    {
+        return reference;
+    }
+    let by_value =
+        regex::Regex::new(r#"(@s[0-9A-Za-z]+:e\d+) \[[^\]]+\] value="([^"]*)""#).unwrap();
+    let found: Option<String> = by_value
+        .captures_iter(observation)
+        .find(|found| &found[2] == name)
+        .map(|found| found[1].to_owned());
+    found.unwrap_or_else(|| panic!("no reference named {name:?} in:\n{observation}"))
 }
 
 /// The fixture's password field: by its name where the platform reports one. Windows UI
