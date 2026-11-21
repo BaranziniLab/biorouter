@@ -359,7 +359,7 @@ grant it needs (BB-17).
 | `browser_press` | Press a key or chord (`Enter`, `Meta+A`) | Act, except `Escape`, `Tab`, arrows, `PageUp`, `PageDown`, `Home`, `End` |
 | `browser_select` | Choose options in a `select` or listbox | Act |
 | `browser_dialog` | Accept or dismiss an open JavaScript dialog, with text for `prompt` | Act |
-| `browser_drag` | Drag a reference to another reference or a point in the page (AD-17 in [Copilot on agent-desktop](../design/copilot-agent-desktop.md)): mouse events through `webContents.debugger` with `Input.setInterceptDrags`, so a native HTML drag is finished with `Input.dispatchDragEvent`; the system pointer never moves and no file from disk is dropped | Act |
+| `browser_drag` | Drag an element to another element or a point in the page (AD-17 in [Copilot on agent-desktop](../design/copilot-agent-desktop.md)). Each element is a reference, a CSS selector or `text=` and its visible words ("Drag and drop on real pages", below). Mouse events through `webContents.debugger` with `Input.setInterceptDrags`, so a native HTML drag is finished with `Input.dispatchDragEvent`; the system pointer never moves and no file from disk is dropped | Act |
 
 Not in this version: arbitrary JavaScript evaluation, cookie and storage tools, network
 interception, device emulation and uploads (BB-26). agent-browser treats evaluation as a
@@ -398,6 +398,16 @@ Arguments: `interactive_only` (default true), `max_depth`, `scope` (a reference 
   from the DOM, in this order: `icon:` (an icon's title or class stem), `img:` alt text, `testid:`,
   `name:` or `id:` attribute, or `in:` the text of its row. Icon buttons are common, and without a
   hint the model cannot tell them apart.
+- **Drag items.** Something a person would drag gets a line and a reference even when its role is
+  plain structure (`browser/agent/dragAffordance.ts`): an element that declares it
+  (`draggable="true"`, `aria-grabbed`, an `aria-roledescription` of draggable or sortable,
+  jQuery UI's `ui-draggable` and `ui-sortable-handle`, react-beautiful-dnd's
+  `data-rbd-draggable-id`), or the element that sets a `move` or `grab` cursor, read in one
+  `DOM.getNodesForSubtreeByStyle` call. The cursor is inherited, so only the element that sets
+  it counts, and a list that sets it (a `ul`, or three or more children sharing a tag and class)
+  stands for its items. The line is `@e9 [draggable] "Write the report"`, or
+  `[listitem] "Item 1" [draggable]` when the role says more; a grip with no words is named by its
+  row with `in:`. At most 100 per frame, in document order.
 - **Reference storage.** Each reference stores the node's `backendDOMNodeId`, its frame, its role,
   its name and whether it was unique in its snapshot. CSS paths are never stored.
 - **Lifetime.** A reference stays valid while its node is alive in the same document; a node keeps
@@ -1412,6 +1422,78 @@ browser_key_tests`; Vitest `src/browser`, `components/browser`, `components/agen
 `utils/agentCaptureDir.test.ts`, `WebPagePreview.navigation.test.tsx`; and the Electron specs
 `biorouter-browser.spec.ts` (L3), `biorouter-browser-agent.spec.ts` (S2, L1) and
 `biorouter-browser-import.spec.ts` (S3).
+
+### Drag and drop on real pages
+
+A live check with GPT-5.5 on 2026-11-20 found `browser_drag` working on a local test page (an
+HTML5 drop zone and a mouse event sortable, the first drop missing its zone) and failing on
+SortableJS's demo: the list rows are plain `div`s with no reference, a CSS selector was refused
+as "not a reference", and the model dragged the heading instead. This round made the targets
+reachable and the gesture behave like a person's.
+
+**Naming the ends.** `from` and `to` take a reference, a CSS selector, `text=` and visible words,
+or a CSS scope before the words (`#example1 >> text=Item 1`). The daemon sends a selector or
+words as data (`{"selector": …}`, `{"text": …, "scope": …}`, built by `drag_locator` in
+`browser_extension.rs`); main resolves it with `LOCATE_FUNCTION` (`browser/agent/actionability.ts`)
+in the isolated world, as function arguments, never as script. It searches the main document and
+the open shadow roots under it, never a frame, and keeps only visible elements. Words match the
+smallest element whose whole text is the words (case and spacing ignored), or else the elements
+whose text contains them. Anything but exactly one match refuses with what was found and where
+(`2 visible elements match the text "Item 1" (in #example1, #example2-left)`). The element found
+keeps its existing reference or gets a new one, and from there it is checked exactly as a
+reference is.
+
+**Checks.** The source passes BB-13's checks. The destination must be visible together with the
+source and is hit tested at the drop point, so a cover is named. Neither end may be a password,
+verification code or card field (a drop types the dragged text into it), a drop at a point is
+refused on one of those or inside a frame (`DOM.getNodeForLocation` and `DOM.describeNode`, no page
+script), and the source and destination must differ. The act grant is unchanged.
+
+**The gesture** (`browser/agent/drag.ts`):
+
+1. Hover, press, then a lift of 2, 5 and 10 CSS px toward the destination, one frame (16 ms)
+   apart: past jQuery UI's 1 px `distance`, Chromium's 4 px native drag threshold and the 5 to
+   10 px activation distances of pointer libraries.
+2. The destination is measured again after the lift, because pages reflow when they pick the
+   source up (they hide it, or put a placeholder in its place).
+3. The travel is one move per 20 CSS px (at least 10, at most 50, or `steps`), one frame apart.
+4. The drop point is past the middle of the destination in the direction of travel, a quarter of
+   its size (`dropPointIn`), so a sortable that inserts by halves puts the item in the
+   destination's place, and a drop zone gets a point well inside it.
+5. A native drag gets `dragEnter` where it started, `dragOver` along the path, four more
+   `dragOver`s at the destination a frame apart, then `drop`. SortableJS accepts drags only from
+   the tick after `dragstart` and reorders on `dragover`, and Chromium lets a drop through only if
+   the last `dragOver` was accepted.
+6. A drag the page starts late (on the last lift move, or partway through the travel) is still
+   finished as a native drag, never left open: an open drag makes Chromium ignore every later
+   mouse event on the page.
+
+After the drag the result says whether the page moved the source (`the page moved it after
+[listitem] "Item 3"`, or `into [region] "Done"`), read from where the source sits in the DOM.
+
+**Measured** on Electron 39.8.10 (Chromium 142), each run on a freshly loaded page, the old
+gesture taken from the parent commit and given the same points:
+
+| Page | Old gesture | New gesture |
+|---|---|---|
+| HTML5 drop zones that hide the dragged card on the tick after `dragstart` | 0 of 10 | 10 of 10 |
+| A SortableJS style native list | 9 of 10 | 10 of 10 |
+| A jQuery UI style mouse sortable ("intersect" tolerance) | 0 of 10 | 10 of 10 |
+| sortablejs.github.io, simple list, Item 1 below Item 3 | 5 of 5 | 5 of 5 |
+| jqueryui.com sortable demo, Item 1 below Item 3 | 0 of 5 | 5 of 5 |
+
+On sortablejs.github.io the old gesture worked once it had a target; the live failure was only
+that the rows had no reference. Through the driver, `#example1 >> text=Item 1` to
+`#example1 >> text=Item 3` gives `Item 2, Item 3, Item 1, Item 4, Item 5, Item 6`; on the jQuery UI
+demo `text=Item 1` to `text=Item 3` gives `Item 2, Item 3, Item 1, …`, and the snapshot lists every
+row as `[listitem] "Item n" [draggable]`, whose references drag it back.
+
+Tests: Vitest `src/browser/agent` (`drag.test.ts`, `dragAffordance.test.ts`, the drag cases in
+`snapshot.test.ts`, `actionability.test.ts` and `refs.test.ts`); `cargo test -p biorouter --lib --
+browser_extension`; and the Electron spec `tests/e2e/biorouter-browser-drag.spec.ts` against the
+fixture site's `/agent/drag/` pages (`fixtures/biorouter-browser/drag-pages.cjs`: drop zones that
+reflow, a SortableJS style native list, a jQuery UI style mouse list, and the drag items and their
+cap). With `BIOROUTER_BROWSER_LIVE_DRAG=1` the same spec drags on the two public demo pages.
 
 ## Open questions and things to measure first
 

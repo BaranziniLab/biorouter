@@ -40,7 +40,7 @@ window there can hold a page or show the approval.
 | `browser_press` | Press a key or chord such as `Enter` or `Meta+A` | Acting, except Escape, Tab, arrows, Page Up and Down, Home and End |
 | `browser_select` | Choose options in a `select` | Acting |
 | `browser_dialog` | Accept or dismiss a JavaScript dialog Chromium reports | Acting |
-| `browser_drag` | Drag a reference and drop it on another reference or a point in the page: reorder a list, move a card, fill a drop zone. Page events only: the person's pointer never moves, and no file from disk is dropped | Acting |
+| `browser_drag` | Drag an element and drop it on another element or a point in the page: reorder a list, move a card, fill a drop zone. Each element is an `@e` reference, a CSS selector, or `text=` and its visible words. Page events only: the person's pointer never moves, and no file from disk is dropped | Acting |
 
 The advertised names carry the capability's prefix, `browser__browser_open` and so on. No name
 matches one of Copilot's tools.
@@ -67,6 +67,40 @@ Tab t1, opened by Biorouter. References last until this page navigates.
   `img:`, `testid:`, `name:`, `id:` or `in:` (the text of its row).
 - Cross-site frames, such as a consent dialog, are listed under a `frame` line and can be used
   like the page itself.
+- Something a person would drag gets a reference even when it is plain structure: an element
+  with `draggable="true"`, the items jQuery UI and similar libraries mark, and an element that
+  sets a `move` or `grab` cursor (or, when a list sets it, each item of the list). It shows as
+  `@e9 [draggable] "Write the report"`, or `[listitem] "Item 1" [draggable]` when its role
+  says more, and a grip with no words of its own is named by its row with `in:`. At most 100
+  per frame, so a board with hundreds of cards does not flood the snapshot.
+
+### Dragging
+
+`browser_drag` takes `from` and either `to` or a point (`to_x`, `to_y`). Each end is one of:
+
+| Form | Example | Matches |
+| --- | --- | --- |
+| A reference | `@e12` | The element of the latest snapshot |
+| A CSS selector | `#example1 > .list-group-item:nth-child(1)` | Every element the selector matches |
+| Visible words | `text=Item 1` | The smallest element whose whole text is the words (case and spacing ignored), or else the elements whose text contains them |
+| Scoped words | `#example1 >> text=Item 1` | The same, inside the elements the selector before `>>` matches |
+
+A selector or words must match exactly one visible element of the page (frames are reached by
+their references). Otherwise nothing is dragged and the result says what was found, for example
+`2 visible elements match the text "Item 1" (in #example1, #example2-left)`, with a scoped form
+to try. A sortable list whose rows have no role and no drag cursor, such as SortableJS's demo, is
+reached this way.
+
+The drag is made the way a person makes one: a hover, the press, a short lift past the start
+thresholds of drag libraries, then many small moves to the destination and a pause there. The
+drop lands past the middle of the destination in the direction of travel, so a sortable puts the
+item in the destination's place. The destination is measured again once the source is picked
+up, because many pages reflow at that moment. A page that uses native HTML drag and drop gets
+the matching drag events, ending in a drop; a page that uses mouse or pointer events gets those.
+
+The result says how the page answered when it can tell: `the page moved it after [listitem]
+"Item 3"`, `into [region] "Done"`, or that the element is still where it was (a drop zone may
+copy rather than move). Take a new snapshot to check anything else.
 
 ### What every action checks
 
@@ -82,7 +116,9 @@ keyboard focus or raises the window.
 
 - It never types into a password, verification code or card number field, and their values
   never appear in a snapshot or in `browser_read`. When a page needs a login, the agent asks the
-  person to sign in in the panel.
+  person to sign in in the panel. A drag never starts or ends on one either, since a drop types
+  the dragged text into the field, and a drop at a point is refused when the point is on one or
+  inside a frame.
 - It never types text that looks like a credential (a private key, a cloud key, a provider key).
 - It has no tool to run page JavaScript, read cookies or storage, or upload a file.
 
