@@ -24,10 +24,10 @@
 //!   the form did not list is refused unless the schema says `additionalProperties: true` or
 //!   gives a schema for them. A schema that lists no `properties` at all, and nested objects
 //!   (outside MCP's flat form), keep JSON Schema's default.
-//! * **A blank optional text field is left blank.** The desktop form sends `""` for an
-//!   optional field the person did not fill, choice fields included, and that has always
-//!   meant "not answered". An empty string for a field that is not required, and that accepts
-//!   text, is therefore accepted whatever the field's choices or length bounds.
+//! * **A blank optional field is left blank.** The desktop form sends `""` for an optional
+//!   field the person did not fill or cleared, choice and number fields included, and that has
+//!   always meant "not answered". An empty string for a field that is not required is
+//!   therefore accepted whatever the field's type, choices or bounds.
 
 use serde_json::{Map, Value};
 
@@ -113,7 +113,7 @@ fn object_problem(
     for (name, value) in fields {
         match properties.get(name) {
             Some(field) => {
-                if !required.contains(&name.as_str()) && is_blank_text(field, value) {
+                if !required.contains(&name.as_str()) && value.as_str() == Some("") {
                     continue;
                 }
                 if let Some(problem) = field_problem(name, field, value) {
@@ -140,15 +140,6 @@ fn object_problem(
 
 fn not_asked_for(name: &str) -> String {
     format!("'{name}' is not a field this request asked for.")
-}
-
-/// An empty string for a field that takes text: what a form sends for a field left empty.
-fn is_blank_text(field: &Value, value: &Value) -> bool {
-    value.as_str() == Some("") && types_of(field).is_none_or(|types| types.contains(&"string"))
-}
-
-fn types_of(field: &Value) -> Option<Vec<&str>> {
-    types_in(field.as_object()?)
 }
 
 fn types_in(schema: &Map<String, Value>) -> Option<Vec<&str>> {
@@ -423,16 +414,17 @@ mod tests {
         }
     }
 
-    /// The desktop form sends `""` for an optional field left empty, choice fields included.
+    /// The desktop form sends `""` for an optional field left empty or cleared, choice and
+    /// number fields included.
     #[test]
-    fn a_blank_optional_text_field_is_left_blank() {
-        let answer = json!({ "cohort": "discovery", "color": "", "notes": "", "confirm": true });
+    fn a_blank_optional_field_is_left_blank() {
+        let answer = json!({ "cohort": "discovery", "color": "", "notes": "", "samples": "", "confirm": true });
         assert_eq!(answer_problem(&form(), &answer), None);
         // A blank required choice is not an answer.
         let answer = json!({ "cohort": "", "confirm": true });
         assert!(answer_problem(&form(), &answer).is_some());
-        // A blank is text: a number field still refuses it.
-        let answer = json!({ "cohort": "discovery", "samples": "", "confirm": true });
+        // Blank means the empty string only: any other text in a number field is refused.
+        let answer = json!({ "cohort": "discovery", "samples": " ", "confirm": true });
         assert!(answer_problem(&form(), &answer).is_some());
     }
 
