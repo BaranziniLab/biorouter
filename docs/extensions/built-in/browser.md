@@ -73,6 +73,11 @@ Tab t1, opened by Biorouter. References last until this page navigates.
   `@e9 [draggable] "Write the report"`, or `[listitem] "Item 1" [draggable]` when its role
   says more, and a grip with no words of its own is named by its row with `in:`. At most 100
   per frame, so a board with hundreds of cards does not flood the snapshot.
+- A place that takes a drop gets a reference the same way: an element with an `ondrop`,
+  `ondragover` or `ondragenter` attribute, a `dropzone` or `droppable` class, or the marks drag
+  libraries put on their drop targets. It shows as `@e10 [dropzone] id:"div1"`, or
+  `[region] "Done" [dropzone]`. This is how an empty drop zone inside a frame is named, as in
+  W3Schools' drag and drop demo. At most 50 per frame.
 
 ### Dragging
 
@@ -85,11 +90,13 @@ Tab t1, opened by Biorouter. References last until this page navigates.
 | Visible words | `text=Item 1` | The smallest element whose whole text is the words (case and spacing ignored), or else the elements whose text contains them |
 | Scoped words | `#example1 >> text=Item 1` | The same, inside the elements the selector before `>>` matches |
 
-A selector or words must match exactly one visible element of the page (frames are reached by
-their references). Otherwise nothing is dragged and the result says what was found, for example
+A selector or words must match exactly one visible element of the page itself. Otherwise nothing
+is dragged and the result says what was found, for example
 `2 visible elements match the text "Item 1" (in #example1, #example2-left)`, with a scoped form
 to try. A sortable list whose rows have no role and no drag cursor, such as SortableJS's demo, is
-reached this way.
+reached this way. Elements inside a frame are reached only by their references, listed under the
+frame's line in the snapshot; when a selector finds nothing on a page with frames, the result
+says so.
 
 The drag is made the way a person makes one: a hover, the press, a short lift past the start
 thresholds of drag libraries, then many small moves to the destination and a pause there. The
@@ -117,8 +124,11 @@ keyboard focus or raises the window.
 - It never types into a password, verification code or card number field, and their values
   never appear in a snapshot or in `browser_read`. When a page needs a login, the agent asks the
   person to sign in in the panel. A drag never starts or ends on one either, since a drop types
-  the dragged text into the field, and a drop at a point is refused when the point is on one or
-  inside a frame.
+  the dragged text into the field. The point where a drag presses and the point where it drops
+  are checked as well, so a form named as the destination is refused when its drop point is its
+  password field. A drag never starts or ends on a frame, and a press or drop point that lands on
+  a frame, or inside another frame than its element's, is refused, because the check cannot see
+  into it.
 - It never types text that looks like a credential (a private key, a cloud key, a provider key).
 - It has no tool to run page JavaScript, read cookies or storage, or upload a file.
 

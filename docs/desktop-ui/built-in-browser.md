@@ -408,6 +408,13 @@ Arguments: `interactive_only` (default true), `max_depth`, `scope` (a reference 
   stands for its items. The line is `@e9 [draggable] "Write the report"`, or
   `[listitem] "Item 1" [draggable]` when the role says more; a grip with no words is named by its
   row with `in:`. At most 100 per frame, in document order.
+- **Drop zones.** An element that is not a drag item but declares it takes a drop gets a line and
+  a reference too: an inline `ondrop`, `ondragover` or `ondragenter` handler, a `dropzone`
+  attribute, an `aria-dropeffect` other than `none`, or `ui-droppable`, `data-rbd-droppable-id`,
+  `data-rfd-droppable-id` and the `dropzone`, `drop-zone`, `droppable` and `drop-target` classes.
+  The line is `@e10 [dropzone] id:"div1"` (one with no words is named by its DOM hint, then its
+  row), or `[region] "Done" [dropzone]`. At most 50 per frame. A zone wired only with
+  `addEventListener` and no mark still has none.
 - **Reference storage.** Each reference stores the node's `backendDOMNodeId`, its frame, its role,
   its name and whether it was unique in its snapshot. CSS paths are never stored.
 - **Lifetime.** A reference stays valid while its node is alive in the same document; a node keeps
@@ -1445,9 +1452,19 @@ reference is.
 
 **Checks.** The source passes BB-13's checks. The destination must be visible together with the
 source and is hit tested at the drop point, so a cover is named. Neither end may be a password,
-verification code or card field (a drop types the dragged text into it), a drop at a point is
-refused on one of those or inside a frame (`DOM.getNodeForLocation` and `DOM.describeNode`, no page
-script), and the source and destination must differ. The act grant is unchanged.
+verification code or card field (a drop types the dragged text into it), nor a frame element
+(`iframe`, `frame`, `object`, `embed`): a selector resolves in the main document, so
+`to: "iframe#pay"` named the frame element and its drop point landed on whatever the frame shows.
+The press point and the drop point are hit tested too (`refuseUncheckablePoint` in `driver.ts`,
+with `DOM.getNodeForLocation` and `DOM.describeNode` in the end's own frame session, no page
+script) and refused when they land on such a field, on a frame element, or on content of another
+frame than the end's. That covers a container named as an end: `to: "#login-form"` gets a drop
+point a quarter past its middle, which can be the password field inside it. A drop at a point is
+judged the same way against the page's own frame. The drop point is judged once more just before
+a native `drop` is sent (`checkDrop` in `drag.ts`), because the page may have moved things while
+the drag was open; a refusal there sends `dragCancel` instead. A destination measured again after
+the lift is taken only when it passes. The source and destination must differ, and the act grant
+is unchanged.
 
 **The gesture** (`browser/agent/drag.ts`):
 
@@ -1482,6 +1499,15 @@ gesture taken from the parent commit and given the same points:
 | sortablejs.github.io, simple list, Item 1 below Item 3 | 5 of 5 | 5 of 5 |
 | jqueryui.com sortable demo, Item 1 below Item 3 | 0 of 5 | 5 of 5 |
 
+A second live check the same day failed on W3Schools' "Try it" drag and drop demo: its result is a
+same-origin frame holding an empty `div` whose only marks are inline `ondrop` and `ondragover`
+handlers. It had no reference, a selector cannot look into a frame, and a drop at a point over a
+frame is refused by design, so nothing could name it. The drop zone references above fix that:
+the fixture's copy of the demo (`/agent/drag/frame`, written into its frame with `document.write`
+as W3Schools does) and the same demo in a frame from another site, which Electron runs in a
+process of its own (`/agent/drag/frame-cross`), both take the image. A selector that finds
+nothing on a page with frames now says that frame content is reached by reference.
+
 On sortablejs.github.io the old gesture worked once it had a target; the live failure was only
 that the rows had no reference. Through the driver, `#example1 >> text=Item 1` to
 `#example1 >> text=Item 3` gives `Item 2, Item 3, Item 1, Item 4, Item 5, Item 6`; on the jQuery UI
@@ -1492,8 +1518,9 @@ Tests: Vitest `src/browser/agent` (`drag.test.ts`, `dragAffordance.test.ts`, the
 `snapshot.test.ts`, `actionability.test.ts` and `refs.test.ts`); `cargo test -p biorouter --lib --
 browser_extension`; and the Electron spec `tests/e2e/biorouter-browser-drag.spec.ts` against the
 fixture site's `/agent/drag/` pages (`fixtures/biorouter-browser/drag-pages.cjs`: drop zones that
-reflow, a SortableJS style native list, a jQuery UI style mouse list, and the drag items and their
-cap). With `BIOROUTER_BROWSER_LIVE_DRAG=1` the same spec drags on the two public demo pages.
+reflow, a SortableJS style native list, a jQuery UI style mouse list, the drag items and their
+cap, W3Schools' demo in a same-origin and a cross-site frame, and a guard page whose form, frame
+holder and frames must all be refused). With `BIOROUTER_BROWSER_LIVE_DRAG=1` the same spec drags on the two public demo pages.
 
 ## Open questions and things to measure first
 
