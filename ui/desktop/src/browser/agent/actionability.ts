@@ -135,11 +135,11 @@ export function isStable(first: Box | null, second: Box | null): boolean {
   );
 }
 
-/** The point an action aims at: the centre of the first quad, inside the viewport. */
-export function clickPoint(
+/** The part of the first quad inside the viewport that is at least a pixel each way. */
+function visibleBox(
   quads: number[][],
   viewport: { width: number; height: number }
-): { x: number; y: number } | null {
+): { minX: number; maxX: number; minY: number; maxY: number } | null {
   for (const quad of quads) {
     if (quad.length < 8) continue;
     const xs = [quad[0], quad[2], quad[4], quad[6]];
@@ -149,9 +149,44 @@ export function clickPoint(
     const minY = Math.max(0, Math.min(...ys));
     const maxY = Math.min(viewport.height, Math.max(...ys));
     if (maxX - minX < 1 || maxY - minY < 1) continue;
-    return { x: (minX + maxX) / 2, y: (minY + maxY) / 2 };
+    return { minX, maxX, minY, maxY };
   }
   return null;
+}
+
+/** The point an action aims at: the centre of the first quad, inside the viewport. */
+export function clickPoint(
+  quads: number[][],
+  viewport: { width: number; height: number }
+): { x: number; y: number } | null {
+  const box = visibleBox(quads, viewport);
+  return box ? { x: (box.minX + box.maxX) / 2, y: (box.minY + box.maxY) / 2 } : null;
+}
+
+/**
+ * Where a drag drops on its destination (AD-17): inside the destination's visible part, a
+ * quarter of its size past the centre in the main direction of travel. A person moving an item
+ * onto another goes past its middle, and a sortable that inserts before or after by halves
+ * (jQuery UI's default tolerance, and most hand-written lists) then puts the item on the far
+ * side, where it was taken; a drop zone gets a point well inside it. `from` is where the drag
+ * starts, in the same coordinates as the quads.
+ */
+export function dropPointIn(
+  quads: number[][],
+  viewport: { width: number; height: number },
+  from: { x: number; y: number }
+): { x: number; y: number } | null {
+  const box = visibleBox(quads, viewport);
+  if (!box) return null;
+  const x = (box.minX + box.maxX) / 2;
+  const y = (box.minY + box.maxY) / 2;
+  const dx = x - from.x;
+  const dy = y - from.y;
+  if (Math.abs(dx) < 1 && Math.abs(dy) < 1) return { x, y };
+  if (Math.abs(dy) >= Math.abs(dx)) {
+    return { x, y: y + (Math.sign(dy) * (box.maxY - box.minY)) / 4 };
+  }
+  return { x: x + (Math.sign(dx) * (box.maxX - box.minX)) / 4, y };
 }
 
 export function boxOfQuads(quads: number[][]): Box | null {
@@ -205,6 +240,106 @@ export function isProtectedInput(
 
 export const PROTECTED_FIELD_REFUSAL =
   'This is a password, verification code or card field. The Biorouter Browser never types into one: ask the person to enter it in the panel themselves.';
+
+/** A drop types the dragged text into a field, so a drag never starts or ends on one. */
+export const PROTECTED_DRAG_REFUSAL =
+  'That is a password, verification code or card field. The Biorouter Browser never drags into or out of one: ask the person to do it in the panel themselves.';
+
+/**
+ * Finds the one visible element a `browser_drag` locator names (AD-17), in the main document
+ * and the open shadow roots under it, never inside a frame. Runs in the isolated world through
+ * `Runtime.callFunctionOn` with the locator as arguments, so nothing the model wrote becomes
+ * script. Returns the element, or a JSON string saying why there is not exactly one:
+ * `{ problem, count, hidden, near }`, `near` naming up to five places the matches are in.
+ *
+ * - `selector`: `querySelectorAll` in each root.
+ * - `text`: the smallest element whose whole text is the given text (case and spacing
+ *   ignored); if none, the elements holding a piece of text that contains it. `scope`, a CSS
+ *   selector, keeps only matches inside one of its visible elements.
+ */
+export const LOCATE_FUNCTION = `function (kind, value, scope) {
+  const SKIP = /^(SCRIPT|STYLE|NOSCRIPT|TEMPLATE|HEAD|TITLE)$/;
+  const norm = (s) => String(s || '').replace(/\\s+/g, ' ').trim().toLowerCase();
+  const visible = (el) => {
+    if (!el.isConnected) return false;
+    if (typeof el.checkVisibility === 'function' && !el.checkVisibility({ visibilityProperty: true, checkVisibilityCSS: true })) return false;
+    const r = el.getBoundingClientRect();
+    return r.width > 0 && r.height > 0;
+  };
+  const roots = [];
+  const addRoots = (root) => { roots.push(root); for (const el of root.querySelectorAll('*')) if (el.shadowRoot) addRoots(el.shadowRoot); };
+  addRoots(document);
+  const queryAll = (selector) => { const out = []; for (const root of roots) for (const el of root.querySelectorAll(selector)) out.push(el); return out; };
+  const near = (els) => {
+    const out = [];
+    for (const el of els) {
+      let at = el.parentElement;
+      while (at && !at.id) at = at.parentElement;
+      const name = at && at.id ? '#' + CSS.escape(at.id).slice(0, 40) : el.tagName.toLowerCase();
+      if (!out.includes(name)) out.push(name);
+      if (out.length >= 5) break;
+    }
+    return out;
+  };
+  const report = (problem, all, shown) => JSON.stringify({ problem, count: shown.length, hidden: all.length - shown.length, near: near(shown.length ? shown : []) });
+  if (kind === 'selector') {
+    let all;
+    try { all = queryAll(value); } catch (e) { return JSON.stringify({ problem: 'syntax', count: 0, hidden: 0, near: [] }); }
+    const shown = all.filter(visible);
+    return shown.length === 1 ? shown[0] : report(shown.length ? 'several' : 'none', all, shown);
+  }
+  let scopes = null;
+  if (scope) {
+    let all;
+    try { all = queryAll(scope); } catch (e) { return JSON.stringify({ problem: 'scope-syntax', count: 0, hidden: 0, near: [] }); }
+    scopes = new Set(all.filter(visible));
+    if (scopes.size === 0) return JSON.stringify({ problem: 'scope-none', count: 0, hidden: all.length, near: [] });
+  }
+  const inScope = (node) => {
+    if (!scopes) return true;
+    for (let at = node; at; at = at.parentNode || (at instanceof ShadowRoot ? at.host : null)) if (scopes.has(at)) return true;
+    return false;
+  };
+  const needle = norm(value);
+  const exact = new Set();
+  const partial = new Set();
+  for (const root of roots) {
+    const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+    for (let t = walker.nextNode(); t; t = walker.nextNode()) {
+      const parent = t.parentElement;
+      if (!parent || SKIP.test(parent.tagName) || !inScope(t)) continue;
+      const text = norm(t.data);
+      if (!text) continue;
+      if (text.includes(needle)) partial.add(parent);
+      if (needle.includes(text)) {
+        for (let el = parent, depth = 0; el && depth < 8; el = el.parentElement, depth += 1) {
+          const whole = norm(el.textContent);
+          if (whole === needle) { exact.add(el); break; }
+          if (whole.length > needle.length) break;
+        }
+      }
+    }
+  }
+  const all = exact.size ? [...exact] : [...partial];
+  const shown = all.filter(visible);
+  if (shown.length === 1) return shown[0];
+  if (shown.length === 0 && exact.size) {
+    const loose = [...partial].filter(visible);
+    if (loose.length === 1) return loose[0];
+    if (loose.length > 1) return report('several', [...partial], loose);
+  }
+  return report(shown.length ? 'several' : 'none', all, shown);
+}`;
+
+/** A short label for an element a locator found: `[listitem] "Item 1"`. */
+export const DESCRIBE_TARGET_FUNCTION = `function () {
+  const el = this;
+  const implicit = { li: 'listitem', a: el.hasAttribute('href') ? 'link' : 'a', button: 'button', img: 'img', tr: 'row', td: 'cell', th: 'columnheader', h1: 'heading', h2: 'heading', h3: 'heading', h4: 'heading', h5: 'heading', h6: 'heading', input: 'textbox', textarea: 'textbox', select: 'combobox', ul: 'list', ol: 'list', table: 'table', section: 'region', article: 'article' };
+  const tag = el.tagName.toLowerCase();
+  const role = (el.getAttribute('role') || implicit[tag] || tag).toLowerCase().slice(0, 40);
+  const name = (el.getAttribute('aria-label') || el.getAttribute('alt') || el.textContent || '').replace(/\\s+/g, ' ').trim().slice(0, 80);
+  return { role, name };
+}`;
 
 /** Inputs whose value is chosen, not typed: `browser_fill` sets them directly. */
 export const SET_VALUE_INPUT_TYPES: ReadonlySet<string> = new Set([

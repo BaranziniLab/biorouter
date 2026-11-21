@@ -30,6 +30,14 @@ describe('RefStore', () => {
     expect(refs.get('e2')?.backendNodeId).toBe(11);
   });
 
+  it('finds the reference a node already has, without changing it', () => {
+    const refs = new RefStore();
+    refs.assign(node(10, { name: 'Save', unique: true }));
+    expect(refs.find('main', 10)).toMatchObject({ ref: '@e1', name: 'Save', unique: true });
+    expect(refs.find('main', 11)).toBeNull();
+    expect(refs.find('F2', 10)).toBeNull();
+  });
+
   it('refreshes what the latest snapshot said about a node', () => {
     const refs = new RefStore();
     refs.assign(node(10, { name: 'Save', unique: true }));

@@ -1,3 +1,5 @@
+import type { DragMark } from './dragAffordance';
+
 /**
  * A page as a compact accessibility tree with `@e` references (BB-12).
  *
@@ -16,6 +18,10 @@
  * `icon:`, `img:`, `testid:`, `name:`, `id:`, `in:` (the text of its row). Values of password,
  * verification code and card fields are never shown.
  *
+ * Something a person would drag (AD-17) gets a line and a reference too, even when its role is
+ * plain structure: `@e9 [draggable] "Write the report"`, or `[listitem] "Item 1" [draggable]`
+ * when its role says more. A grip with no words of its own is named by its row, `in:"…"`.
+ *
  * Pure: no Electron, so the Vitest suite feeds it recorded trees.
  */
 
@@ -24,6 +30,7 @@ export type AXProperty = { name: string; value?: AXValue };
 export type AXNode = {
   nodeId: string;
   ignored?: boolean;
+  ignoredReasons?: AXProperty[];
   role?: AXValue;
   name?: AXValue;
   value?: AXValue;
@@ -45,6 +52,8 @@ export type DomFacts = {
   iconHint?: string;
   /** For a select element: its option labels. */
   options?: string[];
+  /** Something a person would drag (AD-17, `dragAffordance.ts`), with the words it shows. */
+  drag?: DragMark;
 };
 
 export type SnapshotFrame = {
@@ -156,6 +165,30 @@ const SKIPPED_ROLES: ReadonlySet<string> = new Set([
 /** A collapsed select's popup: its options are listed on the select line instead. */
 const HIDDEN_SUBTREE_ROLES: ReadonlySet<string> = new Set(['MenuListPopup']);
 
+/** Roles that say nothing about a drag item: it is shown as `[draggable]` instead. */
+const PLAIN_ROLES: ReadonlySet<string> = new Set([
+  'generic',
+  'none',
+  'presentation',
+  'unknown',
+  'Ignored',
+  'IgnoredRole',
+  'paragraph',
+  'StaticText',
+  'Section',
+  'Div',
+]);
+
+/** Why Chromium leaves a node out that also means a person cannot see it. */
+const HIDDEN_REASONS: ReadonlySet<string> = new Set([
+  'notRendered',
+  'notVisible',
+  'ariaHiddenElement',
+  'ariaHiddenSubtree',
+  'inertElement',
+  'inertSubtree',
+]);
+
 /** Containers whose name tells two identical controls apart (`in:`). */
 const ROW_ROLES: ReadonlySet<string> = new Set([
   'row',
@@ -250,6 +283,8 @@ type Item =
       facts: DomFacts | undefined;
       rowName: string | null;
       interactive: boolean;
+      /** A drag item (AD-17): its role is shown as `draggable` when the real one says nothing. */
+      drag?: DragMark;
     }
   | { kind: 'text'; depth: number; text: string }
   | { kind: 'frame'; depth: number; title: string; url: string };
@@ -295,6 +330,12 @@ export function buildSnapshot(
         LANDMARK_ROLES.has(role) &&
         // An unnamed region is just a box.
         (role !== 'region' || name !== '');
+      // A drag item shows even when Chromium calls it uninteresting, never when it is hidden.
+      const drag =
+        facts?.drag &&
+        !(node.ignoredReasons ?? []).some((reason) => HIDDEN_REASONS.has(reason.name))
+          ? facts.drag
+          : undefined;
       let printed = false;
 
       if (!ignored && facts?.frameId && frames.has(facts.frameId)) {
@@ -320,6 +361,21 @@ export function buildSnapshot(
           facts,
           rowName: [...rowNames].reverse().find((row) => row) ?? null,
           interactive,
+          drag,
+        });
+        printed = true;
+      } else if (drag && node.backendDOMNodeId !== undefined) {
+        items.push({
+          kind: 'node',
+          depth: level,
+          frameKey: frame.frameKey,
+          node,
+          role: PLAIN_ROLES.has(role) || ignored ? 'draggable' : role,
+          name: name || drag.text,
+          facts,
+          rowName: null,
+          interactive: false,
+          drag,
         });
         printed = true;
       } else if (!options.interactiveOnly && !ignored && !SKIPPED_ROLES.has(role)) {
@@ -328,7 +384,12 @@ export function buildSnapshot(
           // Text already carried by the parent's name is noise.
           const parent = node.parentId ? byId.get(node.parentId) : undefined;
           const parentName = parent ? str(parent.name).replace(/\s+/g, ' ').trim() : '';
-          if (text && text !== parentName) items.push({ kind: 'text', depth: level, text });
+          const parentDrag =
+            parent?.backendDOMNodeId !== undefined
+              ? frame.dom.get(parent.backendDOMNodeId)?.drag?.text
+              : undefined;
+          if (text && text !== parentName && text !== parentDrag)
+            items.push({ kind: 'text', depth: level, text });
         } else if (name || node.backendDOMNodeId !== undefined) {
           items.push({
             kind: 'node',
@@ -434,7 +495,10 @@ function formatNode(
   if (item.interactive && (!name || !unique)) {
     const hint = hintFor(item.facts, item.rowName);
     if (hint) parts.push(`${hint.kind}:"${clean(hint.value, HINT_MAX)}"`);
+  } else if (item.drag && (!name || !unique) && item.drag.context) {
+    parts.push(`in:"${clean(item.drag.context, HINT_MAX)}"`);
   }
+  if (item.drag && item.role !== 'draggable') parts.push('[draggable]');
   const node = item.node;
   const protectedField = isProtectedField(item.facts);
   const valueRoles = new Set([

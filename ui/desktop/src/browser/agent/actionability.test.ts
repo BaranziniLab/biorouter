@@ -1,8 +1,11 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
+  DESCRIBE_TARGET_FUNCTION,
+  LOCATE_FUNCTION,
   boxOfQuads,
   checkElement,
   clickPoint,
+  dropPointIn,
   isPlainLinkClick,
   isProtectedInput,
   isStable,
@@ -77,6 +80,32 @@ describe('geometry', () => {
   });
 });
 
+describe('dropPointIn (AD-17)', () => {
+  const viewport = { width: 800, height: 600 };
+  // An item 40 px tall, from y 100 to 140, centre (50, 120).
+  const item = [[10, 100, 90, 100, 90, 140, 10, 140]];
+
+  it('drops past the middle of the destination in the direction of travel', () => {
+    // Dragged down onto it: the lower half, where a sortable puts the item after it.
+    expect(dropPointIn(item, viewport, { x: 50, y: 20 })).toEqual({ x: 50, y: 130 });
+    // Dragged up onto it: the upper half.
+    expect(dropPointIn(item, viewport, { x: 50, y: 400 })).toEqual({ x: 50, y: 110 });
+    // Mostly sideways: past the middle across.
+    expect(dropPointIn(item, viewport, { x: 600, y: 118 })).toEqual({ x: 30, y: 120 });
+    // From its own centre: the centre.
+    expect(dropPointIn(item, viewport, { x: 50, y: 120 })).toEqual({ x: 50, y: 120 });
+  });
+
+  it('stays inside the part of the destination in view', () => {
+    // From y 580 to 640, 20 px of it in view: a quarter of the visible part past its middle.
+    const low = [[10, 580, 90, 580, 90, 640, 10, 640]];
+    expect(dropPointIn(low, viewport, { x: 50, y: 10 })).toEqual({ x: 50, y: 595 });
+    expect(
+      dropPointIn([[10, 700, 90, 700, 90, 720, 10, 720]], viewport, { x: 0, y: 0 })
+    ).toBeNull();
+  });
+});
+
 describe('isPlainLinkClick (BB-17: the observe grant follows plain links only)', () => {
   it('admits a link to another http(s) page', () => {
     expect(isPlainLinkClick(facts({ tag: 'a', href: 'https://site-a.test/article' }))).toBe(true);
@@ -121,5 +150,82 @@ describe('isProtectedInput (BB-13 step 2)', () => {
     );
     expect(isProtectedInput({ tag: 'input', type: 'text', autocomplete: 'email' })).toBe(false);
     expect(isProtectedInput({ tag: 'textarea', type: '', autocomplete: '' })).toBe(false);
+  });
+});
+
+describe('LOCATE_FUNCTION (AD-17: a drag end named by a selector or words)', () => {
+  // The source string main sends to the page, run here in jsdom. jsdom lays nothing out, so an
+  // element is given a size unless it sits under [data-hidden].
+  const locate = new Function(`return (${LOCATE_FUNCTION})`)() as (
+    kind: 'selector' | 'text',
+    value: string,
+    scope: string | null
+  ) => Element | string;
+  const describeTarget = new Function(`return (${DESCRIBE_TARGET_FUNCTION})`)() as (
+    this: Element
+  ) => { role: string; name: string };
+  const original = Element.prototype.getBoundingClientRect;
+  const hadCss = 'CSS' in globalThis;
+  beforeEach(() => {
+    Element.prototype.getBoundingClientRect = function (this: Element) {
+      const size = this.closest('[data-hidden]') ? 0 : 10;
+      return {
+        x: 0,
+        y: 0,
+        top: 0,
+        left: 0,
+        right: size,
+        bottom: size,
+        width: size,
+        height: size,
+        toJSON: () => ({}),
+      } as DOMRect;
+    };
+    if (!hadCss) (globalThis as { CSS?: unknown }).CSS = { escape: (value: string) => value };
+    document.body.innerHTML = `
+      <div id="first"><div class="item">Item 1</div><div class="item"><span>Send\n   THE  samples</span></div></div>
+      <div id="second"><div class="item">Item 1</div><div class="item">Item 10</div></div>
+      <div data-hidden><div class="ghost">Only hidden</div></div>`;
+  });
+  afterEach(() => {
+    Element.prototype.getBoundingClientRect = original;
+    if (!hadCss) delete (globalThis as { CSS?: unknown }).CSS;
+  });
+  const report = (value: Element | string) => JSON.parse(value as string);
+
+  it('finds the one element a selector matches', () => {
+    const found = locate('selector', '#second > .item:nth-child(2)', null);
+    expect((found as Element).textContent).toBe('Item 10');
+    expect(describeTarget.call(found as Element)).toEqual({ role: 'div', name: 'Item 10' });
+  });
+
+  it('finds the smallest element whose whole text is the words, ignoring case and spacing', () => {
+    const found = locate('text', 'send the Samples', null) as Element;
+    expect(found.tagName).toBe('SPAN');
+    // Whole text first: "Item 1" is not "Item 10", but it is in two lists.
+    expect(report(locate('text', 'Item 1', null))).toEqual({
+      problem: 'several',
+      count: 2,
+      hidden: 0,
+      near: ['#first', '#second'],
+    });
+    expect((locate('text', 'Item 1', '#second') as Element).textContent).toBe('Item 1');
+    // No element has exactly these words: the one whose text contains them.
+    expect((locate('text', 'tem 10', null) as Element).textContent).toBe('Item 10');
+  });
+
+  it('says why when nothing visible, several, or nothing at all matches', () => {
+    expect(report(locate('text', 'Only hidden', null))).toMatchObject({
+      problem: 'none',
+      count: 0,
+      hidden: 1,
+    });
+    expect(report(locate('selector', '.item', null))).toMatchObject({
+      problem: 'several',
+      count: 4,
+    });
+    expect(report(locate('selector', 'Item 1', null))).toMatchObject({ problem: 'syntax' });
+    expect(report(locate('text', 'Item 1', '#nowhere'))).toMatchObject({ problem: 'scope-none' });
+    expect(report(locate('text', 'Item 1', '::bad'))).toMatchObject({ problem: 'scope-syntax' });
   });
 });

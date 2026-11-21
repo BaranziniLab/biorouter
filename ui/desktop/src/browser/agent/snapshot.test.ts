@@ -28,6 +28,7 @@ function ax(
     name: { type: 'computedString', value: name },
     backendDOMNodeId: extra.backendDOMNodeId ?? 1000 + ids,
     ignored: extra.ignored,
+    ignoredReasons: extra.ignoredReasons,
     value: extra.value,
     properties: Object.entries(extra.props ?? {}).map(([key, value]) => ({
       name: key,
@@ -239,6 +240,59 @@ describe('buildSnapshot', () => {
     const first = snap([frame(tree)], {}, refs);
     const second = snap([frame(tree)], {}, refs);
     expect(second.text).toBe(first.text);
+  });
+
+  it('gives what a person would drag a line and a reference, even as plain structure (AD-17)', () => {
+    const tree = ax('RootWebArea', '', {
+      children: [
+        ax('generic', '', {
+          backendDOMNodeId: 101,
+          children: [ax('StaticText', 'Write the report')],
+        }),
+        ax('none', '', { backendDOMNodeId: 102, ignored: true }),
+        ax('list', '', {
+          children: [ax('listitem', '', { backendDOMNodeId: 103 })],
+        }),
+        ax('button', 'Move', { backendDOMNodeId: 104 }),
+        ax('generic', '', { backendDOMNodeId: 105 }),
+        ax('generic', '', { backendDOMNodeId: 106 }),
+        ax('generic', '', {
+          backendDOMNodeId: 107,
+          ignored: true,
+          ignoredReasons: [{ name: 'notRendered', value: { type: 'boolean', value: true } }],
+        }),
+        ax('generic', '', { backendDOMNodeId: 108 }),
+      ],
+    });
+    const result = snap([
+      frame(tree, [
+        [101, { tag: 'div', attributes: {}, drag: { text: 'Write the report' } }],
+        [102, { tag: 'div', attributes: { draggable: 'true' }, drag: { text: 'Native box' } }],
+        [103, { tag: 'li', attributes: {}, drag: { text: 'Item 1' } }],
+        [104, { tag: 'button', attributes: {}, drag: { text: 'Move' } }],
+        [105, { tag: 'span', attributes: {}, drag: { text: '', context: 'Alpha task' } }],
+        [106, { tag: 'span', attributes: {}, drag: { text: '', context: 'Beta task' } }],
+        [107, { tag: 'div', attributes: {}, drag: { text: 'Hidden box' } }],
+        // Not a drag item: plain structure stays out of the default snapshot.
+        [108, { tag: 'div', attributes: {} }],
+      ]),
+    ]);
+    expect(result.text.split('\n')).toEqual([
+      '@e1 [draggable] "Write the report"',
+      '@e2 [draggable] "Native box"',
+      '@e3 [listitem] "Item 1" [draggable]',
+      '@e4 [button] "Move" [draggable]',
+      '@e5 [draggable] in:"Alpha task"',
+      '@e6 [draggable] in:"Beta task"',
+    ]);
+    // The full tree does not repeat a drag item's words as a text line under it.
+    const full = snap(
+      [frame(tree, [[101, { tag: 'div', attributes: {}, drag: { text: 'Write the report' } }]])],
+      {
+        interactiveOnly: false,
+      }
+    );
+    expect(full.text.match(/Write the report/g)).toHaveLength(1);
   });
 
   it('quotes page text so it cannot break the line', () => {

@@ -62,6 +62,12 @@ export class RefStore {
     return this.live.get(normalizeRef(ref)) ?? null;
   }
 
+  /** The live reference a node already has, if any. */
+  find(frameKey: string, backendNodeId: number): RefTarget | null {
+    const ref = this.byNode.get(RefStore.nodeKey(frameKey, backendNodeId));
+    return ref ? (this.live.get(ref) ?? null) : null;
+  }
+
   /** The last number handed out; tests and the counter-never-resets rule read it. */
   get lastNumber(): number {
     return this.counter;

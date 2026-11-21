@@ -19,7 +19,10 @@ import {
 import {
   CONTAINS_FUNCTION,
   DESCRIBE_COVER_FUNCTION,
+  DESCRIBE_TARGET_FUNCTION,
   ELEMENT_FACTS_FUNCTION,
+  LOCATE_FUNCTION,
+  PROTECTED_DRAG_REFUSAL,
   PROTECTED_FIELD_REFUSAL,
   SET_VALUE_INPUT_TYPES,
   STABLE_BOX_FUNCTION,
@@ -27,6 +30,7 @@ import {
   boxOfQuads,
   checkElement,
   clickPoint,
+  dropPointIn,
   isPlainLinkClick,
   isProtectedInput,
   isStable,
@@ -38,7 +42,8 @@ import { parseChord, strokeForCharacter, type KeyStroke } from './keys';
 import { READ_AS_MARKDOWN_FUNCTION } from './readPage';
 import { RefStore, fallbackMatch, type RefTarget } from './refs';
 import { buildSnapshot, type AXNode, type DomFacts, type SnapshotFrame } from './snapshot';
-import { performDrag } from './drag';
+import { performDrag, type Point } from './drag';
+import { DRAG_CURSORS, markDragAffordances, type DragDomNode } from './dragAffordance';
 import {
   BROWSER_AGENT_OPS,
   type BrowserAgentRequest,
@@ -470,6 +475,140 @@ async function resolveRef(ctx: Context, ref: unknown): Promise<Resolved> {
   return { target, sessionId, objectId, offset, label: describeTarget(target) };
 }
 
+/** What `browser_drag` names an end by (AD-17): a reference, a CSS selector, or visible text. */
+type Locator = { ref: string } | { selector: string } | { text: string; scope: string | null };
+
+function locatorOf(value: unknown): Locator | null {
+  // An older daemon sends a bare reference.
+  if (typeof value === 'string') return { ref: value };
+  if (!value || typeof value !== 'object') return null;
+  const record = value as Record<string, unknown>;
+  if (typeof record.ref === 'string') return { ref: record.ref };
+  if (typeof record.selector === 'string' && record.selector.trim())
+    return { selector: record.selector.slice(0, 512) };
+  if (typeof record.text === 'string' && record.text.trim()) {
+    return {
+      text: record.text.slice(0, 200),
+      scope:
+        typeof record.scope === 'string' && record.scope.trim() ? record.scope.slice(0, 512) : null,
+    };
+  }
+  return null;
+}
+
+function describeLocator(locator: Exclude<Locator, { ref: string }>): string {
+  if ('selector' in locator) return `the CSS selector ${JSON.stringify(locator.selector)}`;
+  const text = `the text ${JSON.stringify(locator.text)}`;
+  return locator.scope ? `${text} inside ${JSON.stringify(locator.scope)}` : text;
+}
+
+/** A reference, or the one visible element a selector or text names, resolved like a reference. */
+async function resolveTarget(ctx: Context, value: unknown): Promise<Resolved> {
+  const locator = locatorOf(value);
+  if (!locator)
+    throw new OpFailure('Pass an @e reference, a CSS selector, or text= and the visible text.');
+  if ('ref' in locator) return resolveRef(ctx, locator.ref);
+  return resolveLocator(ctx, locator);
+}
+
+/**
+ * AD-17: find the one visible element a selector or a text locator names, in the main document
+ * (never inside a frame: an element there is reached by its @e reference), and resolve it the
+ * way a reference resolves, so every check a reference gets applies to it unchanged. It keeps
+ * the reference the node already has, or gets a new one, so the result can name it.
+ */
+async function resolveLocator(
+  ctx: Context,
+  locator: Exclude<Locator, { ref: string }>
+): Promise<Resolved> {
+  const world = await worldFor(ctx, 'main');
+  const args =
+    'selector' in locator
+      ? ['selector', locator.selector, null]
+      : ['text', locator.text, locator.scope];
+  const found = await ctx.state.cdp.send<{
+    result: { type?: string; subtype?: string; value?: unknown; objectId?: string };
+    exceptionDetails?: { text?: string };
+  }>('Runtime.callFunctionOn', {
+    functionDeclaration: LOCATE_FUNCTION,
+    executionContextId: world,
+    arguments: args.map((value) => ({ value })),
+    returnByValue: false,
+  });
+  const what = describeLocator(locator);
+  if (found.exceptionDetails) throw new OpFailure(`The page could not look for ${what}.`);
+  if (found.result.subtype !== 'node' || !found.result.objectId) {
+    let report: { problem?: string; count?: number; hidden?: number; near?: string[] } = {};
+    try {
+      report = JSON.parse(String(found.result.value ?? '{}'));
+    } catch {
+      report = {};
+    }
+    throw new OpFailure(locatorProblem(locator, what, report));
+  }
+  const objectId = found.result.objectId;
+  const described = await ctx.state.cdp.send<{ node: { backendNodeId: number } }>(
+    'DOM.describeNode',
+    { objectId }
+  );
+  const backendNodeId = described.node.backendNodeId;
+  const label = await callOn<{ role: string; name: string }>(
+    ctx,
+    objectId,
+    undefined,
+    DESCRIBE_TARGET_FUNCTION
+  ).catch(() => ({ role: 'element', name: '' }));
+  const existing = ctx.state.refs.find('main', backendNodeId);
+  const target =
+    existing ??
+    (() => {
+      const ref = ctx.state.refs.assign({
+        backendNodeId,
+        frameKey: 'main',
+        role: label.role,
+        name: label.name,
+        unique: false,
+      });
+      return ctx.state.refs.get(ref)!;
+    })();
+  return {
+    target,
+    sessionId: undefined,
+    objectId,
+    offset: { x: 0, y: 0 },
+    label: describeTarget(target),
+  };
+}
+
+function locatorProblem(
+  locator: Exclude<Locator, { ref: string }>,
+  what: string,
+  report: { problem?: string; count?: number; hidden?: number; near?: string[] }
+): string {
+  const hidden = report.hidden ?? 0;
+  const near = (report.near ?? []).filter((place) => typeof place === 'string').slice(0, 5);
+  switch (report.problem) {
+    case 'syntax':
+      return 'selector' in locator
+        ? `${JSON.stringify(locator.selector)} is not a valid CSS selector. For an element by its words, pass text= and the visible text; or use an @e reference.`
+        : `The page could not look for ${what}.`;
+    case 'scope-syntax':
+      return `${JSON.stringify((locator as { scope: string | null }).scope)} (before >>) is not a valid CSS selector.`;
+    case 'scope-none':
+      return `No visible element matches ${JSON.stringify((locator as { scope: string | null }).scope)} (before >>)${hidden ? `; ${hidden} match but are hidden` : ''}.`;
+    case 'several': {
+      const where = near.length ? ` (in ${near.join(', ')})` : '';
+      const example =
+        'text' in locator && near[0]?.startsWith('#')
+          ? `, as in "${near[0]} >> text=${locator.text}"`
+          : '';
+      return `${report.count} visible elements match ${what}${where}. Name exactly one: narrow the selector, put a CSS scope before the text${example}, or use an @e reference.`;
+    }
+    default:
+      return `No visible element matches ${what}${hidden ? ` (${hidden} match but are hidden)` : ''}. Take a browser_snapshot, or browser_read for the page's words.`;
+  }
+}
+
 async function factsOf(ctx: Context, node: Resolved): Promise<ElementFacts> {
   return callOn<ElementFacts>(ctx, node.objectId, node.sessionId, ELEMENT_FACTS_FUNCTION);
 }
@@ -555,8 +694,26 @@ async function actionablePoint(
       `${node.target.ref} ${node.label} is outside the visible page and could not be scrolled into view.`
     );
   }
-  // Hit test at the point, in the element's own frame. `DOM.getNodeForLocation` takes document
-  // coordinates, so the frame's scroll offset is added to the viewport point the quads give.
+  const cover = await coverAt(ctx, node, point, viewport);
+  if (cover) {
+    throw new OpFailure(
+      `${node.target.ref} ${node.label} is covered by ${cover}. Close or dismiss it first.`
+    );
+  }
+  return { x: point.x + node.offset.x, y: point.y + node.offset.y };
+}
+
+/**
+ * BB-13 step 6: what covers `node` at `point` (in its own frame's viewport), or null when the
+ * point is on it. `DOM.getNodeForLocation` takes document coordinates, so the frame's scroll
+ * offset is added to the viewport point the quads give.
+ */
+async function coverAt(
+  ctx: Context,
+  node: Resolved,
+  point: Point,
+  viewport: { scrollX: number; scrollY: number }
+): Promise<string | null> {
   const hit = await ctx.state.cdp
     .send<{ backendNodeId: number }>(
       'DOM.getNodeForLocation',
@@ -569,26 +726,16 @@ async function actionablePoint(
       node.sessionId
     )
     .catch(() => null);
-  if (hit) {
-    const hitObject = await resolveNodeObject(ctx, node.target.frameKey, hit.backendNodeId);
-    if (hitObject) {
-      const inside = await callOn<boolean>(ctx, node.objectId, node.sessionId, CONTAINS_FUNCTION, [
-        { objectId: hitObject },
-      ]).catch(() => true);
-      if (!inside) {
-        const cover = await callOn<string>(
-          ctx,
-          hitObject,
-          node.sessionId,
-          DESCRIBE_COVER_FUNCTION
-        ).catch(() => 'another element');
-        throw new OpFailure(
-          `${node.target.ref} ${node.label} is covered by ${cover}. Close or dismiss it first.`
-        );
-      }
-    }
-  }
-  return { x: point.x + node.offset.x, y: point.y + node.offset.y };
+  if (!hit) return null;
+  const hitObject = await resolveNodeObject(ctx, node.target.frameKey, hit.backendNodeId);
+  if (!hitObject) return null;
+  const inside = await callOn<boolean>(ctx, node.objectId, node.sessionId, CONTAINS_FUNCTION, [
+    { objectId: hitObject },
+  ]).catch(() => true);
+  if (inside) return null;
+  return callOn<string>(ctx, hitObject, node.sessionId, DESCRIBE_COVER_FUNCTION).catch(
+    () => 'another element'
+  );
 }
 
 /** BB-13 step 7: flash the target, drawn by the inspector overlay without touching the DOM. */
@@ -847,6 +994,7 @@ type FrameTreeNode = {
 };
 
 type DomNode = {
+  nodeId?: number;
   backendNodeId: number;
   nodeType: number;
   nodeName: string;
@@ -930,9 +1078,15 @@ async function domFacts(
     .send<{ root: DomNode }>('DOM.getDocument', { depth: -1, pierce: true }, sessionId)
     .catch(() => null);
   if (!document) return facts;
-  const stack: DomNode[] = [document.root];
+  // The same walk records the element tree the drag affordances are judged on (AD-17).
+  const dragNodes = new Map<number, DragDomNode>();
+  const order: number[] = [];
+  const backendOf = new Map<number, number>();
+  const stack: Array<{ node: DomNode; parent?: number }> = [{ node: document.root }];
   while (stack.length > 0) {
-    const node = stack.pop()!;
+    const { node, parent } = stack.pop()!;
+    if (node.nodeId !== undefined) backendOf.set(node.nodeId, node.backendNodeId);
+    let here = parent;
     if (node.nodeType === 1) {
       const tag = (node.localName ?? node.nodeName).toLowerCase();
       const attributes = attrs(node);
@@ -942,10 +1096,50 @@ async function domFacts(
         Object.assign(entry, subtreeHints(node));
       }
       facts.set(node.backendNodeId, entry);
+      const parts: Array<string | number> = [];
+      for (const child of node.children ?? []) {
+        if (child.nodeType === 1) parts.push(child.backendNodeId);
+        else if (child.nodeType === 3 && child.nodeValue) parts.push(child.nodeValue);
+      }
+      dragNodes.set(node.backendNodeId, {
+        backendNodeId: node.backendNodeId,
+        parent,
+        tag,
+        attributes,
+        parts,
+      });
+      order.push(node.backendNodeId);
+      here = node.backendNodeId;
     }
-    for (const child of node.children ?? []) stack.push(child);
-    for (const root of node.shadowRoots ?? []) stack.push(root);
-    if (node.contentDocument) stack.push(node.contentDocument);
+    // Pushed in reverse, so the stack visits in document order. A shadow root or a frame's
+    // document starts a new tree: an inherited cursor does not cross into it.
+    if (node.contentDocument) stack.push({ node: node.contentDocument });
+    for (const root of [...(node.shadowRoots ?? [])].reverse()) stack.push({ node: root });
+    const children = node.children ?? [];
+    for (let i = children.length - 1; i >= 0; i -= 1)
+      stack.push({ node: children[i], parent: here });
+  }
+  const cursor = new Set<number>();
+  if (document.root.nodeId !== undefined) {
+    const matched = await ctx.state.cdp
+      .send<{ nodeIds: number[] }>(
+        'DOM.getNodesForSubtreeByStyle',
+        {
+          nodeId: document.root.nodeId,
+          computedStyles: DRAG_CURSORS.map((value) => ({ name: 'cursor', value })),
+          pierce: true,
+        },
+        sessionId
+      )
+      .catch(() => ({ nodeIds: [] as number[] }));
+    for (const nodeId of matched.nodeIds) {
+      const backend = backendOf.get(nodeId);
+      if (backend !== undefined) cursor.add(backend);
+    }
+  }
+  for (const [backendNodeId, mark] of markDragAffordances(dragNodes, order, cursor)) {
+    const entry = facts.get(backendNodeId);
+    if (entry) entry.drag = mark;
   }
   return facts;
 }
@@ -1518,21 +1712,110 @@ async function opDialog(ctx: Context): Promise<BrowserAgentResult> {
   };
 }
 
-/** The drop point of a reference without scrolling, so the source stays where it was picked up. */
-async function dropPoint(ctx: Context, node: Resolved): Promise<{ x: number; y: number } | null> {
+/**
+ * Where a drag drops on `node`, without scrolling so the source stays where it was picked up:
+ * inside its visible part, past the middle in the direction of travel from `from` (main
+ * viewport coordinates), as `dropPointIn` decides. Null when no part of it is visible.
+ */
+async function dropPoint(
+  ctx: Context,
+  node: Resolved,
+  from: Point
+): Promise<{
+  point: Point;
+  local: Point;
+  viewport: Awaited<ReturnType<typeof viewportOf>>;
+} | null> {
   const quads = await ctx.state.cdp
     .send<{
       quads: number[][];
     }>('DOM.getContentQuads', { backendNodeId: node.target.backendNodeId }, node.sessionId)
     .catch(() => ({ quads: [] as number[][] }));
-  const inner = clickPoint(quads.quads, await viewportOf(ctx, node.sessionId));
-  return inner ? { x: inner.x + node.offset.x, y: inner.y + node.offset.y } : null;
+  const viewport = await viewportOf(ctx, node.sessionId);
+  const local = dropPointIn(quads.quads, viewport, {
+    x: from.x - node.offset.x,
+    y: from.y - node.offset.y,
+  });
+  if (!local) return null;
+  return { point: { x: local.x + node.offset.x, y: local.y + node.offset.y }, local, viewport };
 }
 
 /**
- * AD-17: drag a reference and drop it on another reference or a point, with page events only
- * (the gesture is `performDrag` in `drag.ts`). The source passes BB-13's checks (visible,
- * enabled, stable, not covered); the destination must be visible together with it.
+ * A drop at a point must land on something the browser can check (AD-17): never a password,
+ * verification code or card field (a drop types the dragged text into it), and never inside a
+ * frame, whose fields are reached by their @e references instead.
+ */
+async function refuseUncheckedDropPoint(ctx: Context, point: Point): Promise<void> {
+  const viewport = await viewportOf(ctx);
+  const hit = await ctx.state.cdp
+    .send<{ backendNodeId: number; frameId?: string }>('DOM.getNodeForLocation', {
+      x: Math.round(point.x + viewport.scrollX),
+      y: Math.round(point.y + viewport.scrollY),
+      includeUserAgentShadowDOM: false,
+      ignorePointerEventsNone: true,
+    })
+    .catch(() => null);
+  if (!hit) return;
+  const main = await mainFrameId(ctx).catch(() => null);
+  const described = await ctx.state.cdp
+    .send<{
+      node: { nodeName?: string; attributes?: string[] };
+    }>('DOM.describeNode', { backendNodeId: hit.backendNodeId })
+    .catch(() => null);
+  const tag = (described?.node.nodeName ?? '').toLowerCase();
+  if ((hit.frameId && main && hit.frameId !== main) || tag === 'iframe' || tag === 'frame') {
+    throw new OpFailure(
+      `(${point.x}, ${point.y}) is over a frame, whose content the browser cannot check before a drop. Drop on an @e reference inside the frame instead.`
+    );
+  }
+  const attributes: Record<string, string> = {};
+  const list = described?.node.attributes ?? [];
+  for (let i = 0; i + 1 < list.length; i += 2) attributes[list[i].toLowerCase()] = list[i + 1];
+  if (
+    isProtectedInput({
+      tag,
+      type: (attributes.type ?? '').toLowerCase(),
+      autocomplete: (attributes.autocomplete ?? '').toLowerCase(),
+    })
+  ) {
+    throw new OpFailure(PROTECTED_DRAG_REFUSAL, { error_kind: 'protected_field' });
+  }
+}
+
+function refuseProtectedDragEnd(facts: ElementFacts): void {
+  if (isProtectedInput(facts))
+    throw new OpFailure(PROTECTED_DRAG_REFUSAL, { error_kind: 'protected_field' });
+}
+
+/** Remembers where the source sits, in the isolated world (the page cannot see it). */
+const REMEMBER_PLACE_FUNCTION = `function () {
+  globalThis.__biorouterDragPlace = { parent: this.parentNode, prev: this.previousElementSibling, next: this.nextElementSibling };
+}`;
+
+/** Whether the page moved the source, and where it is now. */
+const PLACE_NOW_FUNCTION = `function () {
+  const was = globalThis.__biorouterDragPlace;
+  if (!was) return null;
+  if (!this.isConnected) return { state: 'gone' };
+  if (this.parentNode === was.parent && this.previousElementSibling === was.prev && this.nextElementSibling === was.next) return { state: 'same' };
+  const label = (el) => {
+    if (!el) return null;
+    const implicit = { li: 'listitem', ul: 'list', ol: 'list', tr: 'row', td: 'cell', section: 'region' };
+    const tag = el.tagName.toLowerCase();
+    const role = (el.getAttribute('role') || implicit[tag] || tag).slice(0, 40);
+    const name = (el.getAttribute('aria-label') || el.textContent || '').replace(/\\s+/g, ' ').trim().slice(0, 60);
+    return name ? '[' + role + '] "' + name.replace(/"/g, "'") + '"' : '[' + role + ']';
+  };
+  return { state: 'moved', after: label(this.previousElementSibling), into: this.parentNode === was.parent ? null : label(this.parentElement) };
+}`;
+
+/**
+ * AD-17: drag one element and drop it on another or at a point, with page events only (the
+ * gesture is `performDrag` in `drag.ts`). Each end is an @e reference or, in the main document,
+ * the one visible element a CSS selector or text names (`resolveTarget`). The source passes
+ * BB-13's checks (visible, enabled, stable, not covered); the destination must be visible
+ * together with it and not covered at the drop point; neither end may be a password,
+ * verification code or card field, and a drop at a point may not land on one or in a frame.
  */
 async function opDrag(ctx: Context): Promise<BrowserAgentResult> {
   if (ctx.request.grant !== 'act') {
@@ -1542,21 +1825,39 @@ async function opDrag(ctx: Context): Promise<BrowserAgentResult> {
       data: { needs_act_grant: true },
     };
   }
-  const source = await resolveRef(ctx, ctx.request.args.from);
+  const source = await resolveTarget(ctx, ctx.request.args.from);
   const sourceFacts = await factsOf(ctx, source);
+  refuseProtectedDragEnd(sourceFacts);
   const from = await actionablePoint(ctx, source, sourceFacts, true);
-  let to: { x: number; y: number };
+  let to: Point;
   let targetLabel: string;
+  let locateTarget: (() => Promise<Point | null>) | undefined;
   let hideTarget: () => Promise<void> = async () => undefined;
   if (ctx.request.args.to) {
-    const target = await resolveRef(ctx, ctx.request.args.to);
-    const point = await dropPoint(ctx, target);
-    if (!point)
+    const target = await resolveTarget(ctx, ctx.request.args.to);
+    if (
+      target.target.frameKey === source.target.frameKey &&
+      target.target.backendNodeId === source.target.backendNodeId
+    ) {
+      throw new OpFailure(
+        `${source.label} is both the thing to drag and the place to drop it. Name a different destination.`
+      );
+    }
+    refuseProtectedDragEnd(await factsOf(ctx, target));
+    const drop = await dropPoint(ctx, target, from);
+    if (!drop)
       throw new OpFailure(
         `${target.label} is not visible together with ${source.label}; scroll so both show, or drop at a point with to_x and to_y.`
       );
-    to = point;
+    const cover = await coverAt(ctx, target, drop.local, drop.viewport);
+    if (cover) {
+      throw new OpFailure(
+        `${target.target.ref} ${target.label} is covered by ${cover} where the drop would land. Close or dismiss it first.`
+      );
+    }
+    to = drop.point;
     targetLabel = target.label;
+    locateTarget = async () => (await dropPoint(ctx, target, from))?.point ?? null;
     hideTarget = await highlight(ctx, target);
   } else {
     const point = ctx.request.args.point as { x: number; y: number } | null;
@@ -1566,30 +1867,56 @@ async function opDrag(ctx: Context): Promise<BrowserAgentResult> {
       throw new OpFailure(
         `(${point.x}, ${point.y}) is outside the visible page (${viewport.width} by ${viewport.height} CSS pixels).`
       );
+    await refuseUncheckedDropPoint(ctx, point);
     to = { x: point.x, y: point.y };
     targetLabel = `(${point.x}, ${point.y})`;
   }
+  await callOn(ctx, source.objectId, source.sessionId, REMEMBER_PLACE_FUNCTION).catch(
+    () => undefined
+  );
   const hideSource = await highlight(ctx, source);
   const before = ctx.state.mainNavigations;
   let mechanism: string;
   beginAgentInput(ctx.window, ctx.info.viewId);
   try {
-    mechanism = await performDrag(
-      ctx.state.cdp,
+    const steps = Number(ctx.request.args.steps);
+    mechanism = await performDrag(ctx.state.cdp, {
       from,
       to,
-      Number(ctx.request.args.steps) || 10,
-      ctx.signal
-    );
+      steps: Number.isFinite(steps) && steps >= 1 ? steps : null,
+      locateTarget,
+      signal: ctx.signal,
+    });
   } finally {
     endAgentInput(ctx.window, ctx.info.viewId);
     await hideSource();
     await hideTarget();
   }
   const navigated = await afterAction(ctx, before);
+  let outcome = 'take a new snapshot to see whether the page accepted the drop';
+  if (!navigated) {
+    const place = await callOn<{
+      state: 'gone' | 'same' | 'moved';
+      after?: string | null;
+      into?: string | null;
+    } | null>(ctx, source.objectId, source.sessionId, PLACE_NOW_FUNCTION).catch(() => null);
+    if (place?.state === 'moved') {
+      const where = place.into
+        ? `into ${place.into}${place.after ? `, after ${place.after}` : ''}`
+        : place.after
+          ? `after ${place.after}`
+          : 'to the start of its list';
+      outcome = `the page moved it ${where}`;
+    } else if (place?.state === 'same') {
+      outcome =
+        'it is still in the same place in the page (a drop zone may copy rather than move); take a new snapshot to see whether the page accepted the drop';
+    } else if (place?.state === 'gone') {
+      outcome = 'the page replaced it; take a new snapshot to see the result';
+    }
+  }
   return {
     ok: true,
-    detail: `dragged ${source.label} to ${targetLabel} with ${mechanism}; take a new snapshot to see whether the page accepted the drop`,
+    detail: `dragged ${source.label} to ${targetLabel} with ${mechanism}; ${outcome}`,
     data: { navigated, refs_invalidated: true },
   };
 }
