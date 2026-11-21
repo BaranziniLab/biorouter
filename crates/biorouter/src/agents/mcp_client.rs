@@ -1137,6 +1137,49 @@ impl McpClient {
     }
 }
 
+/// A request the server has been sent and has not answered: dropped while still in flight, it
+/// tells the server with `notifications/cancelled`.
+///
+/// ⚠ This is how Stop reaches an extension. The agent loop races the turn's cancel token
+/// against the whole tool batch (`next_batch_wake`, a biased select) and, when the token
+/// wins, drops the batch's futures without polling them again, so the cancel branch of
+/// [`await_response`] below never runs for a call that was in flight. Measured before this
+/// guard: a stdio extension kept running and sent its result 22 s after Stop. The send is
+/// spawned, never awaited in `drop`, so a dropped call never holds up the end of the turn.
+struct InFlightRequest {
+    /// `None` once the request needs no cancellation: its reply arrived, the transport
+    /// closed, or [`await_response`] sent the cancellation itself.
+    peer: Option<Peer<RoleClient>>,
+    id: RequestId,
+}
+
+impl InFlightRequest {
+    fn settled(&mut self) {
+        self.peer = None;
+    }
+}
+
+impl Drop for InFlightRequest {
+    fn drop(&mut self) {
+        let Some(peer) = self.peer.take() else {
+            return;
+        };
+        // No runtime means the process is shutting down, and the server with it.
+        let Ok(runtime) = tokio::runtime::Handle::try_current() else {
+            return;
+        };
+        let id = self.id.clone();
+        runtime.spawn(async move {
+            let reason = Some("operation cancelled".to_owned());
+            if let Err(error) = send_cancel_message(&peer, id, reason).await {
+                tracing::debug!(
+                    "could not tell the server a dropped request was cancelled: {error}"
+                );
+            }
+        });
+    }
+}
+
 async fn await_response(
     handle: RequestHandle<RoleClient>,
     timeout: Duration,
@@ -1145,16 +1188,23 @@ async fn await_response(
     let receiver = handle.rx;
     let peer = handle.peer;
     let request_id = handle.id;
+    let mut in_flight = InFlightRequest {
+        peer: Some(peer.clone()),
+        id: request_id.clone(),
+    };
     tokio::select! {
         result = receiver => {
+            in_flight.settled();
             result.map_err(|_e| ServiceError::TransportClosed)?
         }
         _ = tokio::time::sleep(timeout) => {
             send_cancel_message(&peer, request_id, Some("timed out".to_owned())).await?;
+            in_flight.settled();
             Err(ServiceError::Timeout{timeout})
         }
         _ = cancel_token.cancelled() => {
             send_cancel_message(&peer, request_id, Some("operation cancelled".to_owned())).await?;
+            in_flight.settled();
             Err(ServiceError::Cancelled { reason: None })
         }
     }
@@ -2041,6 +2091,200 @@ mod tests {
     #[tokio::test]
     async fn concurrent_dispatches_on_one_pooled_client_each_receive_only_their_own_lines() {
         concurrent_dispatches_receive_only_their_own_lines(true).await;
+    }
+
+    /// A fake extension speaking the stdio wire format, one JSON-RPC message per line, over an
+    /// in-memory pipe. It answers `initialize`, never answers a `tools/call` of `hang`, answers
+    /// any other call at once, and records every message the client sends it. It is written
+    /// against the wire rather than with rmcp's server, so what it records is exactly what an
+    /// extension would read on its stdin.
+    fn spawn_recording_extension() -> (
+        (tokio::io::DuplexStream, tokio::io::DuplexStream),
+        mpsc::UnboundedReceiver<Value>,
+    ) {
+        use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
+        let (server_read, client_write) = tokio::io::duplex(1 << 16);
+        let (client_read, mut server_write) = tokio::io::duplex(1 << 16);
+        let (seen_tx, seen_rx) = mpsc::unbounded_channel();
+        tokio::spawn(async move {
+            let mut lines = tokio::io::BufReader::new(server_read).lines();
+            while let Ok(Some(line)) = lines.next_line().await {
+                let Ok(message) = serde_json::from_str::<Value>(&line) else {
+                    continue;
+                };
+                let reply = match message["method"].as_str() {
+                    Some("initialize") => Some(serde_json::json!({
+                        "jsonrpc": "2.0",
+                        "id": message["id"],
+                        "result": {
+                            "protocolVersion": "2025-03-26",
+                            "capabilities": { "tools": {} },
+                            "serverInfo": { "name": "recording", "version": "0" }
+                        }
+                    })),
+                    Some("tools/call") if message["params"]["name"] != "hang" => {
+                        Some(serde_json::json!({
+                            "jsonrpc": "2.0",
+                            "id": message["id"],
+                            "result": { "content": [{ "type": "text", "text": "done" }] }
+                        }))
+                    }
+                    _ => None,
+                };
+                let _ = seen_tx.send(message);
+                if let Some(reply) = reply {
+                    let mut bytes = serde_json::to_vec(&reply).unwrap();
+                    bytes.push(b'\n');
+                    if server_write.write_all(&bytes).await.is_err() {
+                        break;
+                    }
+                }
+            }
+        });
+        ((client_read, client_write), seen_rx)
+    }
+
+    /// The next message the extension received with `method`, skipping the others.
+    async fn next_received(seen: &mut mpsc::UnboundedReceiver<Value>, method: &str) -> Value {
+        tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                let message = seen.recv().await.expect("the extension stopped reading");
+                if message["method"] == method {
+                    return message;
+                }
+            }
+        })
+        .await
+        .unwrap_or_else(|_| panic!("the extension never received {method}"))
+    }
+
+    /// Every message the extension received with `method` within `window`.
+    async fn received_within(
+        seen: &mut mpsc::UnboundedReceiver<Value>,
+        method: &str,
+        window: Duration,
+    ) -> Vec<Value> {
+        let mut found = Vec::new();
+        let deadline = tokio::time::Instant::now() + window;
+        while let Ok(Some(message)) = tokio::time::timeout_at(deadline, seen.recv()).await {
+            if message["method"] == method {
+                found.push(message);
+            }
+        }
+        found
+    }
+
+    async fn connect_recording() -> (McpClient, mpsc::UnboundedReceiver<Value>) {
+        let (transport, seen) = spawn_recording_extension();
+        let client = McpClient::connect(transport, Duration::from_secs(30), empty_provider())
+            .await
+            .expect("the recording extension connects");
+        (client, seen)
+    }
+
+    fn recording_meta() -> McpMeta {
+        McpMeta::new(
+            "sess-stop".to_string(),
+            crate::privacy::CallCapability::for_test_restricted(),
+        )
+    }
+
+    /// Stop as the agent loop delivers it: the turn's token is both the call's own token and
+    /// the one `next_batch_wake` races against the batch, and the biased select wins on the
+    /// token, so the batch (and the call inside it) is dropped without being polled again.
+    /// The extension must still be told, with the id of the request it is running; before
+    /// the drop guard it heard nothing and answered 22 s later.
+    #[tokio::test]
+    async fn stop_during_a_tool_call_tells_the_extension_it_was_cancelled() {
+        use crate::agents::agent::{next_batch_wake, BatchWake};
+        use futures::StreamExt;
+        let (client, mut seen) = connect_recording().await;
+        let turn = Some(CancellationToken::new());
+        let call = client.call_tool(
+            "hang",
+            None,
+            recording_meta(),
+            turn.clone().expect("a turn token"),
+        );
+        let mut combined = futures::stream::select_all(vec![futures::stream::once(call).boxed()]);
+        let session = format!("stop-{}", uuid::Uuid::new_v4());
+        // Poll the batch, as the loop does, until the extension is running the call. An
+        // unscoped elicitation another test publishes wakes every session's batch; the loop
+        // answers that wake with `continue`, and so does this.
+        let request = loop {
+            let wake = tokio::select! {
+                wake = next_batch_wake(&turn, &mut combined, &session, None) => wake,
+                request = next_received(&mut seen, "tools/call") => break request,
+            };
+            assert!(
+                matches!(wake, BatchWake::ElicitationReady),
+                "the batch woke before Stop: {wake:?}"
+            );
+        };
+        turn.as_ref().expect("a turn token").cancel();
+        let wake = next_batch_wake(&turn, &mut combined, &session, None).await;
+        assert!(matches!(wake, BatchWake::Cancelled), "{wake:?}");
+        drop(combined);
+        let cancelled = next_received(&mut seen, "notifications/cancelled").await;
+        assert_eq!(cancelled["params"]["requestId"], request["id"]);
+    }
+
+    /// The guard is the only sender in the drop case, and is silent otherwise: a call that is
+    /// answered sends no cancellation, and one cancelled through its own token sends exactly
+    /// one (the explicit send, never a second from the guard).
+    #[tokio::test]
+    async fn a_dropped_call_is_cancelled_once_and_an_answered_one_never() {
+        let (client, mut seen) = connect_recording().await;
+
+        // Dropped mid-call, with a token nobody cancels.
+        let mut dropped =
+            Box::pin(client.call_tool("hang", None, recording_meta(), CancellationToken::new()));
+        let request = tokio::select! {
+            _ = &mut dropped => panic!("the extension never answers `hang`"),
+            request = next_received(&mut seen, "tools/call") => request,
+        };
+        drop(dropped);
+        let cancelled = next_received(&mut seen, "notifications/cancelled").await;
+        assert_eq!(cancelled["params"]["requestId"], request["id"]);
+
+        // Answered: nothing to cancel.
+        let answered = client
+            .call_tool("echo", None, recording_meta(), CancellationToken::new())
+            .await
+            .expect("the extension answers `echo`");
+        assert_eq!(answered.content[0].as_text().unwrap().text, "done");
+        assert!(
+            received_within(
+                &mut seen,
+                "notifications/cancelled",
+                Duration::from_millis(300)
+            )
+            .await
+            .is_empty(),
+            "an answered call was reported cancelled"
+        );
+
+        // Cancelled through its own token: the explicit send, once.
+        let own = CancellationToken::new();
+        let mut cancelled_call =
+            Box::pin(client.call_tool("hang", None, recording_meta(), own.clone()));
+        let request = tokio::select! {
+            _ = &mut cancelled_call => panic!("the extension never answers `hang`"),
+            request = next_received(&mut seen, "tools/call") => request,
+        };
+        own.cancel();
+        assert!(matches!(
+            cancelled_call.await,
+            Err(ServiceError::Cancelled { .. })
+        ));
+        let sent = received_within(
+            &mut seen,
+            "notifications/cancelled",
+            Duration::from_millis(500),
+        )
+        .await;
+        assert_eq!(sent.len(), 1, "{sent:?}");
+        assert_eq!(sent[0]["params"]["requestId"], request["id"]);
     }
 
     #[test]
