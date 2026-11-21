@@ -44,6 +44,14 @@ pub const NO_WINDOW: &str = "Biorouter Copilot asks the person in this chat befo
 or controls the desktop, and no Biorouter window is open to ask in. Nothing was done. Tell the \
 person Copilot needs this chat open in Biorouter.";
 
+/// Said where a subagent's call would raise Copilot's card on a host with no Biorouter window at
+/// all: the CLI's own process, which asks at its prompt only for the chat the person is in and
+/// never shows a subagent's card.
+pub const SUBAGENT_NOBODY_CAN_ANSWER: &str = "Biorouter Copilot asks the person before it looks \
+at or controls the desktop, and this subagent runs where nobody can be asked: no Biorouter window \
+is open, and the terminal asks only for the chat the person is in. Nothing was done. Report back \
+to the chat that started this subagent and leave the desktop step to it.";
+
 /// Refuse at once, before a card is raised, when no window holds the chat, by the routing rule
 /// the Biorouter Browser asks (`WorkspaceServices::browser_route_refusal`, BB-10). Without it
 /// such a chat waited the whole 900 s approval wait for a card nobody could see. A host that

@@ -1950,6 +1950,24 @@ impl ExtensionManager {
         // sentence.
         if status.grant.is_none() && !crate::user_surface::no_human_surface() {
             computer_use::refuse_unless_a_window_holds(session_id)?;
+            // A host with no workspace services (the CLI's own process) shows the card only at
+            // its prompt, which polls the chat the person is in and never a subagent's, so a
+            // subagent there waited the whole 900 s for nobody. Hidden (`--no-session`) and
+            // Terminal (`biorouter term`) chats answer at that prompt and are not refused. A row
+            // that cannot be read keeps the wait: this refusal saves a wait, it grants nothing.
+            if crate::workspace_services::get().is_none()
+                && self
+                    .context
+                    .session_manager
+                    .get_session(session_id, false)
+                    .await
+                    .is_ok_and(|session| {
+                        session.session_type
+                            == crate::session::session_manager::SessionType::SubAgent
+                    })
+            {
+                anyhow::bail!(computer_use::SUBAGENT_NOBODY_CAN_ANSWER);
+            }
         }
         let needed = computer_use::grant_for_call(tool, arguments);
         Ok(Some(
@@ -11146,6 +11164,89 @@ mod tests {
         client.release.notify_one();
         again.result.await.unwrap();
         manager.computer_use.revoke();
+    }
+
+    /// The CLI's own process has no workspace services, and its prompt shows Copilot's card only
+    /// for the chat the person is in, so a subagent's card was never shown there and its call
+    /// waited the whole 900 s. A subagent is refused at once on such a host; the CLI's Hidden
+    /// (`--no-session`) and Terminal (`biorouter term`) chats, which answer the card at that
+    /// prompt, still raise it and wait.
+    #[tokio::test]
+    #[serial_test::serial(workspace_services)]
+    async fn a_subagents_copilot_call_is_refused_where_no_window_can_ever_answer() {
+        use crate::security::computer_use::SUBAGENT_NOBODY_CAN_ANSWER;
+        use crate::session::session_manager::SessionType;
+
+        let _serial = crate::security::computer_use::tests::test_serial()
+            .lock()
+            .await;
+        struct Override;
+        impl Drop for Override {
+            fn drop(&mut self) {
+                crate::workspace_services::clear_test_override();
+            }
+        }
+        // No daemon: the CLI's own process.
+        crate::workspace_services::set_for_tests(None);
+        let _override = Override;
+
+        for (kind, refused) in [
+            (SessionType::SubAgent, true),
+            (SessionType::Hidden, false),
+            (SessionType::Terminal, false),
+        ] {
+            // One manager per chat: a consent belongs to one chat at a time.
+            let (dir, manager, _provider) = manager_bound_to(crate::privacy::ProviderTier::Public);
+            let client = Arc::new(GatedMockClient::default());
+            manager
+                .add_mock_extension("computercontroller".into(), client.clone())
+                .await;
+            let chat = manager
+                .context
+                .session_manager
+                .create_session(dir.path().to_path_buf(), "chat".into(), kind)
+                .await
+                .unwrap()
+                .id;
+            let _task = manager.computer_use.task_guard();
+            manager.bind_computer_use_task(&chat).await.unwrap();
+            let admission = manager.dispatch_tool_call(
+                &chat,
+                copilot_call("get_app_state", serde_json::json!({"app":"TextEdit"})),
+                crate::privacy::CallCapability::for_test_restricted(),
+                CancellationToken::new(),
+            );
+            if refused {
+                let error = tokio::time::timeout(Duration::from_secs(2), admission)
+                    .await
+                    .expect("refused at once, not parked for the card")
+                    .err()
+                    .expect("refused");
+                assert!(
+                    error.to_string().contains(SUBAGENT_NOBODY_CAN_ANSWER),
+                    "{error}"
+                );
+                let status = manager.computer_use_status(&chat).await.unwrap();
+                assert!(!status.requested, "no card was raised for a {kind:?} chat");
+            } else {
+                tokio::pin!(admission);
+                // The admission cannot return before the card is answered, so "still parked"
+                // holds by construction rather than by the clock.
+                assert!(
+                    tokio::time::timeout(Duration::from_millis(50), &mut admission)
+                        .await
+                        .is_err(),
+                    "a {kind:?} chat waits for the card at the terminal's prompt"
+                );
+                let status = manager.computer_use_status(&chat).await.unwrap();
+                assert!(status.requested, "the card was raised for a {kind:?} chat");
+            }
+            assert!(
+                client.seen_grant.lock().unwrap().is_none(),
+                "nothing reached the desktop"
+            );
+            manager.computer_use.revoke();
+        }
     }
 
     /// Stop while a native call is in flight, then let the client answer `Ok`
