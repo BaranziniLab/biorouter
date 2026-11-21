@@ -1127,10 +1127,22 @@ try {
     finish.bytes > 0 ? daemon.puts.length : null,
     'finish carried the wrong seq'
   );
-  const audioSeconds = daemon.bytes / 32000;
+  // Audio starts when the microphone is live, not at the press: measured on hosted macOS
+  // runners, press to recording took 165 to 373 ms on most runs and about 1 s on a loaded one,
+  // while the audio received always matched recording to stop. So the transport is held to the
+  // recorded span exactly, and the start up to a bound of its own.
+  assert(dictated.recordingAt !== null, 'the page never reported recording');
+  const pressToRecordingMs = dictated.recordingAt - pressAt;
   assert(
-    audioSeconds > dictateMs / 1000 - 0.5 && audioSeconds < dictateMs / 1000 + 0.6,
-    `the daemon received ${audioSeconds} s of audio for a ${dictateMs / 1000} s dictation`
+    pressToRecordingMs < 1500,
+    `the microphone took ${pressToRecordingMs} ms from the press to go live`
+  );
+  const audioSeconds = daemon.bytes / 32000;
+  const recordedSeconds = (stopAt - dictated.recordingAt) / 1000;
+  assert(
+    audioSeconds > recordedSeconds - 0.25 && audioSeconds < recordedSeconds + 0.6,
+    `the daemon received ${audioSeconds} s of audio for ${recordedSeconds} s of recording ` +
+      `(a ${dictateMs / 1000} s dictation, ${pressToRecordingMs} ms to go live)`
   );
   // What the stand in received, in seq order, for a model to transcribe.
   const received = [...daemon.bodies.entries()].sort(([a], [b]) => a - b).map(([, body]) => body);
