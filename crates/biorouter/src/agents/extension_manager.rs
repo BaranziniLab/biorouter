@@ -10961,6 +10961,32 @@ mod tests {
         }
     }
 
+    /// Drive a Copilot admission until it has raised the card. It cannot finish without an
+    /// answer, so it is polled in short slices until the status says a card waits, however long
+    /// the steps before the card take (on a host with no workspace services, a session read).
+    async fn drive_until_the_card_is_raised<F: std::future::Future>(
+        manager: &ExtensionManager,
+        chat: &str,
+        mut admission: std::pin::Pin<&mut F>,
+    ) {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+        loop {
+            assert!(
+                tokio::time::timeout(Duration::from_millis(5), admission.as_mut())
+                    .await
+                    .is_err(),
+                "the admission finished before the card was answered"
+            );
+            if manager.computer_use_status(chat).await.unwrap().requested {
+                return;
+            }
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "the card was never raised"
+            );
+        }
+    }
+
     fn copilot_call(tool: &str, arguments: serde_json::Value) -> CallToolRequestParams {
         CallToolRequestParams {
             name: format!("computercontroller__{tool}").into(),
@@ -10991,11 +11017,7 @@ mod tests {
             CancellationToken::new(),
         );
         tokio::pin!(admission);
-        assert!(
-            tokio::time::timeout(Duration::from_millis(5), &mut admission)
-                .await
-                .is_err()
-        );
+        drive_until_the_card_is_raised(&manager, "look-chat", admission.as_mut()).await;
         let status = manager.computer_use_status("look-chat").await.unwrap();
         manager
             .computer_use
@@ -11278,14 +11300,7 @@ mod tests {
             CancellationToken::new(),
         );
         tokio::pin!(admission);
-        // Not a race: admission parks until approval and cannot finish without
-        // it, so this times out however the thread is scheduled. It is here to
-        // drive admission to the point where it has asked for approval.
-        assert!(
-            tokio::time::timeout(Duration::from_millis(5), &mut admission)
-                .await
-                .is_err()
-        );
+        drive_until_the_card_is_raised(&manager, "isolated-chat", admission.as_mut()).await;
         let status = manager.computer_use_status("isolated-chat").await.unwrap();
         manager
             .approve_computer_use(
