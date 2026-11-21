@@ -2,8 +2,8 @@
 > tools on Linux, Windows and macOS, what each drive checks, how to reproduce the Linux drive in
 > Docker on any machine, and what has been measured.
 > **Status:** Current. Written 2026-11-20 for 1.94.6 (AD-21 and AD-22 in
-> [Biorouter Copilot on agent-desktop](../design/copilot-agent-desktop.md)). The Linux drive passes;
-> the Windows and macOS drives have not run yet.
+> [Biorouter Copilot on agent-desktop](../design/copilot-agent-desktop.md)). The Linux, Windows and
+> macOS drives pass.
 > **Audience:** anyone changing Biorouter Copilot's wrapper, its engine pin or its packaging, and
 > whoever runs the live macOS gate before a release.
 
@@ -113,7 +113,9 @@ cargo test -p biorouter-mcp --test computer_use_fixture -- --ignored --nocapture
 | 2026-11-20 | Ubuntu 24.04 arm64 in Docker on an Apple silicon Mac: Xvfb, openbox, at-spi2-core 2.52.0, the `linux-arm64` payload of agent-desktop 1.3.1 | Passed, four runs in four, about 9 s each. Both list drags and the drop into the second window land: drag and drop works within a GTK app and between two of its windows on X11. No button stayed pressed after Stop. |
 | 2026-11-20 | The engine CLI alone against the GTK fixture, same container | `set-value`, `click` and `check` are delivered through the accessibility API (`semantic_api`); `drag --headed` is a physical XTEST gesture (`physical_synthetic`, 22 events) whose GTK drop handlers run. |
 | 2026-11-20 | `mcs -langversion:5` (mono 6.12) | The WinForms fixture compiles as C# 5. Not yet run on Windows. |
-| 2026-11-20 | `swiftc` on macOS 26 | The AppKit fixture builds. Not yet driven: that needs the owner's grants. |
+| 2026-11-20 | `swiftc` on macOS 26 | The AppKit fixture builds. Driven the next day, row below. |
+| 2026-11-20 | `windows-latest` in CI (`computer-use-native.yml`, windows-fixture), the `win32-x64` payload | Passed every step, drag and drop included, at `bb855dfe9`. Earlier runs found three gaps in the drive, all fixed: Windows PowerShell 5.1 treated cargo's stderr as fatal, UI Automation reports the password edit without its name, and a text field over 2,048 characters can never be proven unique by agent-desktop's Windows adapter. |
+| 2026-11-21 | macOS 26.7.1 on Apple silicon, the `darwin-arm64` payload signed with the UCSF Developer ID, started through the disclaimed spawn after the owner allowed Biorouter Copilot in Accessibility and Screen Recording | Passed every step in 13.6 s: observe, look only, act, the password refusal, a foreign reference, two list drags, the drop into the second window, scroll and Stop mid-drag with no button left pressed. The drop into the second window needs Screen Recording, because window titles are hidden without it. macOS's own permission check reported Screen Recording denied while the granted entry belonged to an earlier test copy; removing and re-adding the app fixed it. |
 
 Not measured yet: the Windows drive (its UI Automation path with the windows-gnu engine, AD-05),
 the macOS drive, Wayland (where Copilot offers no pointer input, so drag is refused), drags between

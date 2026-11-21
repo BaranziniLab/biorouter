@@ -244,11 +244,43 @@ fn password_reference(observation: &str) -> String {
     found[0].clone()
 }
 
+/// What scrolls the long text: the scroll area that holds `FixtureScroll` where the platform
+/// wraps it in one (macOS, GTK), else `FixtureScroll` itself (a Windows multiline TextBox). The
+/// first scroll area in the window is not it on macOS, where the list has a scroll area of its own
+/// with nothing to scroll.
 fn scroll_reference(observation: &str) -> String {
-    references(observation)
-        .into_iter()
-        .find(|(_, role, name)| name == "FixtureScroll" || role == "scrollarea")
-        .map(|(reference, _, _)| reference)
+    let line =
+        regex::Regex::new(r#"^(\s*)(@s[0-9A-Za-z]+:e\d+) \[([^\]]+)\](?: "([^"]*)")?"#).unwrap();
+    let lines: Vec<(usize, String, String, String)> = observation
+        .lines()
+        .filter_map(|text| {
+            line.captures(text).map(|found| {
+                (
+                    found[1].len(),
+                    found[2].to_owned(),
+                    found[3].to_owned(),
+                    found.get(4).map_or("", |name| name.as_str()).to_owned(),
+                )
+            })
+        })
+        .collect();
+    if let Some(at) = lines
+        .iter()
+        .position(|(_, _, _, name)| name == "FixtureScroll")
+    {
+        let indent = lines[at].0;
+        let parent = lines[..at].iter().rev().find(|(depth, ..)| *depth < indent);
+        if let Some((_, reference, role, _)) = parent {
+            if role == "scrollarea" {
+                return reference.clone();
+            }
+        }
+        return lines[at].1.clone();
+    }
+    lines
+        .iter()
+        .find(|(_, _, role, _)| role == "scrollarea")
+        .map(|(_, reference, _, _)| reference.clone())
         .unwrap_or_else(|| panic!("no scrollable element in:\n{observation}"))
 }
 
