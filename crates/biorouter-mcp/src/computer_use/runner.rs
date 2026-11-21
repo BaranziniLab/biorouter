@@ -929,11 +929,18 @@ pub(crate) mod tests {
         let root = tempfile::tempdir().unwrap();
         // The engine traps SIGTERM like a release guard would, writes that it released, and
         // exits; its child ignores SIGTERM and must still die with the group.
+        //
+        // Both wait in `sleep 1 & wait $!`, never a bare `sleep 1`: sh runs a trap only once
+        // the foreground command it is waiting for ends, and a SIGTERM to the group that lands
+        // while sh forks the next `sleep` misses it, so a bare `sleep 1` could hold the trap
+        // for a whole second, the length of the grace, and the engine was killed before it
+        // wrote `released` (a macOS CI failure). The `wait` builtin returns as soon as a
+        // trapped signal arrives.
         let engine = fake_engine(
             root.path(),
-            "sh -c 'trap \"\" TERM; echo $$ > \"$AGENT_DESKTOP_HOME/child\"; while :; do sleep 1; done' &\n\
+            "sh -c 'trap \"\" TERM; echo $$ > \"$AGENT_DESKTOP_HOME/child\"; while :; do sleep 1 & wait $!; done' &\n\
              trap 'echo released > \"$AGENT_DESKTOP_HOME/released\"; exit 0' TERM\n\
-             echo $$ > \"$AGENT_DESKTOP_HOME/engine\"\nwhile :; do sleep 1; done",
+             echo $$ > \"$AGENT_DESKTOP_HOME/engine\"\nwhile :; do sleep 1 & wait $!; done",
         );
         let cancel = CancellationToken::new();
         let stop = cancel.clone();

@@ -15,7 +15,8 @@ if [ "$cmd" = screenshot ]; then cp "$dir/shot.png" "$last"; fi
 if [ -f "$dir/block-$cmd" ]; then
   trap 'echo released > "$dir/released"; exit 0' TERM
   echo $$ > "$dir/blocked.pid"
-  while :; do sleep 1; done
+  # `wait` returns at once for a trapped signal; a bare `sleep 1` holds the trap until it ends.
+  while :; do sleep 1 & wait $!; done
 fi
 if [ -f "$dir/$cmd.json" ]; then cat "$dir/$cmd.json"; else
   echo '{"version":"2.6","ok":true,"command":"'"$cmd"'","data":{"action":"'"$cmd"'","disposition":{"delivery":"delivered_verified","retry":"unsafe"}}}'
@@ -891,9 +892,12 @@ async fn the_task_folder_is_private_and_goes_with_the_task() {
 /// Stop sends `SIGTERM` first, so the engine's release guard runs, then the call ends cancelled
 /// and the task folder goes. The grace is raised for this test: with the production 1 s, a loaded
 /// full run (2 of the 4 logged on 2026-11-20) killed the stand-in shell before its trap wrote
-/// `released`. The runner waits for the engine to exit before the call returns, so the file
-/// exists by then or never will, and polling for it afterwards could not help. The 1 s grace
-/// itself, and the `SIGKILL` after it, are `runner`'s own test.
+/// `released`. Most of that was the stand-in's own loop, a bare `sleep 1` that held the trap for
+/// up to the whole grace; it now waits with `sleep 1 & wait $!`, which a trapped signal ends at
+/// once, and the raised grace stays for a shell slow to start on a loaded machine. The runner
+/// waits for the engine to exit before the call returns, so the file exists by then or never
+/// will, and polling for it afterwards could not help. The 1 s grace itself, and the `SIGKILL`
+/// after it, are `runner`'s own test.
 #[tokio::test]
 async fn stop_ends_the_running_command_and_deletes_the_task_folder() {
     struct Grace;
