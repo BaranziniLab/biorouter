@@ -93,7 +93,7 @@ interface ProgressiveMessageListProps {
   onRenderingComplete?: () => void; // Callback when all messages are rendered
   submitElicitationResponse?: (
     elicitationId: string,
-    userData: Record<string, unknown>
+    userData: Record<string, unknown> | null
   ) => Promise<void>;
   onOpenArtifact: (artifact: ArtifactSource) => void;
   workingDir?: string;

@@ -15,7 +15,8 @@ interface ElicitationRequestProps {
   isCancelledMessage: boolean;
   isClicked: boolean;
   actionRequiredContent: ActionRequired & { type: 'actionRequired' };
-  onSubmit: (elicitationId: string, userData: Record<string, unknown>) => Promise<void>;
+  /** `null` answers Cancel: the extension is told the person declined. */
+  onSubmit: (elicitationId: string, userData: Record<string, unknown> | null) => Promise<void>;
 }
 
 export default function ElicitationRequest({
@@ -45,13 +46,13 @@ export default function ElicitationRequest({
 
   const { id: elicitationId, message, requested_schema } = actionRequiredContent.data;
 
-  const handleSubmit = async (formData: Record<string, unknown>) => {
+  const handleSubmit = async (formData: Record<string, unknown> | null) => {
     if (browserUnavailable || submitting || settledOutcome !== null) return;
     setSubmitting(true);
     setError(null);
     try {
       await onSubmit(elicitationId, formData);
-      setOutcome((current) => current ?? 'sent');
+      setOutcome((current) => current ?? (formData === null ? 'canceled' : 'sent'));
     } catch (failure) {
       setError(describeRequestFailure(failure));
     } finally {
@@ -119,6 +120,8 @@ export default function ElicitationRequest({
             <JsonSchemaForm
               schema={requested_schema as JsonSchema}
               onSubmit={handleSubmit}
+              onCancel={() => void handleSubmit(null)}
+              cancelLabel={ELICITATION_COPY.cancel}
               submitLabel={submitting ? ELICITATION_COPY.submitting : ELICITATION_COPY.submit}
             />
           </fieldset>

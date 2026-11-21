@@ -659,6 +659,7 @@ export const ELICITATION_COPY = {
   more: 'Details',
   moreName: 'this request',
   submit: 'Submit',
+  cancel: 'Cancel',
   submitting: 'Submitting…',
   sent: 'Information sent',
   canceled: 'Information request canceled',

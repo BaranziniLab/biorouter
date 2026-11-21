@@ -4486,7 +4486,7 @@ class ChatStreamController {
 
   submitElicitationResponse = async (
     elicitationId: string,
-    userData: Record<string, unknown>
+    userData: Record<string, unknown> | null
   ): Promise<void> => {
     await this.loadSession();
 
@@ -4496,7 +4496,10 @@ class ChatStreamController {
 
     this.lastInteractionTime = Date.now();
     const response = await respondToElicitation({
-      body: { session_id: this.sessionId, id: elicitationId, data: userData },
+      body:
+        userData === null
+          ? { session_id: this.sessionId, id: elicitationId, cancelled: true }
+          : { session_id: this.sessionId, id: elicitationId, data: userData },
       headers: await userActionHeaders(),
       throwOnError: true,
     });

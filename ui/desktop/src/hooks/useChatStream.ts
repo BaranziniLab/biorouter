@@ -41,7 +41,7 @@ interface UseChatStreamReturn {
   submitSystemMessage: (message: Message) => Promise<void>;
   submitElicitationResponse: (
     elicitationId: string,
-    userData: Record<string, unknown>
+    userData: Record<string, unknown> | null
   ) => Promise<void>;
   setWorkflowUserParams: (values: Record<string, string>) => Promise<void>;
   /** Resolves true once the server confirms the cancelled turn released its slot. */

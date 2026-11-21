@@ -68,7 +68,7 @@ interface BioRouterMessageProps {
   messageIndex?: number;
   submitElicitationResponse?: (
     elicitationId: string,
-    userData: Record<string, unknown>
+    userData: Record<string, unknown> | null
   ) => Promise<void>;
   onOpenArtifact: (artifact: ArtifactSource) => void;
   workingDir?: string;

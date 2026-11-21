@@ -11,6 +11,10 @@ interface JsonSchemaProperty {
   description?: string;
   default?: unknown;
   enum?: string[];
+  /** Display names parallel to `enum` (legacy MCP elicitation shape). */
+  enumNames?: string[];
+  /** `{ const, title }` choices (current MCP elicitation shape). */
+  oneOf?: Array<{ const: string; title?: string }>;
   minimum?: number;
   maximum?: number;
   minLength?: number;
@@ -150,7 +154,12 @@ export default function JsonSchemaForm({
     const error = errors[key];
     const isRequired = schema.required?.includes(key);
 
-    if (prop.enum) {
+    const choices: Array<{ value: string; label: string }> | null = prop.oneOf?.length
+      ? prop.oneOf.map((o) => ({ value: o.const, label: o.title || o.const }))
+      : prop.enum
+        ? prop.enum.map((o, i) => ({ value: o, label: prop.enumNames?.[i] || o }))
+        : null;
+    if (choices) {
       return (
         <select
           id={fieldId(key)}
@@ -167,9 +176,9 @@ export default function JsonSchemaForm({
           )}
         >
           {!isRequired && <option value="">Select…</option>}
-          {prop.enum.map((option) => (
-            <option key={option} value={option}>
-              {option}
+          {choices.map((option) => (
+            <option key={option.value} value={option.value}>
+              {option.label}
             </option>
           ))}
         </select>

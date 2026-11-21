@@ -11,14 +11,25 @@ afterEach(() => {
 vi.mock('./ui/JsonSchemaForm', () => ({
   default: ({
     onSubmit,
+    onCancel,
+    cancelLabel,
     submitLabel,
   }: {
     onSubmit: (data: Record<string, unknown>) => void;
+    onCancel?: () => void;
+    cancelLabel?: string;
     submitLabel?: string;
   }) => (
-    <button type="button" onClick={() => onSubmit({ cohort: 'synthetic' })}>
-      {submitLabel ?? 'Submit'}
-    </button>
+    <>
+      <button type="button" onClick={() => onSubmit({ cohort: 'synthetic' })}>
+        {submitLabel ?? 'Submit'}
+      </button>
+      {onCancel ? (
+        <button type="button" onClick={onCancel}>
+          {cancelLabel ?? 'Cancel'}
+        </button>
+      ) : null}
+    </>
   ),
 }));
 
@@ -69,6 +80,23 @@ describe('ElicitationRequest', () => {
       expect(screen.getByText('Information sent')).toHaveClass('br-transcript-row-label')
     );
     expect(onSubmit).toHaveBeenCalledWith('request-1', { cohort: 'synthetic' });
+  });
+
+  it('answers Cancel with a null response and settles as canceled', async () => {
+    const onSubmit = vi.fn(async () => undefined);
+    render(
+      <ElicitationRequest
+        actionRequiredContent={action}
+        isCancelledMessage={false}
+        isClicked={false}
+        onSubmit={onSubmit}
+      />
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+    await waitFor(() =>
+      expect(screen.getByText('Information request canceled')).toBeInTheDocument()
+    );
+    expect(onSubmit).toHaveBeenCalledWith('request-1', null);
   });
 
   it('asks in the one card recipe with the question as its title', () => {
