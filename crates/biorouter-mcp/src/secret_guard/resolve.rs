@@ -166,6 +166,9 @@ pub(crate) enum Reason {
     /// The command starts Biorouter Copilot's engine, which holds the person's Accessibility and
     /// Screen Recording permissions (AD-12). See [`HelperSighting`].
     CopilotEngine,
+    /// The command starts an app bundle inside Biorouter's extensions folder, whose helper may
+    /// hold the same permissions. See [`Resolver::refuse_extension_app`].
+    ExtensionApp,
 }
 
 /// What a scan has seen of the browser-key helper (BB-23), across every word, nested script
@@ -340,7 +343,26 @@ pub(crate) struct Resolver<'a> {
     reading_data: bool,
     /// The browser-key helper's words seen so far in this tool call (BB-23).
     helper: HelperSighting,
+    /// The app bundles in Biorouter's extensions folder, found once per scan and only when a
+    /// command names an app rather than a path (`open -a`, `open -b`, `osascript`).
+    extension_bundles: Option<Vec<ExtensionBundle>>,
 }
+
+/// An app bundle found in Biorouter's extensions folder, and the names it may be started by.
+struct ExtensionBundle {
+    path: PathBuf,
+    /// Lower-cased: the bundle's file name without `.app`, and the `CFBundleName`,
+    /// `CFBundleDisplayName` and `CFBundleExecutable` an XML `Info.plist` gives.
+    names: Vec<String>,
+    /// Lower-cased: the `CFBundleIdentifier` an XML `Info.plist` gives.
+    identifiers: Vec<String>,
+    /// Lower-cased bytes of a binary `Info.plist`, whose identifier is matched by containment.
+    binary_plist: Option<Vec<u8>>,
+}
+
+/// How deep into the extensions folder bundles are looked for, and how much of it is read.
+const MAX_BUNDLE_DEPTH: usize = 6;
+const MAX_INFO_PLIST_BYTES: u64 = 256 * 1024;
 
 impl<'a> Resolver<'a> {
     pub(crate) fn new(guard: &'a SecretGuard, env: &'a ShellEnv) -> Self {
@@ -357,6 +379,7 @@ impl<'a> Resolver<'a> {
             windows_lexing: cfg!(windows),
             reading_data: false,
             helper: HelperSighting::default(),
+            extension_bundles: None,
         }
     }
 
@@ -681,6 +704,7 @@ impl<'a> Resolver<'a> {
 
     fn program_semantics(&mut self, args: &[Word], state: &mut State) -> Scan {
         let (index, program) = self.program_of(args, state)?;
+        self.refuse_extension_app(args, index, &program, state)?;
         let rest = args.get(index + 1..).unwrap_or(&[]);
         match program.as_str() {
             "cd" | "chdir" => self.change_dir(rest, state, true)?,
@@ -737,6 +761,314 @@ impl<'a> Resolver<'a> {
             }
         }
         Ok(())
+    }
+
+    // ---- extension apps ---------------------------------------------------
+
+    /// Refuse a command that starts an app bundle inside Biorouter's extensions folder.
+    ///
+    /// An installed extension may ship a helper app that the person granted macOS Accessibility
+    /// and Screen Recording, so a shell that started it would observe and control the desktop
+    /// with none of the extension's own consent. Starting means: the program (`args[index]`, the
+    /// real one behind `sudo`, `env`, `exec` and the like, or the program `xargs`, `arch` or
+    /// `find -exec` runs) is a path inside a bundle there, or `open` opens one (by path, by
+    /// `-a` with its name or path, by `-b` with its identifier), or `osascript` names one as an
+    /// application. Paths resolve as every other word does: `~`, variables, globs, `cd`, links.
+    ///
+    /// Generic on purpose: it names no extension, and it never touches reading or listing,
+    /// which are words in no program's place (`ls`, `cat`, `find`, `plutil -p`, `codesign -dv`).
+    /// It cannot see a path whose start is unknown until the command runs, nor a bundle copied
+    /// out of the folder first, nor a program string built in another language.
+    fn refuse_extension_app(
+        &mut self,
+        args: &[Word],
+        index: usize,
+        program: &str,
+        state: &State,
+    ) -> Scan {
+        if self.guard.extension_roots().is_empty() {
+            return Ok(());
+        }
+        let Some(word) = args.get(index) else {
+            return Ok(());
+        };
+        self.refuse_starting(word, state, true)?;
+        let rest = &args[index + 1..];
+        match program {
+            "open" => self.refuse_opening(rest, state),
+            "osascript" => self.refuse_scripted_app(rest, state),
+            "xargs" | "arch" => {
+                let with_value: &[&str] = if program == "xargs" {
+                    &[
+                        "-n", "-L", "-I", "-P", "-s", "-d", "-E", "-a", "-R", "-S", "-J",
+                    ]
+                } else {
+                    &["-arch", "-e"]
+                };
+                match program_after_options(rest, with_value) {
+                    Some(next) => self.refuse_starting(next, state, true),
+                    None => Ok(()),
+                }
+            }
+            "find" => {
+                for (k, word) in rest.iter().enumerate() {
+                    let flag = plain_text(word).unwrap_or_default();
+                    if matches!(flag.as_str(), "-exec" | "-execdir" | "-ok" | "-okdir") {
+                        if let Some(next) = rest.get(k + 1) {
+                            self.refuse_starting(next, state, true)?;
+                        }
+                    }
+                }
+                Ok(())
+            }
+            _ => Ok(()),
+        }
+    }
+
+    /// Refuse `word` when it resolves inside an extension's app bundle. A program word only
+    /// counts as a path when it holds a separator: a bare name is looked up on `PATH`.
+    fn refuse_starting(&mut self, word: &Word, state: &State, program: bool) -> Scan {
+        for template in self.expand(word, state, false) {
+            if matches!(template.first(), Some(Atom::Ch('-', _))) {
+                continue;
+            }
+            if program
+                && !template
+                    .iter()
+                    .any(|atom| matches!(atom, Atom::Ch(c, _) if is_separator(*c)))
+            {
+                continue;
+            }
+            for path in self.concrete_paths(&template, state) {
+                if let Some(bundle) = self.extension_bundle_of(&path) {
+                    return Err(self.finding(&word_text(word), Some(bundle), Reason::ExtensionApp));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// `open`'s operands, and the app its `-a` or `-b` names.
+    fn refuse_opening(&mut self, rest: &[Word], state: &State) -> Scan {
+        let mut i = 0;
+        while let Some(word) = rest.get(i) {
+            i += 1;
+            let text = plain_text(word).unwrap_or_default();
+            if text == "--args" {
+                break;
+            }
+            if text.starts_with("--") {
+                if matches!(
+                    text.as_str(),
+                    "--env" | "--stdin" | "--stdout" | "--stderr" | "--arch"
+                ) {
+                    i += 1;
+                }
+                continue;
+            }
+            if text.starts_with('-') && text.len() > 1 {
+                // A flag cluster: the value of its last flag, when that flag takes one, is the
+                // next word (`-na Name`, `-b id`).
+                let value = rest.get(i);
+                match text.chars().last() {
+                    Some('a') => {
+                        if let Some(value) = value {
+                            i += 1;
+                            self.refuse_starting(value, state, false)?;
+                            self.refuse_named_app(value, state, "open -a")?;
+                        }
+                    }
+                    Some('b') => {
+                        if let Some(value) = value {
+                            i += 1;
+                            self.refuse_identified_app(value, state, "open -b")?;
+                        }
+                    }
+                    Some('s' | 'u') => i += 1,
+                    _ => {}
+                }
+                continue;
+            }
+            self.refuse_starting(word, state, false)?;
+        }
+        Ok(())
+    }
+
+    /// An application `osascript -e` names: `application "Name"`, `app "Name"`,
+    /// `application id "id"`, or JavaScript's `Application("Name")`.
+    fn refuse_scripted_app(&mut self, rest: &[Word], state: &State) -> Scan {
+        static NAMED: Lazy<Regex> = Lazy::new(|| {
+            Regex::new(r#"(?i)\b(?:application|app)\s*(\bid\s*)?\(?\s*["']([^"']+)["']"#)
+                .expect("static regex")
+        });
+        let mut scripts = Vec::new();
+        for (k, word) in rest.iter().enumerate() {
+            if plain_text(word).as_deref() == Some("-e") {
+                if let Some(script) = rest.get(k + 1) {
+                    scripts.extend(self.readings_as_text(script, state));
+                }
+            }
+        }
+        for script in scripts {
+            for capture in NAMED.captures_iter(&script) {
+                let named = capture[2].to_string();
+                let shown = format!("osascript {}", capture[0].trim());
+                // JavaScript's `Application("…")` takes a name or an identifier alike.
+                let found = if capture.get(1).is_some() {
+                    self.bundle_with_identifier(&named)
+                } else if named.contains('/') {
+                    self.extension_bundle_of(Path::new(&named))
+                } else {
+                    self.bundle_named(&named)
+                        .or_else(|| self.bundle_with_identifier(&named))
+                };
+                if let Some(bundle) = found {
+                    return Err(self.finding(&shown, Some(bundle), Reason::ExtensionApp));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn refuse_named_app(&mut self, word: &Word, state: &State, how: &str) -> Scan {
+        for name in self.readings_as_text(word, state) {
+            if let Some(bundle) = self.bundle_named(&name) {
+                return Err(self.finding(
+                    &format!("{how} {}", word_text(word)),
+                    Some(bundle),
+                    Reason::ExtensionApp,
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    fn refuse_identified_app(&mut self, word: &Word, state: &State, how: &str) -> Scan {
+        for identifier in self.readings_as_text(word, state) {
+            if let Some(bundle) = self.bundle_with_identifier(&identifier) {
+                return Err(self.finding(
+                    &format!("{how} {}", word_text(word)),
+                    Some(bundle),
+                    Reason::ExtensionApp,
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    /// The bundle a path is in, as written and once links are resolved.
+    fn extension_bundle_of(&mut self, path: &Path) -> Option<PathBuf> {
+        let lexical = lexical_normalize(path);
+        if let Some(bundle) = self.guard.extension_bundle_of(&lexical) {
+            return Some(bundle);
+        }
+        let physical = self.physical(&lexical)?;
+        self.guard.extension_bundle_of(&physical)
+    }
+
+    /// Every path a word could name, as far as it can be known now: each glob expanded
+    /// against the directory it is in, and nothing for a part that cannot be known yet.
+    fn concrete_paths(&mut self, template: &Template, state: &State) -> Vec<PathBuf> {
+        let mut readings = vec![template.clone()];
+        if matches!(template.first(), Some(Atom::Ch('~', _))) {
+            let expanded = tilde_at_start(template, self.env);
+            if &expanded != template {
+                readings.push(expanded);
+            }
+        }
+        let mut out = Vec::new();
+        for reading in readings {
+            let (root, comps) = split(&reading);
+            let starts: Vec<PathBuf> = match root {
+                Root::Absolute(prefix) => vec![prefix],
+                Root::Relative => state
+                    .cwds
+                    .iter()
+                    .filter_map(|base| match base {
+                        Base::Dir(dir) => Some(dir.clone()),
+                        Base::Unknown => None,
+                    })
+                    .collect(),
+                Root::Unknown => Vec::new(),
+            };
+            for start in starts {
+                self.concrete_from(start, &comps, &mut out);
+            }
+        }
+        out
+    }
+
+    fn concrete_from(&mut self, dir: PathBuf, comps: &[Template], out: &mut Vec<PathBuf>) {
+        if out.len() >= MAX_GLOB_MATCHES {
+            return;
+        }
+        let mut cur = dir;
+        for (k, comp) in comps.iter().enumerate() {
+            match classify(comp) {
+                Kind::Literal(name) => push_component(&mut cur, &name),
+                Kind::Glob(tokens) => {
+                    if let Listing::Names(names) = self.list(&cur) {
+                        for name in names.iter() {
+                            if glob::matches(&tokens, name, !self.dotglob) {
+                                self.concrete_from(cur.join(name), &comps[k + 1..], out);
+                            }
+                        }
+                    }
+                    return;
+                }
+                // The rest of the path is not known yet; what is known so far may already be
+                // inside a bundle (`…/Helper.app/**`).
+                Kind::Recursive | Kind::Hole => break,
+            }
+        }
+        out.push(cur);
+    }
+
+    /// The extension bundles, found on first use.
+    fn extension_bundles(&mut self) -> &[ExtensionBundle] {
+        if self.extension_bundles.is_none() {
+            let found = discover_extension_bundles(self.guard.extension_roots());
+            self.extension_bundles = Some(found);
+        }
+        self.extension_bundles.as_deref().unwrap_or_default()
+    }
+
+    /// The bundle `open -a` or `osascript` would start for `name`: a bundle whose file name,
+    /// or whose `Info.plist` name, it is (case folded, `.app` optional).
+    fn bundle_named(&mut self, name: &str) -> Option<PathBuf> {
+        let name = name.trim().trim_end_matches('/').to_lowercase();
+        let name = name.strip_suffix(".app").unwrap_or(&name).to_string();
+        let tail = name
+            .rsplit(['/', '\\'])
+            .next()
+            .unwrap_or_default()
+            .to_string();
+        if tail.is_empty() {
+            return None;
+        }
+        self.extension_bundles()
+            .iter()
+            .find(|bundle| bundle.names.contains(&tail))
+            .map(|bundle| bundle.path.clone())
+    }
+
+    /// The bundle whose identifier `open -b` or `osascript … id` names.
+    fn bundle_with_identifier(&mut self, identifier: &str) -> Option<PathBuf> {
+        let identifier = identifier.trim().to_lowercase();
+        if identifier.len() < 3 || !identifier.contains('.') {
+            return None;
+        }
+        self.extension_bundles()
+            .iter()
+            .find(|bundle| {
+                bundle.identifiers.contains(&identifier)
+                    || bundle.binary_plist.as_ref().is_some_and(|bytes| {
+                        bytes
+                            .windows(identifier.len())
+                            .any(|window| window == identifier.as_bytes())
+                    })
+            })
+            .map(|bundle| bundle.path.clone())
     }
 
     /// The real program behind wrappers (`sudo`, `env X=1`, `command`, …).
@@ -1842,6 +2174,108 @@ fn add_cwd(state: &mut State, base: Base) {
         return;
     }
     state.cwds.push(base);
+}
+
+/// The program a runner such as `xargs` or `arch` starts: its first word after its options,
+/// the options in `with_value` taking the next word as their value.
+fn program_after_options<'w>(rest: &'w [Word], with_value: &[&str]) -> Option<&'w Word> {
+    let mut i = 0;
+    while let Some(word) = rest.get(i) {
+        let text = plain_text(word).unwrap_or_default();
+        if text == "--" {
+            return rest.get(i + 1);
+        }
+        if text.starts_with('-') && text.len() > 1 {
+            i += if with_value.contains(&text.as_str()) {
+                2
+            } else {
+                1
+            };
+            continue;
+        }
+        return Some(word);
+    }
+    None
+}
+
+/// Every `*.app` bundle under the extensions folders, within the same walk budgets as `**`.
+/// A bundle is not walked into, and links are not followed.
+fn discover_extension_bundles(roots: &[PathBuf]) -> Vec<ExtensionBundle> {
+    let mut bundles: Vec<ExtensionBundle> = Vec::new();
+    let mut queue: VecDeque<(PathBuf, usize)> =
+        roots.iter().map(|root| (root.clone(), 0)).collect();
+    let (mut dirs_seen, mut entries_seen) = (0usize, 0usize);
+    while let Some((dir, depth)) = queue.pop_front() {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        dirs_seen += 1;
+        if dirs_seen > MAX_WALK_DIRS {
+            break;
+        }
+        for entry in entries.flatten() {
+            entries_seen += 1;
+            if entries_seen > MAX_WALK_ENTRIES {
+                return bundles;
+            }
+            if !entry.file_type().is_ok_and(|kind| kind.is_dir()) {
+                continue;
+            }
+            let path = entry.path();
+            let name = entry.file_name().to_string_lossy().to_lowercase();
+            if let Some(stem) = name.strip_suffix(".app").filter(|stem| !stem.is_empty()) {
+                if bundles.iter().any(|known| known.path == path) {
+                    continue;
+                }
+                bundles.push(read_bundle(path, stem));
+            } else if depth + 1 < MAX_BUNDLE_DEPTH {
+                queue.push_back((path, depth + 1));
+            }
+        }
+    }
+    bundles
+}
+
+/// A bundle's names and identifier from its `Info.plist`, when it can be read.
+fn read_bundle(path: PathBuf, stem: &str) -> ExtensionBundle {
+    static KEYED: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(
+            r"<key>\s*(CFBundleIdentifier|CFBundleName|CFBundleDisplayName|CFBundleExecutable)\s*</key>\s*<string>\s*([^<]+?)\s*</string>",
+        )
+        .expect("static regex")
+    });
+    let mut bundle = ExtensionBundle {
+        names: vec![stem.to_string()],
+        identifiers: Vec::new(),
+        binary_plist: None,
+        path,
+    };
+    let plist = bundle.path.join("Contents").join("Info.plist");
+    let bytes = std::fs::File::open(&plist).ok().and_then(|file| {
+        use std::io::Read;
+        let mut bytes = Vec::new();
+        file.take(MAX_INFO_PLIST_BYTES)
+            .read_to_end(&mut bytes)
+            .ok()
+            .map(|_| bytes)
+    });
+    let Some(bytes) = bytes else {
+        return bundle;
+    };
+    if bytes.starts_with(b"bplist") {
+        bundle.binary_plist = Some(bytes.to_ascii_lowercase());
+        return bundle;
+    }
+    let text = String::from_utf8_lossy(&bytes);
+    for capture in KEYED.captures_iter(&text) {
+        let value = capture[2].to_lowercase();
+        if &capture[1] == "CFBundleIdentifier" {
+            bundle.identifiers.push(value);
+        } else if !bundle.names.contains(&value) {
+            bundle.names.push(value);
+        }
+    }
+    bundle
 }
 
 /// A word with no expansions, as text.

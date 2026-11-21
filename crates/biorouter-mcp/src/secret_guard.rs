@@ -44,7 +44,7 @@
 use ignore::gitignore::{Gitignore, GitignoreBuilder};
 use serde_json::{Map, Value};
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::sync::{Arc, LazyLock, Mutex};
 
 mod expand;
@@ -184,6 +184,50 @@ pub struct SecretGuard {
     /// that names the same directory by a different route (on macOS every
     /// `/var/…` temp dir is really `/private/var/…`). Falls back to `root`.
     canonical_root: PathBuf,
+    /// Biorouter's installed-extensions folders, whose app bundles a shell may not start
+    /// ([`extension_roots`]).
+    extension_roots: Arc<Vec<PathBuf>>,
+}
+
+/// Biorouter's installed-extensions folders: `<config>/extensions` as this process resolves
+/// the config folder (`BIOROUTER_PATH_ROOT` honoured), the platform one beside it (a run under
+/// `BIOROUTER_PATH_ROOT` can still reach the person's real extensions), and each one's
+/// canonical spelling.
+///
+/// An installed extension may ship a helper app that holds the person's macOS Accessibility
+/// and Screen Recording permissions, so the resolver refuses a shell command that starts an
+/// app bundle in here (`resolve::Reason::ExtensionApp`). No extension is named: the rule is
+/// about the folder.
+fn extension_roots() -> Arc<Vec<PathBuf>> {
+    let platform = crate::paths::platform_dirs().ok().map(|dirs| dirs.config);
+    let root = crate::paths::path_root_override();
+    Arc::new(resolve_extension_roots(
+        root.as_deref(),
+        platform.as_deref(),
+    ))
+}
+
+/// The pure core of [`extension_roots`], testable without the process environment.
+fn resolve_extension_roots(root_env: Option<&str>, platform_config: Option<&Path>) -> Vec<PathBuf> {
+    let fallback = platform_config
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| PathBuf::from(".config/biorouter"));
+    let mut roots = vec![crate::paths::resolve_config_dir(root_env, &fallback).join("extensions")];
+    if let Some(platform) = platform_config {
+        roots.push(platform.join("extensions"));
+    }
+    for root in roots.clone() {
+        if let Ok(canonical) = std::fs::canonicalize(&root) {
+            roots.push(canonical);
+        }
+    }
+    let mut unique = Vec::new();
+    for root in roots {
+        if root.is_absolute() && !unique.contains(&root) {
+            unique.push(root);
+        }
+    }
+    unique
 }
 
 impl SecretGuard {
@@ -229,6 +273,7 @@ impl SecretGuard {
                 .unwrap_or_else(|_| Gitignore::empty()),
             root: cwd.to_path_buf(),
             canonical_root: cwd.to_path_buf(),
+            extension_roots: extension_roots(),
         })
     }
 
@@ -268,7 +313,51 @@ impl SecretGuard {
             machine_wide,
             root: cwd.to_path_buf(),
             canonical_root: std::fs::canonicalize(cwd).unwrap_or_else(|_| cwd.to_path_buf()),
+            extension_roots: extension_roots(),
         }
+    }
+
+    /// The same guard with other extensions folders, for a test with a throwaway HOME.
+    #[cfg(test)]
+    pub(crate) fn with_extension_roots(mut self, roots: Vec<PathBuf>) -> Self {
+        self.extension_roots = Arc::new(roots);
+        self
+    }
+
+    /// The app bundle `path` is in, when that bundle is inside Biorouter's extensions folder:
+    /// the path up to and including its first `*.app` component below the folder. Compared
+    /// without regard to case, since the folders live on case-insensitive volumes on macOS
+    /// and Windows; reading the bundle is not this check's business, starting it is.
+    pub(crate) fn extension_bundle_of(&self, path: &Path) -> Option<PathBuf> {
+        fn folded(component: Component<'_>) -> String {
+            component.as_os_str().to_string_lossy().to_lowercase()
+        }
+        let parts: Vec<Component<'_>> = path.components().collect();
+        for root in self.extension_roots.iter() {
+            let root_parts: Vec<Component<'_>> = root.components().collect();
+            if parts.len() <= root_parts.len()
+                || !root_parts
+                    .iter()
+                    .zip(&parts)
+                    .all(|(a, b)| folded(*a) == folded(*b))
+            {
+                continue;
+            }
+            let inside = &parts[root_parts.len()..];
+            if let Some(at) = inside.iter().position(|part| {
+                let name = folded(*part);
+                name.len() > 4 && name.ends_with(".app")
+            }) {
+                let bundle: PathBuf = parts[..root_parts.len() + at + 1].iter().collect();
+                return Some(bundle);
+            }
+        }
+        None
+    }
+
+    /// [`extension_roots`] as this guard holds them.
+    pub(crate) fn extension_roots(&self) -> &[PathBuf] {
+        &self.extension_roots
     }
 
     /// Cached counterpart of [`SecretGuard::for_dir`], for the tool-dispatch
@@ -804,6 +893,13 @@ impl DeniedAccess {
                  permissions. Use Biorouter Copilot's own tools, which ask the person first; never \
                  start its engine from a shell."
                 .to_string(),
+            resolve::Reason::ExtensionApp => format!(
+                "The command is blocked: {target} starts an app bundle inside Biorouter's \
+                 extensions folder. An installed extension's helper app may hold the person's \
+                 macOS Accessibility and Screen Recording permissions, so starting it from a \
+                 shell would observe or control the desktop without asking them. Use that \
+                 extension's own tools instead. Reading or listing the folder is still allowed."
+            ),
         };
         // #546: a model that wrote the body as text looks for the word among
         // its commands and finds nothing, so say where it was.
@@ -1055,8 +1151,15 @@ pub(crate) mod h1_fixtures {
             ])
         }
 
+        /// The guard for this HOME, its extensions folder being the fake one.
         pub(crate) fn guard(&self) -> SecretGuard {
-            SecretGuard::build(&self.project, &[])
+            SecretGuard::build(&self.project, &[]).with_extension_roots(vec![self.extensions()])
+        }
+
+        /// `<HOME>/.config/biorouter/extensions`, the folder [`Self::guard`] treats as
+        /// Biorouter's installed extensions.
+        pub(crate) fn extensions(&self) -> PathBuf {
+            self.home.join(".config/biorouter/extensions")
         }
     }
 
@@ -1377,6 +1480,142 @@ mod tests {
             assert!(
                 scan_command(&g, &env, ordinary).is_none(),
                 "refused an ordinary command: {ordinary}"
+            );
+        }
+    }
+
+    /// A helper app installed with an extension, in the fake HOME's extensions folder, with
+    /// an XML `Info.plist` naming it. Returns the bundle.
+    fn install_helper_app(extensions: &Path) -> PathBuf {
+        let bundle = extensions.join("desktop-helper/1.2.0/Helper Kit.app");
+        fs::create_dir_all(bundle.join("Contents/MacOS")).unwrap();
+        fs::write(bundle.join("Contents/MacOS/helper"), "#!/bin/sh\n").unwrap();
+        fs::write(
+            bundle.join("Contents/Info.plist"),
+            "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<plist version=\"1.0\"><dict>\n\
+             <key>CFBundleIdentifier</key><string>org.example.helperkit</string>\n\
+             <key>CFBundleName</key><string>Kit Helper</string>\n\
+             <key>CFBundleExecutable</key><string>helper</string>\n\
+             </dict></plist>\n",
+        )
+        .unwrap();
+        fs::create_dir_all(extensions.join("desktop-helper/bin")).unwrap();
+        fs::write(extensions.join("desktop-helper/README.md"), "notes\n").unwrap();
+        bundle
+    }
+
+    /// An installed extension's helper app may hold the person's macOS Accessibility and Screen
+    /// Recording permissions, so a shell never starts one: not by the path of its executable in
+    /// any spelling the resolver reads, not with `open` by path, name or identifier, and not
+    /// through `osascript`. The rule names no extension; it is about the folder.
+    #[test]
+    fn an_extensions_helper_app_is_never_started_from_a_shell() {
+        let fake = FakeHome::new();
+        let (g, env) = (fake.guard(), fake.env());
+        let bundle = install_helper_app(&fake.extensions());
+        let exe = bundle.join("Contents/MacOS/helper");
+        let exe = exe.to_string_lossy().replace('\\', "/");
+        let at = "~/.config/biorouter/extensions/desktop-helper/1.2.0";
+        for command in [
+            format!("'{exe}' --serve"),
+            format!("{at}/'Helper Kit.app'/Contents/MacOS/helper --serve"),
+            "\"$HOME/.config/biorouter/extensions/desktop-helper/1.2.0/Helper Kit.app/Contents/MacOS/helper\"".to_string(),
+            format!("cd {at} && ./'Helper Kit.app'/Contents/MacOS/helper"),
+            "cd ~/.config/biorouter/extensions/desktop-helper/1.2.0/'Helper Kit.app'/Contents/MacOS && ./helper".to_string(),
+            "~/.config/biorouter/extensions/*/*/*.app/Contents/MacOS/helper".to_string(),
+            format!("nohup env FOO=1 {at}/'Helper Kit.app'/Contents/MacOS/helper &"),
+            format!("exec {at}/'HELPER KIT.APP'/Contents/MacOS/helper"),
+            format!("sh -c \"{at}/'Helper Kit.app'/Contents/MacOS/helper\""),
+            "D=$HOME/.config/biorouter/extensions/desktop-helper/1.2.0; \"$D/Helper Kit.app/Contents/MacOS/helper\"".to_string(),
+            format!("echo x | xargs -n 1 {at}/'Helper Kit.app'/Contents/MacOS/helper"),
+            format!("find ~/.config/biorouter/extensions -name README.md -exec {at}/'Helper Kit.app'/Contents/MacOS/helper {{}} ';'"),
+            format!("open {at}/'Helper Kit.app'"),
+            format!("/usr/bin/open -na {at}/'Helper Kit.app' --args --serve"),
+            "open -a 'Helper Kit'".to_string(),
+            "open -a 'helper kit.app' notes.txt".to_string(),
+            "open -a 'Kit Helper'".to_string(),
+            "open -g -b org.example.helperkit".to_string(),
+            "osascript -e 'tell application \"Helper Kit\" to activate'".to_string(),
+            "osascript -e 'tell application id \"org.example.helperkit\" to launch'".to_string(),
+            "osascript -l JavaScript -e 'Application(\"Kit Helper\").activate()'".to_string(),
+        ] {
+            let denied = g
+                .find_denied_access_in(json!({ "command": command }).as_object().unwrap(), &env)
+                .unwrap_or_else(|| panic!("started an extension's helper app: {command}"));
+            let message = denied.message();
+            assert!(
+                message.contains("app bundle inside Biorouter's extensions folder")
+                    && message.contains("Reading or listing the folder is still allowed"),
+                "{command}: {message}"
+            );
+            assert!(
+                !message.contains("Biorouter Copilot"),
+                "the generic rule is not Copilot's: {message}"
+            );
+        }
+        // Reading, listing and inspecting the folder and its bundles stays allowed, as do apps
+        // and scripts that are not bundles in it.
+        for ordinary in [
+            format!("ls -la {at}/'Helper Kit.app'/Contents/MacOS"),
+            format!("cat {at}/'Helper Kit.app'/Contents/Info.plist"),
+            format!("plutil -p {at}/'Helper Kit.app'/Contents/Info.plist"),
+            format!("codesign -dv --verbose=4 {at}/'Helper Kit.app'"),
+            format!("xattr -l {at}/'Helper Kit.app'/Contents/MacOS/helper"),
+            format!("file {at}/'Helper Kit.app'/Contents/MacOS/helper"),
+            "find ~/.config/biorouter/extensions -name '*.app' -maxdepth 4".to_string(),
+            "du -sh ~/.config/biorouter/extensions".to_string(),
+            "rg 'Helper Kit' ~/.config/biorouter/extensions".to_string(),
+            "open ~/.config/biorouter/extensions".to_string(),
+            "open -a TextEdit ~/.config/biorouter/extensions/desktop-helper/README.md".to_string(),
+            "open -b com.apple.TextEdit notes.txt".to_string(),
+            "osascript -e 'tell application \"Finder\" to activate'".to_string(),
+            "helper --serve".to_string(),
+            "~/.config/biorouter/extensions/desktop-helper/bin/run.sh".to_string(),
+            "/Applications/Other.app/Contents/MacOS/other".to_string(),
+            "~/Applications/Helper Kit.app/Contents/MacOS/helper".replace(' ', "\\ "),
+        ] {
+            assert!(
+                scan_command(&g, &env, &ordinary).is_none(),
+                "refused an ordinary command: {ordinary}"
+            );
+        }
+    }
+
+    /// The folder is `<config>/extensions` as Biorouter resolves it: under
+    /// `BIOROUTER_PATH_ROOT` when that is set, and the platform folder too, since a run under
+    /// a path root can still reach the person's real extensions.
+    #[test]
+    fn the_extensions_folder_follows_biorouter_path_root() {
+        let platform = Path::new("/home/u/.config/biorouter");
+        assert_eq!(
+            resolve_extension_roots(None, Some(platform)),
+            vec![PathBuf::from("/home/u/.config/biorouter/extensions")]
+        );
+        assert_eq!(
+            resolve_extension_roots(Some("/srv/sandbox"), Some(platform)),
+            vec![
+                PathBuf::from("/srv/sandbox/config/extensions"),
+                PathBuf::from("/home/u/.config/biorouter/extensions"),
+            ]
+        );
+
+        let fake = FakeHome::new();
+        let root = tempdir().unwrap();
+        let root = fs::canonicalize(root.path()).unwrap();
+        let roots = resolve_extension_roots(
+            Some(&root.to_string_lossy()),
+            Some(&fake.home.join(".config/biorouter")),
+        );
+        let g = fake.guard().with_extension_roots(roots);
+        let env = fake.env();
+        for extensions in [root.join("config/extensions"), fake.extensions()] {
+            let bundle = install_helper_app(&extensions);
+            let exe = bundle.join("Contents/MacOS/helper");
+            let command = format!("'{}'", exe.to_string_lossy().replace('\\', "/"));
+            assert!(
+                scan_command(&g, &env, &command).is_some(),
+                "started a helper app under {}",
+                extensions.display()
             );
         }
     }
