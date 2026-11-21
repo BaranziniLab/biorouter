@@ -12269,7 +12269,7 @@ impl Agent {
     /// The Biorouter Browser's tools reach the model only in a person's own chat (BB-16).
     /// A subagent, a scheduled run, a hidden or a terminal session is never the chat a
     /// window shows, so no person could see the consent card or the page, and every call
-    /// would be refused. Offering them anyway cost every such roster fifteen tools that
+    /// would be refused. Offering them anyway cost every such roster sixteen tools that
     /// could never work. The session kind never changes during a chat, so the roster stays
     /// stable for prompt caching. A chat whose row could not be read (`None`) keeps them:
     /// `ExtensionManager::admit_browser` refuses its calls, failing closed.
@@ -27366,7 +27366,7 @@ mod tests {
     /// BB-16: the Biorouter Browser's tools reach the model only in a person's own chat,
     /// even on a desktop daemon where the browser is available. A subagent, a scheduled run,
     /// a hidden or a terminal session is never the chat a window shows, so it was offered
-    /// fifteen tools whose every call was refused. The permission editor still lists them.
+    /// sixteen tools whose every call was refused. The permission editor still lists them.
     #[tokio::test]
     #[serial_test::serial(workspace_services)]
     async fn browser_tools_are_offered_only_in_a_persons_own_chat() {
