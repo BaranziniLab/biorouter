@@ -13,6 +13,14 @@
 //   is passed only once the pointer is in its lower half).
 // - /agent/drag/affordances: what the snapshot should give references to, and a flood of
 //   draggable tiles it must cap.
+// - /agent/drag/frame: W3Schools' "Try it" HTML5 drag and drop demo: the result is a
+//   same-origin iframe the outer page writes with script, holding an empty drop zone whose
+//   only marks are its inline `ondrop` and `ondragover` handlers, and a draggable image.
+//   /agent/drag/frame-cross shows the same result from another site (/agent/drag/frame-result),
+//   so it runs in a frame of its own process.
+// - /agent/drag/guard: drag ends a drop must not reach through: a row whose press point is
+//   its password field, a form whose drop point lands on its password field, a box whose drop
+//   point lands on a frame inside it, and a frame from another site with a password field.
 //
 // Every value is synthetic.
 
@@ -191,8 +199,105 @@ const AFFORDANCES = `<style>
 <button style="cursor:move">Move button</button>
 <div id="tiles">${Array.from({ length: 300 }, (_, i) => `<div>T${i + 1}</div>`).join('')}</div>`;
 
-/** The page for `pathname`, or null. */
-function dragPage(pathname) {
+// The result document of W3Schools' tryhtml5_draganddrop, with the logo as an inline image.
+const FRAME_RESULT = `<!DOCTYPE HTML>
+<html>
+<head>
+<style>
+#div1 {
+  width: 350px;
+  height: 70px;
+  padding: 10px;
+  border: 1px solid #aaaaaa;
+}
+</style>
+<script>
+function allowDrop(ev) {
+  ev.preventDefault();
+}
+
+function drag(ev) {
+  ev.dataTransfer.setData("text", ev.target.id);
+}
+
+function drop(ev) {
+  ev.preventDefault();
+  var data = ev.dataTransfer.getData("text");
+  ev.target.appendChild(document.getElementById(data));
+}
+</script>
+</head>
+<body>
+
+<p>Drag the W3Schools image into the rectangle:</p>
+
+<div id="div1" ondrop="drop(event)" ondragover="allowDrop(event)"></div>
+<br>
+<img id="drag1" src="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='336' height='69'%3E%3Crect width='336' height='69' fill='%2304aa6d'/%3E%3C/svg%3E" draggable="true" ondragstart="drag(event)" width="336" height="69">
+
+</body>
+</html>`;
+
+// The same demo served on its own, for a frame from another site; the page tells its parent
+// where the image ended up, since the parent cannot read across origins.
+const FRAME_RESULT_PAGE = `${FRAME_RESULT.replace(
+  'ev.target.appendChild(document.getElementById(data));',
+  "ev.target.appendChild(document.getElementById(data));\n  parent.postMessage('result:' + document.getElementById(data).parentNode.id, '*');"
+)}`;
+
+const FRAME_CROSS = (other) => `<h1>Tryit Editor</h1>
+<iframe id="crossResult" title="Result" src="${other}/agent/drag/frame-result" style="width:520px;height:260px;border:1px solid #ccc"></iframe>
+<script>
+  window.addEventListener('message', (e) => { if (typeof e.data === 'string' && e.data.startsWith('result:')) document.title = 'image in ' + e.data.slice(7); });
+</script>`;
+
+// The tryit editor writes the result into its iframe with document.write, as W3Schools does,
+// so the frame is about:blank and shares the page's origin.
+const FRAME = `<h1>Tryit Editor</h1>
+<textarea id="textareaCode" rows="4" cols="60" aria-label="Source">${FRAME_RESULT.replace(/</g, '&lt;')}</textarea>
+<iframe id="iframeResult" name="iframeResult" title="Result" style="width:520px;height:260px;border:1px solid #ccc"></iframe>
+<script>
+  const doc = document.getElementById('iframeResult').contentWindow.document;
+  doc.open();
+  doc.write(${JSON.stringify(FRAME_RESULT).replace(/</g, '\\u003c')});
+  doc.close();
+</script>`;
+
+/** `other` is the origin of another site, for the cross-site frame. */
+const GUARD = (other) => `<style>
+  .card{height:34px;line-height:34px;padding:0 10px;background:#eef;width:200px}
+  #login-form{width:420px;height:160px;position:relative;border:1px dashed #888}
+  #login-form input{position:absolute;left:10px;width:390px;height:30px;box-sizing:border-box}
+  #holder{width:420px;height:160px;position:relative;border:1px dashed #888}
+  #holder iframe{position:absolute;left:0;width:420px;height:70px;border:0}
+</style>
+<h1>Guard</h1>
+<div class="card" draggable="true" id="card">Drag me</div>
+<div id="pw-row" draggable="true" aria-label="Password row" style="width:300px;padding:4px 0"><input id="pw2" type="password" autocomplete="new-password" aria-label="New password" style="width:300px"></div>
+<form id="login-form" aria-label="Sign in">
+  <input id="user" style="top:10px" autocomplete="username" aria-label="User">
+  <input id="pw" style="top:100px" type="password" autocomplete="current-password" aria-label="Password">
+</form>
+<div id="holder" aria-label="Holder"><iframe id="inner-frame" title="Inner form" style="top:90px" src="/agent/drag/guard-inner"></iframe></div>
+<iframe id="pay" title="Pay" src="${other}/agent/drag/guard-inner" style="width:420px;height:70px"></iframe>
+<script>
+  document.addEventListener('dragstart', (e) => e.dataTransfer.setData('text/plain', 'dragged text'));
+  window.addEventListener('message', (e) => { if (typeof e.data === 'string' && e.data.startsWith('typed:')) document.body.dataset.typed = (document.body.dataset.typed || '') + e.data + ';'; });
+  for (const el of document.querySelectorAll('#login-form, #holder')) {
+    el.addEventListener('dragover', (e) => e.preventDefault());
+    el.addEventListener('drop', (e) => { document.title = 'dropped on ' + e.target.id; });
+  }
+</script>`;
+
+const GUARD_INNER = `<style>body{margin:0} input{width:400px;height:60px;box-sizing:border-box}</style>
+<input id="inner-pw" type="password" autocomplete="current-password" aria-label="Inner password">
+<script>
+  // Tell the page when anything lands in the field, so a spec can see it across origins.
+  document.getElementById('inner-pw').addEventListener('input', (e) => parent.postMessage('typed:' + e.target.value.length, '*'));
+</script>`;
+
+/** The page for `pathname`, or null. `other` is another site's origin. */
+function dragPage(pathname, other = '') {
   switch (pathname) {
     case '/agent/drag/zone':
       return { title: 'Drag zone', body: ZONE };
@@ -202,6 +307,16 @@ function dragPage(pathname) {
       return { title: 'Drag mouse', body: MOUSE };
     case '/agent/drag/affordances':
       return { title: 'Drag affordances', body: AFFORDANCES };
+    case '/agent/drag/frame':
+      return { title: 'Drag frame', body: FRAME };
+    case '/agent/drag/frame-cross':
+      return { title: 'Drag frame cross', body: FRAME_CROSS(other) };
+    case '/agent/drag/frame-result':
+      return { title: 'Frame result', body: FRAME_RESULT_PAGE };
+    case '/agent/drag/guard':
+      return { title: 'Drag guard', body: GUARD(other) };
+    case '/agent/drag/guard-inner':
+      return { title: 'Guard inner', body: GUARD_INNER };
     default:
       return null;
   }

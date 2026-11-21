@@ -382,7 +382,7 @@ async function startFixtureSite(names = {}) {
         );
         return;
       default: {
-        const drag = dragPage(url.pathname);
+        const drag = dragPage(url.pathname, origin(publicB));
         if (drag) html(200, drag.title, drag.body);
         else html(404, 'Not found', '<h1>Not found</h1>');
       }

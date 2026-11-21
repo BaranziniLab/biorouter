@@ -273,6 +273,108 @@ test('never drags into a password field, by locator or at its point', async () =
   expect(await page<string>("document.getElementById('pw').value")).toBe('');
 });
 
+/** Run script in the W3Schools-style result frame of /agent/drag/frame. */
+const inResult = <T>(script: string) =>
+  page<T>(
+    `(() => { const document = window.document.getElementById('iframeResult').contentDocument; return ${script}; })()`
+  );
+
+test('drops the W3Schools image into the empty rectangle in its frame', async () => {
+  await open('/agent/drag/frame');
+  await expect.poll(() => inResult<boolean>("!!document.getElementById('div1')")).toBe(true);
+  const snap = (await agent('snapshot')).data?.snapshot ?? '';
+  // The empty zone has no role and no words: its drop handlers are what make it a place.
+  const zone = refFor(snap, /\[dropzone\] id:"div1"/);
+  const image = refFor(snap, /\[image\].*\[draggable\]/);
+  const dragged = await agent('drag', { from: { ref: image }, to: { ref: zone } });
+  expect(dragged.ok, dragged.detail).toBe(true);
+  expect(dragged.detail).toContain('with an HTML drag');
+  expect(dragged.detail).toContain('the page moved it into');
+  expect(await inResult<boolean>("!!document.querySelector('#div1 > #drag1')")).toBe(true);
+});
+
+test('says how to reach an element in a frame when a selector finds nothing', async () => {
+  await open('/agent/drag/frame');
+  await expect.poll(() => inResult<boolean>("!!document.getElementById('div1')")).toBe(true);
+  for (const to of [{ selector: '#div1' }, { selector: 'iframe#iframeResult div#div1' }]) {
+    const missed = await agent('drag', { from: { selector: '#textareaCode' }, to });
+    expect(missed.ok).toBe(false);
+    expect(missed.detail).toContain('No visible element matches');
+    expect(missed.detail).toContain('not inside its frame');
+    expect(missed.detail).toContain('@e reference from browser_snapshot');
+  }
+});
+
+test('drops between references inside a frame from another site', async () => {
+  await open('/agent/drag/frame-cross');
+  let snap = '';
+  await expect
+    .poll(async () => {
+      snap = (await agent('snapshot')).data?.snapshot ?? '';
+      return /\[dropzone\] id:"div1"/.test(snap) && /\[image\].*\[draggable\]/.test(snap);
+    })
+    .toBe(true);
+  // The frame runs in a process of its own, so its nodes are reached through its own session.
+  const processes = await app.evaluate(({ webContents }) =>
+    webContents
+      .getAllWebContents()
+      .flatMap((contents) => contents.mainFrame.framesInSubtree)
+      .filter((frame) => frame.url.includes('/agent/drag/frame'))
+      .map((frame) => frame.processId)
+  );
+  expect(new Set(processes).size).toBe(2);
+  const dragged = await agent('drag', {
+    from: { ref: refFor(snap, /\[image\].*\[draggable\]/) },
+    to: { ref: refFor(snap, /\[dropzone\] id:"div1"/) },
+  });
+  expect(dragged.ok, dragged.detail).toBe(true);
+  expect(dragged.detail).toContain('with an HTML drag');
+  await expect.poll(() => page<string>('document.title')).toBe('image in div1');
+});
+
+test('never drops through a frame, nor on a password field inside what it names', async () => {
+  await open('/agent/drag/guard');
+  await expect
+    .poll(() =>
+      page<boolean>(
+        "!!document.getElementById('inner-frame').contentDocument?.getElementById('inner-pw')"
+      )
+    )
+    .toBe(true);
+  const from = { selector: '#card' };
+  // A frame named as the destination: what a drop lands on inside it is not checked.
+  for (const selector of ['iframe#pay', '#inner-frame']) {
+    const framed = await agent('drag', { from, to: { selector } });
+    expect(framed.ok, selector).toBe(false);
+    expect(framed.detail, selector).toContain('is a frame');
+  }
+  // A form whose drop point is its password field.
+  const form = await agent('drag', { from, to: { selector: '#login-form' } });
+  expect(form.ok).toBe(false);
+  expect(form.data?.error_kind).toBe('protected_field');
+  // A box whose drop point is over a frame inside it.
+  const holder = await agent('drag', { from, to: { selector: '#holder' } });
+  expect(holder.ok).toBe(false);
+  expect(holder.detail).toContain('over a frame');
+  // A source whose press point is a password field.
+  const source = await agent('drag', { from: { selector: '#pw-row' }, to: { selector: '#card' } });
+  expect(source.ok).toBe(false);
+  expect(source.data?.error_kind).toBe('protected_field');
+  // A frame named as the thing to drag.
+  const frameSource = await agent('drag', { from: { selector: '#inner-frame' }, to: from });
+  expect(frameSource.ok).toBe(false);
+  expect(frameSource.detail).toContain('is a frame');
+  expect(await page<string>('document.title')).toBe('Drag guard');
+  expect(await page<string>("document.getElementById('pw').value")).toBe('');
+  expect(
+    await page<string>(
+      "document.getElementById('inner-frame').contentDocument.getElementById('inner-pw').value"
+    )
+  ).toBe('');
+  // Nothing reached the field in the other site's frame either.
+  expect(await page<string>("document.body.dataset.typed || ''")).toBe('');
+});
+
 test.describe('live demo pages (network)', () => {
   test.skip(!process.env.BIOROUTER_BROWSER_LIVE_DRAG, 'set BIOROUTER_BROWSER_LIVE_DRAG=1');
 
