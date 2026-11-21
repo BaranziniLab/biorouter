@@ -540,12 +540,14 @@ person's own shell can always run what it likes.
 | Refused | How it is detected | Applies to |
 |---|---|---|
 | Biorouter's own windows and processes | The target's process id is the daemon, one of its ancestors (the desktop app, or the terminal running the CLI), or a descendant of the desktop main process (the launcher passes `BIOROUTER_DESKTOP_MAIN_PID`); or its executable lies inside the running app's install folder; or its bundle identifier is the desktop app's or the Copilot bundle's | Every tool, observing included |
-| Biorouter's windows in display captures | On macOS and Windows every Biorouter window sets Electron's content protection while any Copilot grant is live, so a display capture shows them blank; on Linux, which has no equivalent, a display capture is refused while a Biorouter window is on that display and the model is told to capture an app window | `screen_capture` with `display` |
+| Biorouter's windows in display captures | On every OS a display capture is refused while a shown Biorouter window overlaps that display, and the model is told to capture an app window. Electron's content protection, planned for macOS and Windows, is not set | `screen_capture` with `display` |
+| Security prompts and password stores in display captures | A shown window of a process the guard calls a security prompt (the system security prompts below, plus Keychain Access, Passwords and Seahorse), found by the app list's process id or by the window's own app name, overlaps that display; a prompt window that reports no bounds counts for every display | `screen_capture` with `display` |
 | The lock screen | macOS `CGSessionCopyCurrentDictionary` (`CGSSessionScreenIsLocked`); Windows input desktop and session lock state; Linux logind `LockedHint` | Every tool |
 | System security prompts | Target process: macOS `SecurityAgent`, `coreautha`, `UserNotificationCenter` (permission prompts), `loginwindow`; Windows `consent.exe`, `CredentialUIBroker.exe`, `LogonUI.exe`; Linux polkit agents, `gcr-prompter`, `pinentry` | Every tool |
 | Privacy and security settings | The settings app's window or selected pane is a privacy, security, users or login items pane (a list per OS) | Act calls; looking is allowed |
 | Password fields | The reference's recorded state includes `secure` (agent-desktop marks `AXSecureTextField`, `IsPassword` and the AT-SPI password role and never reads their values) | `type_text`, `set_value`, `perform_secondary_action clear` |
 | Secure keyboard input | macOS `IsSecureEventInputEnabled()`: some app's password field holds the keyboard | `type_text`, `press_key`, `set_value` |
+| A recorded password field holds the keyboard (Windows, Linux) | Neither OS has a secure input flag. Before `press_key`, the wrapper asks `is <ref> --property=focused` for each password field (state `secure`) this request recorded in the target app, at most eight, and refuses on a `true` answer. A read that fails counts as not focused | `press_key` (`type_text` and `set_value` act on a reference, refused by the password field row) |
 | Secrets in typed text | The text is scanned with the patterns `guardrails/secret_output.rs` uses (private keys, cloud keys, provider store values), as the browser does (BB-13) | `type_text`, `set_value` |
 | Keystrokes into terminals | Target is a terminal emulator by bundle identifier or process name (Terminal, iTerm2, Warp, Ghostty, kitty, Alacritty, WezTerm, Windows Terminal, `conhost`, `cmd`, PowerShell, GNOME Terminal, Konsole, xterm and others in a maintained list). Typing there runs commands outside Developer's shell, its permission mode, the secret guard and folder access | `type_text`, `press_key`, `set_value`, `drag`; clicking and looking are allowed |
 | DevTools ports and launch options | Not constructible: `open_app` takes only an app name or bundle identifier | `open_app` |
@@ -1062,6 +1064,17 @@ Phases 3 and 5 and the first part of phase 6 landed on this branch on 2026-11-20
   agent-desktop 1.3.1's source after the first Windows drive was refused on a 10,400 character text.
   Copilot's advice for that refusal no longer says to observe again, and the WinForms fixture's
   scrolling text is 1,500 characters.
+- **On Windows and Linux a password field is detected only when it was seen.** macOS reports
+  secure keyboard input for the whole system; Windows and Linux report nothing, and agent-desktop
+  has no read of the focused element (its `focused` surface on Windows is the foreground window's
+  whole tree, and Linux has none), so a check before every key would mean a full window read.
+  `press_key` asks the engine instead whether a password field recorded in this request has focus,
+  one `is` read per field. A password field that appeared after the last observation (a sign-in
+  sheet that opened since), a field the engine reports without the `secure` state, or focus that
+  moves between the check and the key, is not caught. `type_text` and `set_value` are not affected:
+  they act on a reference, and a password field's reference is refused. Where the live state
+  cannot be read, `is` answers from the state the observation recorded, so a field focused then
+  still refuses keys. Read from agent-desktop 1.3.1's `is`, `states` and surface sources.
 - **The retired engine's leftover is ended by path.** On macOS the daemon ends, once at start, a
   process whose executable is exactly `<this app>/Contents/Resources/computer-use/BioRouter
   Computer Use.app/Contents/MacOS/ocu` (`computer_use::retired`), so another installation's copy
