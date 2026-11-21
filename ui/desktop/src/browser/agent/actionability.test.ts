@@ -227,5 +227,20 @@ describe('LOCATE_FUNCTION (AD-17: a drag end named by a selector or words)', () 
     expect(report(locate('selector', 'Item 1', null))).toMatchObject({ problem: 'syntax' });
     expect(report(locate('text', 'Item 1', '#nowhere'))).toMatchObject({ problem: 'scope-none' });
     expect(report(locate('text', 'Item 1', '::bad'))).toMatchObject({ problem: 'scope-syntax' });
+    expect(report(locate('text', 'Only hidden', null))).not.toHaveProperty('frames');
+  });
+
+  it('counts the frames whose content it cannot look into when nothing matches', () => {
+    document.body.insertAdjacentHTML('beforeend', '<iframe id="iframeResult"></iframe>');
+    expect(report(locate('selector', 'iframe#iframeResult div#div1', null))).toMatchObject({
+      problem: 'none',
+      frames: 1,
+    });
+    expect(report(locate('text', 'Item 1', '#nowhere'))).toMatchObject({
+      problem: 'scope-none',
+      frames: 1,
+    });
+    // A match is reported without them.
+    expect(report(locate('selector', '.item', null))).not.toHaveProperty('frames');
   });
 });

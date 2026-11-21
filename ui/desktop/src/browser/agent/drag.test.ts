@@ -182,6 +182,36 @@ describe('performDrag (AD-17)', () => {
     expect(fake.kinds().slice(-3)).toEqual(['dragCancel', 'mouseReleased', 'intercept:false']);
   });
 
+  it('checks the drop point once more before a native drop, and cancels when it is refused', async () => {
+    const fake = fakeCdp({ startsDragAt: () => true });
+    const checked: Array<{ x: number; y: number }> = [];
+    await expect(
+      performDrag(fake.cdp, {
+        from: { x: 0, y: 0 },
+        to: { x: 0, y: 100 },
+        steps: 2,
+        locateTarget: async () => ({ x: 0, y: 80 }),
+        checkDrop: async (at) => {
+          checked.push(at);
+          throw new Error('a password field is under the drop point now');
+        },
+      })
+    ).rejects.toThrow('a password field');
+    // The point it would drop at, after the destination was found again.
+    expect(checked).toEqual([{ x: 0, y: 80 }]);
+    expect(fake.kinds()).not.toContain('drop');
+    expect(fake.kinds().slice(-3)).toEqual(['dragCancel', 'mouseReleased', 'intercept:false']);
+
+    const passes = fakeCdp({ startsDragAt: () => true });
+    await performDrag(passes.cdp, {
+      from: { x: 0, y: 0 },
+      to: { x: 0, y: 100 },
+      steps: 2,
+      checkDrop: async () => undefined,
+    });
+    expect(passes.ofType('drop')).toHaveLength(1);
+  });
+
   it('stops when the operation is stopped, still releasing the button', async () => {
     const fake = fakeCdp();
     const stop = new AbortController();

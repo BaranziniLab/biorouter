@@ -27,6 +27,8 @@
  * - **A drag that starts late** (a page that sets `draggable` on press, or starts a native
  *   drag partway through) is still finished as a native drag, never left open: an open drag
  *   would make the page ignore every later mouse event.
+ * - **A native drop is checked once more** (`checkDrop`) right before it is sent, and a refusal
+ *   cancels the drag with `dragCancel` rather than dropping.
  */
 import type { CdpEvent } from './cdp';
 
@@ -50,6 +52,12 @@ export type DragOptions = {
    * at a point, or a destination that left the visible page).
    */
   locateTarget?: () => Promise<Point | null>;
+  /**
+   * Asked just before a native drop is sent at `at`; throwing cancels the drag instead. A native
+   * drop is the one that types the dragged text into a field, and the page may have moved
+   * things since the drop point was first checked.
+   */
+  checkDrop?: (at: Point) => Promise<void>;
   signal?: AbortSignal;
 };
 
@@ -173,6 +181,7 @@ export async function performDrag(cdp: DragCdp, options: DragOptions): Promise<D
       await cdp.send('Input.dispatchDragEvent', { type: 'dragOver', x: to.x, y: to.y, data });
       await wait(FRAME_MS, signal);
     }
+    if (options.checkDrop) await options.checkDrop(to);
     await cdp.send('Input.dispatchDragEvent', { type: 'drop', x: to.x, y: to.y, data });
     dropSent = true;
     await mouse(cdp, 'mouseReleased', to, true);

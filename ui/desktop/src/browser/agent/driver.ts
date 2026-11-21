@@ -538,7 +538,7 @@ async function resolveLocator(
   const what = describeLocator(locator);
   if (found.exceptionDetails) throw new OpFailure(`The page could not look for ${what}.`);
   if (found.result.subtype !== 'node' || !found.result.objectId) {
-    let report: { problem?: string; count?: number; hidden?: number; near?: string[] } = {};
+    let report: LocatorReport = {};
     try {
       report = JSON.parse(String(found.result.value ?? '{}'));
     } catch {
@@ -580,10 +580,32 @@ async function resolveLocator(
   };
 }
 
+/** Why a locator did not name exactly one element, as `LOCATE_FUNCTION` reports it. */
+type LocatorReport = {
+  problem?: string;
+  count?: number;
+  hidden?: number;
+  near?: string[];
+  frames?: number;
+};
+
 function locatorProblem(
   locator: Exclude<Locator, { ref: string }>,
   what: string,
-  report: { problem?: string; count?: number; hidden?: number; near?: string[] }
+  report: LocatorReport
+): string {
+  const problem = locatorProblemText(locator, what, report);
+  const frames = typeof report.frames === 'number' ? report.frames : 0;
+  if (frames <= 0 || report.problem === 'several' || report.problem === 'syntax') return problem;
+  // A selector cannot look into a frame (`iframe#result #zone` finds nothing), so say where its
+  // content is reached.
+  return `${problem} A selector or text looks only in the page itself, not inside its ${frames === 1 ? 'frame' : `${frames} frames`}: name an element in a frame by its @e reference from browser_snapshot.`;
+}
+
+function locatorProblemText(
+  locator: Exclude<Locator, { ref: string }>,
+  what: string,
+  report: LocatorReport
 ): string {
   const hidden = report.hidden ?? 0;
   const near = (report.near ?? []).filter((place) => typeof place === 'string').slice(0, 5);
@@ -1740,34 +1762,85 @@ async function dropPoint(
   return { point: { x: local.x + node.offset.x, y: local.y + node.offset.y }, local, viewport };
 }
 
+/** Elements that host another document or a plugin, whose content a hit test cannot see. */
+const FRAME_TAGS: ReadonlySet<string> = new Set(['iframe', 'frame', 'object', 'embed']);
+
+function frameRefusal(where: string, act: 'drag' | 'drop'): string {
+  const advice =
+    act === 'drop'
+      ? 'Drop on an @e reference inside the frame instead'
+      : 'Drag an @e reference inside the frame instead';
+  return `${where} is over a frame, whose content the browser cannot check before a ${act}. ${advice} (browser_snapshot lists them under the frame's line).`;
+}
+
 /**
- * A drop at a point must land on something the browser can check (AD-17): never a password,
- * verification code or card field (a drop types the dragged text into it), and never inside a
- * frame, whose fields are reached by their @e references instead.
+ * A drag end (AD-17) must be an element the browser can check: never a password, verification
+ * code or card field (a drop types the dragged text into it), and never a frame, which hosts
+ * another document the checks cannot see into. A selector or text resolves in the main
+ * document, so `iframe#pay` names the frame element itself, and its drop point would land on
+ * whatever the frame shows there.
  */
-async function refuseUncheckedDropPoint(ctx: Context, point: Point): Promise<void> {
-  const viewport = await viewportOf(ctx);
+function refuseDragEnd(facts: ElementFacts, node: Resolved, act: 'drag' | 'drop'): void {
+  if (isProtectedInput(facts))
+    throw new OpFailure(PROTECTED_DRAG_REFUSAL, { error_kind: 'protected_field' });
+  if (FRAME_TAGS.has(facts.tag)) {
+    const advice =
+      act === 'drop'
+        ? 'Drop on an @e reference inside it instead'
+        : 'Drag an @e reference inside it instead';
+    throw new OpFailure(
+      `${node.label} is a frame, whose content the browser cannot check before a ${act}. ${advice} (browser_snapshot lists them under the frame's line).`
+    );
+  }
+}
+
+/** The frame `node` lives in (the page's own when null), as a hit test reports a node's frame. */
+async function frameIdOf(ctx: Context, node: Resolved | null): Promise<string | null> {
+  if (node?.sessionId) return mainFrameId(ctx, node.sessionId).catch(() => null);
+  if (node && node.target.frameKey !== 'main') return node.target.frameKey;
+  return mainFrameId(ctx).catch(() => null);
+}
+
+/**
+ * AD-17: what a drag presses or drops on at `local` must be something the browser can check.
+ * `local` is in the viewport of `node`'s frame, or of the page when `node` is null (a drop at a
+ * point). The point is hit tested (`DOM.getNodeForLocation`, `DOM.describeNode`, no page
+ * script) and refused when it lands on a password, verification code or card field, on a frame
+ * element, or on content of another frame than `node`'s: a container named as a drag end
+ * (`#login-form`) gets a drop point past its middle, which may be the password field inside it.
+ * `where` names the point in a refusal.
+ */
+async function refuseUncheckablePoint(
+  ctx: Context,
+  node: Resolved | null,
+  local: Point,
+  where: string,
+  act: 'drag' | 'drop'
+): Promise<void> {
+  const sessionId = node?.sessionId;
+  const viewport = await viewportOf(ctx, sessionId);
   const hit = await ctx.state.cdp
-    .send<{ backendNodeId: number; frameId?: string }>('DOM.getNodeForLocation', {
-      x: Math.round(point.x + viewport.scrollX),
-      y: Math.round(point.y + viewport.scrollY),
-      includeUserAgentShadowDOM: false,
-      ignorePointerEventsNone: true,
-    })
+    .send<{ backendNodeId: number; frameId?: string }>(
+      'DOM.getNodeForLocation',
+      {
+        x: Math.round(local.x + viewport.scrollX),
+        y: Math.round(local.y + viewport.scrollY),
+        includeUserAgentShadowDOM: false,
+        ignorePointerEventsNone: true,
+      },
+      sessionId
+    )
     .catch(() => null);
   if (!hit) return;
-  const main = await mainFrameId(ctx).catch(() => null);
+  const frame = await frameIdOf(ctx, node);
   const described = await ctx.state.cdp
     .send<{
       node: { nodeName?: string; attributes?: string[] };
-    }>('DOM.describeNode', { backendNodeId: hit.backendNodeId })
+    }>('DOM.describeNode', { backendNodeId: hit.backendNodeId }, sessionId)
     .catch(() => null);
   const tag = (described?.node.nodeName ?? '').toLowerCase();
-  if ((hit.frameId && main && hit.frameId !== main) || tag === 'iframe' || tag === 'frame') {
-    throw new OpFailure(
-      `(${point.x}, ${point.y}) is over a frame, whose content the browser cannot check before a drop. Drop on an @e reference inside the frame instead.`
-    );
-  }
+  if ((hit.frameId && frame && hit.frameId !== frame) || FRAME_TAGS.has(tag))
+    throw new OpFailure(frameRefusal(where, act));
   const attributes: Record<string, string> = {};
   const list = described?.node.attributes ?? [];
   for (let i = 0; i + 1 < list.length; i += 2) attributes[list[i].toLowerCase()] = list[i + 1];
@@ -1782,9 +1855,9 @@ async function refuseUncheckedDropPoint(ctx: Context, point: Point): Promise<voi
   }
 }
 
-function refuseProtectedDragEnd(facts: ElementFacts): void {
-  if (isProtectedInput(facts))
-    throw new OpFailure(PROTECTED_DRAG_REFUSAL, { error_kind: 'protected_field' });
+/** `point` (main viewport coordinates) in the viewport of `node`'s own frame. */
+function localTo(node: Resolved, point: Point): Point {
+  return { x: point.x - node.offset.x, y: point.y - node.offset.y };
 }
 
 /** Remembers where the source sits, in the isolated world (the page cannot see it). */
@@ -1814,8 +1887,11 @@ const PLACE_NOW_FUNCTION = `function () {
  * gesture is `performDrag` in `drag.ts`). Each end is an @e reference or, in the main document,
  * the one visible element a CSS selector or text names (`resolveTarget`). The source passes
  * BB-13's checks (visible, enabled, stable, not covered); the destination must be visible
- * together with it and not covered at the drop point; neither end may be a password,
- * verification code or card field, and a drop at a point may not land on one or in a frame.
+ * together with it and not covered at the drop point. Neither end may be a password,
+ * verification code or card field or a frame, and neither the press point nor the drop point
+ * may land on such a field, on a frame, or in another frame than its end's
+ * (`refuseUncheckablePoint`); the drop point is judged again just before a native drop, where
+ * the page may have moved things since.
  */
 async function opDrag(ctx: Context): Promise<BrowserAgentResult> {
   if (ctx.request.grant !== 'act') {
@@ -1827,11 +1903,19 @@ async function opDrag(ctx: Context): Promise<BrowserAgentResult> {
   }
   const source = await resolveTarget(ctx, ctx.request.args.from);
   const sourceFacts = await factsOf(ctx, source);
-  refuseProtectedDragEnd(sourceFacts);
+  refuseDragEnd(sourceFacts, source, 'drag');
   const from = await actionablePoint(ctx, source, sourceFacts, true);
+  await refuseUncheckablePoint(
+    ctx,
+    source,
+    localTo(source, from),
+    `The press point on ${source.label}`,
+    'drag'
+  );
   let to: Point;
   let targetLabel: string;
   let locateTarget: (() => Promise<Point | null>) | undefined;
+  let checkDrop: (at: Point) => Promise<void>;
   let hideTarget: () => Promise<void> = async () => undefined;
   if (ctx.request.args.to) {
     const target = await resolveTarget(ctx, ctx.request.args.to);
@@ -1843,12 +1927,14 @@ async function opDrag(ctx: Context): Promise<BrowserAgentResult> {
         `${source.label} is both the thing to drag and the place to drop it. Name a different destination.`
       );
     }
-    refuseProtectedDragEnd(await factsOf(ctx, target));
+    refuseDragEnd(await factsOf(ctx, target), target, 'drop');
     const drop = await dropPoint(ctx, target, from);
     if (!drop)
       throw new OpFailure(
         `${target.label} is not visible together with ${source.label}; scroll so both show, or drop at a point with to_x and to_y.`
       );
+    const where = `The drop point on ${target.label}`;
+    await refuseUncheckablePoint(ctx, target, drop.local, where, 'drop');
     const cover = await coverAt(ctx, target, drop.local, drop.viewport);
     if (cover) {
       throw new OpFailure(
@@ -1857,7 +1943,16 @@ async function opDrag(ctx: Context): Promise<BrowserAgentResult> {
     }
     to = drop.point;
     targetLabel = target.label;
-    locateTarget = async () => (await dropPoint(ctx, target, from))?.point ?? null;
+    checkDrop = (at) => refuseUncheckablePoint(ctx, target, localTo(target, at), where, 'drop');
+    // Found again once the source is picked up; a new point that fails the checks is not taken.
+    locateTarget = async () => {
+      const again = await dropPoint(ctx, target, from);
+      if (!again) return null;
+      return refuseUncheckablePoint(ctx, target, again.local, where, 'drop').then(
+        () => again.point,
+        () => null
+      );
+    };
     hideTarget = await highlight(ctx, target);
   } else {
     const point = ctx.request.args.point as { x: number; y: number } | null;
@@ -1867,9 +1962,11 @@ async function opDrag(ctx: Context): Promise<BrowserAgentResult> {
       throw new OpFailure(
         `(${point.x}, ${point.y}) is outside the visible page (${viewport.width} by ${viewport.height} CSS pixels).`
       );
-    await refuseUncheckedDropPoint(ctx, point);
+    const where = `(${point.x}, ${point.y})`;
+    await refuseUncheckablePoint(ctx, null, point, where, 'drop');
     to = { x: point.x, y: point.y };
-    targetLabel = `(${point.x}, ${point.y})`;
+    targetLabel = where;
+    checkDrop = (at) => refuseUncheckablePoint(ctx, null, at, where, 'drop');
   }
   await callOn(ctx, source.objectId, source.sessionId, REMEMBER_PLACE_FUNCTION).catch(
     () => undefined
@@ -1885,6 +1982,7 @@ async function opDrag(ctx: Context): Promise<BrowserAgentResult> {
       to,
       steps: Number.isFinite(steps) && steps >= 1 ? steps : null,
       locateTarget,
+      checkDrop,
       signal: ctx.signal,
     });
   } finally {

@@ -250,7 +250,9 @@ export const PROTECTED_DRAG_REFUSAL =
  * and the open shadow roots under it, never inside a frame. Runs in the isolated world through
  * `Runtime.callFunctionOn` with the locator as arguments, so nothing the model wrote becomes
  * script. Returns the element, or a JSON string saying why there is not exactly one:
- * `{ problem, count, hidden, near }`, `near` naming up to five places the matches are in.
+ * `{ problem, count, hidden, near, frames? }`, `near` naming up to five places the matches are
+ * in and `frames`, when nothing visible matched, how many visible frames the page has, whose
+ * content no locator reaches.
  *
  * - `selector`: `querySelectorAll` in each root.
  * - `text`: the smallest element whose whole text is the given text (case and spacing
@@ -281,7 +283,8 @@ export const LOCATE_FUNCTION = `function (kind, value, scope) {
     }
     return out;
   };
-  const report = (problem, all, shown) => JSON.stringify({ problem, count: shown.length, hidden: all.length - shown.length, near: near(shown.length ? shown : []) });
+  const withFrames = (out) => { const count = queryAll('iframe, frame, object, embed').filter(visible).length; if (count) out.frames = count; return JSON.stringify(out); };
+  const report = (problem, all, shown) => { const out = { problem, count: shown.length, hidden: all.length - shown.length, near: near(shown.length ? shown : []) }; return shown.length ? JSON.stringify(out) : withFrames(out); };
   if (kind === 'selector') {
     let all;
     try { all = queryAll(value); } catch (e) { return JSON.stringify({ problem: 'syntax', count: 0, hidden: 0, near: [] }); }
@@ -293,7 +296,7 @@ export const LOCATE_FUNCTION = `function (kind, value, scope) {
     let all;
     try { all = queryAll(scope); } catch (e) { return JSON.stringify({ problem: 'scope-syntax', count: 0, hidden: 0, near: [] }); }
     scopes = new Set(all.filter(visible));
-    if (scopes.size === 0) return JSON.stringify({ problem: 'scope-none', count: 0, hidden: all.length, near: [] });
+    if (scopes.size === 0) return withFrames({ problem: 'scope-none', count: 0, hidden: all.length, near: [] });
   }
   const inScope = (node) => {
     if (!scopes) return true;
