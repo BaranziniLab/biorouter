@@ -155,6 +155,15 @@ pub fn list_displays(ctx: &Ctx) -> Invocation {
     Builder::observe(ctx, "list-displays", OBSERVE).build(None)
 }
 
+/// `is <ref> --property=focused`: whether a password field this task recorded holds the
+/// keyboard now, asked before keys on Windows and Linux, which have no secure input flag (AD-12).
+pub fn is_focused(ctx: &Ctx, reference: &str) -> Invocation {
+    Builder::observe(ctx, "is", OBSERVE)
+        .opt("property", "focused")
+        .reference(reference)
+        .build(None)
+}
+
 /// `get_app_state`'s tree read.
 #[derive(Clone, Debug, Default)]
 pub struct SnapshotRequest<'a> {
@@ -493,6 +502,7 @@ mod tests {
             ),
             permissions(&c),
             request_permissions(&c),
+            is_focused(&c, r),
         ];
         out.extend(
             [
@@ -742,6 +752,16 @@ mod tests {
         }
         assert!(secondary(&c, "@s1:e1", "select", None).is_err());
         assert!(secondary(&c, "@s1:e1", "close", None).is_err());
+        assert_eq!(
+            is_focused(&c, "@s1:e2").args,
+            [
+                "is",
+                "--session=0b7c1d2e-aaaa-bbbb-cccc-123456789abc",
+                "--property=focused",
+                "--",
+                "@s1:e2"
+            ]
+        );
         assert_eq!(first(open_app(&c, "Notes").unwrap()), "launch");
         assert!(open_app(&c, "Notes").unwrap().releases_launched_apps);
         assert!(

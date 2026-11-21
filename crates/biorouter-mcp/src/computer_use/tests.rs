@@ -447,6 +447,70 @@ async fn secure_keyboard_input_stops_keys_and_text() {
         .is_ok());
 }
 
+/// Windows and Linux have no secure input flag, and `press_key` goes to the app's focused
+/// element, so a key is refused while a password field the observation recorded holds the
+/// keyboard. macOS asks its secure input flag instead and reads nothing more.
+#[tokio::test]
+async fn keys_are_refused_while_a_recorded_password_field_holds_the_keyboard() {
+    let focused = |result: bool| {
+        envelope(
+            "is",
+            json!({"ref":"@s1:e2","property":"focused","result":result}),
+        )
+    };
+    for platform in [Platform::Windows, Platform::LinuxX11] {
+        let mut fx = Fixture::new(platform);
+        fx.observe("TextEdit").await;
+        fx.set("is", &focused(true));
+        fx.clear_calls();
+        assert_eq!(
+            refused(
+                fx.call("press_key", json!({"app":"TextEdit","key":"a"}), Grant::Act)
+                    .await
+            ),
+            guard::FOCUSED_PASSWORD_REFUSAL,
+            "{platform:?}"
+        );
+        let calls = fx.calls();
+        assert!(
+            calls
+                .iter()
+                .any(|call| call == "is --session=task-1 --property=focused -- @s1:e2"),
+            "{calls:?}"
+        );
+        assert!(
+            !calls.iter().any(|call| call.starts_with("press")),
+            "{calls:?}"
+        );
+        // Focus moved elsewhere: the key goes.
+        fx.set("is", &focused(false));
+        let pressed = fx
+            .call("press_key", json!({"app":"TextEdit","key":"a"}), Grant::Act)
+            .await
+            .unwrap();
+        assert_ne!(pressed.is_error, Some(true), "{pressed:?}");
+        // A field the engine can no longer resolve counts as not focused.
+        fx.set(
+            "is",
+            &json!({"version":"2.6","ok":false,"command":"is","error":{"code":"STALE_REF","message":"gone"}})
+                .to_string(),
+        );
+        assert!(fx
+            .call("press_key", json!({"app":"TextEdit","key":"a"}), Grant::Act)
+            .await
+            .is_ok());
+    }
+    let mut mac = Fixture::new(Platform::MacOs);
+    mac.observe("TextEdit").await;
+    mac.set("is", &focused(true));
+    mac.clear_calls();
+    assert!(mac
+        .call("press_key", json!({"app":"TextEdit","key":"a"}), Grant::Act)
+        .await
+        .is_ok());
+    assert!(!mac.calls().iter().any(|call| call.starts_with("is ")));
+}
+
 #[tokio::test]
 async fn terminals_accept_looks_and_clicks_but_never_keys_text_or_drops() {
     let mut fx = Fixture::new(Platform::MacOs);

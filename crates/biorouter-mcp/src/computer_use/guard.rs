@@ -36,6 +36,12 @@ the person to finish or close it.";
 pub const PASSWORD_FIELD_REFUSAL: &str = "That is a password field. Biorouter Copilot never types \
 into, sets or clears password fields; ask the person to enter it themselves.";
 
+/// Windows and Linux have no secure input flag, so before keys go to an app the wrapper asks
+/// whether a password field it recorded there holds the keyboard.
+pub const FOCUSED_PASSWORD_REFUSAL: &str = "A password field in that app holds the keyboard, so \
+Biorouter Copilot will not send keys to it. Ask the person to enter it themselves, or click \
+another field first.";
+
 pub const TERMINAL_REFUSAL: &str = "That app is a terminal. Typing, keys or drops there would run \
 commands outside the Developer tools, their permission mode and folder access, so Biorouter \
 Copilot only looks and clicks there. Use the Developer shell for commands, or ask the person.";

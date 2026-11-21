@@ -707,6 +707,48 @@ impl SessionRuntime {
         self.check_settings(target, cancel).await
     }
 
+    /// AD-12 on Windows and Linux, where `secure_input` is always false: `press_key` goes to the
+    /// app's focused element, so it is refused while a password field this task recorded in that
+    /// app holds the keyboard (any key, as macOS secure input refuses them all). One `is` read per
+    /// recorded password field, none when the observation held none. It sees only fields an
+    /// observation in this request recorded, and a read that fails (the field is gone, or no
+    /// longer proven unique) counts as not focused. `type_text` and `set_value` act on a
+    /// reference, which `write` refuses when it is a password field.
+    async fn check_password_focus(&self, target: &Target, cancel: &CancellationToken) -> Step<()> {
+        if self.platform == Platform::MacOs {
+            return Ok(());
+        }
+        let key = target.key();
+        let mut secure: Vec<String> = self
+            .task
+            .as_ref()
+            .map(|task| {
+                task.refs
+                    .iter()
+                    .filter(|(_, owned)| owned.target.key() == key && owned.record.is_secure())
+                    .map(|(reference, _)| reference.clone())
+                    .collect()
+            })
+            .unwrap_or_default();
+        secure.sort();
+        for reference in secure.iter().take(8) {
+            match self
+                .exec(&plan::is_focused(&self.ctx(), reference), cancel)
+                .await
+            {
+                Ok(envelope)
+                    if envelope.ok
+                        && envelope.data.get("result").and_then(Value::as_bool) == Some(true) =>
+                {
+                    return Err(Halt::Error(refuse(guard::FOCUSED_PASSWORD_REFUSAL)));
+                }
+                Err(halt) if cancel.is_cancelled() => return Err(halt),
+                _ => {}
+            }
+        }
+        Ok(())
+    }
+
     /// The window of `target` a screenshot or a coordinate refers to.
     async fn pick_window(
         &self,
@@ -1647,6 +1689,7 @@ impl SessionRuntime {
             .await?;
         self.require_observed(&target)?;
         self.check_act(&target, true, cancel).await?;
+        self.check_password_focus(&target, cancel).await?;
         let window = arg(arguments, "window_id");
         if let Some(requested) = window {
             self.pick_window(&target, Some(requested), cancel).await?;
