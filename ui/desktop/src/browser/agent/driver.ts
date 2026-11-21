@@ -1831,13 +1831,15 @@ async function refuseUncheckablePoint(
       sessionId
     )
     .catch(() => null);
-  if (!hit) return;
+  // Fail closed: a point the browser cannot inspect might be a protected field or a frame.
+  if (!hit) throw new OpFailure(uncheckablePointRefusal(where, act));
   const frame = await frameIdOf(ctx, node);
   const described = await ctx.state.cdp
     .send<{
       node: { nodeName?: string; attributes?: string[] };
     }>('DOM.describeNode', { backendNodeId: hit.backendNodeId }, sessionId)
     .catch(() => null);
+  if (!described) throw new OpFailure(uncheckablePointRefusal(where, act));
   const tag = (described?.node.nodeName ?? '').toLowerCase();
   if ((hit.frameId && frame && hit.frameId !== frame) || FRAME_TAGS.has(tag))
     throw new OpFailure(frameRefusal(where, act));
@@ -1853,6 +1855,11 @@ async function refuseUncheckablePoint(
   ) {
     throw new OpFailure(PROTECTED_DRAG_REFUSAL, { error_kind: 'protected_field' });
   }
+}
+
+/** The refusal for a drag point the browser could not inspect. */
+function uncheckablePointRefusal(where: string, act: 'drag' | 'drop'): string {
+  return `${where} could not be checked for a protected field or a frame, so the browser did not ${act} there. Take a new snapshot and name the ${act === 'drag' ? 'item' : 'drop target'} by an @e reference.`;
 }
 
 /** `point` (main viewport coordinates) in the viewport of `node`'s own frame. */

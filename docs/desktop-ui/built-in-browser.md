@@ -1458,7 +1458,7 @@ verification code or card field (a drop types the dragged text into it), nor a f
 The press point and the drop point are hit tested too (`refuseUncheckablePoint` in `driver.ts`,
 with `DOM.getNodeForLocation` and `DOM.describeNode` in the end's own frame session, no page
 script) and refused when they land on such a field, on a frame element, or on content of another
-frame than the end's. That covers a container named as an end: `to: "#login-form"` gets a drop
+frame than the end's, and a point the browser cannot inspect (the hit test or the node read fails) is refused rather than let through. That covers a container named as an end: `to: "#login-form"` gets a drop
 point a quarter past its middle, which can be the password field inside it. A drop at a point is
 judged the same way against the page's own frame. The drop point is judged once more just before
 a native `drop` is sent (`checkDrop` in `drag.ts`), because the page may have moved things while
