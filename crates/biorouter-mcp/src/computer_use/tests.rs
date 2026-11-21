@@ -888,8 +888,23 @@ async fn the_task_folder_is_private_and_goes_with_the_task() {
     );
 }
 
+/// Stop sends `SIGTERM` first, so the engine's release guard runs, then the call ends cancelled
+/// and the task folder goes. The grace is raised for this test: with the production 1 s, a loaded
+/// full run (2 of the 4 logged on 2026-11-20) killed the stand-in shell before its trap wrote
+/// `released`. The runner waits for the engine to exit before the call returns, so the file
+/// exists by then or never will, and polling for it afterwards could not help. The 1 s grace
+/// itself, and the `SIGKILL` after it, are `runner`'s own test.
 #[tokio::test]
 async fn stop_ends_the_running_command_and_deletes_the_task_folder() {
+    struct Grace;
+    impl Drop for Grace {
+        fn drop(&mut self) {
+            runner::TEST_RELEASE_GRACE.with(|grace| grace.set(None));
+        }
+    }
+    // A current thread runtime: the runner reads the grace on this thread.
+    runner::TEST_RELEASE_GRACE.with(|grace| grace.set(Some(Duration::from_secs(20))));
+    let _grace = Grace;
     let fx = Fixture::new(Platform::MacOs);
     let engine = fx.engine();
     let runtime = Arc::new(tokio::sync::Mutex::new(fx.runtime));

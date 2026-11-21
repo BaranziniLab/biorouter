@@ -32,6 +32,24 @@ pub const OUTER_GRACE: Duration = Duration::from_secs(5);
 #[cfg_attr(windows, allow(dead_code))]
 pub const RELEASE_GRACE: Duration = Duration::from_secs(1);
 
+#[cfg(all(test, unix))]
+thread_local! {
+    /// A longer grace for a test, on its own thread, that must see a stand-in engine's release
+    /// guard run: on a loaded machine a shell can take longer than [`RELEASE_GRACE`] to run its
+    /// trap, and is then killed before it does.
+    pub(super) static TEST_RELEASE_GRACE: std::cell::Cell<Option<Duration>> =
+        const { std::cell::Cell::new(None) };
+}
+
+#[cfg(unix)]
+fn release_grace() -> Duration {
+    #[cfg(test)]
+    if let Some(grace) = TEST_RELEASE_GRACE.with(std::cell::Cell::get) {
+        return grace;
+    }
+    RELEASE_GRACE
+}
+
 /// One engine command, fully decided.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Invocation {
@@ -551,7 +569,7 @@ mod platform {
         };
         if let Some(cancelled) = stopped {
             signal_group(pid, &reaped, libc::SIGTERM);
-            let exited = tokio::time::timeout(RELEASE_GRACE, &mut waiter)
+            let exited = tokio::time::timeout(super::release_grace(), &mut waiter)
                 .await
                 .is_ok();
             if !exited {
