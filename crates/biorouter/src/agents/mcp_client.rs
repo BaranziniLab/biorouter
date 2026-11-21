@@ -2686,7 +2686,7 @@ mod tests {
                 }
                 SettlementOrder::ClaimThenStopThenDeliver => {
                     let claim = ActionRequiredManager::global()
-                        .claim_ordinary_elicitation(&session, &id)
+                        .claim_ordinary_elicitation(&session, &id, Some(&answer))
                         .expect("the answer claims this live form before Stop");
                     supplied.cancel();
                     assert!(

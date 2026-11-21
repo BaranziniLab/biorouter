@@ -472,10 +472,28 @@ pub async fn respond_to_elicitation(
             })),
         ));
     }
+    // The answer is checked against the request's form as it is claimed, so one that does
+    // not fit is refused with the request still waiting (a value outside a field's choices,
+    // a field the form did not ask for, a wrong type, a missing required field).
     let claim = biorouter::action_required_manager::ActionRequiredManager::global()
-        .claim_ordinary_elicitation(&request.session_id, &request.id)
-        .filter(|claim| !claim.is_closed())
-        .ok_or_else(elicitation_unknown)?;
+        .claim_ordinary_elicitation(&request.session_id, &request.id, request.data.as_ref())
+        .map_err(|refusal| match refusal {
+            biorouter::action_required_manager::ElicitationClaimRefusal::Unknown => {
+                elicitation_unknown()
+            }
+            biorouter::action_required_manager::ElicitationClaimRefusal::Invalid(problem) => (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({
+                    "status": "invalid",
+                    "error": format!(
+                        "This answer does not fit the request: {problem} Nothing was sent; the request is still waiting for an answer."
+                    )
+                })),
+            ),
+        })?;
+    if claim.is_closed() {
+        return Err(elicitation_unknown());
+    }
     // The claimed decision owns its completion even if the HTTP client leaves.
     // Cancelling mid-persist could otherwise record an answer without delivery.
     tokio::spawn(complete_elicitation(state, claim, request.id, request.data))
@@ -1281,6 +1299,16 @@ mod tests {
             String,
             tokio::task::JoinHandle<anyhow::Result<Option<Value>>>,
         ) {
+            wait_for_card_asking(session_id, serde_json::json!({"type":"object"})).await
+        }
+
+        async fn wait_for_card_asking(
+            session_id: &str,
+            schema: Value,
+        ) -> (
+            String,
+            tokio::task::JoinHandle<anyhow::Result<Option<Value>>>,
+        ) {
             let manager = ActionRequiredManager::global();
             let session_id = session_id.to_owned();
             let waiter_session_id = session_id.clone();
@@ -1288,7 +1316,7 @@ mod tests {
                 manager
                     .request_and_wait(
                         "Which cohort?".into(),
-                        serde_json::json!({"type":"object"}),
+                        schema,
                         std::time::Duration::from_secs(5),
                         Some(&waiter_session_id),
                     )
@@ -1336,6 +1364,115 @@ mod tests {
             request: ElicitationResponseRequest,
         ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
             respond_to_elicitation(State(state), headers, Json(request)).await
+        }
+
+        /// The probe's answer, a value outside a field's choices plus a key the form never
+        /// asked for, used to reach the extension as `accept`. It is refused with 400 before
+        /// anything is recorded, the card keeps waiting, and a fitting answer then delivers.
+        #[tokio::test]
+        #[serial]
+        async fn an_answer_that_does_not_fit_the_form_is_refused_and_the_card_still_waits() {
+            if !crate::test_sandbox::in_a_process_of_its_own() {
+                return;
+            }
+            let root = tempfile::tempdir().unwrap();
+            let _env = crate::test_sandbox::relocate_path_root(root.path());
+            let state = AppState::new().await.unwrap();
+            let session = state
+                .session_manager()
+                .create_session(
+                    root.path().to_path_buf(),
+                    "Synthetic validated elicitation".into(),
+                    biorouter::session::session_manager::SessionType::User,
+                )
+                .await
+                .unwrap()
+                .id;
+            let (id, waiter) = wait_for_card_asking(
+                &session,
+                serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "cohort": {
+                            "type": "string",
+                            "oneOf": [
+                                { "const": "discovery", "title": "Discovery" },
+                                { "const": "replication", "title": "Replication" }
+                            ]
+                        },
+                        "samples": { "type": "integer", "minimum": 1 }
+                    },
+                    "required": ["cohort"]
+                }),
+            )
+            .await;
+            let recorded = |state: Arc<AppState>, session: String| async move {
+                state
+                    .session_manager()
+                    .get_session(&session, true)
+                    .await
+                    .unwrap()
+                    .message_count
+            };
+            let before = recorded(Arc::clone(&state), session.clone()).await;
+            for (answer, problem) in [
+                (
+                    serde_json::json!({ "cohort": "everyone", "admin": true }),
+                    "'cohort' must be one of: Discovery, Replication.",
+                ),
+                (
+                    serde_json::json!({ "cohort": "discovery", "admin": true }),
+                    "'admin' is not a field this request asked for.",
+                ),
+                (
+                    serde_json::json!({ "cohort": "discovery", "samples": "many" }),
+                    "'samples' must be a whole number.",
+                ),
+                (serde_json::json!({}), "'cohort' is required."),
+            ] {
+                let (status, body) = respond(
+                    Arc::clone(&state),
+                    proven_headers(),
+                    ElicitationResponseRequest {
+                        session_id: session.clone(),
+                        id: id.clone(),
+                        data: Some(answer.clone()),
+                        cancelled: false,
+                    },
+                )
+                .await
+                .expect_err("an answer outside the form is refused");
+                assert_eq!(status, StatusCode::BAD_REQUEST, "{answer}");
+                assert_eq!(body["status"], "invalid", "{answer}");
+                let error = body["error"].as_str().unwrap();
+                assert!(error.contains(problem), "{answer}: {error}");
+                assert!(error.contains("still waiting"), "{error}");
+            }
+            assert_eq!(
+                recorded(Arc::clone(&state), session.clone()).await,
+                before,
+                "a refused answer is not recorded"
+            );
+            assert!(
+                !waiter.is_finished(),
+                "a refused answer leaves the card waiting"
+            );
+
+            let fitting = serde_json::json!({ "cohort": "replication", "samples": 3 });
+            let delivered = respond(
+                Arc::clone(&state),
+                proven_headers(),
+                ElicitationResponseRequest {
+                    session_id: session.clone(),
+                    id,
+                    data: Some(fitting.clone()),
+                    cancelled: false,
+                },
+            )
+            .await
+            .expect("a fitting answer delivers");
+            assert_eq!(delivered.0["status"], "delivered");
+            assert_eq!(waiter.await.unwrap().unwrap(), Some(fitting));
         }
 
         #[tokio::test]

@@ -59,9 +59,30 @@ struct PendingRequest {
     /// `ElicitationAction::Cancel` instead of leaving it to time out.
     response_tx: Option<tokio::sync::oneshot::Sender<Option<Value>>>,
     cancellation: Option<OrdinaryElicitationCancellation>,
+    /// The form the request asked for, which every answer is checked against before it is
+    /// delivered ([`crate::elicitation_answer`]).
+    schema: Value,
 }
 
 impl PendingRequest {
+    /// Whether an answer could still be delivered: not yet claimed, and not cancelled.
+    fn is_waiting(&self) -> bool {
+        self.response_tx.is_some()
+            && !self
+                .cancellation
+                .as_ref()
+                .is_some_and(OrdinaryElicitationCancellation::is_cancelled)
+    }
+
+    /// Why `answer` does not fit this request's form, asked only while it is still waiting,
+    /// so an answer to a request that ended is unknown rather than invalid.
+    fn answer_problem(&self, answer: Option<&Value>) -> Option<String> {
+        if !self.is_waiting() {
+            return None;
+        }
+        answer.and_then(|answer| crate::elicitation_answer::answer_problem(&self.schema, answer))
+    }
+
     fn claim_sender(&mut self) -> Option<tokio::sync::oneshot::Sender<Option<Value>>> {
         if self
             .cancellation
@@ -138,6 +159,21 @@ impl Drop for PendingRequestRegistration<'_> {
             None => self.manager.unscoped.remove(self.id),
         }
     }
+}
+
+/// An answer that does not fit the form it answers. Nothing was delivered: the request is
+/// still waiting, and the message says what to change.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error("{0}")]
+pub struct InvalidElicitationAnswer(pub String);
+
+/// Why [`ActionRequiredManager::claim_ordinary_elicitation`] claimed nothing.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ElicitationClaimRefusal {
+    /// No live ordinary elicitation waits on that id in that session.
+    Unknown,
+    /// One does, and this answer does not fit its form. It is still waiting.
+    Invalid(String),
 }
 
 enum ElicitationSender {
@@ -317,6 +353,7 @@ impl ActionRequiredManager {
             session_id: session_id.map(str::to_string),
             response_tx: Some(tx),
             cancellation: cancellation.clone(),
+            schema: schema.clone(),
         };
 
         self.pending
@@ -460,42 +497,58 @@ impl ActionRequiredManager {
 
     /// Claim exactly once before persisting an answer, without holding a mutex
     /// during persistence or acquiring the agent's active-turn lock.
+    ///
+    /// `answer` is what the claim will deliver: `Some(data)` is checked against the request's
+    /// form before anything is claimed, so an answer that does not fit is refused with the
+    /// request still waiting ([`ElicitationClaimRefusal::Invalid`]); `None` is a cancellation,
+    /// which always fits. Deliver the same `answer` through the claim.
     pub fn claim_ordinary_elicitation(
         &self,
         session_id: &str,
         request_id: &str,
-    ) -> Option<OrdinaryElicitationClaim> {
+        answer: Option<&Value>,
+    ) -> Result<OrdinaryElicitationClaim, ElicitationClaimRefusal> {
         let sender = {
             let mut pending = self.pending.lock().unwrap_or_else(PoisonError::into_inner);
             match pending.get_mut(request_id) {
                 Some(request) if request.session_id.as_deref() == Some(session_id) => {
-                    Some(request.claim_sender()?)
+                    if let Some(problem) = request.answer_problem(answer) {
+                        return Err(ElicitationClaimRefusal::Invalid(problem));
+                    }
+                    Some(
+                        request
+                            .claim_sender()
+                            .ok_or(ElicitationClaimRefusal::Unknown)?,
+                    )
                 }
-                Some(_) => return None,
+                Some(_) => return Err(ElicitationClaimRefusal::Unknown),
                 None => None,
             }
         };
         match sender {
-            Some(sender) => Some(OrdinaryElicitationClaim {
+            Some(sender) => Ok(OrdinaryElicitationClaim {
                 session_id: session_id.into(),
                 sender: ElicitationSender::Legacy(sender),
             }),
             None => crate::pending_user_action::PendingUserActions::global()
-                .claim_elicitation_in_session(session_id, request_id),
+                .claim_elicitation_in_session(session_id, request_id, answer),
         }
     }
 
+    /// Claim and deliver in one step. An answer that does not fit the request's form is
+    /// [`crate::pending_user_action::ResolveOutcome::Rejected`], and the request keeps waiting.
     pub fn resolve_ordinary_elicitation(
         &self,
         session_id: &str,
         request_id: &str,
         data: Option<Value>,
     ) -> crate::pending_user_action::ResolveOutcome {
-        self.claim_ordinary_elicitation(session_id, request_id)
-            .map_or(
-                crate::pending_user_action::ResolveOutcome::Unknown,
-                |claim| claim.deliver(data),
-            )
+        use crate::pending_user_action::ResolveOutcome;
+        match self.claim_ordinary_elicitation(session_id, request_id, data.as_ref()) {
+            Ok(claim) => claim.deliver(data),
+            Err(ElicitationClaimRefusal::Unknown) => ResolveOutcome::Unknown,
+            Err(ElicitationClaimRefusal::Invalid(_)) => ResolveOutcome::Rejected,
+        }
     }
 
     pub async fn submit_response(
@@ -524,13 +577,17 @@ impl ActionRequiredManager {
     ) -> Result<()> {
         let sender = {
             let mut pending = self.pending.lock().unwrap_or_else(PoisonError::into_inner);
-            pending.get_mut(&request_id).and_then(|request| {
-                if request.session_id.as_deref() == Some(session_id) {
+            match pending.get_mut(&request_id) {
+                Some(request) if request.session_id.as_deref() == Some(session_id) => {
+                    // Checked before the sender is taken, so a refused answer leaves the
+                    // request waiting for a valid one.
+                    if let Some(problem) = request.answer_problem(outcome.as_ref()) {
+                        return Err(InvalidElicitationAnswer(problem).into());
+                    }
                     request.claim_sender()
-                } else {
-                    None
                 }
-            })
+                _ => None,
+            }
         };
         // #107: an elicitation parked through `pending_user_action` is not in
         // this map — its rendezvous lives in that registry so a bridged call,
@@ -542,6 +599,15 @@ impl ActionRequiredManager {
             use crate::pending_user_action::{
                 PendingUserActions, ResolveOutcome, UserActionOutcome,
             };
+            if let Some(problem) = outcome.as_ref().and_then(|answer| {
+                PendingUserActions::global().elicitation_answer_problem(
+                    session_id,
+                    &request_id,
+                    answer,
+                )
+            }) {
+                return Err(InvalidElicitationAnswer(problem).into());
+            }
             let relayed = match outcome {
                 Some(data) => UserActionOutcome::Provided { data },
                 None => UserActionOutcome::Cancelled,
@@ -871,6 +937,86 @@ mod tests {
         })
     }
 
+    /// The answer is checked at resolution, through both doors: a value outside a field's
+    /// choices or a field the form never asked for is refused with the request still waiting,
+    /// and a fitting answer then delivers.
+    #[tokio::test]
+    async fn an_answer_that_does_not_fit_the_form_is_refused_and_the_request_keeps_waiting() {
+        let manager = Arc::new(ActionRequiredManager::new());
+        let session_id = "validated-answer";
+        let waiter = {
+            let manager = Arc::clone(&manager);
+            tokio::spawn(async move {
+                manager
+                    .request_and_wait(
+                        "Which cohort?".into(),
+                        serde_json::json!({
+                            "type": "object",
+                            "properties": { "cohort": { "type": "string", "enum": ["discovery", "replication"] } },
+                            "required": ["cohort"]
+                        }),
+                        Duration::from_secs(30),
+                        Some(session_id),
+                    )
+                    .await
+            })
+        };
+        let id = next_request_id(&manager, session_id).await;
+
+        let outside = serde_json::json!({ "cohort": "everyone" });
+        let refused = manager
+            .submit_response(session_id, id.clone(), outside.clone())
+            .await
+            .expect_err("a value outside the choices is refused");
+        assert_eq!(
+            refused.downcast_ref::<InvalidElicitationAnswer>(),
+            Some(&InvalidElicitationAnswer(
+                "'cohort' must be one of: discovery, replication.".into()
+            ))
+        );
+        assert_eq!(
+            manager
+                .claim_ordinary_elicitation(
+                    session_id,
+                    &id,
+                    Some(&serde_json::json!({ "cohort": "discovery", "admin": true }))
+                )
+                .err(),
+            Some(ElicitationClaimRefusal::Invalid(
+                "'admin' is not a field this request asked for.".into()
+            ))
+        );
+        assert_eq!(
+            manager.resolve_ordinary_elicitation(session_id, &id, Some(outside)),
+            crate::pending_user_action::ResolveOutcome::Rejected
+        );
+        // Another session learns nothing about the form: its answer is simply unknown.
+        assert_eq!(
+            manager
+                .claim_ordinary_elicitation("someone-else", &id, Some(&serde_json::json!({})))
+                .err(),
+            Some(ElicitationClaimRefusal::Unknown)
+        );
+        assert!(
+            !waiter.is_finished(),
+            "a refused answer leaves the request waiting"
+        );
+
+        let fitting = serde_json::json!({ "cohort": "replication" });
+        manager
+            .submit_response(session_id, id, fitting.clone())
+            .await
+            .expect("a fitting answer delivers");
+        assert_eq!(
+            timeout(Duration::from_secs(5), waiter)
+                .await
+                .unwrap()
+                .unwrap()
+                .unwrap(),
+            Some(fitting)
+        );
+    }
+
     #[tokio::test]
     async fn elicitation_dropped_waiter_removes_an_undrained_card() {
         let manager = Arc::new(ActionRequiredManager::new());
@@ -893,8 +1039,8 @@ mod tests {
 
         let entry_removed = !manager.pending.lock().unwrap().contains_key(&id);
         let unclaimable = manager
-            .claim_ordinary_elicitation(session_id, &id)
-            .is_none();
+            .claim_ordinary_elicitation(session_id, &id, None)
+            .is_err();
         let queue_empty = manager.drain_requests(session_id).is_empty();
         assert_eq!(
             (entry_removed, unclaimable, queue_empty),
@@ -915,8 +1061,8 @@ mod tests {
 
         let entry_removed = !manager.pending.lock().unwrap().contains_key(&id);
         let unclaimable = manager
-            .claim_ordinary_elicitation(session_id, &id)
-            .is_none();
+            .claim_ordinary_elicitation(session_id, &id, None)
+            .is_err();
         assert_eq!(
             (entry_removed, unclaimable),
             (true, true),

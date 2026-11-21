@@ -9,6 +9,7 @@ mod app;
 mod decisions;
 mod subagents;
 
+use std::borrow::Cow;
 use std::io::Stdout;
 use std::time::Duration;
 
@@ -48,7 +49,8 @@ use biorouter::conversation::Conversation;
 use biorouter::session::SessionManager;
 
 use self::app::{
-    App, PermissionModal, StatusInfo, ACCENT, DICTIONARY_REVIEW_TITLE, TOOL_APPROVAL_TITLE,
+    fixed_options, App, ModalOption, PermissionModal, StatusInfo, ACCENT, DICTIONARY_REVIEW_TITLE,
+    ELICITATION_TITLE, TOOL_APPROVAL_TITLE,
 };
 use super::CliSession;
 
@@ -1384,12 +1386,33 @@ async fn drive_response(
                                 app.push_note(note);
                             }
                             app.thinking = Some(super::thinking::get_random_thinking_message().to_string());
-                        } else if super::find_elicitation_request(&message).is_some() {
+                        } else if let Some((elicitation_id, elicitation_message, schema)) = super::find_elicitation_request(&message) {
+                            // An extension's request for input answers only that request: the
+                            // turn goes on whichever way it is answered (it used to be
+                            // cancelled for any request).
                             commit_stream_to_session(app, &mut session.messages);
-                            app.push_note("This step needs an interactive form not yet supported in the TUI, so it is being cancelled. Use `BIOROUTER_CLI_CLASSIC=1` for that flow.");
-                            cancel.cancel();
-                            while stream.next().await.is_some() {}
-                            break;
+                            app.thinking = None;
+                            let answer = match super::elicitation::elicitation_cards(&elicitation_message, &schema) {
+                                Some(cards) => ask_elicitation_cards(app, tui, rx, &cards, &schema).await?,
+                                None => {
+                                    app.push_note(ELICITATION_NEEDS_A_FORM);
+                                    None
+                                }
+                            };
+                            match answer {
+                                Some(data) => {
+                                    answer_elicitation(&session_manager, &parent_id, &mut session.messages, app, elicitation_id, data).await;
+                                }
+                                None => {
+                                    if let Err(e) = biorouter::action_required_manager::ActionRequiredManager::global()
+                                        .submit_cancellation(&parent_id, elicitation_id)
+                                        .await
+                                    {
+                                        app.push_error(&format!("The request could not be declined: {e}"));
+                                    }
+                                }
+                            }
+                            app.thinking = Some(super::thinking::get_random_thinking_message().to_string());
                         } else if is_stream_text(&message) {
                             // A streaming assistant-text delta: stop the spinner
                             // and grow the live preview token-by-token.
@@ -1624,7 +1647,7 @@ async fn run_permission_modal(
     app.modal = Some(PermissionModal {
         title: TOOL_APPROVAL_TITLE,
         prompt,
-        options,
+        options: fixed_options(&options),
         selected: 0,
         scroll: 0,
     });
@@ -1649,12 +1672,117 @@ async fn run_permission_modal(
                 break Permission::Cancel
             }
             KeyCode::Esc => break Permission::Cancel,
-            KeyCode::Enter => break label_to_permission(modal.options[modal.selected].0),
+            KeyCode::Enter => break label_to_permission(&modal.options[modal.selected].0),
             _ => {}
         }
     };
     app.modal = None;
     Ok(result)
+}
+
+/// What the TUI says when an extension's request has a field it cannot show as a card.
+const ELICITATION_NEEDS_A_FORM: &str = "An extension asked for typed text or a number, which \
+     the TUI cannot show yet, so that request was declined and the turn goes on. Use \
+     `BIOROUTER_CLI_CLASSIC=1` to answer such requests.";
+
+/// Ask an extension's request card by card: the answer, or `None` when the person declines
+/// it (Decline, Esc or Ctrl+C on any card). Declining answers only this request.
+async fn ask_elicitation_cards(
+    app: &mut App,
+    tui: &mut Tui,
+    rx: &mut Events,
+    cards: &[super::elicitation::ElicitationCard],
+    schema: &serde_json::Value,
+) -> Result<Option<serde_json::Value>> {
+    let mut chosen = Vec::with_capacity(cards.len());
+    for card in cards {
+        let modal = elicitation_modal(card);
+        match run_choice_modal(app, tui, rx, modal).await? {
+            Some(option) if !card.declines(option) => chosen.push(option),
+            _ => {
+                app.push_note("You declined the extension's request; the turn goes on.");
+                return Ok(None);
+            }
+        }
+    }
+    match super::elicitation::answer_from_cards(cards, &chosen, schema) {
+        Ok(answer) => Ok(Some(answer)),
+        Err(problem) => {
+            app.push_note(&format!(
+                "The answer did not fit the request ({problem}), so it was declined and the turn goes on."
+            ));
+            Ok(None)
+        }
+    }
+}
+
+/// Deliver an answer to the extension's request `id`, the way the desktop's answer is
+/// delivered: claimed against the request's form, recorded in the chat, then handed to the
+/// waiting call. Not through `Agent::reply`, whose task guards would end the running turn's
+/// Biorouter Copilot and browser grants for what is only an answer inside that turn.
+async fn answer_elicitation(
+    session_manager: &std::sync::Arc<SessionManager>,
+    session_id: &str,
+    messages: &mut Conversation,
+    app: &mut App,
+    id: String,
+    data: serde_json::Value,
+) {
+    use biorouter::action_required_manager::{ActionRequiredManager, ElicitationClaimRefusal};
+    let claim = match ActionRequiredManager::global().claim_ordinary_elicitation(
+        session_id,
+        &id,
+        Some(&data),
+    ) {
+        Ok(claim) => claim,
+        Err(ElicitationClaimRefusal::Invalid(problem)) => {
+            app.push_error(&format!("The answer was not sent: {problem}"));
+            let _ = ActionRequiredManager::global()
+                .submit_cancellation(session_id, id)
+                .await;
+            return;
+        }
+        Err(ElicitationClaimRefusal::Unknown) => {
+            app.push_note("The extension stopped waiting before your answer arrived.");
+            return;
+        }
+    };
+    let mut response = Message::user()
+        .with_content(MessageContent::action_required_elicitation_response(
+            id,
+            data.clone(),
+        ))
+        .with_visibility(false, true);
+    if let Err(e) = session_manager
+        .add_message_adopting_uid(session_id, &mut response)
+        .await
+    {
+        // Dropping the claim ends the waiting call without the answer, as the desktop does:
+        // an answer the chat does not record is not delivered.
+        app.push_error(&format!(
+            "The answer could not be recorded, so it was not sent: {e}"
+        ));
+        return;
+    }
+    messages.push(response);
+    if claim.deliver(Some(data)) != biorouter::pending_user_action::ResolveOutcome::Delivered {
+        app.push_note("The extension stopped waiting before your answer arrived.");
+    }
+}
+
+/// One card of an extension's request in the TUI's modal.
+fn elicitation_modal(card: &super::elicitation::ElicitationCard) -> PermissionModal {
+    PermissionModal {
+        title: ELICITATION_TITLE,
+        prompt: Some(card.prompt.clone()),
+        options: card
+            .options
+            .iter()
+            .map(|(label, hint)| (Cow::Owned(label.clone()), Cow::Owned(hint.clone())))
+            .collect(),
+        selected: card.selected,
+        scroll: 0,
+    }
 }
 
 /// Show `modal` until the person chooses: the chosen option's index, or None
@@ -1702,12 +1830,12 @@ const COMPACT_CHOICE: usize = 0;
 /// Deny from [`super::COMPUTER_USE_CHOICES`], with Deny chosen to start, and Cancel, which cancels
 /// the response as Esc does.
 fn computer_use_modal(disclosure: &str) -> PermissionModal {
-    let mut options: Vec<_> = super::COMPUTER_USE_CHOICES
+    let mut options: Vec<ModalOption> = super::COMPUTER_USE_CHOICES
         .iter()
-        .map(|(_, label, hint)| (*label, *hint))
+        .map(|(_, label, hint)| (Cow::Borrowed(*label), Cow::Borrowed(*hint)))
         .collect();
     let deny = options.len() - 1;
-    options.push(("Cancel", "cancel response"));
+    options.push(("Cancel".into(), "cancel response".into()));
     PermissionModal {
         title: TOOL_APPROVAL_TITLE,
         prompt: Some(format!("Biorouter Copilot\n{disclosure}")),
@@ -1726,10 +1854,10 @@ fn compact_modal(provider_name: &str) -> Option<PermissionModal> {
     Some(PermissionModal {
         title: app::COMPACT_TITLE,
         prompt: Some(question.to_string()),
-        options: vec![
+        options: fixed_options(&[
             ("Compact", "condense the message history"),
             ("Keep", "leave the chat as it is"),
-        ],
+        ]),
         selected: COMPACT_CHOICE,
         scroll: 0,
     })
@@ -1840,11 +1968,11 @@ async fn review_dictionary(app: &mut App, tui: &mut Tui, rx: &mut Events) -> Res
                 row.written,
                 row.tier.as_str()
             )),
-            options: vec![
+            options: fixed_options(&[
                 ("Keep", "add to active dictionary"),
                 ("Dismiss", "remove this suggestion"),
                 ("Skip", "leave for later"),
-            ],
+            ]),
             selected: 2,
             scroll: 0,
         });
@@ -3099,10 +3227,7 @@ fn draw_modal(f: &mut Frame, app: &App) {
         lines.push(Line::from(vec![
             Span::styled(marker, Style::new().fg(ACCENT)),
             Span::styled(format!("{:<14}", label), style),
-            Span::styled(
-                (*desc).to_string(),
-                Style::new().add_modifier(Modifier::DIM),
-            ),
+            Span::styled(desc.to_string(), Style::new().add_modifier(Modifier::DIM)),
         ]));
     }
     f.render_widget(Paragraph::new(lines), regions[1]);
@@ -4099,7 +4224,7 @@ mod tests {
         app.modal = Some(PermissionModal {
             title: TOOL_APPROVAL_TITLE,
             prompt: None,
-            options: vec![("Allow", "allow once"), ("Deny", "deny")],
+            options: fixed_options(&[("Allow", "allow once"), ("Deny", "deny")]),
             selected: 0,
             scroll: 0,
         });
@@ -4115,10 +4240,10 @@ mod tests {
         app.modal = Some(PermissionModal {
             title: DICTIONARY_REVIEW_TITLE,
             prompt: Some("Dictionary term: EPAS1 (public)".into()),
-            options: vec![
+            options: fixed_options(&[
                 ("Keep", "add to active dictionary"),
                 ("Skip", "leave for later"),
-            ],
+            ]),
             selected: 1,
             scroll: 0,
         });
@@ -4159,7 +4284,7 @@ mod tests {
         app.modal = Some(PermissionModal {
             title: TOOL_APPROVAL_TITLE,
             prompt: Some(text),
-            options: vec![("Allow", "allow once"), ("Deny", "deny")],
+            options: fixed_options(&[("Allow", "allow once"), ("Deny", "deny")]),
             selected: 1,
             scroll: 0,
         });
@@ -4194,7 +4319,11 @@ mod tests {
     #[test]
     fn the_copilot_card_offers_look_only_and_starts_on_deny() {
         let modal = computer_use_modal("disclosure");
-        let labels: Vec<_> = modal.options.iter().map(|(label, _)| *label).collect();
+        let labels: Vec<_> = modal
+            .options
+            .iter()
+            .map(|(label, _)| label.as_ref())
+            .collect();
         assert_eq!(labels, ["Allow", "Only let it look", "Deny", "Cancel"]);
         assert_eq!(modal.options[modal.selected].0, "Deny");
         assert_eq!(super::super::COMPUTER_USE_CHOICES[modal.selected].0, None);
@@ -6564,11 +6693,11 @@ mod tests {
             prompt: Some(
                 "Dictionary term: EPAS1 (public)\nKeep, dismiss, or skip this suggestion?".into(),
             ),
-            options: vec![
+            options: fixed_options(&[
                 ("Keep", "add to active dictionary"),
                 ("Dismiss", "remove this suggestion"),
                 ("Skip", "leave for later"),
-            ],
+            ]),
             selected: 2,
             scroll: 0,
         });

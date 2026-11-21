@@ -2,6 +2,7 @@
 //! position, status line, and the helpers that turn agent messages into styled
 //! ratatui lines (with a lightweight markdown renderer).
 
+use std::borrow::Cow;
 use std::collections::VecDeque;
 
 use biorouter::conversation::message::{Message, MessageContent};
@@ -27,21 +28,36 @@ const DIM: Style = Style::new().add_modifier(Modifier::DIM);
 const USER_BG: Color = Color::Indexed(237);
 const USER_FG: Color = Color::Indexed(252);
 
-/// A modal asking the user to choose: a tool call's approval, or a dictionary row's review.
+/// A modal asking the user to choose: a tool call's approval, a dictionary row's review, or
+/// a field of an extension's request.
 pub struct PermissionModal {
-    /// The frame's title, before the scroll hint: [`TOOL_APPROVAL_TITLE`] or
-    /// [`DICTIONARY_REVIEW_TITLE`].
+    /// The frame's title, before the scroll hint: [`TOOL_APPROVAL_TITLE`],
+    /// [`DICTIONARY_REVIEW_TITLE`] or [`ELICITATION_TITLE`].
     pub title: &'static str,
     pub prompt: Option<String>,
-    pub options: Vec<(&'static str, &'static str)>,
+    pub options: Vec<ModalOption>,
     pub selected: usize,
     pub scroll: u16,
+}
+
+/// One option of a [`PermissionModal`]: its label, then a dim hint. Fixed text for every
+/// built-in modal; an extension's request brings its own choices.
+pub type ModalOption = (Cow<'static, str>, Cow<'static, str>);
+
+/// The options of a modal whose labels are fixed text.
+pub fn fixed_options(options: &[(&'static str, &'static str)]) -> Vec<ModalOption> {
+    options
+        .iter()
+        .map(|(label, hint)| (Cow::Borrowed(*label), Cow::Borrowed(*hint)))
+        .collect()
 }
 
 /// The title of a tool call's approval.
 pub const TOOL_APPROVAL_TITLE: &str = "Tool approval";
 /// The title of `/dictionary review`, which is not a tool approval.
 pub const DICTIONARY_REVIEW_TITLE: &str = "Dictionary review";
+/// The title of an extension's request for input (an MCP elicitation).
+pub const ELICITATION_TITLE: &str = "Extension request";
 /// How many of a turn's replies [`App::turn_replies`] keeps.
 const MAX_TURN_REPLIES: usize = 8;
 

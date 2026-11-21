@@ -727,26 +727,64 @@ impl PendingUserActions {
 
     /// Claim only an ordinary elicitation at its origin. Escalation surfaces
     /// cannot cause ordinary answer data to be persisted into another session.
+    ///
+    /// `answer` is checked against the request's form before anything is taken, as
+    /// [`crate::action_required_manager::ActionRequiredManager::claim_ordinary_elicitation`]
+    /// does for its own requests.
     pub(crate) fn claim_elicitation_in_session(
         &self,
         session_id: &str,
         id: &str,
-    ) -> Option<crate::action_required_manager::OrdinaryElicitationClaim> {
+        answer: Option<&Value>,
+    ) -> Result<
+        crate::action_required_manager::OrdinaryElicitationClaim,
+        crate::action_required_manager::ElicitationClaimRefusal,
+    > {
+        use crate::action_required_manager::ElicitationClaimRefusal;
         let mut entries = self.lock();
-        let entry = entries.get_mut(id)?;
-        if entry.session_id.as_deref() != Some(session_id)
-            || !matches!(&entry.request, UserActionRequest::Elicitation(_))
-        {
-            return None;
+        let entry = entries
+            .get_mut(id)
+            .ok_or(ElicitationClaimRefusal::Unknown)?;
+        let UserActionRequest::Elicitation(request) = &entry.request else {
+            return Err(ElicitationClaimRefusal::Unknown);
+        };
+        if entry.session_id.as_deref() != Some(session_id) || entry.tx.is_none() {
+            return Err(ElicitationClaimRefusal::Unknown);
         }
-        let sender = entry.tx.take()?;
+        if let Some(problem) = answer.and_then(|answer| {
+            crate::elicitation_answer::answer_problem(&request.requested_schema, answer)
+        }) {
+            return Err(ElicitationClaimRefusal::Invalid(problem));
+        }
+        let sender = entry.tx.take().ok_or(ElicitationClaimRefusal::Unknown)?;
         entries.remove(id);
-        Some(
+        Ok(
             crate::action_required_manager::OrdinaryElicitationClaim::pending(
                 session_id.into(),
                 sender,
             ),
         )
+    }
+
+    /// Why `answer` does not fit the form of the elicitation `id` that `session_id` may
+    /// answer, or `None` when it fits or no such elicitation waits. For the words of a
+    /// refusal; [`Self::resolve_in_session`] refuses such an answer on its own.
+    pub(crate) fn elicitation_answer_problem(
+        &self,
+        session_id: &str,
+        id: &str,
+        answer: &Value,
+    ) -> Option<String> {
+        let entries = self.lock();
+        let entry = entries.get(id)?;
+        match &entry.request {
+            UserActionRequest::Elicitation(request)
+                if entry.answerable_in(session_id) && entry.tx.is_some() =>
+            {
+                crate::elicitation_answer::answer_problem(&request.requested_schema, answer)
+            }
+            _ => None,
+        }
     }
 
     /// Resolve a credential card from the trusted, proof-of-user surface that
@@ -811,6 +849,18 @@ impl PendingUserActions {
                 entry.request.describe()
             );
             return ResolveOutcome::Rejected;
+        }
+        // An answer that does not fit the form it answers is refused here, at resolution,
+        // whatever door it came through. The caller stays parked for a valid one.
+        if let (UserActionRequest::Elicitation(request), UserActionOutcome::Provided { data }) =
+            (&entry.request, &outcome)
+        {
+            if let Some(problem) =
+                crate::elicitation_answer::answer_problem(&request.requested_schema, data)
+            {
+                debug!("Refusing an answer for {id}: {problem}");
+                return ResolveOutcome::Rejected;
+            }
         }
         // ⚠ The gate sits HERE, above `tx.take()` and `entries.remove(id)`, and
         // inside the same critical section as the scope check. Refusing after
@@ -1467,6 +1517,72 @@ mod tests {
             UserActionOutcome::Approved {
                 permission: Permission::AllowOnce
             }
+        );
+    }
+
+    /// A bridged elicitation's answer is checked against its form at resolution, through the
+    /// claim and through `resolve_in_session`: one that does not fit is refused and the call
+    /// stays parked, and a fitting one then delivers.
+    #[tokio::test]
+    async fn an_elicitation_answer_outside_its_form_is_rejected_and_the_call_stays_parked() {
+        use crate::action_required_manager::ElicitationClaimRefusal;
+        let registry = Arc::new(PendingUserActions::default());
+        let s = chat("form");
+        let parked = registry.park(
+            Some(&s),
+            None,
+            UserActionRequest::Elicitation(ElicitationRequest {
+                message: "Which cohort?".to_string(),
+                requested_schema: serde_json::json!({
+                    "type": "object",
+                    "properties": { "cohort": { "type": "string", "enum": ["discovery"] } },
+                    "required": ["cohort"]
+                }),
+            }),
+        );
+        let id = parked.id().to_string();
+        let outside = serde_json::json!({ "cohort": "everyone", "extra": 1 });
+        assert_eq!(
+            registry.elicitation_answer_problem(&s, &id, &outside),
+            Some("'cohort' must be one of: discovery.".to_string())
+        );
+        assert_eq!(
+            registry
+                .claim_elicitation_in_session(&s, &id, Some(&outside))
+                .err(),
+            Some(ElicitationClaimRefusal::Invalid(
+                "'cohort' must be one of: discovery.".to_string()
+            ))
+        );
+        assert_eq!(
+            registry.resolve_in_session(
+                &s,
+                &id,
+                UserActionOutcome::Provided { data: outside },
+                DecisionAuthority::unproven(),
+            ),
+            ResolveOutcome::Rejected
+        );
+        assert!(
+            registry.is_pending(&id),
+            "a refused answer leaves the call parked"
+        );
+
+        let fitting = serde_json::json!({ "cohort": "discovery" });
+        assert_eq!(
+            registry.resolve_in_session(
+                &s,
+                &id,
+                UserActionOutcome::Provided {
+                    data: fitting.clone()
+                },
+                DecisionAuthority::unproven(),
+            ),
+            ResolveOutcome::Delivered
+        );
+        assert_eq!(
+            parked.wait(Duration::from_secs(5), None).await,
+            UserActionOutcome::Provided { data: fitting }
         );
     }
 

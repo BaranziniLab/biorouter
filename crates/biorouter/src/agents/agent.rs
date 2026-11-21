@@ -12779,6 +12779,25 @@ impl Agent {
                 .submit_response(&session_config.id, id.clone(), user_data)
                 .await
             {
+                // An answer that does not fit the request's form was refused at resolution
+                // and the request is still waiting, so this is not the interrupted run below.
+                // Nothing is stored: the extension never received this answer, and a row of
+                // it would tell the model it had.
+                if let Some(invalid) =
+                    e.downcast_ref::<crate::action_required_manager::InvalidElicitationAnswer>()
+                {
+                    tracing::info!("Elicitation response for {id} refused: {invalid}");
+                    let notice = Message::assistant()
+                        .with_system_notification(
+                            SystemNotificationType::InlineMessage,
+                            format!(
+                                "Your answer was not sent: {invalid} The request is still \
+                                 waiting for an answer."
+                            ),
+                        )
+                        .user_only();
+                    return Ok(Box::pin(stream::iter([Ok(AgentEvent::Message(notice))])));
+                }
                 // No live request is waiting on this id. The usual cause
                 // is a daemon restart between the elicitation and the
                 // reply: the in-memory pending request — and the tool
@@ -31448,6 +31467,91 @@ mod gate_b_turn_tests {
             "an elicitation answer is a user action on a parked tool call, not a \
              disclosure; the gate sits after this early return:\n{}",
             rendered(&events)
+        );
+    }
+
+    /// An answer that does not fit the request's form is refused at resolution. The person is
+    /// told so, nothing is stored (the extension never received it), and the request still
+    /// waits; a fitting answer then delivers. Before, it reached the extension as `accept`.
+    #[tokio::test]
+    async fn an_elicitation_answer_outside_its_form_is_refused_with_a_notice() {
+        use std::time::Duration;
+        let (_dir, agent, s) = agent_on(public_provider()).await;
+        let sm = manager(&agent);
+        let session_id = s.id.clone();
+        let waiter = tokio::spawn(async move {
+            ActionRequiredManager::global()
+                .request_and_wait(
+                    "Which cohort?".into(),
+                    serde_json::json!({
+                        "type": "object",
+                        "properties": { "cohort": { "type": "string", "enum": ["discovery"] } },
+                        "required": ["cohort"]
+                    }),
+                    Duration::from_secs(30),
+                    Some(&session_id),
+                )
+                .await
+        });
+        let id = tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                let found = ActionRequiredManager::global()
+                    .drain_requests(&s.id)
+                    .iter()
+                    .flat_map(|message| message.content.iter())
+                    .find_map(|content| match content {
+                        MessageContent::ActionRequired(action) => match &action.data {
+                            ActionRequiredData::Elicitation { id, .. } => Some(id.clone()),
+                            _ => None,
+                        },
+                        _ => None,
+                    });
+                if let Some(id) = found {
+                    return id;
+                }
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("the request is published");
+        let stored = reread(&sm, &s.id).await.message_count;
+
+        let outside =
+            Message::user().with_content(MessageContent::action_required_elicitation_response(
+                id.clone(),
+                serde_json::json!({ "cohort": "everyone", "admin": true }),
+            ));
+        let events = drain(agent.reply(outside, cfg(&s), None).await.unwrap()).await;
+        assert!(
+            events.iter().any(|event| matches!(
+                event,
+                Ok(AgentEvent::Message(message))
+                    if format!("{message:?}").contains("Your answer was not sent")
+                        && format!("{message:?}").contains("must be one of")
+            )),
+            "the person is told the answer was refused:\n{}",
+            rendered(&events)
+        );
+        assert_eq!(
+            reread(&sm, &s.id).await.message_count,
+            stored,
+            "a refused answer is not stored"
+        );
+        assert!(!waiter.is_finished(), "the request still waits");
+
+        let fitting =
+            Message::user().with_content(MessageContent::action_required_elicitation_response(
+                id,
+                serde_json::json!({ "cohort": "discovery" }),
+            ));
+        drain(agent.reply(fitting, cfg(&s), None).await.unwrap()).await;
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(5), waiter)
+                .await
+                .unwrap()
+                .unwrap()
+                .unwrap(),
+            Some(serde_json::json!({ "cohort": "discovery" }))
         );
     }
 
