@@ -207,6 +207,22 @@ fn extension_roots() -> Arc<Vec<PathBuf>> {
     ))
 }
 
+/// A path component as the extensions-folder checks compare it: without regard to case, since
+/// the folders live on case-insensitive volumes on macOS and Windows.
+fn folded(component: Component<'_>) -> String {
+    component.as_os_str().to_string_lossy().to_lowercase()
+}
+
+/// Whether `path` is `prefix` or inside it, component by component and case folded.
+fn starts_with_folded(path: &Path, prefix: &Path) -> bool {
+    let mut parts = path.components();
+    prefix.components().all(|want| {
+        parts
+            .next()
+            .is_some_and(|have| folded(have) == folded(want))
+    })
+}
+
 /// The pure core of [`extension_roots`], testable without the process environment.
 fn resolve_extension_roots(root_env: Option<&str>, platform_config: Option<&Path>) -> Vec<PathBuf> {
     let fallback = platform_config
@@ -329,30 +345,30 @@ impl SecretGuard {
     /// without regard to case, since the folders live on case-insensitive volumes on macOS
     /// and Windows; reading the bundle is not this check's business, starting it is.
     pub(crate) fn extension_bundle_of(&self, path: &Path) -> Option<PathBuf> {
-        fn folded(component: Component<'_>) -> String {
-            component.as_os_str().to_string_lossy().to_lowercase()
-        }
         let parts: Vec<Component<'_>> = path.components().collect();
         for root in self.extension_roots.iter() {
-            let root_parts: Vec<Component<'_>> = root.components().collect();
-            if parts.len() <= root_parts.len()
-                || !root_parts
-                    .iter()
-                    .zip(&parts)
-                    .all(|(a, b)| folded(*a) == folded(*b))
-            {
+            let root_len = root.components().count();
+            if parts.len() <= root_len || !starts_with_folded(path, root) {
                 continue;
             }
-            let inside = &parts[root_parts.len()..];
+            let inside = &parts[root_len..];
             if let Some(at) = inside.iter().position(|part| {
                 let name = folded(*part);
                 name.len() > 4 && name.ends_with(".app")
             }) {
-                let bundle: PathBuf = parts[..root_parts.len() + at + 1].iter().collect();
+                let bundle: PathBuf = parts[..root_len + at + 1].iter().collect();
                 return Some(bundle);
             }
         }
         None
+    }
+
+    /// Whether `path` is one of [`extension_roots`] or inside one, compared as
+    /// [`Self::extension_bundle_of`] compares.
+    pub(crate) fn in_extension_roots(&self, path: &Path) -> bool {
+        self.extension_roots
+            .iter()
+            .any(|root| starts_with_folded(path, root))
     }
 
     /// [`extension_roots`] as this guard holds them.
@@ -899,6 +915,14 @@ impl DeniedAccess {
                  macOS Accessibility and Screen Recording permissions, so starting it from a \
                  shell would observe or control the desktop without asking them. Use that \
                  extension's own tools instead. Reading or listing the folder is still allowed."
+            ),
+            resolve::Reason::ExtensionAppCopy => format!(
+                "The command is blocked: {target} copies, moves or links an app bundle inside \
+                 Biorouter's extensions folder. An installed extension's helper app may hold the \
+                 person's macOS Accessibility and Screen Recording permissions, a copy keeps \
+                 them, and starting it would observe or control the desktop without asking them. \
+                 Use that extension's own tools instead. Reading or listing the folder is still \
+                 allowed, and so is copying a file in it that cannot run."
             ),
         };
         // #546: a model that wrote the body as text looks for the word among
@@ -1499,9 +1523,37 @@ mod tests {
              </dict></plist>\n",
         )
         .unwrap();
+        // A real helper can run; whether a copied or opened file can is part of the rule.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(
+                bundle.join("Contents/MacOS/helper"),
+                fs::Permissions::from_mode(0o755),
+            )
+            .unwrap();
+        }
         fs::create_dir_all(extensions.join("desktop-helper/bin")).unwrap();
         fs::write(extensions.join("desktop-helper/README.md"), "notes\n").unwrap();
         bundle
+    }
+
+    /// `command` is refused as starting an extension's helper app, by the generic rule and not
+    /// by Copilot's.
+    fn assert_refused_as_extension_app(g: &SecretGuard, env: &ShellEnv, command: &str) {
+        let denied = g
+            .find_denied_access_in(json!({ "command": command }).as_object().unwrap(), env)
+            .unwrap_or_else(|| panic!("started an extension's helper app: {command}"));
+        let message = denied.message();
+        assert!(
+            message.contains("app bundle inside Biorouter's extensions folder")
+                && message.contains("Reading or listing the folder is still allowed"),
+            "{command}: {message}"
+        );
+        assert!(
+            !message.contains("Biorouter Copilot"),
+            "the generic rule is not Copilot's: {message}"
+        );
     }
 
     /// An installed extension's helper app may hold the person's macOS Accessibility and Screen
@@ -1538,20 +1590,39 @@ mod tests {
             "osascript -e 'tell application \"Helper Kit\" to activate'".to_string(),
             "osascript -e 'tell application id \"org.example.helperkit\" to launch'".to_string(),
             "osascript -l JavaScript -e 'Application(\"Kit Helper\").activate()'".to_string(),
+            // A wrapper's option that takes a value takes the next word with it, so the program
+            // is the word after that value: `nice -n 10`, `sudo -u root`, `env -u FOO`,
+            // `timeout -s KILL 5`, in every spelling getopt reads.
+            format!("nice -n 10 {at}/'Helper Kit.app'/Contents/MacOS/helper"),
+            format!("nice -n5 {at}/'Helper Kit.app'/Contents/MacOS/helper"),
+            format!("nice --adjustment 5 {at}/'Helper Kit.app'/Contents/MacOS/helper"),
+            format!("nice -5 {at}/'Helper Kit.app'/Contents/MacOS/helper"),
+            format!("sudo -u root {at}/'Helper Kit.app'/Contents/MacOS/helper"),
+            format!("sudo -Eu root -g staff {at}/'Helper Kit.app'/Contents/MacOS/helper"),
+            format!("sudo --user=root -C 5 -D /tmp {at}/'Helper Kit.app'/Contents/MacOS/helper"),
+            format!("sudo --user root -- {at}/'Helper Kit.app'/Contents/MacOS/helper"),
+            format!("doas -u root {at}/'Helper Kit.app'/Contents/MacOS/helper"),
+            format!("env -u FOO {at}/'Helper Kit.app'/Contents/MacOS/helper"),
+            format!("env -i -u FOO -C /tmp BAR=1 {at}/'Helper Kit.app'/Contents/MacOS/helper"),
+            format!("env --unset FOO --chdir=/tmp {at}/'Helper Kit.app'/Contents/MacOS/helper"),
+            "env -S '\"$HOME/.config/biorouter/extensions/desktop-helper/1.2.0/Helper Kit.app/Contents/MacOS/helper\" --serve'".to_string(),
+            format!("env --split-string='{at}/Helper\\ Kit.app/Contents/MacOS/helper'"),
+            format!("timeout -s KILL 5 {at}/'Helper Kit.app'/Contents/MacOS/helper"),
+            format!("timeout -k 2 --signal TERM 10s {at}/'Helper Kit.app'/Contents/MacOS/helper"),
+            format!("caffeinate -t 60 -i {at}/'Helper Kit.app'/Contents/MacOS/helper"),
+            format!("stdbuf -o L {at}/'Helper Kit.app'/Contents/MacOS/helper"),
+            format!("/usr/bin/time -o /tmp/t.txt {at}/'Helper Kit.app'/Contents/MacOS/helper"),
+            format!("time -p {at}/'Helper Kit.app'/Contents/MacOS/helper"),
+            format!("exec -a helper {at}/'Helper Kit.app'/Contents/MacOS/helper"),
+            format!(
+                "sudo -u root nice -n 5 timeout -s KILL 5 {at}/'Helper Kit.app'/Contents/MacOS/helper"
+            ),
+            format!("sh -c \"nice -n 5 {at}/'Helper Kit.app'/Contents/MacOS/helper\""),
+            // An option no table knows may take a value, so the word after it is read as the
+            // program too.
+            format!("sudo --made-up-option value {at}/'Helper Kit.app'/Contents/MacOS/helper"),
         ] {
-            let denied = g
-                .find_denied_access_in(json!({ "command": command }).as_object().unwrap(), &env)
-                .unwrap_or_else(|| panic!("started an extension's helper app: {command}"));
-            let message = denied.message();
-            assert!(
-                message.contains("app bundle inside Biorouter's extensions folder")
-                    && message.contains("Reading or listing the folder is still allowed"),
-                "{command}: {message}"
-            );
-            assert!(
-                !message.contains("Biorouter Copilot"),
-                "the generic rule is not Copilot's: {message}"
-            );
+            assert_refused_as_extension_app(&g, &env, &command);
         }
         // Reading, listing and inspecting the folder and its bundles stays allowed, as do apps
         // and scripts that are not bundles in it.
@@ -1573,6 +1644,118 @@ mod tests {
             "~/.config/biorouter/extensions/desktop-helper/bin/run.sh".to_string(),
             "/Applications/Other.app/Contents/MacOS/other".to_string(),
             "~/Applications/Helper Kit.app/Contents/MacOS/helper".replace(' ', "\\ "),
+            // Behind a wrapper the program is still the reader, not the file it reads.
+            format!("sudo -E cat {at}/'Helper Kit.app'/Contents/Info.plist"),
+            format!("sudo -u root cat {at}/'Helper Kit.app'/Contents/Info.plist"),
+            format!("nice -n 10 plutil -p {at}/'Helper Kit.app'/Contents/Info.plist"),
+            format!("timeout -s KILL 5 codesign -dv {at}/'Helper Kit.app'"),
+            format!("env -u FOO ls {at}/'Helper Kit.app'/Contents/MacOS"),
+            format!("sudo --made-up-option /bin/cat {at}/'Helper Kit.app'/Contents/Info.plist"),
+        ] {
+            assert!(
+                scan_command(&g, &env, &ordinary).is_none(),
+                "refused an ordinary command: {ordinary}"
+            );
+        }
+    }
+
+    /// A copy of an extension's helper app keeps the person's grants (macOS keys them to the
+    /// code signature, not the path), and a link to it starts the bundle itself, so copying,
+    /// moving, linking or archiving the bundle (or a folder in the extensions folder that holds
+    /// it, or a program file in it) is refused like starting it. Copying a file in it that
+    /// cannot run, or anything into the folder, stays allowed.
+    #[test]
+    fn copying_or_linking_an_extensions_helper_app_is_refused() {
+        let fake = FakeHome::new();
+        let (g, env) = (fake.guard(), fake.env());
+        install_helper_app(&fake.extensions());
+        let at = "~/.config/biorouter/extensions/desktop-helper/1.2.0";
+        let mut refused = vec![
+            format!("cp -R {at}/'Helper Kit.app' /tmp/hk.app && /tmp/hk.app/Contents/MacOS/helper"),
+            format!("ln -s {at}/'Helper Kit.app' /tmp/hk && /tmp/hk/Contents/MacOS/helper"),
+            format!("cd {at} && ln -s 'Helper Kit.app'"),
+            format!("ln -sf {at}/'Helper Kit.app'"),
+            format!("mv {at}/'Helper Kit.app' ~/Desktop/"),
+            format!("ditto {at}/'Helper Kit.app' /tmp/hk.app"),
+            format!("ditto -c -k --keepParent {at}/'Helper Kit.app' /tmp/hk.zip"),
+            format!("rsync -a {at}/'Helper Kit.app' /tmp/"),
+            "rsync -av ~/.config/biorouter/extensions/ /tmp/extensions/".to_string(),
+            "cp -R ~/.config/biorouter/extensions/desktop-helper /tmp/".to_string(),
+            "cp -R ~/.config/biorouter/extensions/*/*/*.app /tmp/".to_string(),
+            format!("cp -R {at}/'Helper Kit.app'/Contents /tmp/contents"),
+            format!("sudo cp -pR {at}/'Helper Kit.app' /Applications/"),
+            format!("cp -t /tmp {at}/'Helper Kit.app'"),
+            format!("gcp -a {at}/'Helper Kit.app' /tmp/"),
+        ];
+        #[cfg(unix)]
+        refused.extend([
+            format!("cp {at}/'Helper Kit.app'/Contents/MacOS/helper /tmp/helper"),
+            format!("ln {at}/'Helper Kit.app'/Contents/MacOS/helper /tmp/helper"),
+            format!(
+                "install -m 755 {at}/'Helper Kit.app'/Contents/MacOS/helper /usr/local/bin/helper"
+            ),
+        ]);
+        for command in &refused {
+            assert_refused_as_extension_app(&g, &env, command);
+        }
+        for ordinary in [
+            format!("cp {at}/'Helper Kit.app'/Contents/Info.plist /tmp/info.plist"),
+            "cp ~/.config/biorouter/extensions/desktop-helper/README.md .".to_string(),
+            "cp -R ~/.config/biorouter/extensions/desktop-helper/bin /tmp/bin".to_string(),
+            "cp notes.txt ~/.config/biorouter/extensions/desktop-helper/".to_string(),
+            "rsync -a ~/project/ /tmp/backup/".to_string(),
+            "ln -s ~/project/tool /tmp/tool".to_string(),
+            "mv build/Other.app /Applications/".to_string(),
+        ] {
+            assert!(
+                scan_command(&g, &env, &ordinary).is_none(),
+                "refused an ordinary command: {ordinary}"
+            );
+        }
+    }
+
+    /// `open` starts what it opens only when that is an app bundle or a program: revealing a
+    /// bundle in the Finder (`-R`), opening one of its files in an editor (`-a TextEdit`, `-e`,
+    /// `-t`), or opening a folder or a file in it that cannot run stays allowed.
+    #[test]
+    fn opening_inside_an_extensions_bundle_refuses_only_what_starts() {
+        let fake = FakeHome::new();
+        let (g, env) = (fake.guard(), fake.env());
+        let bundle = install_helper_app(&fake.extensions());
+        fs::create_dir_all(bundle.join("Contents/Library/LoginItems/Login Agent.app/Contents"))
+            .unwrap();
+        let at = "~/.config/biorouter/extensions/desktop-helper/1.2.0";
+        let mut refused = vec![
+            format!("open {at}/'Helper Kit.app'/"),
+            format!("open -g {at}/'Helper Kit.app'/Contents/Library/LoginItems/'Login Agent.app'"),
+            format!("open -a Finder {at}/'Helper Kit.app'"),
+        ];
+        #[cfg(unix)]
+        {
+            let url = format!("file://{}", bundle.to_string_lossy().replace(' ', "%20"));
+            refused.extend([
+                format!("open {at}/'Helper Kit.app'/Contents/MacOS/helper"),
+                format!("open '{url}'"),
+                format!("open -u '{url}/'"),
+                format!(
+                    "open 'file://localhost{}'",
+                    url.strip_prefix("file://").unwrap()
+                ),
+            ]);
+        }
+        for command in &refused {
+            assert_refused_as_extension_app(&g, &env, command);
+        }
+        for ordinary in [
+            format!("open -R {at}/'Helper Kit.app'"),
+            format!("open -gR {at}/'Helper Kit.app'"),
+            format!("open -a TextEdit {at}/'Helper Kit.app'/Contents/Info.plist"),
+            format!("open -b com.apple.TextEdit {at}/'Helper Kit.app'/Contents/Info.plist"),
+            format!("open -e {at}/'Helper Kit.app'/Contents/Info.plist"),
+            format!("open -t {at}/'Helper Kit.app'/Contents/MacOS/helper"),
+            format!("open {at}/'Helper Kit.app'/Contents"),
+            format!("open {at}/'Helper Kit.app'/Contents/Info.plist"),
+            "open 'file:///Applications/Other.app'".to_string(),
         ] {
             assert!(
                 scan_command(&g, &env, &ordinary).is_none(),

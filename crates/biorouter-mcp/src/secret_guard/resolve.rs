@@ -169,6 +169,9 @@ pub(crate) enum Reason {
     /// The command starts an app bundle inside Biorouter's extensions folder, whose helper may
     /// hold the same permissions. See [`Resolver::refuse_extension_app`].
     ExtensionApp,
+    /// The command copies, moves or links such a bundle, and a copy keeps those permissions.
+    /// See [`Resolver::refuse_copying`].
+    ExtensionAppCopy,
 }
 
 /// What a scan has seen of the browser-key helper (BB-23), across every word, nested script
@@ -609,8 +612,18 @@ impl<'a> Resolver<'a> {
             match plain_text(word).as_deref() {
                 Some(
                     "!" | "{" | "}" | "if" | "then" | "else" | "elif" | "fi" | "do" | "done"
-                    | "while" | "until" | "esac" | "time" | "coproc" | "[[" | "]]" | "function",
+                    | "while" | "until" | "esac" | "coproc" | "[[" | "]]" | "function",
                 ) => i += 1,
+                // bash's `time [-p] pipeline`.
+                Some("time") => {
+                    i += 1;
+                    while matches!(
+                        words.get(i).and_then(plain_text).as_deref(),
+                        Some("-p" | "--")
+                    ) {
+                        i += 1;
+                    }
+                }
                 Some("for" | "select") => return self.for_loop(&words[i + 1..], state),
                 Some("case") => {
                     if let Some(subject) = words.get(i + 1) {
@@ -703,8 +716,13 @@ impl<'a> Resolver<'a> {
     }
 
     fn program_semantics(&mut self, args: &[Word], state: &mut State) -> Scan {
-        let (index, program) = self.program_of(args, state)?;
-        self.refuse_extension_app(args, index, &program, state)?;
+        let at = self.program_at(args, state)?;
+        self.refuse_extension_app(args, &at, state)?;
+        // `env -S 'prog args'`: env splits the string into the program it runs.
+        for script in &at.split_strings {
+            self.nested(script, state)?;
+        }
+        let (index, program) = (at.index, at.name);
         let rest = args.get(index + 1..).unwrap_or(&[]);
         match program.as_str() {
             "cd" | "chdir" => self.change_dir(rest, state, true)?,
@@ -775,30 +793,42 @@ impl<'a> Resolver<'a> {
     /// `-a` with its name or path, by `-b` with its identifier), or `osascript` names one as an
     /// application. Paths resolve as every other word does: `~`, variables, globs, `cd`, links.
     ///
+    /// A copy of a bundle keeps the person's grants (macOS keys them to the code signature, not
+    /// the path) and a link to one starts the bundle itself, so `cp`, `mv`, `ln`, `ditto`,
+    /// `rsync` and `install` are refused when a source is such a bundle, a program or folder
+    /// inside one, or a folder in the extensions folder that holds one
+    /// ([`Self::refuse_copying`]).
+    ///
     /// Generic on purpose: it names no extension, and it never touches reading or listing,
-    /// which are words in no program's place (`ls`, `cat`, `find`, `plutil -p`, `codesign -dv`).
-    /// It cannot see a path whose start is unknown until the command runs, nor a bundle copied
-    /// out of the folder first, nor a program string built in another language.
-    fn refuse_extension_app(
-        &mut self,
-        args: &[Word],
-        index: usize,
-        program: &str,
-        state: &State,
-    ) -> Scan {
+    /// which are words in no program's place (`ls`, `cat`, `find`, `plutil -p`, `codesign -dv`),
+    /// nor `open` on something that does not start ([`Self::refuse_opening`]). It cannot see a
+    /// path whose start is unknown until the command runs, a copy made some other way (an
+    /// archive, another language) or of a folder above the extensions folder, nor a program
+    /// string built in another language.
+    fn refuse_extension_app(&mut self, args: &[Word], at: &ProgramAt, state: &State) -> Scan {
         if self.guard.extension_roots().is_empty() {
             return Ok(());
         }
-        let Some(word) = args.get(index) else {
+        let Some(word) = args.get(at.index) else {
             return Ok(());
         };
         self.refuse_starting(word, state, true)?;
-        let rest = &args[index + 1..];
-        match program {
+        // The word read as the program may be the value of an option no table knows: read the
+        // next word as the program too, unless the first is a path, which is a program.
+        let is_path = plain_text(word).is_some_and(|text| text.chars().any(is_separator));
+        if at.after_unknown_option && !is_path {
+            if let Some(next) = args.get(at.index + 1) {
+                self.refuse_starting(next, state, true)?;
+            }
+        }
+        let rest = &args[at.index + 1..];
+        match at.name.as_str() {
+            "cp" | "gcp" | "mv" | "gmv" | "ln" | "gln" | "link" | "ditto" | "rsync" | "install"
+            | "ginstall" => self.refuse_copying(&at.name, rest, state),
             "open" => self.refuse_opening(rest, state),
             "osascript" => self.refuse_scripted_app(rest, state),
             "xargs" | "arch" => {
-                let with_value: &[&str] = if program == "xargs" {
+                let with_value: &[&str] = if at.name == "xargs" {
                     &[
                         "-n", "-L", "-I", "-P", "-s", "-d", "-E", "-a", "-R", "-S", "-J",
                     ]
@@ -825,9 +855,11 @@ impl<'a> Resolver<'a> {
         }
     }
 
-    /// Refuse `word` when it resolves inside an extension's app bundle. A program word only
-    /// counts as a path when it holds a separator: a bare name is looked up on `PATH`.
-    fn refuse_starting(&mut self, word: &Word, state: &State, program: bool) -> Scan {
+    /// Every path `word` could name now ([`Self::concrete_paths`]), leaving out a reading that
+    /// starts with `-` (an option). A word in a program's place (`program`) only counts as a
+    /// path when it holds a separator: a bare name is looked up on `PATH`.
+    fn word_paths(&mut self, word: &Word, state: &State, program: bool) -> Vec<PathBuf> {
+        let mut out = Vec::new();
         for template in self.expand(word, state, false) {
             if matches!(template.first(), Some(Atom::Ch('-', _))) {
                 continue;
@@ -839,17 +871,32 @@ impl<'a> Resolver<'a> {
             {
                 continue;
             }
-            for path in self.concrete_paths(&template, state) {
-                if let Some(bundle) = self.extension_bundle_of(&path) {
-                    return Err(self.finding(&word_text(word), Some(bundle), Reason::ExtensionApp));
-                }
+            out.extend(self.concrete_paths(&template, state));
+        }
+        out
+    }
+
+    /// Refuse `word` when it resolves inside an extension's app bundle.
+    fn refuse_starting(&mut self, word: &Word, state: &State, program: bool) -> Scan {
+        for path in self.word_paths(word, state, program) {
+            if let Some((bundle, _)) = self.in_extension_bundle(&path) {
+                return Err(self.finding(&word_text(word), Some(bundle), Reason::ExtensionApp));
             }
         }
         Ok(())
     }
 
     /// `open`'s operands, and the app its `-a` or `-b` names.
+    ///
+    /// The app `-a` or `-b` names is started whatever else the command says. An operand is
+    /// started only when it is an app bundle (the extension's own, or one nested in it) or a
+    /// file that can run (Terminal runs it), or cannot be read: a folder opens in the Finder
+    /// and any other file in the app that reads it. `-R` (reveal in the Finder), `-e` and `-t`
+    /// (open in a text editor) and `-f` start no operand at all. An operand may be a `file:`
+    /// URL, here or as `-u`'s value.
     fn refuse_opening(&mut self, rest: &[Word], state: &State) -> Scan {
+        let mut operands: Vec<&Word> = Vec::new();
+        let mut starts_no_operand = false;
         let mut i = 0;
         while let Some(word) = rest.get(i) {
             i += 1;
@@ -867,6 +914,13 @@ impl<'a> Resolver<'a> {
                 continue;
             }
             if text.starts_with('-') && text.len() > 1 {
+                if text
+                    .chars()
+                    .skip(1)
+                    .any(|c| matches!(c, 'R' | 'e' | 't' | 'f'))
+                {
+                    starts_no_operand = true;
+                }
                 // A flag cluster: the value of its last flag, when that flag takes one, is the
                 // next word (`-na Name`, `-b id`).
                 let value = rest.get(i);
@@ -884,14 +938,130 @@ impl<'a> Resolver<'a> {
                             self.refuse_identified_app(value, state, "open -b")?;
                         }
                     }
-                    Some('s' | 'u') => i += 1,
+                    Some('u') => {
+                        if let Some(value) = value {
+                            i += 1;
+                            operands.push(value);
+                        }
+                    }
+                    Some('s') => i += 1,
                     _ => {}
                 }
                 continue;
             }
-            self.refuse_starting(word, state, false)?;
+            operands.push(word);
+        }
+        if starts_no_operand {
+            return Ok(());
+        }
+        for word in operands {
+            let mut paths = self.word_paths(word, state, false);
+            paths.extend(
+                self.readings_as_text(word, state)
+                    .iter()
+                    .filter_map(|text| file_url_path(text)),
+            );
+            for path in paths {
+                if let Some((bundle, found)) = self.in_extension_bundle(&path) {
+                    if is_app_bundle(&found)
+                        || matches!(entry_kind(&found), Entry::Runnable | Entry::Unknown)
+                    {
+                        return Err(self.finding(
+                            &format!("open {}", word_text(word)),
+                            Some(bundle),
+                            Reason::ExtensionApp,
+                        ));
+                    }
+                }
+            }
         }
         Ok(())
+    }
+
+    /// `cp`, `mv`, `ln`, `link`, `ditto`, `rsync` and `install` (and the `g` coreutils
+    /// spellings) whose source is an extension's app bundle, or a folder or a file that can run
+    /// inside one, or a folder in the extensions folder that holds one. A copy keeps the
+    /// person's grants, since macOS keys them to the code signature and not the path, and a
+    /// link starts the bundle itself; the start rule cannot follow either, because the copy or
+    /// the link does not exist yet when the command is read.
+    ///
+    /// The sources are every operand but the last (the destination), or every operand when
+    /// there is only one (`ln -s bundle`) or a target folder is given (`-t DIR`). An option's
+    /// value is read as an operand too, which can only refuse more. A file inside a bundle that
+    /// cannot run (an `Info.plist`, a resource) copies as data, and a destination is never
+    /// judged: copying into the folder starts nothing.
+    fn refuse_copying(&mut self, verb: &str, rest: &[Word], state: &State) -> Scan {
+        let gnu_target = matches!(
+            verb,
+            "cp" | "gcp" | "mv" | "gmv" | "ln" | "gln" | "install" | "ginstall"
+        );
+        let mut operands: Vec<&Word> = Vec::new();
+        let mut target_folder = false;
+        let mut options = true;
+        for word in rest {
+            if let Some(text) = plain_text(word).filter(|_| options) {
+                if text == "--" {
+                    options = false;
+                    continue;
+                }
+                if let Some(long) = text.strip_prefix("--") {
+                    target_folder |= gnu_target && long.starts_with("target-directory");
+                    continue;
+                }
+                if text.starts_with('-') && text.len() > 1 {
+                    target_folder |= gnu_target && text.chars().skip(1).any(|c| c == 't');
+                    continue;
+                }
+            }
+            operands.push(word);
+        }
+        let sources = if target_folder || operands.len() == 1 {
+            &operands[..]
+        } else {
+            &operands[..operands.len().saturating_sub(1)]
+        };
+        for word in sources {
+            for path in self.word_paths(word, state, false) {
+                let found = match self.in_extension_bundle(&path) {
+                    Some((bundle, found)) => (entry_kind(&found) != Entry::Inert).then_some(bundle),
+                    None => self.bundle_beneath(&path),
+                };
+                if let Some(bundle) = found {
+                    return Err(self.finding(
+                        &format!("{verb} {}", word_text(word)),
+                        Some(bundle),
+                        Reason::ExtensionAppCopy,
+                    ));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// An extension's app bundle inside `path`, when `path` is a folder at or below an
+    /// extensions folder (the folder itself, an extension's own folder or one of its
+    /// versions), as written or once links are resolved. A folder above the extensions folder
+    /// (the config folder, the home folder) is not looked into: copying it is a backup.
+    fn bundle_beneath(&mut self, path: &Path) -> Option<PathBuf> {
+        let lexical = lexical_normalize(path);
+        if let Some(bundle) = self.bundle_beneath_spelling(&lexical) {
+            return Some(bundle);
+        }
+        let physical = self.physical(&lexical)?;
+        if physical == lexical {
+            return None;
+        }
+        self.bundle_beneath_spelling(&physical)
+    }
+
+    fn bundle_beneath_spelling(&mut self, folder: &Path) -> Option<PathBuf> {
+        if !self.guard.in_extension_roots(folder) {
+            return None;
+        }
+        self.extension_bundles()
+            .iter()
+            .find(|bundle| super::starts_with_folded(&bundle.path, folder))
+            .map(|bundle| bundle.path.clone())
     }
 
     /// An application `osascript -e` names: `application "Name"`, `app "Name"`,
@@ -917,7 +1087,8 @@ impl<'a> Resolver<'a> {
                 let found = if capture.get(1).is_some() {
                     self.bundle_with_identifier(&named)
                 } else if named.contains('/') {
-                    self.extension_bundle_of(Path::new(&named))
+                    self.in_extension_bundle(Path::new(&named))
+                        .map(|(bundle, _)| bundle)
                 } else {
                     self.bundle_named(&named)
                         .or_else(|| self.bundle_with_identifier(&named))
@@ -956,14 +1127,16 @@ impl<'a> Resolver<'a> {
         Ok(())
     }
 
-    /// The bundle a path is in, as written and once links are resolved.
-    fn extension_bundle_of(&mut self, path: &Path) -> Option<PathBuf> {
+    /// The bundle a path is in, as written and once links are resolved, and the spelling of
+    /// the path it was found under (the link's target for a link).
+    fn in_extension_bundle(&mut self, path: &Path) -> Option<(PathBuf, PathBuf)> {
         let lexical = lexical_normalize(path);
         if let Some(bundle) = self.guard.extension_bundle_of(&lexical) {
-            return Some(bundle);
+            return Some((bundle, lexical));
         }
         let physical = self.physical(&lexical)?;
-        self.guard.extension_bundle_of(&physical)
+        let bundle = self.guard.extension_bundle_of(&physical)?;
+        Some((bundle, physical))
     }
 
     /// Every path a word could name, as far as it can be known now: each glob expanded
@@ -1073,46 +1246,85 @@ impl<'a> Resolver<'a> {
 
     /// The real program behind wrappers (`sudo`, `env X=1`, `command`, …).
     fn program_of(&mut self, args: &[Word], state: &mut State) -> Result<(usize, String), Finding> {
+        let at = self.program_at(args, state)?;
+        Ok((at.index, at.name))
+    }
+
+    /// [`Self::program_of`], with what the wrappers' options said on the way.
+    ///
+    /// Each wrapper's options are read as its `getopt` reads them ([`wrapper_spec`]): an option
+    /// that takes a value takes the next word with it (`nice -n 10`, `sudo -u root`,
+    /// `env -u FOO`, `timeout -s KILL 5`) unless the value is attached (`-n10`,
+    /// `--user=root`), in a cluster the first such letter ends the cluster (`sudo -Eu root`),
+    /// `--` ends the options, and `timeout`'s duration is one more word before the program.
+    /// Until 1.94.6 every option was read as taking no value, so the value was taken for the
+    /// program and the real program went unread.
+    fn program_at(&mut self, args: &[Word], state: &mut State) -> Result<ProgramAt, Finding> {
+        let mut at = ProgramAt {
+            index: args.len(),
+            name: String::new(),
+            after_unknown_option: false,
+            split_strings: Vec::new(),
+        };
         let mut i = 0;
         while let Some(word) = args.get(i) {
             let name = program_name(word);
-            if !matches!(
-                name.as_str(),
-                "builtin"
-                    | "command"
-                    | "exec"
-                    | "nohup"
-                    | "time"
-                    | "nice"
-                    | "sudo"
-                    | "doas"
-                    | "env"
-                    | "caffeinate"
-                    | "stdbuf"
-                    | "timeout"
-                    | "unbuffer"
-                    | "noglob"
-            ) {
-                return Ok((i, name));
-            }
+            let Some(spec) = wrapper_spec(&name) else {
+                at.index = i;
+                at.name = name;
+                return Ok(at);
+            };
+            at.after_unknown_option = false;
             i += 1;
+            let mut operands = spec.operands;
+            let mut options = true;
             while let Some(next) = args.get(i) {
                 if let Some((n, value, append)) = split_assignment(next) {
                     self.assign(&n, &value, append, state)?;
+                    // Whether or not an unknown option took it as its value, the program
+                    // comes after it.
+                    at.after_unknown_option = false;
                     i += 1;
                     continue;
                 }
                 let text = plain_text(next).unwrap_or_default();
-                let is_duration =
-                    name == "timeout" && text.starts_with(|c: char| c.is_ascii_digit());
-                if text.starts_with('-') || is_duration {
+                if options && text == "--" {
+                    options = false;
+                    i += 1;
+                    continue;
+                }
+                if options && text.starts_with('-') {
+                    let read = spec.read(&text);
+                    at.after_unknown_option = read.unknown;
+                    if let Some(split) = read.split {
+                        match split {
+                            Split::Attached(prefix) => {
+                                at.split_strings.extend(
+                                    self.readings_as_text(next, state).into_iter().filter_map(
+                                        |r| r.strip_prefix(&prefix).map(str::to_string),
+                                    ),
+                                );
+                            }
+                            Split::Next => {
+                                if let Some(value) = args.get(i + 1) {
+                                    at.split_strings.extend(self.readings_as_text(value, state));
+                                }
+                            }
+                        }
+                    }
+                    i += 1 + usize::from(read.takes_next);
+                    continue;
+                }
+                if operands > 0 {
+                    operands -= 1;
+                    at.after_unknown_option = false;
                     i += 1;
                     continue;
                 }
                 break;
             }
         }
-        Ok((args.len(), String::new()))
+        Ok(at)
     }
 
     /// The refusal for `args[index]`, a word [`Self::check_word`] refused as
@@ -2176,6 +2388,240 @@ fn add_cwd(state: &mut State, base: Base) {
     state.cwds.push(base);
 }
 
+/// Where [`Resolver::program_at`] found the program, and what the wrappers before it said.
+struct ProgramAt {
+    index: usize,
+    name: String,
+    /// The word right before the program is an option the wrapper's table does not know. It
+    /// may take a value, in which case the word read as the program is that value and the real
+    /// program is the word after it ([`Resolver::refuse_extension_app`] reads that one too).
+    after_unknown_option: bool,
+    /// The command lines `env -S` / `--split-string` hands over: `env` splits each one into a
+    /// program and its arguments, so each is scanned as a script of its own.
+    split_strings: Vec<String>,
+}
+
+/// How a wrapper's options read, as its `getopt` (GNU and BSD together) reads them.
+struct WrapperSpec {
+    /// Short options that take a value.
+    short_value: &'static str,
+    /// Short options that take none.
+    short_flag: &'static str,
+    /// Long options (without `--`) that take a value.
+    long_value: &'static [&'static str],
+    /// Long options that take none, or only an attached one (`--preserve-env=LIST`).
+    long_flag: &'static [&'static str],
+    /// The option whose value is a command line the wrapper splits (`env -S`).
+    split: Option<(char, &'static str)>,
+    /// Words after the options and before the program (`timeout`'s duration).
+    operands: usize,
+}
+
+/// What one option word told [`Resolver::program_at`].
+struct OptionRead {
+    /// The option's value is the next word.
+    takes_next: bool,
+    /// The word holds an option the table does not know.
+    unknown: bool,
+    /// The word is the split-string option, with its value attached or in the next word.
+    split: Option<Split>,
+}
+
+enum Split {
+    /// The value is the word's text after this prefix (`-S'cmd'`, `--split-string=cmd`).
+    Attached(String),
+    /// The value is the next word.
+    Next,
+}
+
+impl WrapperSpec {
+    /// Read one word that starts with `-`.
+    fn read(&self, text: &str) -> OptionRead {
+        let mut read = OptionRead {
+            takes_next: false,
+            unknown: false,
+            split: None,
+        };
+        if let Some(long) = text.strip_prefix("--") {
+            let (written, attached) = match long.split_once('=') {
+                Some((written, _)) => (written, true),
+                None => (long, false),
+            };
+            // getopt_long takes the full name or an unambiguous prefix of it.
+            let all = || self.long_value.iter().chain(self.long_flag.iter()).copied();
+            let full: Option<&'static str> = all().find(|name| *name == written).or_else(|| {
+                let mut prefixed =
+                    all().filter(|name| !written.is_empty() && name.starts_with(written));
+                match (prefixed.next(), prefixed.next()) {
+                    (Some(name), None) => Some(name),
+                    _ => None,
+                }
+            });
+            let Some(full) = full else {
+                read.unknown = true;
+                return read;
+            };
+            if self.long_value.contains(&full) {
+                read.takes_next = !attached;
+                if self.split.is_some_and(|(_, split)| split == full) {
+                    read.split = Some(if attached {
+                        Split::Attached(format!("--{written}="))
+                    } else {
+                        Split::Next
+                    });
+                }
+            }
+            return read;
+        }
+        let cluster = text.get(1..).unwrap_or_default();
+        // `nice -10`, the old spelling of `-n 10`; and a lone `-` (`env -`).
+        if cluster.chars().all(|c| c.is_ascii_digit()) {
+            return read;
+        }
+        for (at, c) in cluster.char_indices() {
+            if self.short_value.contains(c) {
+                let rest = cluster.get(at + c.len_utf8()..).unwrap_or_default();
+                read.takes_next = rest.is_empty();
+                if self.split.is_some_and(|(short, _)| short == c) {
+                    read.split = Some(if rest.is_empty() {
+                        Split::Next
+                    } else {
+                        Split::Attached(
+                            text.get(..1 + at + c.len_utf8())
+                                .unwrap_or_default()
+                                .to_string(),
+                        )
+                    });
+                }
+                return read;
+            }
+            if !self.short_flag.contains(c) {
+                read.unknown = true;
+            }
+        }
+        read
+    }
+}
+
+// The long options of the wrappers below, GNU and BSD together.
+const TIME_LONG_FLAG: &[&str] = &[
+    "append",
+    "portability",
+    "quiet",
+    "verbose",
+    "help",
+    "version",
+];
+const SUDO_LONG_VALUE: &[&str] = &[
+    "auth-type",
+    "chdir",
+    "chroot",
+    "close-from",
+    "command-timeout",
+    "group",
+    "host",
+    "login-class",
+    "other-user",
+    "prompt",
+    "role",
+    "type",
+    "user",
+];
+const SUDO_LONG_FLAG: &[&str] = &[
+    "askpass",
+    "background",
+    "bell",
+    "edit",
+    "help",
+    "list",
+    "login",
+    "no-update",
+    "non-interactive",
+    "preserve-env",
+    "preserve-groups",
+    "remove-timestamp",
+    "reset-timestamp",
+    "set-home",
+    "shell",
+    "stdin",
+    "validate",
+    "version",
+];
+const ENV_LONG_FLAG: &[&str] = &[
+    "block-signal",
+    "debug",
+    "default-signal",
+    "help",
+    "ignore-environment",
+    "ignore-signal",
+    "list-signal-handling",
+    "null",
+    "version",
+];
+const TIMEOUT_LONG_FLAG: &[&str] = &[
+    "foreground",
+    "preserve-status",
+    "verbose",
+    "help",
+    "version",
+];
+const HELP: &[&str] = &["help", "version"];
+
+/// The wrappers [`Resolver::program_at`] looks through, and how their options read. A name
+/// not here is the program.
+fn wrapper_spec(name: &str) -> Option<WrapperSpec> {
+    const fn spec(
+        short_value: &'static str,
+        short_flag: &'static str,
+        long_value: &'static [&'static str],
+        long_flag: &'static [&'static str],
+    ) -> WrapperSpec {
+        WrapperSpec {
+            short_value,
+            short_flag,
+            long_value,
+            long_flag,
+            split: None,
+            operands: 0,
+        }
+    }
+    Some(match name {
+        "builtin" | "nohup" | "noglob" => spec("", "", &[], HELP),
+        "command" => spec("", "pvV", &[], &[]),
+        // bash's `exec [-cl] [-a name]`.
+        "exec" => spec("a", "cl", &[], &[]),
+        // `/usr/bin/time`; the `time` keyword is read in `simple_command`.
+        "time" => spec("fo", "ahlpqvV", &["format", "output"], TIME_LONG_FLAG),
+        "nice" => spec("n", "", &["adjustment"], HELP),
+        "sudo" => spec(
+            "aCcDgpRrTtUu",
+            "ABbEeHhiKklNnPSsVv",
+            SUDO_LONG_VALUE,
+            SUDO_LONG_FLAG,
+        ),
+        "doas" => spec("aCu", "Lns", &[], &[]),
+        // `env -S STRING` splits STRING into the program and its arguments.
+        "env" => WrapperSpec {
+            split: Some(('S', "split-string")),
+            ..spec(
+                "CLPSUu",
+                "0iv",
+                &["chdir", "split-string", "unset"],
+                ENV_LONG_FLAG,
+            )
+        },
+        "caffeinate" => spec("tw", "dimsu", &[], &[]),
+        "stdbuf" => spec("eio", "", &["error", "input", "output"], HELP),
+        // `timeout [options] DURATION COMMAND`.
+        "timeout" => WrapperSpec {
+            operands: 1,
+            ..spec("ks", "v", &["kill-after", "signal"], TIMEOUT_LONG_FLAG)
+        },
+        "unbuffer" => spec("", "p", &[], &[]),
+        _ => return None,
+    })
+}
+
 /// The program a runner such as `xargs` or `arch` starts: its first word after its options,
 /// the options in `with_value` taking the next word as their value.
 fn program_after_options<'w>(rest: &'w [Word], with_value: &[&str]) -> Option<&'w Word> {
@@ -2196,6 +2642,85 @@ fn program_after_options<'w>(rest: &'w [Word], with_value: &[&str]) -> Option<&'
         return Some(word);
     }
     None
+}
+
+/// What is at a path inside an extension's bundle, as far as starting it goes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Entry {
+    Folder,
+    /// A file that can run: on Unix, one with an execute bit.
+    Runnable,
+    /// A file that cannot run (an `Info.plist`, a resource).
+    Inert,
+    /// Nothing can be read there, which counts as able to run.
+    Unknown,
+}
+
+fn entry_kind(path: &Path) -> Entry {
+    match std::fs::metadata(path) {
+        Err(_) => Entry::Unknown,
+        Ok(meta) if meta.is_dir() => Entry::Folder,
+        Ok(meta) if can_run(&meta) => Entry::Runnable,
+        Ok(_) => Entry::Inert,
+    }
+}
+
+#[cfg(unix)]
+fn can_run(meta: &std::fs::Metadata) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    meta.permissions().mode() & 0o111 != 0
+}
+
+/// No execute bit to read; the grants this rule protects are macOS's.
+#[cfg(not(unix))]
+fn can_run(_: &std::fs::Metadata) -> bool {
+    false
+}
+
+/// Whether `path` names an app bundle itself (its last component is `*.app`).
+fn is_app_bundle(path: &Path) -> bool {
+    path.file_name()
+        .map(|name| name.to_string_lossy().to_lowercase())
+        .is_some_and(|name| name.len() > 4 && name.ends_with(".app"))
+}
+
+/// The local path a `file:` URL names (`file:///…`, `file://localhost/…`), percent-decoded.
+fn file_url_path(text: &str) -> Option<PathBuf> {
+    let scheme = text.get(..7)?;
+    if !scheme.eq_ignore_ascii_case("file://") {
+        return None;
+    }
+    let mut rest = text.get(7..)?;
+    if rest
+        .get(..9)
+        .is_some_and(|host| host.eq_ignore_ascii_case("localhost"))
+    {
+        rest = rest.get(9..).unwrap_or_default();
+    }
+    let rest = rest.split(['?', '#']).next().unwrap_or_default();
+    if !rest.starts_with('/') {
+        return None;
+    }
+    let bytes = rest.as_bytes();
+    let mut decoded = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        let hex = bytes
+            .get(i + 1..i + 3)
+            .and_then(|pair| std::str::from_utf8(pair).ok())
+            .and_then(|pair| u8::from_str_radix(pair, 16).ok());
+        match (bytes[i], hex) {
+            (b'%', Some(byte)) => {
+                decoded.push(byte);
+                i += 3;
+            }
+            (byte, _) => {
+                decoded.push(byte);
+                i += 1;
+            }
+        }
+    }
+    String::from_utf8(decoded).ok().map(PathBuf::from)
 }
 
 /// Every `*.app` bundle under the extensions folders, within the same walk budgets as `**`.

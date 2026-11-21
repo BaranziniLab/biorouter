@@ -10,8 +10,9 @@
 > began to apply the floor and the redaction (SG-27). Since #546 (1.94.6) a quoted here-document
 > that only writes a file is read as data; see "Here-documents" below. On 2026-11-19 conventional
 > `.env` templates were reopened, and the dispatch scan began to leave out the free text of the
-> Todo tools and the source of `execute_code` (issue #522). Since 2026-11-20 a shell may not start
-> an app bundle in Biorouter's extensions folder; see "Extensions' helper apps" below.
+> Todo tools and the source of `execute_code` (issue #522). Since 2026-11-20 a shell may not start,
+> copy or link an app bundle in Biorouter's extensions folder, and a wrapper's options are read
+> with their values; see "Extensions' helper apps" below.
 > **Audience:** developers working on tool dispatch, the Developer and Biorouter Copilot
 > extensions or the guardrails, and anyone reviewing what BioRouter promises about secrets.
 
@@ -90,12 +91,28 @@ look at and control the desktop with none of the extension's own consent. The co
 therefore refuses a command that starts an app bundle (a folder whose name ends in `.app`) inside
 that folder:
 
-- the command's program is a path inside such a bundle, the real program behind `sudo`, `env`,
-  `exec`, `nohup` and the other wrappers, or the one `xargs`, `arch` or `find -exec` runs;
-- `open` opens such a bundle by path, by `-a` with its path or name, or by `-b` with its bundle
-  identifier;
+- the command's program is a path inside such a bundle: the real program behind `sudo`, `env`,
+  `nice`, `timeout`, `exec`, `nohup` and the other wrappers, a program in the command line
+  `env -S` splits, or the one `xargs`, `arch` or `find -exec` runs. Each wrapper's options are
+  read as its `getopt` reads them (`wrapper_spec` in `secret_guard/resolve.rs`), so an option's
+  value (`nice -n 10`, `sudo -u root`, `env -u FOO`, `timeout -s KILL 5`) is never taken for the
+  program. When a wrapper's option is one its table does not know, the word after a bare name is
+  read as the program too, since the option may have taken that name as its value;
+- `open` starts something in such a bundle: the app `-a` names by path or name, or `-b` by bundle
+  identifier, or an operand (a path, or a `file:` URL, also as `-u`'s value) that is an app
+  bundle, the extension's own or one nested in it, or a file in one that can run, which Terminal
+  would run. A folder in a bundle opens in the Finder and any other file in it opens in the app
+  that reads it, so those stay allowed, as does every operand of `open -R` (reveal in the
+  Finder), `-e` and `-t` (open in a text editor);
 - `osascript -e` names it as an application (`application "Name"`, `application id "id"`,
-  JavaScript's `Application("Name")`).
+  JavaScript's `Application("Name")`);
+- `cp`, `mv`, `ln`, `link`, `ditto`, `rsync` or `install` copies, moves or links it: a source is
+  such a bundle, a folder or a file that can run inside one, or a folder in the extensions folder
+  that holds one. macOS keys the grants to the app's code signature, not its path, so a copy keeps
+  them, and a link starts the bundle itself. The start rule cannot follow either, because the copy
+  or the link does not exist yet while the command is read. Copying a file in a bundle that cannot
+  run (its `Info.plist`, a resource) is reading, and a destination is never judged, so copying
+  into the folder stays allowed.
 
 The folder is `<config>/extensions` as Biorouter resolves it, `$BIOROUTER_PATH_ROOT/config/extensions`
 when that is set, together with the platform folder (`~/.config/biorouter/extensions` on macOS
@@ -110,8 +127,10 @@ The rule names no extension: it is about the folder, so it holds for any extensi
 helper app. It is separate from Biorouter Copilot's own rule for its engine (AD-12 in
 [the Copilot design](../design/copilot-agent-desktop.md)), which it does not change. Reading,
 listing and inspecting the folder stay allowed (`ls`, `cat`, `find`, `du`, `plutil -p`,
-`codesign -dv`, `open` on the folder itself), as does starting an app that is not in it. The
-refusal tells the model to use the extension's own tools.
+`codesign -dv`, `open` on the folder itself, `open -R` on a bundle, `open -a TextEdit` on its
+`Info.plist`, copying that file out), with or without a wrapper in front (`sudo -u root cat …`),
+as does starting an app that is not in it. The refusal tells the model to use the extension's own
+tools.
 
 The floor is not only the agent's. Crew's local file registration
 ([`crates/biorouter-server/src/crew/local_files.rs`](../../crates/biorouter-server/src/crew/local_files.rs))
@@ -437,11 +456,16 @@ boundary against a determined adversary — the same ruling that governs
   when the body only writes a file.
 - **The deny set is editable by the agent**: a negation written into `.biorouterignore` reopens a
   file, as it always could.
-- **An extension's helper app started in a way the scan cannot read** is not refused: a bundle
-  copied out of the extensions folder and started from the copy, a program path whose start is
-  only known when the command runs (`"$(…)"/Contents/MacOS/…`), a program a script in another
-  language starts (`subprocess.run([...])`), or a launch through some other service
-  (`launchctl`). The operating system's own grant still decides what the app may do.
+- **An extension's helper app started in a way the scan cannot read** is not refused: a copy made
+  some other way (an archive with `tar` or `zip`, a copy in another language) or of a folder above
+  the extensions folder (the config folder or the home folder, as a backup copies them) and
+  started from the copy, a copy whose source the command only learns when it runs
+  (`find … -exec cp {} …`, `xargs cp`), a program path whose start is only known when the command
+  runs (`"$(…)"/Contents/MacOS/…`), a relative path after a wrapper that changes folder first
+  (`env -C DIR`, `sudo -D DIR`), which is resolved against the shell's own folder as every other
+  word is, a program a script in another language starts (`subprocess.run([...])`), or a launch
+  through some other service (`launchctl`). The operating system's own grant still decides what
+  the app may do.
 - **Windows shells**: `\` is read as a path separator (not a POSIX escape), so a native
   `C:\Users\…\.aws\credentials` — bare, quoted, or after `cd` — is resolved and matched. What is
   *not* modelled is PowerShell's own `$env:` expansion and `Set-Location`, and a backslash path that
@@ -479,9 +503,13 @@ admit the Todo and `execute_code` free text while every other field, lookalike c
 Compute's `code` stay refused. `bb_23_` runs the Chrome key helper's
 spellings through the dispatch scan, `developer__shell`'s check and the code scan, and keeps a
 search for the helper's name allowed. `an_extensions_helper_app_is_never_started_from_a_shell`
-starts a fake extension's helper app in every spelling above and keeps reading, listing and
-inspecting it allowed; `the_extensions_folder_follows_biorouter_path_root` holds the folder to
-`BIOROUTER_PATH_ROOT` and the platform folder. The fake key material is
+starts a fake extension's helper app in every spelling above, behind every wrapper and its option
+values, and keeps reading, listing and inspecting it allowed;
+`copying_or_linking_an_extensions_helper_app_is_refused` copies, moves and links it and keeps
+copying its `Info.plist`, or anything into the folder, allowed;
+`opening_inside_an_extensions_bundle_refuses_only_what_starts` keeps `open -R`, `open -e` and
+`open -a TextEdit` on its files allowed; `the_extensions_folder_follows_biorouter_path_root`
+holds the folder to `BIOROUTER_PATH_ROOT` and the platform folder. The fake key material is
 assembled at run time so no key-shaped literal sits in the source. None of the tests reads the
 real `~/.aws`, `~/.ssh` or `~/.config/biorouter`.
 
