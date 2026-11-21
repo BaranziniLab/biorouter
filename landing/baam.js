@@ -169,7 +169,7 @@
   /* ─────────────────────────────────────────────────────────────
      Extensions: rendered client-side from registry.json
      ───────────────────────────────────────────────────────────── */
-  const FEATURED_EXT_IDS = ['cdwagent', 'ucsfomopagent', 'spokeagent', 'codegraphagent'];
+  const FEATURED_EXT_IDS = ['cdwagent', 'ucsfomopagent', 'spokeagent'];
   // Registry ids can carry a version suffix (e.g. "spokeagent-0.4.1"), so match on the base slug.
   const featIndex = id => {
     id = (id || '').toLowerCase();
