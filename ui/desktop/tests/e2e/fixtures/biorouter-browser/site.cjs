@@ -21,6 +21,7 @@ const http = require('node:http');
 const https = require('node:https');
 const os = require('node:os');
 const path = require('node:path');
+const { dragPage } = require('./drag-pages.cjs');
 
 /** A one page PDF Chromium's viewer can open. */
 const PDF = `%PDF-1.4
@@ -380,8 +381,11 @@ async function startFixtureSite(names = {}) {
           '<h1>Data</h1><a id="get" href="/download">Download the data</a>'
         );
         return;
-      default:
-        html(404, 'Not found', '<h1>Not found</h1>');
+      default: {
+        const drag = dragPage(url.pathname);
+        if (drag) html(200, drag.title, drag.body);
+        else html(404, 'Not found', '<h1>Not found</h1>');
+      }
     }
   };
 
