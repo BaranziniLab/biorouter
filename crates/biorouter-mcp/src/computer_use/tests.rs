@@ -605,6 +605,112 @@ async fn a_display_capture_is_refused_while_a_biorouter_window_is_on_it() {
     assert!(missing.contains("computer_use_display_not_found"));
 }
 
+fn set_windows(fx: &Fixture, list: Value) {
+    fx.set("list-windows", &envelope("list-windows", list));
+}
+
+/// AD-12: every other observation refuses system security prompts and password stores, so a
+/// display screenshot is refused while one of their windows is on that display, as it is for a
+/// Biorouter window. A prompt that reports no bounds counts for every display.
+#[tokio::test]
+async fn a_display_capture_is_refused_while_a_security_prompt_or_password_store_is_on_it() {
+    let mut fx = Fixture::new(Platform::MacOs);
+    fx.set(
+        "list-apps",
+        &envelope(
+            "list-apps",
+            json!({"apps":[
+                {"name":"TextEdit","bundle_id":"com.apple.TextEdit","pid":100},
+                {"name":"Biorouter","bundle_id":"com.electron.biorouter","pid":200},
+                {"name":"SecurityAgent","bundle_id":"com.apple.SecurityAgent","pid":500},
+                {"name":"Passwords","bundle_id":"com.apple.Passwords","pid":700}
+            ]}),
+        ),
+    );
+    // A password prompt on the side display; nothing of Biorouter's anywhere.
+    set_windows(
+        &fx,
+        json!([
+            window(
+                "w1",
+                100,
+                "TextEdit",
+                "Untitled",
+                (100.0, 50.0, 1000.0, 500.0)
+            ),
+            window(
+                "wa",
+                500,
+                "SecurityAgent",
+                "",
+                (1500.0, 100.0, 400.0, 200.0)
+            )
+        ]),
+    );
+    let main = fx
+        .call("screen_capture", json!({"display":0}), Grant::Observe)
+        .await
+        .unwrap();
+    assert!(main.content.iter().any(|c| c.as_image().is_some()));
+    let prompt = refused(
+        fx.call("screen_capture", json!({"display":1}), Grant::Observe)
+            .await,
+    );
+    assert!(
+        prompt.contains("a system security prompt or password window is on that display"),
+        "{prompt}"
+    );
+    // A password store's window on the main display.
+    set_windows(
+        &fx,
+        json!([window(
+            "wp",
+            700,
+            "Passwords",
+            "Passwords",
+            (200.0, 200.0, 600.0, 400.0)
+        )]),
+    );
+    let store = refused(
+        fx.call("screen_capture", json!({"display":0}), Grant::Observe)
+            .await,
+    );
+    assert!(
+        store.contains("password window is on that display"),
+        "{store}"
+    );
+    // Known by the window's own app name when the app list lacks it, and with no bounds it
+    // counts on every display.
+    set_windows(
+        &fx,
+        json!([
+            {"id":"wk","pid":900,"app_name":"Keychain Access","title":"","visible":true,"minimized":false}
+        ]),
+    );
+    for display in [0, 1] {
+        let anywhere = refused(
+            fx.call(
+                "screen_capture",
+                json!({ "display": display }),
+                Grant::Observe,
+            )
+            .await,
+        );
+        assert!(anywhere.contains("password window"), "{anywhere}");
+    }
+    // A minimized prompt shows nothing.
+    set_windows(
+        &fx,
+        json!([{"id":"wa","pid":500,"app_name":"SecurityAgent","title":"","visible":true,
+        "minimized":true,"bounds":{"x":1500.0,"y":100.0,"width":400.0,"height":200.0}}]),
+    );
+    let side = fx
+        .call("screen_capture", json!({"display":1}), Grant::Observe)
+        .await
+        .unwrap();
+    assert!(side.content.iter().any(|c| c.as_image().is_some()));
+}
+
 #[tokio::test]
 async fn drag_runs_one_headed_gesture_and_reports_an_unaccepted_drop() {
     let mut fx = Fixture::new(Platform::MacOs);

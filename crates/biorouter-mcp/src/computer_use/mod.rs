@@ -1327,7 +1327,8 @@ impl SessionRuntime {
     }
 
     /// AD-12: a display capture would show Biorouter's own windows, which can hold other
-    /// (possibly private) chats, so it is refused while one is on that display.
+    /// (possibly private) chats, and any system security prompt or password store window on
+    /// it, which every other observation refuses; so it is refused while one is on that display.
     async fn capture_display(
         &mut self,
         display: u64,
@@ -1343,17 +1344,50 @@ impl SessionRuntime {
             .and_then(|entry| entry.get("bounds"))
             .and_then(Rect::from)
             .ok_or_else(|| Halt::Error(refuse("computer_use_display_not_found: no display has that index. Call screen_capture with list_only.")))?;
-        let covered = self.windows(None, cancel).await?.iter().any(|window| {
+        // A process the guard calls a security prompt (password stores included), by its
+        // listed facts or, failing a listing, by the name the window itself reports.
+        let prompts: Vec<u32> = self
+            .apps(cancel)
+            .await?
+            .into_iter()
+            .filter(guard::is_security_prompt)
+            .map(|app| app.pid)
+            .collect();
+        let is_prompt = |window: &Value| {
+            window_pid(window).is_some_and(|pid| prompts.contains(&pid))
+                || guard::is_security_prompt(&AppFacts {
+                    name: window
+                        .get("app_name")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default()
+                        .to_owned(),
+                    bundle_id: None,
+                    pid: 0,
+                })
+        };
+        let on_display = |window: &Value| {
+            window
+                .get("bounds")
+                .and_then(Rect::from)
+                .map(|rect| rect.intersects(&bounds))
+        };
+        let windows = self.windows(None, cancel).await?;
+        let covered = windows.iter().any(|window| {
             window_shown(window)
                 && window_pid(window).is_some_and(|pid| identity.owns_pid(pid))
-                && window
-                    .get("bounds")
-                    .and_then(Rect::from)
-                    .is_some_and(|rect| rect.intersects(&bounds))
+                && on_display(window) == Some(true)
         });
         if covered {
             return Err(Halt::Error(refuse(
                 "computer_use_refused: a Biorouter window is on that display, and a display screenshot would capture it (it can show other chats). Capture an app window instead (screen_capture with app or window_id).",
+            )));
+        }
+        // A prompt window that reports no bounds could be on any display, so it counts.
+        if windows.iter().any(|window| {
+            window_shown(window) && is_prompt(window) && on_display(window) != Some(false)
+        }) {
+            return Err(Halt::Error(refuse(
+                "computer_use_refused: a system security prompt or password window is on that display, and a display screenshot would capture it. Capture an app window instead (screen_capture with app or window_id), or ask the person to finish with the prompt first.",
             )));
         }
         let path = self
