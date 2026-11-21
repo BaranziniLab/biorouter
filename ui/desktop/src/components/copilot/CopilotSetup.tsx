@@ -113,6 +113,9 @@ export function CopilotRuntimeDetails({
           )
           .join(' · ');
   const target = runtime.target ?? '';
+  const grantedCopy = /darwin/.test(target)
+    ? (runtime.app_bundle ?? runtime.executable)
+    : undefined;
   const verdict = runtimeVerdict(runtime);
   const facts = runtimeFacts(runtime);
   return (
@@ -136,11 +139,12 @@ export function CopilotRuntimeDetails({
           on one machine, two reporting `screen_recording: true` and the source build
           reporting false, with an identical bundle id and the same Developer ID. */}
       {/* The path is data, read character by character against what System Settings lists, so
-          it is set as code (design.md D-42), not as a folder's place. */}
-      {runtime.executable && verdict !== 'ready' && (
+          it is set as code (design.md D-42), not as a folder's place. On macOS that is the
+          Biorouter Copilot app, not the engine inside it; a development payload outside any app
+          is granted by its own executable. Windows and Linux grant nothing per copy. */}
+      {grantedCopy && verdict !== 'ready' && (
         <p className="break-all">
-          Grant these to this exact copy:{' '}
-          <code className="font-mono text-code">{runtime.executable}</code>
+          Grant these to this exact copy: <code className="font-mono text-code">{grantedCopy}</code>
         </p>
       )}
       {runtime.message && <p>{runtime.message}</p>}

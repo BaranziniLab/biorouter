@@ -25,6 +25,8 @@ const runtimeSchema = z.object({
   runtime_version: optionalText,
   target: optionalText,
   executable: optionalText,
+  /** On macOS, the Biorouter Copilot app around the executable: what System Settings grants. */
+  app_bundle: optionalText,
   development_override: optionalBoolean,
   permissions: z.union([
     z.string(),

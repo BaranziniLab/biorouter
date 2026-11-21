@@ -1119,6 +1119,29 @@ fn version_floors_compare_numerically() {
     assert!(!version_at_least("", ATSPI_MINIMUM));
 }
 
+/// What a person is shown to allow on macOS is the app System Settings lists, not the engine
+/// inside it; an executable outside any bundle has none.
+#[test]
+fn the_app_bundle_is_the_app_around_the_executable() {
+    assert_eq!(
+        app_bundle_of(Path::new(
+            "/Applications/Biorouter.app/Contents/Resources/computer-use/darwin-arm64/Biorouter Copilot.app/Contents/MacOS/engine"
+        )),
+        Some(PathBuf::from(
+            "/Applications/Biorouter.app/Contents/Resources/computer-use/darwin-arm64/Biorouter Copilot.app"
+        ))
+    );
+    assert_eq!(
+        app_bundle_of(Path::new("/usr/lib/biorouter/computer-use/engine")),
+        None
+    );
+    assert_eq!(
+        app_bundle_of(Path::new("/x/Copilot/Contents/MacOS/engine")),
+        None
+    );
+    assert_eq!(app_bundle_of(Path::new("engine")), None);
+}
+
 #[tokio::test]
 async fn stop_of_an_idle_task_deletes_its_folder_and_leaves_a_newer_generation_alone() {
     let fx = Fixture::new(Platform::MacOs);

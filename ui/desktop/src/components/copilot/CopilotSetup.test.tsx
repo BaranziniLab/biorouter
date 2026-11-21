@@ -57,6 +57,8 @@ describe('CopilotSetup', () => {
   // panel told the operator to allow Screen Recording when they already had,
   // for a different copy, and nothing on screen said which one was being probed.
   // The path is the only thing that disambiguates.
+  // The copy named is the app System Settings lists and grants, Biorouter Copilot, never the
+  // engine executable inside it.
   it('names the exact copy that needs the OS grant when one is missing', async () => {
     mocks.setup.mockResolvedValue({
       status: 'os_permission_required',
@@ -64,18 +66,48 @@ describe('CopilotSetup', () => {
       target: 'darwin-arm64',
       executable:
         '/Users/x/src/target/computer-use/darwin-arm64/Biorouter Copilot.app/Contents/MacOS/agent-desktop',
+      app_bundle: '/Users/x/src/target/computer-use/darwin-arm64/Biorouter Copilot.app',
       permissions: { accessibility: true, screen_recording: false },
     });
     render(<CopilotSetup />);
     fireEvent.click(checkButton());
     await screen.findByText(/Screen Recording: not allowed/);
     const path = screen.getByText(
-      '/Users/x/src/target/computer-use/darwin-arm64/Biorouter Copilot.app/Contents/MacOS/agent-desktop'
+      '/Users/x/src/target/computer-use/darwin-arm64/Biorouter Copilot.app'
     );
     expect(path).toBeVisible();
     // Data read character by character, so it is set as code (design.md D-42).
     expect(path.tagName).toBe('CODE');
     expect(path).toHaveClass('font-mono', 'text-code');
+    expect(screen.queryByText(/Contents\/MacOS/)).not.toBeInTheDocument();
+  });
+
+  // A development payload outside any app is granted by its own executable, so that is shown.
+  it('names the executable on macOS only when no app holds it', async () => {
+    mocks.setup.mockResolvedValue({
+      status: 'os_permission_required',
+      target: 'darwin-arm64',
+      executable: '/Users/x/src/target/debug/engine',
+      permissions: { accessibility: false, screen_recording: false },
+    });
+    render(<CopilotSetup />);
+    fireEvent.click(checkButton());
+    await screen.findByText(/Accessibility: not allowed/);
+    expect(screen.getByText('/Users/x/src/target/debug/engine').tagName).toBe('CODE');
+  });
+
+  // Windows and Linux grant nothing per copy, so no path is named there.
+  it('names no path where the system grants nothing per copy', async () => {
+    mocks.setup.mockResolvedValue({
+      status: 'os_permission_required',
+      target: 'linux-x64',
+      executable: '/usr/lib/biorouter/computer-use/linux-x64/engine',
+      permissions: { accessibility: false, screen_recording: true },
+    });
+    render(<CopilotSetup />);
+    fireEvent.click(checkButton());
+    await screen.findByText(/Accessibility: not allowed/);
+    expect(screen.queryByText(/Grant these to this exact copy/)).not.toBeInTheDocument();
   });
 
   // The negative control: a ready runtime must NOT nag about a path, or every

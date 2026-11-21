@@ -1848,13 +1848,32 @@ fn linux_desktop_entry(name: &str) -> bool {
     })
 }
 
+/// The app bundle an executable runs from (`…/Biorouter Copilot.app` for
+/// `…/Biorouter Copilot.app/Contents/MacOS/<engine>`), which is what macOS System Settings lists
+/// and grants Accessibility and Screen Recording to. `None` for an executable outside a bundle.
+pub fn app_bundle_of(executable: &Path) -> Option<PathBuf> {
+    let macos = executable.parent()?;
+    let contents = macos.parent()?;
+    let bundle = contents.parent()?;
+    (macos.file_name()? == "MacOS"
+        && contents.file_name()? == "Contents"
+        && bundle.extension()? == "app")
+        .then(|| bundle.to_owned())
+}
+
 pub fn diagnostics() -> Value {
     let host = std::env::var("HOSTNAME")
         .or_else(|_| std::env::var("COMPUTERNAME"))
         .unwrap_or_else(|_| "backend host".into());
     match manifest::probe() {
         Ok(payload) => {
-            json!({"status":"probe_pending","runtime_version":manifest::UPSTREAM_VERSION,"target":manifest::target(),"executable":payload.executable,"development_override":payload.development_override,"permissions":"unknown","integrity":"verified_on_start","host":host})
+            // `executable` stays exact for `biorouter doctor --format json` and the payload
+            // acceptance check; a person is shown `app_bundle` where there is one.
+            let mut value = json!({"status":"probe_pending","runtime_version":manifest::UPSTREAM_VERSION,"target":manifest::target(),"executable":payload.executable,"development_override":payload.development_override,"permissions":"unknown","integrity":"verified_on_start","host":host});
+            if let Some(bundle) = app_bundle_of(&payload.executable) {
+                value["app_bundle"] = json!(bundle);
+            }
+            value
         }
         Err(error) => {
             json!({"status":if error.to_string().contains("incompatible_runtime") {"incompatible_runtime"} else {"missing_runtime"},"runtime_version":manifest::UPSTREAM_VERSION,"target":manifest::target(),"permissions":"unknown","integrity":"verified_on_start","host":host,"error":error.to_string()})
