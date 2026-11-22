@@ -264,6 +264,7 @@
 .skill-card .skill-dl-btn { grid-column: 3; grid-row: 1 / span 2; }
 .skill-card > .row-toggle { grid-column: 4; grid-row: 1 / span 2; }
 .skill-card .skill-meta { gap: 2px 10px; }
+.skill-ver { font-size: var(--fs-xs); line-height: 1.4; color: var(--subtle); font-variant-numeric: tabular-nums; }
 
 /* The collapsed skill groups show their first eight rows */
 .skill-grid.collapsed > .skill-card:nth-child(n+9) { display: none; }
@@ -401,3 +402,14 @@
 
   .ext-card.open::before, .skill-card.open::before, .wf-card.open::before { left: -12px; }
 }
+
+/* Moved and retired: one plain line per item that left the shelves, and the
+   note a search for an old name shows above them. */
+.moved-note { margin: 16px 0 0; padding: 12px 16px; border-radius: var(--r-container); background: var(--fill); color: var(--ink); font-size: var(--fs-md); line-height: 1.6; }
+.baam-moved { margin-top: 48px; color: var(--muted); font-size: var(--fs-md); line-height: 1.6; }
+.baam-moved > summary { cursor: pointer; color: var(--ink); font-size: var(--fs-h3); letter-spacing: var(--tr-h); }
+.baam-moved > summary .n { margin-left: 8px; color: var(--subtle); font-size: var(--fs-sm); }
+.baam-moved > p { margin: 12px 0 0; max-width: 760px; }
+.baam-moved ul { margin: 12px 0 0; padding-left: 20px; max-width: 760px; }
+.baam-moved li { margin: 4px 0; }
+.baam-moved li strong { font-weight: 400; color: var(--ink); }
