@@ -99,7 +99,12 @@
 
     // Release version: elements with [data-version] show the latest release tag.
     // The HTML carries a current fallback; this only refreshes it.
-    var slots = document.querySelectorAll('[data-version]');
+    // ⚠ Only the two release spellings, `v` and an empty value. BAAM skill and
+    // extension cards carry `data-version="<catalog version>"` for their own
+    // version chip; a bare `[data-version]` selector rewrote every one of them,
+    // chips and all, to the app's release number as soon as the GitHub answer
+    // arrived.
+    var slots = document.querySelectorAll('[data-version="v"], [data-version=""]');
     if (slots.length) {
       fetch('https://api.github.com/repos/BaranziniLab/biorouter/releases/latest', { headers: { Accept: 'application/vnd.github+json' } })
         .then(function (r) { return r.ok ? r.json() : null; })
