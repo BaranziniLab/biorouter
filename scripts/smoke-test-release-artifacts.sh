@@ -275,13 +275,24 @@ LINUX_DESKTOP_SMOKE="$ROOT/scripts/smoke-linux-desktop.sh"
 # and the inferred legs its part outside PR-09's spike (more_cli, more_daemon). The ALAC
 # decoder itself adds 11,924 B of sections to biorouter, 96 B of file size because it fit
 # in the segments' page padding.
+#
+# Re-measured 2026-11-22 on the 1.94.6 release build (76e10934e), whose verify failed here:
+# the shipped, signed macOS arm64 binaries were 186,244,432 B (biorouter) and 176,158,176 B
+# (biorouterd), +21,854,672 B and +21,382,512 B over v1.94.1's shipped binaries [M], past
+# the 2026-11-13 lines by 1,036,220 B and 1,078,152 B. The growth is the 1.94.6 work merged
+# since that measurement (the built-in browser and its Chrome import, Biorouter Copilot on
+# agent-desktop, the elicitation checks); no speech model, which would be 264 MB or more.
+# The arm64 lines take the new growth, with the same 1 MiB of slack. The inferred legs were
+# measured on the same release for the first time [M]: Linux x86_64 206,560,736 B and
+# 195,105,208 B, macOS x86_64 194,884,576 B and 183,727,264 B, each about 29 MiB under its
+# ceiling, so they keep their 32 MiB of slack for now.
 dictation_size_ceiling() { # <platform> <binary>
   local slack=1048576 inferred=$((32 << 20)) more_cli=13079876 more_daemon=12565784
   case "$1/$2" in
     linux-x64/biorouter) echo $((187413248 + 2170000 + more_cli + inferred)) ;;
     linux-x64/biorouterd) echo $((176920720 + 2170000 + more_daemon + inferred)) ;;
-    darwin-arm64/biorouter) echo $((164389760 + 19769876 + slack)) ;;
-    darwin-arm64/biorouterd) echo $((154775664 + 19255784 + slack)) ;;
+    darwin-arm64/biorouter) echo $((164389760 + 21854672 + slack)) ;;
+    darwin-arm64/biorouterd) echo $((154775664 + 21382512 + slack)) ;;
     darwin-x64/biorouter) echo $((176538336 + 1690000 + more_cli + inferred)) ;;
     darwin-x64/biorouterd) echo $((166285184 + 1690000 + more_daemon + inferred)) ;;
     *) die "no dictation size ceiling for $1/$2" ;;
