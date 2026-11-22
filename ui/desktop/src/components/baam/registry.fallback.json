@@ -126,7 +126,7 @@
       "id": "gptragent",
       "name": "gptr Agent",
       "organization": "Broccolito · UCSF",
-      "version": "v0.1.1",
+      "version": "v0.1.2",
       "description": "Work inside an R session you already have open. Biorouter inspects, analyses, plots and fixes objects in memory through gptr, without reloading data, and every call passes gptr's permission settings. Private: a public model never sees your session. 3 tools and a bundled gptr-live-r skill. Needs R with the gptr package (1.0 or later) and uv.",
       "tags": [
         "MCP",
@@ -135,7 +135,7 @@
         "gptr"
       ],
       "github": "https://github.com/Broccolito/GptrAgent",
-      "download": "https://github.com/Broccolito/GptrAgent/releases/download/v0.1.1/gptragent.brxt",
+      "download": "https://github.com/Broccolito/GptrAgent/releases/download/v0.1.2/gptragent.brxt",
       "filename": "gptragent.brxt",
       "license": "Apache-2.0",
       "privacy": "private",

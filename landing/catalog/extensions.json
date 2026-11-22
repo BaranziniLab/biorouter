@@ -2404,7 +2404,7 @@
       "manifest_name": "gptragent",
       "repository": "Broccolito/GptrAgent",
       "group": "tools",
-      "version": "0.1.1",
+      "version": "0.1.2",
       "status": "active",
       "aliases": [],
       "job": "r.live-session",
@@ -2449,6 +2449,11 @@
           "version": "0.1.1",
           "date": "2026-11-22",
           "note": "reports a reused gptr server's real mode and tools, states the edits mode exactly, one floor (gptr 1.0; plan mode 1.2), and says which side is behind on a format mismatch"
+        },
+        {
+          "version": "0.1.2",
+          "date": "2026-11-22",
+          "note": "the plan-mode overview lists the session's objects on gptr 1.2.0, not the empty scratch environment each call runs in"
         }
       ],
       "summary": "Work inside an R session you already have open. Biorouter inspects, analyses, plots and fixes objects in memory through gptr, without reloading data, and every call passes gptr's permission settings. Private: a public model never sees your session. 3 tools and a bundled gptr-live-r skill. Needs R with the gptr package (1.0 or later) and uv.",
@@ -2459,9 +2464,9 @@
         "gptr"
       ],
       "release": {
-        "tag": "v0.1.1",
+        "tag": "v0.1.2",
         "asset": "gptragent.brxt",
-        "sha256": "7822065b154bba367ea2ce3a2db2c9ae5e15700ac2cc3187babd1a1158e73329"
+        "sha256": "6de59047c1e87eed76fb9e67fbb75c9ac7c404eac7cbd75ed144091087fb1ea0"
       }
     },
     {
