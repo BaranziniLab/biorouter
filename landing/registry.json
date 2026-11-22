@@ -9,8 +9,8 @@
       "id": "cdwagent",
       "name": "CDWAgent",
       "organization": "BaranziniLab · UCSF",
-      "version": "v0.5.1",
-      "description": "Multimodal access to the UCSF Clinical Data Warehouse through natural language. One-call cohort building across diagnoses, medications, procedures, labs, radiology/imaging, immunizations, allergies, and vitals; clinical-notes/NLP search; read-only queries, schema discovery, and structured results. Requires UCSF network credentials (CAMPUS\\username and password).",
+      "version": "v0.7.0",
+      "description": "Multimodal access to the UCSF Clinical Data Warehouse through natural language. One-call cohort building across diagnoses, medications, procedures, labs, radiology/imaging, immunizations, allergies, and vitals; clinical-notes/NLP search; read-only queries, schema discovery, and structured results. 28 tools, including durable query jobs for long exports. Requires UCSF network credentials (CAMPUS\\username and password).",
       "tags": [
         "UCSF",
         "MCP",
@@ -18,7 +18,7 @@
         "Clinical"
       ],
       "github": "https://github.com/BaranziniLab/CDWAgent",
-      "download": "https://github.com/BaranziniLab/CDWAgent/releases/download/v0.5.1-brxt/cdwagent.brxt",
+      "download": "https://github.com/BaranziniLab/CDWAgent/releases/download/v0.7.0/cdwagent.brxt",
       "filename": "cdwagent.brxt",
       "license": "Apache-2.0",
       "privacy": "private",
@@ -31,8 +31,8 @@
       "id": "ucsfomopagent",
       "name": "UCSFOMOPAgent",
       "organization": "BaranziniLab · UCSF",
-      "version": "v0.2.0",
-      "description": "Natural language SQL on the UCSF OMOP de-identified clinical database. Read-only access to standardized EHR data under the OMOP Common Data Model. v0.2.0 adds built-in OMOP/SQL-Server context plus concept-search, lab-finder, and live schema tools so the agent reaches the right data faster and more reliably. Requires UCSF credentials.",
+      "version": "v0.4.0",
+      "description": "Natural language SQL on the UCSF OMOP de-identified clinical database. Read-only access to standardized EHR data under the OMOP Common Data Model. 11 tools: built-in OMOP/SQL-Server context, concept search, a lab finder, live schema tools, and durable query jobs for long exports. Requires UCSF credentials.",
       "tags": [
         "UCSF",
         "MCP",
@@ -40,7 +40,7 @@
         "EHR"
       ],
       "github": "https://github.com/BaranziniLab/UCSFOMOPAgent",
-      "download": "https://github.com/BaranziniLab/UCSFOMOPAgent/releases/download/v0.2.0-brxt/ucsfomopagent.brxt",
+      "download": "https://github.com/BaranziniLab/UCSFOMOPAgent/releases/download/v0.4.0/ucsfomopagent.brxt",
       "filename": "ucsfomopagent.brxt",
       "license": "Apache-2.0",
       "privacy": "private",
@@ -123,44 +123,6 @@
       "privacy": "public"
     },
     {
-      "id": "benchlingagent",
-      "name": "BenchlingAgent",
-      "organization": "BaranziniLab · BRXT",
-      "version": "v0.1.0",
-      "description": "Read-only and confirmation-gated MCP access to Benchling projects, registry records, notebook entries, and assay metadata for scientific workflow review.",
-      "tags": [
-        "MCP",
-        "Benchling",
-        "ELN",
-        "Registry",
-        "Apache-2.0"
-      ],
-      "github": "https://github.com/BaranziniLab/BenchlingAgent",
-      "download": "https://github.com/BaranziniLab/BenchlingAgent/releases/download/v0.1.0-brxt/benchlingagent.brxt",
-      "filename": "benchlingagent.brxt",
-      "license": "Apache-2.0",
-      "privacy": "public"
-    },
-    {
-      "id": "dnanexusagent",
-      "name": "DNAnexusAgent",
-      "organization": "BaranziniLab · BRXT",
-      "version": "v0.1.0",
-      "description": "MCP access to DNAnexus project, file, app, workflow, and job metadata with guarded API calls for cloud bioinformatics runs.",
-      "tags": [
-        "MCP",
-        "DNAnexus",
-        "Cloud",
-        "Workflows",
-        "Apache-2.0"
-      ],
-      "github": "https://github.com/BaranziniLab/DNAnexusAgent",
-      "download": "https://github.com/BaranziniLab/DNAnexusAgent/releases/download/v0.1.0-brxt/dnanexusagent.brxt",
-      "filename": "dnanexusagent.brxt",
-      "license": "Apache-2.0",
-      "privacy": "public"
-    },
-    {
       "id": "latchbioagent",
       "name": "LatchBioAgent",
       "organization": "BaranziniLab · BRXT",
@@ -218,25 +180,6 @@
       "privacy": "public"
     },
     {
-      "id": "protocolsioagent",
-      "name": "ProtocolsIOAgent",
-      "organization": "BaranziniLab · BRXT",
-      "version": "v0.1.0",
-      "description": "MCP access to Protocols.io public and authenticated protocol metadata for method discovery, citation, and reproducible protocol review.",
-      "tags": [
-        "MCP",
-        "Protocols.io",
-        "Methods",
-        "Protocols",
-        "Apache-2.0"
-      ],
-      "github": "https://github.com/BaranziniLab/ProtocolsIOAgent",
-      "download": "https://github.com/BaranziniLab/ProtocolsIOAgent/releases/download/v0.1.0-brxt/protocolsioagent.brxt",
-      "filename": "protocolsioagent.brxt",
-      "license": "Apache-2.0",
-      "privacy": "public"
-    },
-    {
       "id": "opennotebookagent",
       "name": "OpenNotebookAgent",
       "organization": "BaranziniLab · BRXT",
@@ -290,25 +233,6 @@
       "github": "https://github.com/BaranziniLab/IDCAgent",
       "download": "https://github.com/BaranziniLab/IDCAgent/releases/download/v0.1.0-brxt/idcagent.brxt",
       "filename": "idcagent.brxt",
-      "license": "Apache-2.0",
-      "privacy": "public"
-    },
-    {
-      "id": "literatureagent",
-      "name": "LiteratureAgent",
-      "organization": "BaranziniLab · BRXT",
-      "version": "v0.1.0",
-      "description": "MCP access pattern for PubMed, OpenAlex, Crossref, Semantic Scholar, and literature evidence workflows, with provenance-first search and guarded API calls.",
-      "tags": [
-        "MCP",
-        "Literature",
-        "PubMed",
-        "Evidence",
-        "Apache-2.0"
-      ],
-      "github": "https://github.com/BaranziniLab/LiteratureAgent",
-      "download": "https://github.com/BaranziniLab/LiteratureAgent/releases/download/v0.1.0-brxt/literatureagent.brxt",
-      "filename": "literatureagent.brxt",
       "license": "Apache-2.0",
       "privacy": "public"
     },
@@ -427,25 +351,6 @@
       "privacy": "public"
     },
     {
-      "id": "proteinstructureagent",
-      "name": "ProteinStructureAgent",
-      "organization": "BaranziniLab · BRXT",
-      "version": "v0.1.0",
-      "description": "MCP access pattern for PDB, AlphaFold, UniProt, sequence-to-structure lookup, structure metadata review, and guarded local structure-tool planning.",
-      "tags": [
-        "MCP",
-        "PDB",
-        "AlphaFold",
-        "Proteins",
-        "Apache-2.0"
-      ],
-      "github": "https://github.com/BaranziniLab/ProteinStructureAgent",
-      "download": "https://github.com/BaranziniLab/ProteinStructureAgent/releases/download/v0.1.0-brxt/proteinstructureagent.brxt",
-      "filename": "proteinstructureagent.brxt",
-      "license": "Apache-2.0",
-      "privacy": "public"
-    },
-    {
       "id": "singlecellomicsagent",
       "name": "SingleCellOmicsAgent",
       "organization": "BaranziniLab · BRXT",
@@ -541,25 +446,6 @@
       "privacy": "public"
     },
     {
-      "id": "depmapagent",
-      "name": "DepMapAgent",
-      "organization": "BaranziniLab · BRXT",
-      "version": "v0.1.0",
-      "description": "MCP adapter for DepMap portal/API metadata, datasets, cell lines, genes, compounds, and cancer dependency evidence review.",
-      "tags": [
-        "MCP",
-        "DepMap",
-        "Cancer",
-        "Dependencies",
-        "Apache-2.0"
-      ],
-      "github": "https://github.com/BaranziniLab/DepMapAgent",
-      "download": "https://github.com/BaranziniLab/DepMapAgent/releases/download/v0.1.0-brxt/depmapagent.brxt",
-      "filename": "depmapagent.brxt",
-      "license": "Apache-2.0",
-      "privacy": "public"
-    },
-    {
       "id": "primekgagent",
       "name": "PrimeKGAgent",
       "organization": "BaranziniLab · BRXT",
@@ -575,25 +461,6 @@
       "github": "https://github.com/BaranziniLab/PrimeKGAgent",
       "download": "https://github.com/BaranziniLab/PrimeKGAgent/releases/download/v0.1.0-brxt/primekgagent.brxt",
       "filename": "primekgagent.brxt",
-      "license": "Apache-2.0",
-      "privacy": "public"
-    },
-    {
-      "id": "zoteroagent",
-      "name": "ZoteroAgent",
-      "organization": "BaranziniLab · BRXT",
-      "version": "v0.1.0",
-      "description": "MCP adapter for Zotero libraries, collections, items, tags, and citation metadata with read-first and mutation-gated API access.",
-      "tags": [
-        "MCP",
-        "Zotero",
-        "Citations",
-        "Library",
-        "Apache-2.0"
-      ],
-      "github": "https://github.com/BaranziniLab/ZoteroAgent",
-      "download": "https://github.com/BaranziniLab/ZoteroAgent/releases/download/v0.1.0-brxt/zoteroagent.brxt",
-      "filename": "zoteroagent.brxt",
       "license": "Apache-2.0",
       "privacy": "public"
     },
@@ -617,25 +484,6 @@
       "privacy": "public"
     },
     {
-      "id": "adaptyvbiofoundryagent",
-      "name": "AdaptyvBioFoundryAgent",
-      "organization": "BaranziniLab · BRXT",
-      "version": "v0.1.0",
-      "description": "MCP adapter for Adaptyv-style protein engineering design-build-test workflows, sequence libraries, experiment metadata, and result retrieval with guarded API calls.",
-      "tags": [
-        "MCP",
-        "Adaptyv",
-        "Protein Engineering",
-        "Biofoundry",
-        "Apache-2.0"
-      ],
-      "github": "https://github.com/BaranziniLab/AdaptyvBioFoundryAgent",
-      "download": "https://github.com/BaranziniLab/AdaptyvBioFoundryAgent/releases/download/v0.1.0-brxt/adaptyvbiofoundryagent.brxt",
-      "filename": "adaptyvbiofoundryagent.brxt",
-      "license": "Apache-2.0",
-      "privacy": "public"
-    },
-    {
       "id": "structuredpapersearchagent",
       "name": "StructuredPaperSearchAgent",
       "organization": "BaranziniLab · BRXT",
@@ -655,44 +503,6 @@
       "privacy": "public"
     },
     {
-      "id": "scientificwebresearchagent",
-      "name": "ScientificWebResearchAgent",
-      "organization": "BaranziniLab · BRXT",
-      "version": "v0.1.0",
-      "description": "MCP adapter for scientific web and deep-research workflows, web search APIs, source fetching, and provenance capture beyond scholarly APIs.",
-      "tags": [
-        "MCP",
-        "Web Research",
-        "Search",
-        "Sources",
-        "Apache-2.0"
-      ],
-      "github": "https://github.com/BaranziniLab/ScientificWebResearchAgent",
-      "download": "https://github.com/BaranziniLab/ScientificWebResearchAgent/releases/download/v0.1.0-brxt/scientificwebresearchagent.brxt",
-      "filename": "scientificwebresearchagent.brxt",
-      "license": "Apache-2.0",
-      "privacy": "public"
-    },
-    {
-      "id": "tamarindbioagent",
-      "name": "TamarindBioAgent",
-      "organization": "BaranziniLab · BRXT",
-      "version": "v0.1.0",
-      "description": "MCP adapter for Tamarind Bio-style cloud protein, structure, docking, and design workflows with guarded API calls and result provenance.",
-      "tags": [
-        "MCP",
-        "Tamarind",
-        "Protein Design",
-        "Docking",
-        "Apache-2.0"
-      ],
-      "github": "https://github.com/BaranziniLab/TamarindBioAgent",
-      "download": "https://github.com/BaranziniLab/TamarindBioAgent/releases/download/v0.1.0-brxt/tamarindbioagent.brxt",
-      "filename": "tamarindbioagent.brxt",
-      "license": "Apache-2.0",
-      "privacy": "public"
-    },
-    {
       "id": "rowanmolecularmodelingagent",
       "name": "RowanMolecularModelingAgent",
       "organization": "BaranziniLab · BRXT",
@@ -708,25 +518,6 @@
       "github": "https://github.com/BaranziniLab/RowanMolecularModelingAgent",
       "download": "https://github.com/BaranziniLab/RowanMolecularModelingAgent/releases/download/v0.1.0-brxt/rowanmolecularmodelingagent.brxt",
       "filename": "rowanmolecularmodelingagent.brxt",
-      "license": "Apache-2.0",
-      "privacy": "public"
-    },
-    {
-      "id": "unifiedpublicdatabaselookupagent",
-      "name": "UnifiedPublicDatabaseLookupAgent",
-      "organization": "BaranziniLab · BRXT",
-      "version": "v0.1.0",
-      "description": "MCP router for provenance-first public database lookups across biomedical, chemistry, materials, literature, regulatory, patent, and scientific data APIs.",
-      "tags": [
-        "MCP",
-        "Public Databases",
-        "Provenance",
-        "Lookup",
-        "Apache-2.0"
-      ],
-      "github": "https://github.com/BaranziniLab/UnifiedPublicDatabaseLookupAgent",
-      "download": "https://github.com/BaranziniLab/UnifiedPublicDatabaseLookupAgent/releases/download/v0.1.0-brxt/unifiedpublicdatabaselookupagent.brxt",
-      "filename": "unifiedpublicdatabaselookupagent.brxt",
       "license": "Apache-2.0",
       "privacy": "public"
     }

@@ -11,7 +11,7 @@ window.BAAM_DETAILS = {
       'For this cohort, find notes that mention housing instability.',
       'For OMOP person_id 12345, pull lab trends from the CDW.'
     ],
-    tools: ['build_cohort', 'query', 'search_note_concepts', 'search_diagnoses_by_code', 'crossmap_patient', 'get_database_overview'],
+    tools: ['build_cohort', 'query', 'search_note_concepts', 'search_diagnoses_by_code', 'crossmap_patient', 'get_database_overview', 'submit_query_job'],
     needs: 'UCSF network or VPN access, and read permission on the CDW. Your UCSF login as CLINICAL_RECORDS_USERNAME (CAMPUS\\username) and CLINICAL_RECORDS_PASSWORD. uv and Python 3.11 or later.',
     sources: [
       'UCSF Epic Caboodle CDW, de-identified (database CDW_NEW, schema deid_uf)',
@@ -29,7 +29,7 @@ window.BAAM_DETAILS = {
       'How many people have a type 2 diabetes condition and a metformin drug exposure?',
       'List the OMOP tables and describe the columns of the measurement table.'
     ],
-    tools: ['query_ucsf_omop', 'search_concepts', 'find_measurement', 'get_omop_schema', 'list_ucsf_omop_tables'],
+    tools: ['query_ucsf_omop', 'search_concepts', 'find_measurement', 'get_omop_schema', 'list_ucsf_omop_tables', 'submit_query_job'],
     needs: 'UCSF network or VPN access, and read permission on OMOP_DEID. Your UCSF network login as CLINICAL_RECORDS_USERNAME and CLINICAL_RECORDS_PASSWORD. uv and Python 3.11 or later.',
     sources: [
       'UCSF OMOP_DEID (OMOP CDM v5.4 on Microsoft SQL Server, schema omop)',
