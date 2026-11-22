@@ -4446,7 +4446,7 @@ mod tests {
     #[tokio::test]
     async fn marketplace_deletion_reports_a_failed_roster_write_and_continues_housekeeping() {
         let _path_root = pinned_path_root();
-        let fixture = install_deletion_fixture("opennotebookagent", "PartialRoster").await;
+        let fixture = install_deletion_fixture("literatureagent", "PartialRoster").await;
         let (_manager_root, _manager, client, _session_id) = a_live_tool_client().await;
         let sessions = client.context.session_manager.clone();
         let kept = marketplace_deletion_kept_config();
@@ -5010,7 +5010,7 @@ mod tests {
     #[tokio::test]
     async fn post_approval_config_revalidation_leaves_the_replacement_and_package_untouched() {
         let _path_root = pinned_path_root();
-        let fixture = install_deletion_fixture("opennotebookagent", "Revalidate").await;
+        let fixture = install_deletion_fixture("literatureagent", "Revalidate").await;
         let (_manager_root, manager, client, _session_id) = a_live_tool_client().await;
         let sessions = client.context.session_manager.clone();
         let saved = save_marketplace_deletion_roster(
