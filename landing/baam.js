@@ -127,9 +127,9 @@
     var version = '';
     if (org) {
       var orgText = String(org.textContent);
-      var tail = /[·|]\s*(v[\d.]+)\s*$/.exec(orgText);
+      var tail = /[·|]\s*(v[\d.]+(?:\+[0-9A-Za-z.-]+)?)\s*$/.exec(orgText);
       if (tail) version = tail[1];
-      fields.push([orgText.replace(/[·|]\s*v[\d.]+\s*$/, ''), W.Label]);
+      fields.push([orgText.replace(/[·|]\s*v[\d.]+(?:\+[0-9A-Za-z.-]+)?\s*$/, ''), W.Label]);
     }
     // ⚠ Not `data-tags` as it stands. That blob is
     // `name + organization + version + description + tags`, so it carries the

@@ -632,7 +632,7 @@
       "tags": [
         "Reproducibility",
         "Audit",
-        "Apache-2.0"
+        "Apache-2.0 AND MIT AND BSD-3-Clause AND CC-BY-4.0 AND CC0-1.0"
       ],
       "keywords": [
         "replication-package-audit",
@@ -659,7 +659,7 @@
       "tags": [
         "Claims",
         "Evidence",
-        "Apache-2.0"
+        "Apache-2.0 AND MIT"
       ],
       "keywords": [
         "claim-evidence-integrity",
@@ -713,7 +713,7 @@
       "tags": [
         "Documents",
         "Slides",
-        "Apache-2.0"
+        "Apache-2.0 AND MIT AND CC0-1.0"
       ],
       "keywords": [
         "scientific-artifacts",
@@ -740,7 +740,7 @@
       "tags": [
         "Data",
         "Pipelines",
-        "Apache-2.0"
+        "Apache-2.0 AND MIT AND BSD-3-Clause"
       ],
       "keywords": [
         "scientific-data-engineering",
@@ -765,7 +765,7 @@
       "tags": [
         "Statistics",
         "Bayes",
-        "Apache-2.0"
+        "Apache-2.0 AND MIT AND BSD-3-Clause"
       ],
       "keywords": [
         "statistical-modeling-bayes",
@@ -789,7 +789,7 @@
       "tags": [
         "ML",
         "Explainability",
-        "Apache-2.0"
+        "Apache-2.0 AND MIT AND BSD-3-Clause"
       ],
       "keywords": [
         "scientific-machine-learning",
@@ -815,7 +815,7 @@
       "tags": [
         "Geospatial",
         "Maps",
-        "Apache-2.0"
+        "Apache-2.0 AND MIT"
       ],
       "keywords": [
         "geospatial-science",
@@ -840,7 +840,7 @@
       "tags": [
         "Signals",
         "Neural",
-        "Apache-2.0"
+        "Apache-2.0 AND MIT"
       ],
       "keywords": [
         "neurophysiology-analysis",
@@ -866,7 +866,7 @@
       "tags": [
         "Quantum",
         "Simulation",
-        "Apache-2.0"
+        "Apache-2.0 AND MIT"
       ],
       "keywords": [
         "quantum-scientific-computing",
@@ -890,7 +890,7 @@
       "tags": [
         "Materials",
         "Crystals",
-        "Apache-2.0"
+        "Apache-2.0 AND MIT"
       ],
       "keywords": [
         "materials-informatics",
@@ -915,7 +915,7 @@
       "tags": [
         "Imaging",
         "Pathology",
-        "Apache-2.0"
+        "Apache-2.0 AND MIT"
       ],
       "keywords": [
         "biomedical-imaging-pathology",
@@ -940,7 +940,7 @@
       "tags": [
         "Citations",
         "Zotero",
-        "Apache-2.0"
+        "Apache-2.0 AND MIT"
       ],
       "keywords": [
         "citation-library-management",
@@ -965,7 +965,7 @@
       "tags": [
         "Lab Automation",
         "Protocols",
-        "Apache-2.0"
+        "Apache-2.0 AND MIT"
       ],
       "keywords": [
         "laboratory-automation-planning",
@@ -991,7 +991,7 @@
       "tags": [
         "Econometrics",
         "Causal",
-        "Apache-2.0"
+        "Apache-2.0 AND BSD-3-Clause"
       ],
       "keywords": [
         "econometrics-toolkit",
@@ -1022,7 +1022,7 @@
       "tags": [
         "PRISMA",
         "Review",
-        "Apache-2.0"
+        "Apache-2.0 AND MIT"
       ],
       "keywords": [
         "systematic-review-prisma",
@@ -1049,7 +1049,7 @@
       "tags": [
         "Simulation",
         "Optimization",
-        "Apache-2.0"
+        "Apache-2.0 AND MIT"
       ],
       "keywords": [
         "simulation-optimization",
@@ -1074,7 +1074,7 @@
       "tags": [
         "Physics",
         "Astronomy",
-        "Apache-2.0"
+        "Apache-2.0 AND MIT AND BSD-3-Clause"
       ],
       "keywords": [
         "physical-science-computing",
@@ -1099,7 +1099,7 @@
       "tags": [
         "Clinical",
         "Safety",
-        "Apache-2.0"
+        "Apache-2.0 AND MIT"
       ],
       "keywords": [
         "clinical-decision-support-review",
@@ -1126,7 +1126,7 @@
       "tags": [
         "Grants",
         "Funding",
-        "Apache-2.0"
+        "Apache-2.0 AND MIT"
       ],
       "keywords": [
         "grant-funding-strategy",
@@ -1152,7 +1152,7 @@
       "tags": [
         "Regulatory",
         "QMS",
-        "Apache-2.0"
+        "Apache-2.0 AND MIT"
       ],
       "keywords": [
         "regulatory-quality-systems",
@@ -1178,7 +1178,7 @@
       "tags": [
         "GPU",
         "Performance",
-        "Apache-2.0"
+        "Apache-2.0 AND MIT"
       ],
       "keywords": [
         "gpu-compute-optimization",
@@ -1203,7 +1203,7 @@
       "tags": [
         "Venues",
         "Evaluation",
-        "Apache-2.0"
+        "Apache-2.0 AND MIT"
       ],
       "keywords": [
         "research-evaluation-venues",

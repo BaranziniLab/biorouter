@@ -338,7 +338,7 @@ rounds stop helping. While improving:
   once in `scripts/` and have the skill run it.
 
 To answer "is the new version really better?", run a **blind comparison**: give
-a fresh subagent the prompt and the two outputs labelled A and B in random order,
+a fresh subagent the prompt and the two outputs labeled A and B in random order,
 ask which better serves the prompt and why, and only then say which was which.
 
 ## Optimizing the description
