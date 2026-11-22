@@ -748,16 +748,23 @@ describe('a chat whose Crew connection is offline', () => {
     await waitFor(() => expect(screen.getByTestId('state')).toHaveTextContent('offline'));
 
     status = 'connected';
-    // A focus re-read can land while the first read is still settling on a loaded CI shard
-    // (vitest 3/3 on PR #552 saw 'offline' after the default 1 s), so focus again until the
-    // re-read shows the connection; what is asserted is unchanged.
-    await waitFor(
-      () => {
+    // The focus listener refetches; a focus that lands while the first read is still in flight
+    // can share that read, which saw the connection offline (vitest 3/3 on PR #552). Focus again,
+    // at most three times with a wait between, rather than inside waitFor's 50 ms loop, whose
+    // stream of refetches kept the worker from exiting.
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      act(() => {
         window.dispatchEvent(new Event('focus'));
-        expect(screen.getByTestId('state')).toHaveTextContent('active');
-      },
-      { timeout: 5000 }
-    );
+      });
+      try {
+        await waitFor(() => expect(screen.getByTestId('state')).toHaveTextContent('active'), {
+          timeout: 1500,
+        });
+        break;
+      } catch (error) {
+        if (attempt === 2) throw error;
+      }
+    }
     expect(screen.queryByTestId('crew-chat-access-offline')).toBeNull();
     expect(screen.getByRole('button', { name: accessCopy.revokeButton })).toBeInTheDocument();
   });
