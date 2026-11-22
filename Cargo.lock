@@ -993,7 +993,7 @@ dependencies = [
 
 [[package]]
 name = "biorouter"
-version = "1.94.5"
+version = "1.94.6"
 dependencies = [
  "agent-client-protocol-schema",
  "ahash",
@@ -1103,7 +1103,7 @@ dependencies = [
 
 [[package]]
 name = "biorouter-acp"
-version = "1.94.5"
+version = "1.94.6"
 dependencies = [
  "anyhow",
  "assert-json-diff",
@@ -1130,7 +1130,7 @@ dependencies = [
 
 [[package]]
 name = "biorouter-authprompt"
-version = "1.94.5"
+version = "1.94.6"
 dependencies = [
  "block2",
  "objc2",
@@ -1138,7 +1138,7 @@ dependencies = [
 
 [[package]]
 name = "biorouter-bench"
-version = "1.94.5"
+version = "1.94.6"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1161,7 +1161,7 @@ dependencies = [
 
 [[package]]
 name = "biorouter-cli"
-version = "1.94.5"
+version = "1.94.6"
 dependencies = [
  "anstream",
  "anyhow",
@@ -1234,7 +1234,7 @@ dependencies = [
 
 [[package]]
 name = "biorouter-crew"
-version = "1.94.5"
+version = "1.94.6"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -1256,7 +1256,7 @@ dependencies = [
 
 [[package]]
 name = "biorouter-dictation"
-version = "1.94.5"
+version = "1.94.6"
 dependencies = [
  "aho-corasick",
  "cc",
@@ -1281,7 +1281,7 @@ dependencies = [
 
 [[package]]
 name = "biorouter-dictation-capture"
-version = "1.94.5"
+version = "1.94.6"
 dependencies = [
  "biorouter-dictation",
  "cc",
@@ -1292,11 +1292,11 @@ dependencies = [
 
 [[package]]
 name = "biorouter-fnkey"
-version = "1.94.5"
+version = "1.94.6"
 
 [[package]]
 name = "biorouter-mcp"
-version = "1.94.5"
+version = "1.94.6"
 dependencies = [
  "aes-gcm",
  "ammonia",
@@ -1389,7 +1389,7 @@ dependencies = [
 
 [[package]]
 name = "biorouter-sandbox"
-version = "1.94.5"
+version = "1.94.6"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1410,7 +1410,7 @@ dependencies = [
 
 [[package]]
 name = "biorouter-server"
-version = "1.94.5"
+version = "1.94.6"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1471,7 +1471,7 @@ dependencies = [
 
 [[package]]
 name = "biorouter-test"
-version = "1.94.5"
+version = "1.94.6"
 dependencies = [
  "clap",
  "serde_json",

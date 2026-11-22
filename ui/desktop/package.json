@@ -1,7 +1,7 @@
 {
   "name": "biorouter-app",
   "productName": "Biorouter",
-  "version": "1.94.5",
+  "version": "1.94.6",
   "description": "Biorouter App",
   "engines": {
     "node": "^24.0.0"

@@ -10,7 +10,7 @@
     "license": {
       "name": "Apache-2.0"
     },
-    "version": "1.94.5"
+    "version": "1.94.6"
   },
   "paths": {
     "/action-required/crew-step": {
