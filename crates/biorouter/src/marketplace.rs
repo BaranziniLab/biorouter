@@ -1202,7 +1202,10 @@ mod tests {
     fn a_three_letter_query_does_not_return_the_whole_extension_shelf() {
         let catalog = MarketplaceCatalog::from_bytes(EMBEDDED_REGISTRY).unwrap();
         let shelf = catalog.browse_extensions(ProviderTier::Private).len();
-        assert!(shelf >= 30, "measured against 37 entries; now {shelf}");
+        // The shelf shrinks and grows as extensions are withdrawn, retired and restored
+        // (37 when this was measured, 27 after the 2026-11-21 key-binding withdrawal), so
+        // the floors below are relative: enough entries that a handful is not the shelf.
+        assert!(shelf >= 20, "measured against 37 entries; now {shelf}");
 
         // Guard: the words the flood came through are still in the catalog, so a
         // pass here means the rule refused them rather than the registry having
@@ -1218,7 +1221,7 @@ mod tests {
             .filter(|entry| entry.organization.to_lowercase().contains("baranzinilab"))
             .count();
         assert!(
-            names >= 20 && orgs >= 20,
+            names * 2 >= shelf && orgs * 2 >= shelf,
             "the shelf no longer says `Agent` ({names}) or `BaranziniLab` ({orgs}), so this test \
              would pass vacuously"
         );
@@ -1248,7 +1251,9 @@ mod tests {
         assert_eq!(ids("BaranziniLab").len(), orgs, "the lab, by its own name");
         let ucsf = ids("UCSF");
         assert!(
-            ucsf.len() >= 5 && ucsf.contains(&"ucsfhpcagent".to_owned()),
+            ucsf.len() >= 2
+                && ucsf.contains(&"cdwagent".to_owned())
+                && ucsf.contains(&"ucsfomopagent".to_owned()),
             "UCSF by name: {ucsf:?}"
         );
     }
