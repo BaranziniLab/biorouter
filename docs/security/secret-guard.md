@@ -60,6 +60,13 @@ takes care never to read (passwords) or to let leave the app (cookie values). Ch
 files (`Bookmarks`, `Preferences`, `Local State`) and any file merely called `Cookies` elsewhere
 stay readable. Like the rest of the floor, this stops an accident, not a determined program.
 
+Since 1.94.6 it also names gptr's session records, `serve-*` under a `gptr/mcp-serve/` folder
+(R's per-user cache: macOS `~/Library/Caches/org.R-project.R/R/gptr/`, Linux `~/.cache/R/gptr/`,
+Windows `…/AppData/Local/R/cache/R/gptr/`). gptr Agent's attach step writes one for each live R
+session it serves, and it holds the bearer token of that session's gptr server, which runs R code
+in the person's open session. The extension reads the record itself, so no chat's shell needs it.
+gptr's other cache files stay readable.
+
 ### The Chrome key helper (BB-23)
 
 One command is refused by what it runs rather than by a path: `biorouterd browser-key`, the

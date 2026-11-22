@@ -100,6 +100,12 @@ pub const DEFAULT_SECRET_PATTERNS: &[&str] = &[
     "**/google-chrome/**/Login Data For Account",
     "**/google-chrome/**/Web Data",
     "**/Partitions/biorouter-embedded-browser/**/Cookies",
+    // The discovery records gptr Agent's attach step writes for a live R session
+    // (`tools::R_user_dir("gptr", "cache")/mcp-serve/serve-<pid>.json`, staged as
+    // `serve-*.tmp`). Each holds the bearer token of that session's gptr server, which runs
+    // R code in the person's open session; the extension reads the record itself, so no chat's
+    // shell ever needs it.
+    "**/gptr/mcp-serve/serve-*",
 ];
 
 /// The floor line whose last component reaches a `.env` template's name, and so the only
@@ -1435,6 +1441,51 @@ mod tests {
             assert!(
                 scan_command(&g, &env, command).is_some(),
                 "reached a browser store: {command}"
+            );
+        }
+    }
+
+    /// gptr's discovery records: the bearer token of a live R session, under R's per-user cache on
+    /// every platform, whether the record is finished or still staged.
+    const GPTR_RECORDS: &[&str] = &[
+        "Library/Caches/org.R-project.R/R/gptr/mcp-serve/serve-4242.json",
+        "Library/Caches/org.R-project.R/R/gptr/mcp-serve/serve-1a2b3c.tmp",
+        ".cache/R/gptr/mcp-serve/serve-4242.json",
+        "AppData/Local/R/cache/R/gptr/mcp-serve/serve-4242.json",
+    ];
+
+    #[test]
+    fn gptr_session_records_are_on_the_floor() {
+        let fake = FakeHome::new();
+        let g = fake.guard();
+        for record in GPTR_RECORDS {
+            assert!(g.is_denied(&fake.home.join(record)), "~/{record}");
+            let shouted = record.to_uppercase();
+            assert!(g.is_denied(&fake.home.join(&shouted)), "~/{shouted}");
+        }
+        // gptr's other cache files, and a file merely named like a record elsewhere, stay readable.
+        for ordinary in [
+            ".cache/R/gptr/sessions/index.json",
+            ".cache/R/gptr/mcp-serve/README",
+            "project/serve-4242.json",
+            "project/mcp-serve/serve-4242.json",
+        ] {
+            assert!(!g.is_denied(&fake.home.join(ordinary)), "~/{ordinary}");
+        }
+        // A real record on disk, so the glob below resolves against it.
+        let dir = fake.home.join(".cache/R/gptr/mcp-serve");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("serve-4242.json"), "{}").unwrap();
+        let (g, env) = (fake.guard(), fake.env());
+        for command in [
+            "cat ~/.cache/R/gptr/mcp-serve/serve-4242.json",
+            "cat ~/.cache/R/gptr/mcp-serve/*.json",
+            "jq -r .token \"$HOME/Library/Caches/org.R-project.R/R/gptr/mcp-serve/serve-4242.json\"",
+            "cd ~/.cache/R/gptr/mcp-serve && cat serve-4242.json",
+        ] {
+            assert!(
+                scan_command(&g, &env, command).is_some(),
+                "reached a gptr session record: {command}"
             );
         }
     }
