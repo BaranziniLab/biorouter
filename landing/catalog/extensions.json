@@ -2404,7 +2404,7 @@
       "manifest_name": "gptragent",
       "repository": "Broccolito/GptrAgent",
       "group": "tools",
-      "version": "0.1.0",
+      "version": "0.1.1",
       "status": "active",
       "aliases": [],
       "job": "r.live-session",
@@ -2417,7 +2417,7 @@
       "third_party": [
         {
           "name": "gptr",
-          "version": ">=1.1",
+          "version": ">=1.0",
           "licence": "Apache-2.0",
           "how": "the person's own R package, reached over its MCP endpoint"
         }
@@ -2444,9 +2444,14 @@
           "version": "0.1.0",
           "date": "2026-11-22",
           "note": "first release: live R session bridge on gptr"
+        },
+        {
+          "version": "0.1.1",
+          "date": "2026-11-22",
+          "note": "reports a reused gptr server's real mode and tools, states the edits mode exactly, one floor (gptr 1.0; plan mode 1.2), and says which side is behind on a format mismatch"
         }
       ],
-      "summary": "Work inside an R session you already have open. Biorouter inspects, analyses, plots and fixes objects in memory through gptr, without reloading data, and every call passes gptr's permission settings. Private: a public model never sees your session. 3 tools and a bundled gptr-live-r skill. Needs R with the gptr package (1.1 or later) and uv.",
+      "summary": "Work inside an R session you already have open. Biorouter inspects, analyses, plots and fixes objects in memory through gptr, without reloading data, and every call passes gptr's permission settings. Private: a public model never sees your session. 3 tools and a bundled gptr-live-r skill. Needs R with the gptr package (1.0 or later) and uv.",
       "keywords": [
         "MCP",
         "R",
@@ -2454,9 +2459,9 @@
         "gptr"
       ],
       "release": {
-        "tag": "v0.1.0",
+        "tag": "v0.1.1",
         "asset": "gptragent.brxt",
-        "sha256": "3c74671e8dfcf851f1a93f0c7016733f36eae25175376ad21f6f669c600e8d4b"
+        "sha256": "7822065b154bba367ea2ce3a2db2c9ae5e15700ac2cc3187babd1a1158e73329"
       }
     },
     {

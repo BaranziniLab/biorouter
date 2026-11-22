@@ -113,7 +113,7 @@ biorouter session \
   <tbody>
     <tr><td><strong>UCSFOMOPAgent</strong></td><td>Private</td><td>The UCSF OMOP deidentified clinical database, queried in plain language. It cannot change the data.</td><td>UCSF credentials.</td></tr>
     <tr><td><strong>CDWAgent</strong></td><td>Private</td><td>The UCSF Clinical Data Warehouse: cohorts, labs, imaging and clinical notes. It cannot change the data.</td><td>Your UCSF network login, <code>CAMPUS\username</code>.</td></tr>
-    <tr><td><strong>gptr Agent</strong></td><td>Private</td><td>The R session you already have open, through the gptr package: inspect, analyse, plot and fix objects in memory without reloading data.</td><td>None. Needs R with gptr 1.1 or later.</td></tr>
+    <tr><td><strong>gptr Agent</strong></td><td>Private</td><td>The R session you already have open, through the gptr package: inspect, analyse, plot and fix objects in memory without reloading data.</td><td>None. Needs R with gptr 1.0 or later (plan mode needs 1.2 or later).</td></tr>
     <tr><td><strong>SPOKEAgent</strong></td><td>Public</td><td>The SPOKE biomedical knowledge graph of genes, proteins, drugs, diseases and pathways, queried with Cypher.</td><td>A SPOKE passcode, from the UCSF wiki credentials page.</td></tr>
     <tr><td><strong>PlaywrightAgent</strong></td><td>Public</td><td>A web browser the agent drives to open, read and fill in pages.</td><td>None. Needs Node.js.</td></tr>
     <tr><td><strong>CodeGraphAgent</strong></td><td>Public</td><td>An index of a codebase in about 30 languages, including Python and R, that finds a symbol, who calls it and what a change would touch.</td><td>None.</td></tr>

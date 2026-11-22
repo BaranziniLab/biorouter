@@ -340,7 +340,7 @@ window.BAAM_DETAILS = {
       'My last command failed; read the traceback and fix it in place.'
     ],
     tools: ['sessions', 'inspect', 'r'],
-    needs: 'R with the gptr package (1.1 or later) and a session started with gptr\'s MCP endpoint, and uv. A private model in Biorouter.',
+    needs: 'R with the gptr package (1.0 or later; plan mode needs 1.2 or later) and a session started with gptr\'s MCP endpoint, and uv. A private model in Biorouter.',
     sources: [
       'Your own R session, through gptr (Broccolito/gptr)'
     ]
