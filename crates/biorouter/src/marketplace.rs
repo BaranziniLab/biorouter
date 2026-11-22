@@ -846,14 +846,14 @@ mod tests {
         let spoke = catalog
             .resolve_extension_for_install("spokeagent", ProviderTier::Public)
             .unwrap();
-        // ⚠ The ID carries no version; the ASSET does. A registry id is a name,
-        // and SPOKEAgent's used to be `spokeagent-0.4.1` — which the descriptor
-        // then advertised as the extension's name, while the extension that
-        // installs is `spokeagent`. The release asset really is versioned on
-        // GitHub, so `filename`/`download` keep the version and only the name
-        // loses it.
-        assert_eq!(spoke.version, "v0.4.1");
-        assert_eq!(spoke.filename, "spokeagent-0.4.1.brxt");
+        // ⚠ The ID carries no version. A registry id is a name, and SPOKEAgent's
+        // used to be `spokeagent-0.4.1` — which the descriptor then advertised
+        // as the extension's name, while the extension that installs is
+        // `spokeagent`. Through v0.4.1 the card downloaded the versioned asset
+        // `spokeagent-0.4.1.brxt`; from v0.5.0 it downloads the release's
+        // unversioned `spokeagent.brxt`, and the id stays `spokeagent` either way.
+        assert_eq!(spoke.version, "v0.5.0");
+        assert_eq!(spoke.filename, "spokeagent.brxt");
         assert_eq!(spoke.extension_name, "spokeagent");
         assert!(
             spoke.advertises_name,
@@ -1165,7 +1165,7 @@ mod tests {
         }
         let pacs_extensions =
             extension_ids(&catalog.search_extensions(ProviderTier::Private, "PACS"));
-        for licence_only in ["benchlingagent", "dnanexusagent", "omeroagent"] {
+        for licence_only in ["benchlingagent", "dnanexusagent", "protocolsioagent"] {
             assert!(
                 !pacs_extensions.contains(&licence_only.to_owned()),
                 "`{licence_only}` is not about PACS; its only `pac` is `Apache-2.0`: \
@@ -1202,7 +1202,10 @@ mod tests {
     fn a_three_letter_query_does_not_return_the_whole_extension_shelf() {
         let catalog = MarketplaceCatalog::from_bytes(EMBEDDED_REGISTRY).unwrap();
         let shelf = catalog.browse_extensions(ProviderTier::Private).len();
-        assert!(shelf >= 30, "measured against 37 entries; now {shelf}");
+        assert!(
+            shelf >= 25,
+            "measured against 37 entries, 28 after the November 2026 refresh; now {shelf}"
+        );
 
         // Guard: the words the flood came through are still in the catalog, so a
         // pass here means the rule refused them rather than the registry having
@@ -1227,8 +1230,12 @@ mod tests {
             let now = catalog
                 .search_extensions(ProviderTier::Private, query)
                 .len();
+            // Ten, not eight, since the November 2026 refresh: `gen` is more than
+            // half of the word `Agent`, so every card NAMED "… Agent" as a word
+            // answers it, and the refresh added two (gptr Agent, Open Computer Use
+            // Agent). Still a handful, which is what this pins.
             assert!(
-                now <= 8,
+                now <= 10,
                 "`{query}` returned {now} of {shelf}; it returned {was} before an unanchored \
                  match had to be four characters or half its word"
             );
@@ -1248,7 +1255,7 @@ mod tests {
         assert_eq!(ids("BaranziniLab").len(), orgs, "the lab, by its own name");
         let ucsf = ids("UCSF");
         assert!(
-            ucsf.len() >= 5 && ucsf.contains(&"ucsfhpcagent".to_owned()),
+            ucsf.len() >= 5 && ucsf.contains(&"cdwagent".to_owned()),
             "UCSF by name: {ucsf:?}"
         );
     }

@@ -188,6 +188,13 @@ const REJECTED = [
     /^registry: the closed private set names "ucsfomopagent", but no card/m,
     ['--assert-private-set'],
   ],
+  // A private extension the set records with NO affiliation (`null`) may not
+  // gain one by editing its card: absent and ["ucsf"] are different answers.
+  [
+    'private-set-unaffiliated-gains-affiliation',
+    /^registry: .*"gptragent" is private with affiliation \[ucsf\], but the closed private set records \(absent\)/m,
+    ['--assert-private-set'],
+  ],
   [
     'private-set-foreign-affiliation',
     /^registry: .*"cdwagent" is private with affiliation \[stanford\], but the closed private set records \[ucsf\]/m,
@@ -281,13 +288,16 @@ test('a public card is not refused for describing patients honestly', () => {
   assert.match(reg.extensions[0].description, /patient population/);
 });
 
-test('the closed private set is exactly the two UCSF extensions the operator named', () => {
+test('the closed private set is exactly the three extensions the operator named', () => {
   // The assertion inside the generator is checked against fixtures above; this
   // is the other half — that the list it holds is still the right list, read
   // off the committed security artifact rather than off the generator's own
   // constant. A run that widened both together would pass every fixture here.
+  // gptragent is the third (owner decision 1 of the November 2026 BAAM
+  // refresh): private, with no affiliation row, because no institution's
+  // agreements cover a person's own R session.
   const rust = readFileSync(PROTECTED_PRIVATE_SET, 'utf8');
-  assert.match(rust, /PRIVATE_EXTENSIONS: &\[&str\] =\s*&\["cdwagent", "ucsfomopagent"\];/);
+  assert.match(rust, /PRIVATE_EXTENSIONS: &\[&str\] =\s*&\["cdwagent", "gptragent", "ucsfomopagent"\];/);
   assert.match(
     rust,
     /EXTENSION_AFFILIATIONS: &\[\(&str, &\[&str\]\)\] =\s*&\[\("cdwagent", &\["ucsf"\]\), \("ucsfomopagent", &\["ucsf"\]\)\];/
@@ -930,4 +940,41 @@ test('a featured card that repeats nothing in the grids is refused by name', () 
   assert.equal(r.code, 1, `a featured card with no twin must be refused\n${r.both}`);
   assert.match(r.stderr, /repeats no grid card/);
   assert.match(r.stderr, /not-a-published-skill\.zip/);
+});
+
+// ---- A private extension with no institution ------------------------------
+// EXPECTED_PRIVATE_EXTENSIONS spells "private, under no institution's
+// agreements" as `null`, never as an empty list. The fixture below is the set
+// exactly as named; the mutant is the same generator with gptragent's entry
+// rewritten to `[]`, which must refuse that same fixture. Without the mutant, a
+// generator that read `null` and `[]` alike would pass every other test here.
+test('the closed set accepts a private extension with no affiliation, and emits no affiliation row for it', () => {
+  const out = outPath();
+  const rs = rustPath();
+  const r = run({ input: fixture('private-set-unaffiliated'), out, args: ['--assert-private-set', '--emit-rust', rs] });
+  assert.equal(r.code, 0, r.both);
+  const rust = readFileSync(rs, 'utf8');
+  assert.match(rust, /PRIVATE_EXTENSIONS: &\[&str\] =\s*&\["cdwagent", "gptragent", "ucsfomopagent"\];/);
+  assert.doesNotMatch(rust, /\("gptragent", &\[/, 'an unaffiliated private extension gets no affiliation row');
+  const reg = JSON.parse(readFileSync(out, 'utf8'));
+  const gptr = reg.extensions.find((e) => e.id === 'gptragent');
+  assert.equal(gptr.privacy, 'private');
+  assert.equal('affiliation' in gptr, false, 'absent means unconstrained, so the registry omits the field');
+});
+
+test('mutant caught: a closed-set entry of [] is not the same as null', () => {
+  const src = readFileSync(GENERATOR, 'utf8');
+  const entry = "['gptragent', null],";
+  assert.ok(src.includes(entry), 'the gptragent entry must still read exactly this for the mutant to apply');
+  const copy = join(SCRIPTS, `.build-registry.null-mutant-${tmpSeq++}.mjs`);
+  copies.add(copy);
+  try {
+    writeFileSync(copy, src.replace(entry, "['gptragent', []],"));
+    const r = run({ input: fixture('private-set-unaffiliated'), out: outPath(), args: ['--assert-private-set'], script: copy });
+    assert.equal(r.code, 1, `the mutant must refuse the unaffiliated card\n${r.both}`);
+    assert.match(r.stderr, /"gptragent" is private with affiliation \(absent\), but the closed private set records \[\]/);
+  } finally {
+    rmSync(copy, { force: true });
+    copies.delete(copy);
+  }
 });

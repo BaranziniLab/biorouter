@@ -722,7 +722,7 @@ describe('a licence republished as a label is not searchable through it', () => 
     expect(pacsSkills).not.toContain('causal-identification-gates');
 
     const pacsExtensions = ids(rankExtensions(extensions, 'PACS'));
-    for (const licenceOnly of ['benchlingagent', 'dnanexusagent', 'omeroagent']) {
+    for (const licenceOnly of ['benchlingagent', 'dnanexusagent', 'protocolsioagent']) {
       expect(pacsExtensions, `${licenceOnly} is not about PACS`).not.toContain(licenceOnly);
     }
   });
@@ -812,7 +812,10 @@ describe('the shipped catalog: a short query is not the whole shelf', () => {
       ['age', 36],
     ] as const) {
       const hits = rankExtensions(extensions, query).hits;
-      expect(hits.length, `${query} (was ${was} of ${extensions.length})`).toBeLessThan(9);
+      // Ten at most since the November 2026 refresh: `gen` is more than half of
+      // the word "Agent", so each card named "… Agent" as a word answers it, and
+      // the refresh added two. Still a handful, which is what this pins.
+      expect(hits.length, `${query} (was ${was} of ${extensions.length})`).toBeLessThan(11);
     }
 
     // What the shelf is browsed BY: all three reach their rows as whole words.
@@ -821,7 +824,7 @@ describe('the shipped catalog: a short query is not the whole shelf', () => {
     const ucsf = rankExtensions(extensions, 'UCSF').hits;
     expect(ucsf.length).toBeGreaterThan(4);
     expect(ucsf.length).toBeLessThan(extensions.length);
-    expect(ids(rankExtensions(extensions, 'UCSF'))).toContain('ucsfhpcagent');
+    expect(ids(rankExtensions(extensions, 'UCSF'))).toContain('cdwagent');
   });
 
   it('answers a curation-bucket query with the skills that say the word, not the bucket', () => {

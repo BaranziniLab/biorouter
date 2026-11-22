@@ -39,7 +39,7 @@
 /// lookup. That makes the entry match either spelling the registry publishes:
 /// the id (`cdwagent`) or the bundle `manifest.name` (`CDWAgent`).
 #[rustfmt::skip]
-pub const PRIVATE_EXTENSIONS: &[&str] = &["cdwagent", "ucsfomopagent"];
+pub const PRIVATE_EXTENSIONS: &[&str] = &["cdwagent", "gptragent", "ucsfomopagent"];
 
 /// Whose agreements each private extension's data is under — DR-26's third
 /// axis, keyed by the same `name_to_key` key as the set above.

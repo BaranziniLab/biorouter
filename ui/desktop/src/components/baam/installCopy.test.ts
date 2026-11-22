@@ -33,7 +33,8 @@ describe('registrySkillCount', () => {
       expect({ id: row.id, count: registrySkillCount(row) }).toEqual({ id: row.id, count: stated });
     }
     const primer = FALLBACK_REGISTRY.skills.find((s) => s.id === 'primer-design');
-    expect(primer && registrySkillCount(primer)).toBe(3);
+    // Four since the bioSkills resync of the November 2026 BAAM refresh.
+    expect(primer && registrySkillCount(primer)).toBe(4);
   });
 });
 

@@ -1,0 +1,2111 @@
+{
+  "format": 1,
+  "description": "Source of truth for every BAAM extension, active or not (draft written by WP-02 for WP-01; baseline = BAAM today).",
+  "done_work_packages": [],
+  "baseline_violations": [
+    {
+      "rule": "D1",
+      "subject": "job:compute.ucsf-hpc-cluster",
+      "wp": "WP-09",
+      "note": "2 active items share the job \"compute.ucsf-hpc-cluster\": skill:ucsf-hpc, extension:ucsfhpcagent. One of them merges into the other.",
+      "cross_kind": true
+    },
+    {
+      "rule": "D1",
+      "subject": "job:literature.scholarly-api",
+      "wp": "WP-09",
+      "note": "2 active items share the job \"literature.scholarly-api\": extension:literatureagent, extension:structuredpapersearchagent. One of them merges into the other."
+    },
+    {
+      "rule": "D1",
+      "subject": "job:literature.scholarly-api.tool-usage",
+      "wp": "WP-09",
+      "note": "2 active items share the job \"literature.scholarly-api.tool-usage\": bundled:literatureagent/literature-evidence, bundled:structuredpapersearchagent/structured-paper-search. One of them merges into the other."
+    },
+    {
+      "rule": "D1",
+      "subject": "job:bio.public-database-lookup",
+      "wp": "WP-09",
+      "note": "2 active items share the job \"bio.public-database-lookup\": extension:ncbiagent, extension:unifiedpublicdatabaselookupagent. One of them merges into the other."
+    },
+    {
+      "rule": "D1",
+      "subject": "job:bio.public-database-lookup.tool-usage",
+      "wp": "WP-09",
+      "note": "2 active items share the job \"bio.public-database-lookup.tool-usage\": bundled:ncbiagent/ncbi-database-access, bundled:unifiedpublicdatabaselookupagent/unified-public-database-lookup. One of them merges into the other."
+    },
+    {
+      "rule": "D1",
+      "subject": "job:bio.single-cell-census-access",
+      "wp": "WP-09",
+      "note": "2 active items share the job \"bio.single-cell-census-access\": extension:singlecellomicsagent, extension:cellxgenecensusagent. One of them merges into the other."
+    },
+    {
+      "rule": "D1",
+      "subject": "job:bio.single-cell-census-access.tool-usage",
+      "wp": "WP-09",
+      "note": "2 active items share the job \"bio.single-cell-census-access.tool-usage\": bundled:singlecellomicsagent/single-cell-omics, bundled:cellxgenecensusagent/cellxgene-census-access. One of them merges into the other."
+    },
+    {
+      "rule": "D2",
+      "subject": "name:ucsfhpc",
+      "wp": "WP-09",
+      "note": "the name \"ucsfhpc\" is used by skill:ucsf-hpc (id \"ucsf-hpc\"), skill:ucsf-hpc (display name \"UCSF HPC\"), extension:ucsfhpcagent (id \"ucsfhpcagent\"), extension:ucsfhpcagent (display name \"UCSFHPCAgent\")",
+      "cross_kind": true
+    },
+    {
+      "rule": "D3",
+      "subject": "pair:literatureagent|structuredpapersearchagent",
+      "wp": "WP-09",
+      "note": "extension:literatureagent and extension:structuredpapersearchagent look alike (Jaccard 0.182 >= 0.115); merge them, or record a distinct_from boundary"
+    },
+    {
+      "rule": "D3",
+      "subject": "pair:labarchivesagent|opennotebookagent",
+      "wp": "WP-09",
+      "note": "extension:labarchivesagent and extension:opennotebookagent look alike (Jaccard 0.167 >= 0.115); merge them, or record a distinct_from boundary"
+    },
+    {
+      "rule": "D3",
+      "subject": "pair:dnanexusagent|modalagent",
+      "wp": "WP-09",
+      "note": "extension:dnanexusagent and extension:modalagent look alike (Jaccard 0.143 >= 0.115); merge them, or record a distinct_from boundary"
+    },
+    {
+      "rule": "D3",
+      "subject": "pair:ginkgocloudlabagent|protocolsioagent",
+      "wp": "WP-09",
+      "note": "extension:protocolsioagent and extension:ginkgocloudlabagent look alike (Jaccard 0.143 >= 0.115); merge them, or record a distinct_from boundary"
+    },
+    {
+      "rule": "D3",
+      "subject": "pair:labarchivesagent|ucsfhpcagent",
+      "wp": "WP-09",
+      "note": "extension:labarchivesagent and extension:ucsfhpcagent look alike (Jaccard 0.143 >= 0.115); merge them, or record a distinct_from boundary"
+    },
+    {
+      "rule": "D3",
+      "subject": "pair:singlecellomicsagent|ucsfhpcagent",
+      "wp": "WP-09",
+      "note": "extension:ucsfhpcagent and extension:singlecellomicsagent look alike (Jaccard 0.143 >= 0.115); merge them, or record a distinct_from boundary"
+    },
+    {
+      "rule": "D3",
+      "subject": "pair:scientificwebresearchagent|structuredpapersearchagent",
+      "wp": "WP-09",
+      "note": "extension:structuredpapersearchagent and extension:scientificwebresearchagent look alike (Jaccard 0.136 >= 0.115); merge them, or record a distinct_from boundary"
+    },
+    {
+      "rule": "D3",
+      "subject": "pair:ucsfhpcagent|workflowrunneragent",
+      "wp": "WP-09",
+      "note": "extension:workflowrunneragent and extension:ucsfhpcagent look alike (Jaccard 0.136 >= 0.115); merge them, or record a distinct_from boundary"
+    },
+    {
+      "rule": "D3",
+      "subject": "pair:structuredpapersearchagent|unifiedpublicdatabaselookupagent",
+      "wp": "WP-09",
+      "note": "extension:structuredpapersearchagent and extension:unifiedpublicdatabaselookupagent look alike (Jaccard 0.120 >= 0.115); merge them, or record a distinct_from boundary"
+    },
+    {
+      "rule": "D3",
+      "subject": "pair:cellxgenecensusagent|singlecellomicsagent",
+      "wp": "WP-09",
+      "note": "extension:singlecellomicsagent and extension:cellxgenecensusagent look alike (Jaccard 0.118 >= 0.115); merge them, or record a distinct_from boundary"
+    },
+    {
+      "rule": "D3",
+      "subject": "pair:latchbioagent|modalagent",
+      "wp": "WP-09",
+      "note": "extension:latchbioagent and extension:modalagent look alike (Jaccard 0.118 >= 0.115); merge them, or record a distinct_from boundary"
+    },
+    {
+      "rule": "D3",
+      "subject": "pair:markitdownagent|singlecellomicsagent",
+      "wp": "WP-09",
+      "note": "extension:singlecellomicsagent and extension:markitdownagent look alike (Jaccard 0.118 >= 0.115); merge them, or record a distinct_from boundary"
+    }
+  ],
+  "items": [
+    {
+      "id": "cdwagent",
+      "display_name": "CDWAgent",
+      "manifest_name": "cdwagent",
+      "repository": "BaranziniLab/CDWAgent",
+      "group": "ucsf",
+      "version": "0.5.1",
+      "status": "active",
+      "aliases": [],
+      "job": "clinical.ucsf-cdw-access",
+      "role": "tool",
+      "summary": "Multimodal access to the UCSF Clinical Data Warehouse through natural language. One-call cohort building across diagnoses, medications, procedures, labs, radiology/imaging, immunizations, allergies, and vitals; clinical-notes/NLP search; read-only queries, schema discovery, and structured results. Requires UCSF network credentials (CAMPUS\\username and password).",
+      "keywords": [
+        "UCSF",
+        "MCP",
+        "CDW",
+        "Clinical"
+      ],
+      "source": {
+        "origin": "in-house",
+        "upstreams": [],
+        "built_with": null
+      },
+      "third_party": [],
+      "licence": "Apache-2.0",
+      "release": {
+        "tag": "v0.5.1-brxt",
+        "asset": "cdwagent.brxt",
+        "sha256": null
+      },
+      "privacy": "private",
+      "affiliation": [
+        "ucsf"
+      ],
+      "bundled_skills": [],
+      "overlaps_builtin": [],
+      "distinct_from": [
+        {
+          "id": "ucsfomopagent",
+          "boundary": "CDWAgent queries UCSF's identified Clinical Data Warehouse, notes and imaging included; UCSFOMOPAgent queries the de-identified OMOP CDM copy"
+        }
+      ],
+      "history": [
+        {
+          "version": "0.5.1",
+          "date": null,
+          "note": "BAAM version before the November 2026 refresh"
+        }
+      ]
+    },
+    {
+      "id": "ucsfomopagent",
+      "display_name": "UCSFOMOPAgent",
+      "manifest_name": "ucsfomopagent",
+      "repository": "BaranziniLab/UCSFOMOPAgent",
+      "group": "ucsf",
+      "version": "0.2.0",
+      "status": "active",
+      "aliases": [],
+      "job": "clinical.ucsf-omop-access",
+      "role": "tool",
+      "summary": "Natural language SQL on the UCSF OMOP de-identified clinical database. Read-only access to standardized EHR data under the OMOP Common Data Model. v0.2.0 adds built-in OMOP/SQL-Server context plus concept-search, lab-finder, and live schema tools so the agent reaches the right data faster and more reliably. Requires UCSF credentials.",
+      "keywords": [
+        "UCSF",
+        "MCP",
+        "OMOP",
+        "EHR"
+      ],
+      "source": {
+        "origin": "in-house",
+        "upstreams": [],
+        "built_with": null
+      },
+      "third_party": [],
+      "licence": "Apache-2.0",
+      "release": {
+        "tag": "v0.2.0-brxt",
+        "asset": "ucsfomopagent.brxt",
+        "sha256": null
+      },
+      "privacy": "private",
+      "affiliation": [
+        "ucsf"
+      ],
+      "bundled_skills": [
+        {
+          "name": "omop-phenotype-query",
+          "job": "clinical.ucsf-omop-access.tool-usage",
+          "method_skill": null
+        }
+      ],
+      "overlaps_builtin": [],
+      "distinct_from": [],
+      "history": [
+        {
+          "version": "0.2.0",
+          "date": null,
+          "note": "BAAM version before the November 2026 refresh"
+        }
+      ]
+    },
+    {
+      "id": "playwrightagent",
+      "display_name": "Playwright Agent",
+      "manifest_name": "playwrightagent",
+      "repository": "BaranziniLab/PlaywrightAgent",
+      "group": "tools",
+      "version": "0.1.0",
+      "status": "active",
+      "aliases": [],
+      "job": "browser.web-automation",
+      "role": "tool",
+      "summary": "Browser automation via Microsoft's @playwright/mcp. Navigate websites, extract data, fill forms, and run web research workflows using structured accessibility snapshots. No vision model required. Requires Node.js on the host.",
+      "keywords": [
+        "MCP",
+        "Browser",
+        "Automation"
+      ],
+      "source": {
+        "origin": "in-house",
+        "upstreams": [],
+        "built_with": null
+      },
+      "third_party": [
+        {
+          "name": "@playwright/mcp",
+          "licence": "Apache-2.0"
+        }
+      ],
+      "licence": "Apache-2.0",
+      "release": {
+        "tag": "v0.1.0-brxt",
+        "asset": "playwrightagent.brxt",
+        "sha256": null
+      },
+      "privacy": "public",
+      "affiliation": null,
+      "bundled_skills": [],
+      "overlaps_builtin": [
+        {
+          "builtin": "computercontroller",
+          "boundary": "Biorouter Copilot drives native desktop apps; Playwright Agent drives a headless browser through accessibility snapshots"
+        }
+      ],
+      "distinct_from": [],
+      "history": [
+        {
+          "version": "0.1.0",
+          "date": null,
+          "note": "BAAM version before the November 2026 refresh"
+        }
+      ]
+    },
+    {
+      "id": "spokeagent",
+      "display_name": "SPOKEAgent",
+      "manifest_name": "spokeagent",
+      "repository": "BaranziniLab/SPOKEAgent",
+      "group": "tools",
+      "version": "0.4.1",
+      "status": "active",
+      "aliases": [],
+      "job": "knowledge-graph.spoke",
+      "role": "tool",
+      "summary": "Structure-aware access to the SPOKE biomedical knowledge graph (43M nodes): live schema introspection, entity/identifier resolution, node profiling, shortest-path finding, and guarded read-only Cypher across diseases, genes, proteins, drugs, and pathways. Includes a bundled spoke-knowledge-graph skill. Requires a SPOKEAGENT_PASSCODE (see credentials page).",
+      "keywords": [
+        "UCSF",
+        "MCP",
+        "Knowledge Graph"
+      ],
+      "source": {
+        "origin": "in-house",
+        "upstreams": [],
+        "built_with": null
+      },
+      "third_party": [],
+      "licence": "Apache-2.0",
+      "release": {
+        "tag": "v0.4.1",
+        "asset": "spokeagent-0.4.1.brxt",
+        "sha256": null
+      },
+      "privacy": "public",
+      "affiliation": null,
+      "bundled_skills": [
+        {
+          "name": "spoke-knowledge-graph",
+          "job": "knowledge-graph.spoke.tool-usage",
+          "method_skill": null
+        }
+      ],
+      "overlaps_builtin": [],
+      "distinct_from": [],
+      "history": [
+        {
+          "version": "0.4.1",
+          "date": null,
+          "note": "BAAM version before the November 2026 refresh"
+        }
+      ]
+    },
+    {
+      "id": "codegraphagent",
+      "display_name": "CodeGraph Agent",
+      "manifest_name": "codegraphagent",
+      "repository": "Broccolito/CodeGraphAgent",
+      "group": "tools",
+      "version": "0.1.0",
+      "status": "active",
+      "aliases": [],
+      "job": "code.knowledge-graph-index",
+      "role": "tool",
+      "summary": "Pre-indexed code knowledge graph. Ask \"who calls X?\", \"what does Y call?\", or \"what breaks if I change Z?\" across 23 languages including R, Julia, MATLAB, Perl. Vendored fork of CodeGraph on tree-sitter.",
+      "keywords": [
+        "MCP",
+        "Code Intelligence",
+        "R",
+        "Tree-sitter"
+      ],
+      "source": {
+        "origin": "in-house",
+        "upstreams": [],
+        "built_with": null
+      },
+      "third_party": [
+        {
+          "name": "codegraph",
+          "licence": "MIT"
+        }
+      ],
+      "licence": "Apache-2.0",
+      "release": {
+        "tag": "v0.1.0",
+        "asset": "codegraphagent.brxt",
+        "sha256": null
+      },
+      "privacy": "public",
+      "affiliation": null,
+      "bundled_skills": [],
+      "overlaps_builtin": [],
+      "distinct_from": [],
+      "history": [
+        {
+          "version": "0.1.0",
+          "date": null,
+          "note": "BAAM version before the November 2026 refresh"
+        }
+      ]
+    },
+    {
+      "id": "bioroffice",
+      "display_name": "BiorOffice",
+      "manifest_name": "bioroffice",
+      "repository": "BaranziniLab/BiorOffice",
+      "group": "tools",
+      "version": "1.0.0",
+      "status": "active",
+      "aliases": [],
+      "job": "office.cli-document-editing",
+      "role": "tool",
+      "summary": "Create, read, and edit Word (.docx), Excel (.xlsx), and PowerPoint (.pptx) files from chat. Handles headings, tables, charts, and 150+ Excel functions with live formula evaluation. Built on the open-source OfficeCLI engine, so no Microsoft Office install is needed. Ships four bundled skills for the office suite, Word, Excel, and PowerPoint.",
+      "keywords": [
+        "MCP",
+        "Office",
+        "Documents",
+        "Word",
+        "Excel",
+        "PowerPoint"
+      ],
+      "source": {
+        "origin": "in-house",
+        "upstreams": [],
+        "built_with": null
+      },
+      "third_party": [
+        {
+          "name": "OfficeCLI",
+          "licence": "Apache-2.0"
+        }
+      ],
+      "licence": "Apache-2.0",
+      "release": {
+        "tag": "v1.0.0",
+        "asset": "bioroffice.brxt",
+        "sha256": null
+      },
+      "privacy": "public",
+      "affiliation": null,
+      "bundled_skills": [
+        {
+          "name": "bioroffice-office-suite",
+          "job": "office.cli-document-editing.office-suite.tool-usage",
+          "method_skill": null
+        },
+        {
+          "name": "bioroffice-word",
+          "job": "office.cli-document-editing.word.tool-usage",
+          "method_skill": null
+        },
+        {
+          "name": "bioroffice-excel",
+          "job": "office.cli-document-editing.excel.tool-usage",
+          "method_skill": null
+        },
+        {
+          "name": "bioroffice-powerpoint",
+          "job": "office.cli-document-editing.powerpoint.tool-usage",
+          "method_skill": null
+        }
+      ],
+      "overlaps_builtin": [
+        {
+          "builtin": "office-word, office-excel, office-powerpoint, office-pdf",
+          "boundary": "the built-in office skills read and write documents with Web & Documents; BiorOffice edits them in place through OfficeCLI"
+        }
+      ],
+      "distinct_from": [],
+      "history": [
+        {
+          "version": "1.0.0",
+          "date": null,
+          "note": "BAAM version before the November 2026 refresh"
+        }
+      ]
+    },
+    {
+      "id": "benchlingagent",
+      "display_name": "BenchlingAgent",
+      "manifest_name": "benchlingagent",
+      "repository": "BaranziniLab/BenchlingAgent",
+      "group": "adapters",
+      "version": "0.1.0",
+      "status": "active",
+      "aliases": [],
+      "job": "lab.benchling-notebook",
+      "role": "data-access",
+      "summary": "Read-only and confirmation-gated MCP access to Benchling projects, registry records, notebook entries, and assay metadata for scientific workflow review.",
+      "keywords": [
+        "MCP",
+        "Benchling",
+        "ELN",
+        "Registry",
+        "Apache-2.0"
+      ],
+      "source": {
+        "origin": "in-house",
+        "upstreams": [],
+        "built_with": null
+      },
+      "third_party": [],
+      "licence": "Apache-2.0",
+      "release": {
+        "tag": "v0.1.0-brxt",
+        "asset": "benchlingagent.brxt",
+        "sha256": null
+      },
+      "privacy": "public",
+      "affiliation": null,
+      "bundled_skills": [
+        {
+          "name": "benchling-lab-notebook",
+          "job": "lab.benchling-notebook.tool-usage",
+          "method_skill": null
+        }
+      ],
+      "overlaps_builtin": [],
+      "distinct_from": [
+        {
+          "id": "labarchivesagent",
+          "boundary": "BenchlingAgent reads Benchling's notebook and registry; LabArchivesAgent reads a LabArchives notebook; different vendors and accounts"
+        }
+      ],
+      "history": [
+        {
+          "version": "0.1.0",
+          "date": null,
+          "note": "BAAM version before the November 2026 refresh"
+        }
+      ]
+    },
+    {
+      "id": "dnanexusagent",
+      "display_name": "DNAnexusAgent",
+      "manifest_name": "dnanexusagent",
+      "repository": "BaranziniLab/DNAnexusAgent",
+      "group": "adapters",
+      "version": "0.1.0",
+      "status": "active",
+      "aliases": [],
+      "job": "compute.dnanexus-platform",
+      "role": "data-access",
+      "summary": "MCP access to DNAnexus project, file, app, workflow, and job metadata with guarded API calls for cloud bioinformatics runs.",
+      "keywords": [
+        "MCP",
+        "DNAnexus",
+        "Cloud",
+        "Workflows",
+        "Apache-2.0"
+      ],
+      "source": {
+        "origin": "in-house",
+        "upstreams": [],
+        "built_with": null
+      },
+      "third_party": [],
+      "licence": "Apache-2.0",
+      "release": {
+        "tag": "v0.1.0-brxt",
+        "asset": "dnanexusagent.brxt",
+        "sha256": null
+      },
+      "privacy": "public",
+      "affiliation": null,
+      "bundled_skills": [
+        {
+          "name": "dnanexus-cloud-analysis",
+          "job": "compute.dnanexus-platform.tool-usage",
+          "method_skill": "workflow-management"
+        }
+      ],
+      "overlaps_builtin": [],
+      "distinct_from": [],
+      "history": [
+        {
+          "version": "0.1.0",
+          "date": null,
+          "note": "BAAM version before the November 2026 refresh"
+        }
+      ]
+    },
+    {
+      "id": "latchbioagent",
+      "display_name": "LatchBioAgent",
+      "manifest_name": "latchbioagent",
+      "repository": "BaranziniLab/LatchBioAgent",
+      "group": "adapters",
+      "version": "0.1.0",
+      "status": "active",
+      "aliases": [],
+      "job": "compute.latch-platform",
+      "role": "data-access",
+      "summary": "MCP access to LatchBio workspace, workflow, file, and execution metadata with guarded API request helpers for reproducible computational biology workflows.",
+      "keywords": [
+        "MCP",
+        "LatchBio",
+        "Workflow",
+        "Compute",
+        "Apache-2.0"
+      ],
+      "source": {
+        "origin": "in-house",
+        "upstreams": [],
+        "built_with": null
+      },
+      "third_party": [],
+      "licence": "Apache-2.0",
+      "release": {
+        "tag": "v0.1.0-brxt",
+        "asset": "latchbioagent.brxt",
+        "sha256": null
+      },
+      "privacy": "public",
+      "affiliation": null,
+      "bundled_skills": [
+        {
+          "name": "latchbio-workflows",
+          "job": "compute.latch-platform.tool-usage",
+          "method_skill": "workflow-management"
+        }
+      ],
+      "overlaps_builtin": [],
+      "distinct_from": [],
+      "history": [
+        {
+          "version": "0.1.0",
+          "date": null,
+          "note": "BAAM version before the November 2026 refresh"
+        }
+      ]
+    },
+    {
+      "id": "labarchivesagent",
+      "display_name": "LabArchivesAgent",
+      "manifest_name": "labarchivesagent",
+      "repository": "BaranziniLab/LabArchivesAgent",
+      "group": "adapters",
+      "version": "0.1.0",
+      "status": "active",
+      "aliases": [],
+      "job": "lab.labarchives-notebook",
+      "role": "data-access",
+      "summary": "MCP access to LabArchives electronic lab notebook metadata and entries, with read-first notebook inspection and confirmation-gated API requests.",
+      "keywords": [
+        "MCP",
+        "LabArchives",
+        "ELN",
+        "Notebook",
+        "Apache-2.0"
+      ],
+      "source": {
+        "origin": "in-house",
+        "upstreams": [],
+        "built_with": null
+      },
+      "third_party": [],
+      "licence": "Apache-2.0",
+      "release": {
+        "tag": "v0.1.0-brxt",
+        "asset": "labarchivesagent.brxt",
+        "sha256": null
+      },
+      "privacy": "public",
+      "affiliation": null,
+      "bundled_skills": [
+        {
+          "name": "labarchives-eln",
+          "job": "lab.labarchives-notebook.tool-usage",
+          "method_skill": null
+        }
+      ],
+      "overlaps_builtin": [],
+      "distinct_from": [],
+      "history": [
+        {
+          "version": "0.1.0",
+          "date": null,
+          "note": "BAAM version before the November 2026 refresh"
+        }
+      ]
+    },
+    {
+      "id": "omeroagent",
+      "display_name": "OMEROAgent",
+      "manifest_name": "omeroagent",
+      "repository": "BaranziniLab/OMEROAgent",
+      "group": "adapters",
+      "version": "0.1.0",
+      "status": "active",
+      "aliases": [],
+      "job": "imaging.omero-server",
+      "role": "data-access",
+      "summary": "MCP access pattern for OMERO image repositories, project/dataset/image metadata, and web/API endpoint inspection for microscopy data review.",
+      "keywords": [
+        "MCP",
+        "OMERO",
+        "Imaging",
+        "Microscopy",
+        "Apache-2.0"
+      ],
+      "source": {
+        "origin": "in-house",
+        "upstreams": [],
+        "built_with": null
+      },
+      "third_party": [],
+      "licence": "Apache-2.0",
+      "release": {
+        "tag": "v0.1.0-brxt",
+        "asset": "omeroagent.brxt",
+        "sha256": null
+      },
+      "privacy": "public",
+      "affiliation": null,
+      "bundled_skills": [
+        {
+          "name": "omero-imaging-data",
+          "job": "imaging.omero-server.tool-usage",
+          "method_skill": "biomedical-imaging-pathology"
+        }
+      ],
+      "overlaps_builtin": [],
+      "distinct_from": [
+        {
+          "id": "idcagent",
+          "boundary": "OMEROAgent reads a lab's own OMERO image server; IDCAgent searches the NCI Imaging Data Commons public collections"
+        }
+      ],
+      "history": [
+        {
+          "version": "0.1.0",
+          "date": null,
+          "note": "BAAM version before the November 2026 refresh"
+        }
+      ]
+    },
+    {
+      "id": "protocolsioagent",
+      "display_name": "ProtocolsIOAgent",
+      "manifest_name": "protocolsioagent",
+      "repository": "BaranziniLab/ProtocolsIOAgent",
+      "group": "adapters",
+      "version": "0.1.0",
+      "status": "active",
+      "aliases": [],
+      "job": "lab.protocols-io",
+      "role": "data-access",
+      "summary": "MCP access to Protocols.io public and authenticated protocol metadata for method discovery, citation, and reproducible protocol review.",
+      "keywords": [
+        "MCP",
+        "Protocols.io",
+        "Methods",
+        "Protocols",
+        "Apache-2.0"
+      ],
+      "source": {
+        "origin": "in-house",
+        "upstreams": [],
+        "built_with": null
+      },
+      "third_party": [],
+      "licence": "Apache-2.0",
+      "release": {
+        "tag": "v0.1.0-brxt",
+        "asset": "protocolsioagent.brxt",
+        "sha256": null
+      },
+      "privacy": "public",
+      "affiliation": null,
+      "bundled_skills": [
+        {
+          "name": "protocols-io-methods",
+          "job": "lab.protocols-io.tool-usage",
+          "method_skill": null
+        }
+      ],
+      "overlaps_builtin": [],
+      "distinct_from": [],
+      "history": [
+        {
+          "version": "0.1.0",
+          "date": null,
+          "note": "BAAM version before the November 2026 refresh"
+        }
+      ]
+    },
+    {
+      "id": "opennotebookagent",
+      "display_name": "OpenNotebookAgent",
+      "manifest_name": "opennotebookagent",
+      "repository": "BaranziniLab/OpenNotebookAgent",
+      "group": "adapters",
+      "version": "0.1.0",
+      "status": "active",
+      "aliases": [],
+      "job": "knowledge.open-notebook",
+      "role": "data-access",
+      "summary": "MCP adapter for self-hosted or lab-hosted open-notebook systems, exposing guarded notebook entry search, retrieval, and provenance checks.",
+      "keywords": [
+        "MCP",
+        "Open Notebook",
+        "Provenance",
+        "Notebook",
+        "Apache-2.0"
+      ],
+      "source": {
+        "origin": "in-house",
+        "upstreams": [],
+        "built_with": null
+      },
+      "third_party": [],
+      "licence": "Apache-2.0",
+      "release": {
+        "tag": "v0.1.0-brxt",
+        "asset": "opennotebookagent.brxt",
+        "sha256": null
+      },
+      "privacy": "public",
+      "affiliation": null,
+      "bundled_skills": [
+        {
+          "name": "open-notebook-research",
+          "job": "knowledge.open-notebook.tool-usage",
+          "method_skill": null
+        }
+      ],
+      "overlaps_builtin": [
+        {
+          "builtin": "knowledge",
+          "boundary": "retired in favour of the built-in Knowledge extension"
+        }
+      ],
+      "distinct_from": [],
+      "history": [
+        {
+          "version": "0.1.0",
+          "date": null,
+          "note": "BAAM version before the November 2026 refresh"
+        }
+      ]
+    },
+    {
+      "id": "modalagent",
+      "display_name": "ModalAgent",
+      "manifest_name": "modalagent",
+      "repository": "BaranziniLab/ModalAgent",
+      "group": "adapters",
+      "version": "0.1.0",
+      "status": "active",
+      "aliases": [],
+      "job": "compute.modal-cloud",
+      "role": "data-access",
+      "summary": "MCP helper for Modal compute projects, deployment planning, environment validation, and guarded command/API invocation for cloud scientific jobs.",
+      "keywords": [
+        "MCP",
+        "Modal",
+        "Compute",
+        "Jobs",
+        "Apache-2.0"
+      ],
+      "source": {
+        "origin": "in-house",
+        "upstreams": [],
+        "built_with": null
+      },
+      "third_party": [],
+      "licence": "Apache-2.0",
+      "release": {
+        "tag": "v0.1.0-brxt",
+        "asset": "modalagent.brxt",
+        "sha256": null
+      },
+      "privacy": "public",
+      "affiliation": null,
+      "bundled_skills": [
+        {
+          "name": "modal-compute",
+          "job": "compute.modal-cloud.tool-usage",
+          "method_skill": "gpu-compute-optimization"
+        }
+      ],
+      "overlaps_builtin": [],
+      "distinct_from": [],
+      "history": [
+        {
+          "version": "0.1.0",
+          "date": null,
+          "note": "BAAM version before the November 2026 refresh"
+        }
+      ]
+    },
+    {
+      "id": "idcagent",
+      "display_name": "IDCAgent",
+      "manifest_name": "idcagent",
+      "repository": "BaranziniLab/IDCAgent",
+      "group": "adapters",
+      "version": "0.1.0",
+      "status": "active",
+      "aliases": [],
+      "job": "imaging.idc-collections",
+      "role": "data-access",
+      "summary": "MCP access to NCI Imaging Data Commons metadata endpoints for cancer imaging cohort discovery, DICOM collection review, and reproducible image-data queries.",
+      "keywords": [
+        "MCP",
+        "IDC",
+        "Cancer Imaging",
+        "DICOM",
+        "Apache-2.0"
+      ],
+      "source": {
+        "origin": "in-house",
+        "upstreams": [],
+        "built_with": null
+      },
+      "third_party": [],
+      "licence": "Apache-2.0",
+      "release": {
+        "tag": "v0.1.0-brxt",
+        "asset": "idcagent.brxt",
+        "sha256": null
+      },
+      "privacy": "public",
+      "affiliation": null,
+      "bundled_skills": [
+        {
+          "name": "imaging-data-commons",
+          "job": "imaging.idc-collections.tool-usage",
+          "method_skill": "biomedical-imaging-pathology"
+        }
+      ],
+      "overlaps_builtin": [],
+      "distinct_from": [],
+      "history": [
+        {
+          "version": "0.1.0",
+          "date": null,
+          "note": "BAAM version before the November 2026 refresh"
+        }
+      ]
+    },
+    {
+      "id": "literatureagent",
+      "display_name": "LiteratureAgent",
+      "manifest_name": "literatureagent",
+      "repository": "BaranziniLab/LiteratureAgent",
+      "group": "adapters",
+      "version": "0.1.0",
+      "status": "active",
+      "aliases": [],
+      "job": "literature.scholarly-api",
+      "role": "data-access",
+      "summary": "MCP access pattern for PubMed, OpenAlex, Crossref, Semantic Scholar, and literature evidence workflows, with provenance-first search and guarded API calls.",
+      "keywords": [
+        "MCP",
+        "Literature",
+        "PubMed",
+        "Evidence",
+        "Apache-2.0"
+      ],
+      "source": {
+        "origin": "in-house",
+        "upstreams": [],
+        "built_with": null
+      },
+      "third_party": [],
+      "licence": "Apache-2.0",
+      "release": {
+        "tag": "v0.1.0-brxt",
+        "asset": "literatureagent.brxt",
+        "sha256": null
+      },
+      "privacy": "public",
+      "affiliation": null,
+      "bundled_skills": [
+        {
+          "name": "literature-evidence",
+          "job": "literature.scholarly-api.tool-usage",
+          "method_skill": "systematic-review-prisma"
+        }
+      ],
+      "overlaps_builtin": [],
+      "distinct_from": [],
+      "history": [
+        {
+          "version": "0.1.0",
+          "date": null,
+          "note": "BAAM version before the November 2026 refresh"
+        }
+      ]
+    },
+    {
+      "id": "ncbiagent",
+      "display_name": "NCBIAgent",
+      "manifest_name": "ncbiagent",
+      "repository": "BaranziniLab/NCBIAgent",
+      "group": "adapters",
+      "version": "0.1.0",
+      "status": "active",
+      "aliases": [],
+      "job": "bio.public-database-lookup",
+      "role": "data-access",
+      "summary": "MCP access to NCBI database discovery and Entrez-style workflows for PubMed, Gene, SRA, GEO, ClinVar, dbSNP, and sequence metadata review.",
+      "keywords": [
+        "MCP",
+        "NCBI",
+        "Entrez",
+        "Genomics",
+        "Apache-2.0"
+      ],
+      "source": {
+        "origin": "in-house",
+        "upstreams": [],
+        "built_with": null
+      },
+      "third_party": [],
+      "licence": "Apache-2.0",
+      "release": {
+        "tag": "v0.1.0-brxt",
+        "asset": "ncbiagent.brxt",
+        "sha256": null
+      },
+      "privacy": "public",
+      "affiliation": null,
+      "bundled_skills": [
+        {
+          "name": "ncbi-database-access",
+          "job": "bio.public-database-lookup.tool-usage",
+          "method_skill": "database-access"
+        }
+      ],
+      "overlaps_builtin": [],
+      "distinct_from": [],
+      "history": [
+        {
+          "version": "0.1.0",
+          "date": null,
+          "note": "BAAM version before the November 2026 refresh"
+        }
+      ]
+    },
+    {
+      "id": "folklore-clinical-variant-interpretation-mcp",
+      "display_name": "Folklore Clinical Variant Interpretation MCP",
+      "manifest_name": "folklore-clinical-variant-interpretation-mcp",
+      "repository": "Broccolito/folklore-mcp",
+      "group": "tools",
+      "version": "2.0.0+biorouter.1",
+      "status": "active",
+      "aliases": [],
+      "job": "clinical.variant-interpretation",
+      "role": "tool",
+      "summary": "Biorouter rebuild of Folklore MCP 2.0.0: eleven public tools for GRCh38 germline variant classification under ACMG/AMP, gene profiles, ClinGen associations and scientific literature. Use public inputs only; do not send patient or private case data. Results require qualified professional review and are not a diagnosis or treatment recommendation.",
+      "keywords": [
+        "MCP",
+        "Variants",
+        "Literature",
+        "ACMG/AMP",
+        "Apache-2.0"
+      ],
+      "source": {
+        "origin": "adapted",
+        "upstreams": [],
+        "built_with": null
+      },
+      "third_party": [],
+      "licence": "Apache-2.0",
+      "release": {
+        "tag": "folklore-biorouter-v2.0.0+biorouter.1",
+        "asset": "folklore-clinical-variant-interpretation-mcp.brxt",
+        "sha256": null
+      },
+      "privacy": "public",
+      "affiliation": null,
+      "bundled_skills": [
+        {
+          "name": "folklore-clinical-variant-interpretation-mcp",
+          "job": "clinical.variant-interpretation.tool-usage",
+          "method_skill": "clinical-databases"
+        }
+      ],
+      "overlaps_builtin": [],
+      "distinct_from": [],
+      "history": [
+        {
+          "version": "2.0.0+biorouter.1",
+          "date": null,
+          "note": "BAAM version before the November 2026 refresh"
+        }
+      ]
+    },
+    {
+      "id": "clinicalvariantagent",
+      "display_name": "ClinicalVariantAgent",
+      "manifest_name": "clinicalvariantagent",
+      "repository": "BaranziniLab/ClinicalVariantAgent",
+      "group": "adapters",
+      "version": "0.1.0",
+      "status": "active",
+      "aliases": [],
+      "job": "clinical.variant-database-lookup",
+      "role": "data-access",
+      "summary": "MCP access pattern for variant annotation resources such as ClinVar, VEP, MyVariant, and gnomAD, with normalization and clinical-evidence review safeguards.",
+      "keywords": [
+        "MCP",
+        "ClinVar",
+        "Variants",
+        "Annotation",
+        "Apache-2.0"
+      ],
+      "source": {
+        "origin": "in-house",
+        "upstreams": [],
+        "built_with": null
+      },
+      "third_party": [],
+      "licence": "Apache-2.0",
+      "release": {
+        "tag": "v0.1.0-brxt",
+        "asset": "clinicalvariantagent.brxt",
+        "sha256": null
+      },
+      "privacy": "public",
+      "affiliation": null,
+      "bundled_skills": [
+        {
+          "name": "clinical-variant-interpretation",
+          "job": "clinical.variant-database-lookup.tool-usage",
+          "method_skill": "clinical-databases"
+        }
+      ],
+      "overlaps_builtin": [],
+      "distinct_from": [],
+      "history": [
+        {
+          "version": "0.1.0",
+          "date": null,
+          "note": "BAAM version before the November 2026 refresh"
+        }
+      ]
+    },
+    {
+      "id": "workflowrunneragent",
+      "display_name": "WorkflowRunnerAgent",
+      "manifest_name": "workflowrunneragent",
+      "repository": "BaranziniLab/WorkflowRunnerAgent",
+      "group": "adapters",
+      "version": "0.1.0",
+      "status": "active",
+      "aliases": [],
+      "job": "compute.workflow-runner",
+      "role": "data-access",
+      "summary": "Guarded MCP workflow runner for Nextflow, Snakemake, Cromwell/WDL, and CWL planning, validation, dry-run review, and confirmation-gated execution.",
+      "keywords": [
+        "MCP",
+        "Nextflow",
+        "Snakemake",
+        "Workflow",
+        "Apache-2.0"
+      ],
+      "source": {
+        "origin": "in-house",
+        "upstreams": [],
+        "built_with": null
+      },
+      "third_party": [],
+      "licence": "Apache-2.0",
+      "release": {
+        "tag": "v0.1.0-brxt",
+        "asset": "workflowrunneragent.brxt",
+        "sha256": null
+      },
+      "privacy": "public",
+      "affiliation": null,
+      "bundled_skills": [
+        {
+          "name": "workflow-runner",
+          "job": "compute.workflow-runner.tool-usage",
+          "method_skill": "workflow-management"
+        }
+      ],
+      "overlaps_builtin": [],
+      "distinct_from": [],
+      "history": [
+        {
+          "version": "0.1.0",
+          "date": null,
+          "note": "BAAM version before the November 2026 refresh"
+        }
+      ]
+    },
+    {
+      "id": "ucsfhpcagent",
+      "display_name": "UCSFHPCAgent",
+      "manifest_name": "ucsfhpcagent",
+      "repository": "BaranziniLab/UCSFHPCAgent",
+      "group": "adapters",
+      "version": "0.1.0",
+      "status": "active",
+      "aliases": [],
+      "job": "compute.ucsf-hpc-cluster",
+      "role": "data-access",
+      "summary": "MCP helper for UCSF CHPC/SLURM job planning, account inspection, file transfer checks, and confirmation-gated HPC command execution.",
+      "keywords": [
+        "UCSF",
+        "MCP",
+        "HPC",
+        "SLURM",
+        "Apache-2.0"
+      ],
+      "source": {
+        "origin": "in-house",
+        "upstreams": [],
+        "built_with": null
+      },
+      "third_party": [],
+      "licence": "Apache-2.0",
+      "release": {
+        "tag": "v0.1.0-brxt",
+        "asset": "ucsfhpcagent.brxt",
+        "sha256": null
+      },
+      "privacy": "public",
+      "affiliation": null,
+      "bundled_skills": [
+        {
+          "name": "ucsf-hpc-compute",
+          "job": "compute.ucsf-hpc-cluster.tool-usage",
+          "method_skill": "ucsf-hpc"
+        }
+      ],
+      "overlaps_builtin": [],
+      "distinct_from": [],
+      "history": [
+        {
+          "version": "0.1.0",
+          "date": null,
+          "note": "BAAM version before the November 2026 refresh"
+        }
+      ]
+    },
+    {
+      "id": "chemoinformaticsagent",
+      "display_name": "ChemoinformaticsAgent",
+      "manifest_name": "chemoinformaticsagent",
+      "repository": "BaranziniLab/ChemoinformaticsAgent",
+      "group": "adapters",
+      "version": "0.1.0",
+      "status": "active",
+      "aliases": [],
+      "job": "chemistry.cheminformatics-toolkit",
+      "role": "data-access",
+      "summary": "MCP helper for RDKit, PubChem, ChEMBL, SMILES/InChI normalization, molecular descriptors, and guarded local cheminformatics command planning.",
+      "keywords": [
+        "MCP",
+        "RDKit",
+        "ChEMBL",
+        "Molecules",
+        "Apache-2.0"
+      ],
+      "source": {
+        "origin": "in-house",
+        "upstreams": [],
+        "built_with": null
+      },
+      "third_party": [
+        {
+          "name": "RDKit",
+          "licence": "BSD-3-Clause"
+        }
+      ],
+      "licence": "Apache-2.0",
+      "release": {
+        "tag": "v0.1.0-brxt",
+        "asset": "chemoinformaticsagent.brxt",
+        "sha256": null
+      },
+      "privacy": "public",
+      "affiliation": null,
+      "bundled_skills": [
+        {
+          "name": "chemoinformatics-toolkit",
+          "job": "chemistry.cheminformatics-toolkit.tool-usage",
+          "method_skill": "chemoinformatics"
+        }
+      ],
+      "overlaps_builtin": [],
+      "distinct_from": [
+        {
+          "id": "chemoinformatics",
+          "boundary": "the chemoinformatics skill bundle holds the methods; ChemoinformaticsAgent runs RDKit and ChEMBL tools for them"
+        }
+      ],
+      "history": [
+        {
+          "version": "0.1.0",
+          "date": null,
+          "note": "BAAM version before the November 2026 refresh"
+        }
+      ]
+    },
+    {
+      "id": "proteinstructureagent",
+      "display_name": "ProteinStructureAgent",
+      "manifest_name": "proteinstructureagent",
+      "repository": "BaranziniLab/ProteinStructureAgent",
+      "group": "adapters",
+      "version": "0.1.0",
+      "status": "active",
+      "aliases": [],
+      "job": "bio.protein-structure-databases",
+      "role": "data-access",
+      "summary": "MCP access pattern for PDB, AlphaFold, UniProt, sequence-to-structure lookup, structure metadata review, and guarded local structure-tool planning.",
+      "keywords": [
+        "MCP",
+        "PDB",
+        "AlphaFold",
+        "Proteins",
+        "Apache-2.0"
+      ],
+      "source": {
+        "origin": "in-house",
+        "upstreams": [],
+        "built_with": null
+      },
+      "third_party": [],
+      "licence": "Apache-2.0",
+      "release": {
+        "tag": "v0.1.0-brxt",
+        "asset": "proteinstructureagent.brxt",
+        "sha256": null
+      },
+      "privacy": "public",
+      "affiliation": null,
+      "bundled_skills": [
+        {
+          "name": "protein-structure-databases",
+          "job": "bio.protein-structure-databases.tool-usage",
+          "method_skill": "structural-biology"
+        }
+      ],
+      "overlaps_builtin": [],
+      "distinct_from": [
+        {
+          "id": "adaptyvbiofoundryagent",
+          "boundary": "ProteinStructureAgent looks structures up in PDB and AlphaFold DB; AdaptyvBioFoundryAgent submits protein designs for wet-lab testing"
+        }
+      ],
+      "history": [
+        {
+          "version": "0.1.0",
+          "date": null,
+          "note": "BAAM version before the November 2026 refresh"
+        }
+      ]
+    },
+    {
+      "id": "singlecellomicsagent",
+      "display_name": "SingleCellOmicsAgent",
+      "manifest_name": "singlecellomicsagent",
+      "repository": "BaranziniLab/SingleCellOmicsAgent",
+      "group": "adapters",
+      "version": "0.1.0",
+      "status": "active",
+      "aliases": [],
+      "job": "bio.single-cell-census-access",
+      "role": "data-access",
+      "summary": "MCP helper for scanpy/anndata-style single-cell workflows, h5ad metadata inspection, QC planning, clustering review, and guarded local command execution.",
+      "keywords": [
+        "MCP",
+        "Single-cell",
+        "Scanpy",
+        "Omics",
+        "Apache-2.0"
+      ],
+      "source": {
+        "origin": "in-house",
+        "upstreams": [],
+        "built_with": null
+      },
+      "third_party": [],
+      "licence": "Apache-2.0",
+      "release": {
+        "tag": "v0.1.0-brxt",
+        "asset": "singlecellomicsagent.brxt",
+        "sha256": null
+      },
+      "privacy": "public",
+      "affiliation": null,
+      "bundled_skills": [
+        {
+          "name": "single-cell-omics",
+          "job": "bio.single-cell-census-access.tool-usage",
+          "method_skill": "single-cell"
+        }
+      ],
+      "overlaps_builtin": [],
+      "distinct_from": [],
+      "history": [
+        {
+          "version": "0.1.0",
+          "date": null,
+          "note": "BAAM version before the November 2026 refresh"
+        }
+      ]
+    },
+    {
+      "id": "opentronsagent",
+      "display_name": "OpentronsAgent",
+      "manifest_name": "opentronsagent",
+      "repository": "BaranziniLab/OpentronsAgent",
+      "group": "adapters",
+      "version": "0.1.0",
+      "status": "active",
+      "aliases": [],
+      "job": "lab.opentrons-robots",
+      "role": "data-access",
+      "summary": "MCP adapter for Opentrons robot/run APIs, protocol metadata review, simulation planning, and guarded local Opentrons command execution.",
+      "keywords": [
+        "MCP",
+        "Opentrons",
+        "Robotics",
+        "Protocols",
+        "Apache-2.0"
+      ],
+      "source": {
+        "origin": "in-house",
+        "upstreams": [],
+        "built_with": null
+      },
+      "third_party": [],
+      "licence": "Apache-2.0",
+      "release": {
+        "tag": "v0.1.0-brxt",
+        "asset": "opentronsagent.brxt",
+        "sha256": null
+      },
+      "privacy": "public",
+      "affiliation": null,
+      "bundled_skills": [
+        {
+          "name": "opentrons-lab-automation",
+          "job": "lab.opentrons-robots.tool-usage",
+          "method_skill": "laboratory-automation-planning"
+        }
+      ],
+      "overlaps_builtin": [],
+      "distinct_from": [],
+      "history": [
+        {
+          "version": "0.1.0",
+          "date": null,
+          "note": "BAAM version before the November 2026 refresh"
+        }
+      ]
+    },
+    {
+      "id": "ginkgocloudlabagent",
+      "display_name": "GinkgoCloudLabAgent",
+      "manifest_name": "ginkgocloudlabagent",
+      "repository": "BaranziniLab/GinkgoCloudLabAgent",
+      "group": "adapters",
+      "version": "0.1.0",
+      "status": "active",
+      "aliases": [],
+      "job": "lab.ginkgo-cloud-lab",
+      "role": "data-access",
+      "summary": "MCP adapter for Ginkgo-style cloud lab project, run, sample, and protocol metadata with guarded authenticated API calls.",
+      "keywords": [
+        "MCP",
+        "Ginkgo",
+        "Cloud Lab",
+        "Automation",
+        "Apache-2.0"
+      ],
+      "source": {
+        "origin": "in-house",
+        "upstreams": [],
+        "built_with": null
+      },
+      "third_party": [],
+      "licence": "Apache-2.0",
+      "release": {
+        "tag": "v0.1.0-brxt",
+        "asset": "ginkgocloudlabagent.brxt",
+        "sha256": null
+      },
+      "privacy": "public",
+      "affiliation": null,
+      "bundled_skills": [
+        {
+          "name": "ginkgo-cloud-lab",
+          "job": "lab.ginkgo-cloud-lab.tool-usage",
+          "method_skill": "laboratory-automation-planning"
+        }
+      ],
+      "overlaps_builtin": [],
+      "distinct_from": [],
+      "history": [
+        {
+          "version": "0.1.0",
+          "date": null,
+          "note": "BAAM version before the November 2026 refresh"
+        }
+      ]
+    },
+    {
+      "id": "lamindbagent",
+      "display_name": "LaminDBAgent",
+      "manifest_name": "lamindbagent",
+      "repository": "BaranziniLab/LaminDBAgent",
+      "group": "adapters",
+      "version": "0.1.0",
+      "status": "active",
+      "aliases": [],
+      "job": "data.lamindb-registry",
+      "role": "data-access",
+      "summary": "MCP adapter for LaminDB instance metadata, datasets, artifacts, collections, and guarded API/CLI planning for scientific data registries.",
+      "keywords": [
+        "MCP",
+        "LaminDB",
+        "Data Registry",
+        "Lineage",
+        "Apache-2.0"
+      ],
+      "source": {
+        "origin": "in-house",
+        "upstreams": [],
+        "built_with": null
+      },
+      "third_party": [],
+      "licence": "Apache-2.0",
+      "release": {
+        "tag": "v0.1.0-brxt",
+        "asset": "lamindbagent.brxt",
+        "sha256": null
+      },
+      "privacy": "public",
+      "affiliation": null,
+      "bundled_skills": [
+        {
+          "name": "lamindb-data-registry",
+          "job": "data.lamindb-registry.tool-usage",
+          "method_skill": "scientific-data-engineering"
+        }
+      ],
+      "overlaps_builtin": [],
+      "distinct_from": [],
+      "history": [
+        {
+          "version": "0.1.0",
+          "date": null,
+          "note": "BAAM version before the November 2026 refresh"
+        }
+      ]
+    },
+    {
+      "id": "cellxgenecensusagent",
+      "display_name": "CellxGeneCensusAgent",
+      "manifest_name": "cellxgenecensusagent",
+      "repository": "BaranziniLab/CellxGeneCensusAgent",
+      "group": "adapters",
+      "version": "0.1.0",
+      "status": "active",
+      "aliases": [],
+      "job": "bio.single-cell-census-access",
+      "role": "data-access",
+      "summary": "MCP adapter for CELLxGENE Census dataset and cell metadata discovery, with guarded API calls for single-cell atlas review.",
+      "keywords": [
+        "MCP",
+        "CELLxGENE",
+        "Single-cell",
+        "Atlas",
+        "Apache-2.0"
+      ],
+      "source": {
+        "origin": "in-house",
+        "upstreams": [],
+        "built_with": null
+      },
+      "third_party": [],
+      "licence": "Apache-2.0",
+      "release": {
+        "tag": "v0.1.0-brxt",
+        "asset": "cellxgenecensusagent.brxt",
+        "sha256": null
+      },
+      "privacy": "public",
+      "affiliation": null,
+      "bundled_skills": [
+        {
+          "name": "cellxgene-census-access",
+          "job": "bio.single-cell-census-access.tool-usage",
+          "method_skill": "single-cell"
+        }
+      ],
+      "overlaps_builtin": [],
+      "distinct_from": [
+        {
+          "id": "depmapagent",
+          "boundary": "CellxGeneCensusAgent serves single-cell expression from the Census; DepMapAgent serves cancer cell line dependency screens"
+        }
+      ],
+      "history": [
+        {
+          "version": "0.1.0",
+          "date": null,
+          "note": "BAAM version before the November 2026 refresh"
+        }
+      ]
+    },
+    {
+      "id": "depmapagent",
+      "display_name": "DepMapAgent",
+      "manifest_name": "depmapagent",
+      "repository": "BaranziniLab/DepMapAgent",
+      "group": "adapters",
+      "version": "0.1.0",
+      "status": "active",
+      "aliases": [],
+      "job": "bio.depmap-portal",
+      "role": "data-access",
+      "summary": "MCP adapter for DepMap portal/API metadata, datasets, cell lines, genes, compounds, and cancer dependency evidence review.",
+      "keywords": [
+        "MCP",
+        "DepMap",
+        "Cancer",
+        "Dependencies",
+        "Apache-2.0"
+      ],
+      "source": {
+        "origin": "in-house",
+        "upstreams": [],
+        "built_with": null
+      },
+      "third_party": [],
+      "licence": "Apache-2.0",
+      "release": {
+        "tag": "v0.1.0-brxt",
+        "asset": "depmapagent.brxt",
+        "sha256": null
+      },
+      "privacy": "public",
+      "affiliation": null,
+      "bundled_skills": [
+        {
+          "name": "depmap-cancer-dependency",
+          "job": "bio.depmap-portal.tool-usage",
+          "method_skill": null
+        }
+      ],
+      "overlaps_builtin": [],
+      "distinct_from": [],
+      "history": [
+        {
+          "version": "0.1.0",
+          "date": null,
+          "note": "BAAM version before the November 2026 refresh"
+        }
+      ]
+    },
+    {
+      "id": "primekgagent",
+      "display_name": "PrimeKGAgent",
+      "manifest_name": "primekgagent",
+      "repository": "BaranziniLab/PrimeKGAgent",
+      "group": "adapters",
+      "version": "0.1.0",
+      "status": "active",
+      "aliases": [],
+      "job": "knowledge-graph.primekg",
+      "role": "data-access",
+      "summary": "MCP adapter for PrimeKG-style biomedical knowledge graph files and APIs, with guarded metadata lookup and graph-resource summaries.",
+      "keywords": [
+        "MCP",
+        "PrimeKG",
+        "Knowledge Graph",
+        "Biomedical",
+        "Apache-2.0"
+      ],
+      "source": {
+        "origin": "in-house",
+        "upstreams": [],
+        "built_with": null
+      },
+      "third_party": [],
+      "licence": "Apache-2.0",
+      "release": {
+        "tag": "v0.1.0-brxt",
+        "asset": "primekgagent.brxt",
+        "sha256": null
+      },
+      "privacy": "public",
+      "affiliation": null,
+      "bundled_skills": [
+        {
+          "name": "primekg-knowledge-graph",
+          "job": "knowledge-graph.primekg.tool-usage",
+          "method_skill": null
+        }
+      ],
+      "overlaps_builtin": [],
+      "distinct_from": [
+        {
+          "id": "unifiedpublicdatabaselookupagent",
+          "boundary": "PrimeKGAgent walks the PrimeKG precision-medicine graph; Public Bio Databases looks identifiers up in UniProt, Ensembl, NCBI and similar services"
+        }
+      ],
+      "history": [
+        {
+          "version": "0.1.0",
+          "date": null,
+          "note": "BAAM version before the November 2026 refresh"
+        }
+      ]
+    },
+    {
+      "id": "zoteroagent",
+      "display_name": "ZoteroAgent",
+      "manifest_name": "zoteroagent",
+      "repository": "BaranziniLab/ZoteroAgent",
+      "group": "adapters",
+      "version": "0.1.0",
+      "status": "active",
+      "aliases": [],
+      "job": "references.zotero-library",
+      "role": "data-access",
+      "summary": "MCP adapter for Zotero libraries, collections, items, tags, and citation metadata with read-first and mutation-gated API access.",
+      "keywords": [
+        "MCP",
+        "Zotero",
+        "Citations",
+        "Library",
+        "Apache-2.0"
+      ],
+      "source": {
+        "origin": "in-house",
+        "upstreams": [],
+        "built_with": null
+      },
+      "third_party": [
+        {
+          "name": "zotero-mcp core",
+          "licence": "MIT"
+        }
+      ],
+      "licence": "Apache-2.0",
+      "release": {
+        "tag": "v0.1.0-brxt",
+        "asset": "zoteroagent.brxt",
+        "sha256": null
+      },
+      "privacy": "public",
+      "affiliation": null,
+      "bundled_skills": [
+        {
+          "name": "zotero-citation-library",
+          "job": "references.zotero-library.tool-usage",
+          "method_skill": "citation-library-management"
+        }
+      ],
+      "overlaps_builtin": [],
+      "distinct_from": [],
+      "history": [
+        {
+          "version": "0.1.0",
+          "date": null,
+          "note": "BAAM version before the November 2026 refresh"
+        }
+      ]
+    },
+    {
+      "id": "markitdownagent",
+      "display_name": "MarkItDownAgent",
+      "manifest_name": "markitdownagent",
+      "repository": "BaranziniLab/MarkItDownAgent",
+      "group": "adapters",
+      "version": "0.1.0",
+      "status": "active",
+      "aliases": [],
+      "job": "documents.markitdown-conversion",
+      "role": "data-access",
+      "summary": "MCP helper for MarkItDown-style document-to-Markdown conversion planning, status checks, and guarded local conversion commands.",
+      "keywords": [
+        "MCP",
+        "MarkItDown",
+        "Documents",
+        "Markdown",
+        "Apache-2.0"
+      ],
+      "source": {
+        "origin": "in-house",
+        "upstreams": [],
+        "built_with": null
+      },
+      "third_party": [
+        {
+          "name": "markitdown",
+          "licence": "MIT"
+        }
+      ],
+      "licence": "Apache-2.0",
+      "release": {
+        "tag": "v0.1.0-brxt",
+        "asset": "markitdownagent.brxt",
+        "sha256": null
+      },
+      "privacy": "public",
+      "affiliation": null,
+      "bundled_skills": [
+        {
+          "name": "markitdown-document-conversion",
+          "job": "documents.markitdown-conversion.tool-usage",
+          "method_skill": null
+        }
+      ],
+      "overlaps_builtin": [
+        {
+          "builtin": "webdocuments",
+          "boundary": "Web & Documents reads common formats; MarkItDown converts many more formats to Markdown"
+        }
+      ],
+      "distinct_from": [],
+      "history": [
+        {
+          "version": "0.1.0",
+          "date": null,
+          "note": "BAAM version before the November 2026 refresh"
+        }
+      ]
+    },
+    {
+      "id": "adaptyvbiofoundryagent",
+      "display_name": "AdaptyvBioFoundryAgent",
+      "manifest_name": "adaptyvbiofoundryagent",
+      "repository": "BaranziniLab/AdaptyvBioFoundryAgent",
+      "group": "adapters",
+      "version": "0.1.0",
+      "status": "active",
+      "aliases": [],
+      "job": "lab.adaptyv-protein-foundry",
+      "role": "data-access",
+      "summary": "MCP adapter for Adaptyv-style protein engineering design-build-test workflows, sequence libraries, experiment metadata, and result retrieval with guarded API calls.",
+      "keywords": [
+        "MCP",
+        "Adaptyv",
+        "Protein Engineering",
+        "Biofoundry",
+        "Apache-2.0"
+      ],
+      "source": {
+        "origin": "in-house",
+        "upstreams": [],
+        "built_with": null
+      },
+      "third_party": [],
+      "licence": "Apache-2.0",
+      "release": {
+        "tag": "v0.1.0-brxt",
+        "asset": "adaptyvbiofoundryagent.brxt",
+        "sha256": null
+      },
+      "privacy": "public",
+      "affiliation": null,
+      "bundled_skills": [
+        {
+          "name": "adaptyv-biofoundry",
+          "job": "lab.adaptyv-protein-foundry.tool-usage",
+          "method_skill": null
+        }
+      ],
+      "overlaps_builtin": [],
+      "distinct_from": [],
+      "history": [
+        {
+          "version": "0.1.0",
+          "date": null,
+          "note": "BAAM version before the November 2026 refresh"
+        }
+      ]
+    },
+    {
+      "id": "structuredpapersearchagent",
+      "display_name": "StructuredPaperSearchAgent",
+      "manifest_name": "structuredpapersearchagent",
+      "repository": "BaranziniLab/StructuredPaperSearchAgent",
+      "group": "adapters",
+      "version": "0.1.0",
+      "status": "active",
+      "aliases": [],
+      "job": "literature.scholarly-api",
+      "role": "data-access",
+      "summary": "MCP adapter for structured paper and full-text metadata search across scholarly APIs, section-aware evidence extraction, and provenance-first literature queries.",
+      "keywords": [
+        "MCP",
+        "Papers",
+        "Full Text",
+        "Evidence",
+        "Apache-2.0"
+      ],
+      "source": {
+        "origin": "in-house",
+        "upstreams": [],
+        "built_with": null
+      },
+      "third_party": [],
+      "licence": "Apache-2.0",
+      "release": {
+        "tag": "v0.1.0-brxt",
+        "asset": "structuredpapersearchagent.brxt",
+        "sha256": null
+      },
+      "privacy": "public",
+      "affiliation": null,
+      "bundled_skills": [
+        {
+          "name": "structured-paper-search",
+          "job": "literature.scholarly-api.tool-usage",
+          "method_skill": "systematic-review-prisma"
+        }
+      ],
+      "overlaps_builtin": [],
+      "distinct_from": [],
+      "history": [
+        {
+          "version": "0.1.0",
+          "date": null,
+          "note": "BAAM version before the November 2026 refresh"
+        }
+      ]
+    },
+    {
+      "id": "scientificwebresearchagent",
+      "display_name": "ScientificWebResearchAgent",
+      "manifest_name": "scientificwebresearchagent",
+      "repository": "BaranziniLab/ScientificWebResearchAgent",
+      "group": "adapters",
+      "version": "0.1.0",
+      "status": "active",
+      "aliases": [],
+      "job": "literature.web-research-apis",
+      "role": "data-access",
+      "summary": "MCP adapter for scientific web and deep-research workflows, web search APIs, source fetching, and provenance capture beyond scholarly APIs.",
+      "keywords": [
+        "MCP",
+        "Web Research",
+        "Search",
+        "Sources",
+        "Apache-2.0"
+      ],
+      "source": {
+        "origin": "in-house",
+        "upstreams": [],
+        "built_with": null
+      },
+      "third_party": [],
+      "licence": "Apache-2.0",
+      "release": {
+        "tag": "v0.1.0-brxt",
+        "asset": "scientificwebresearchagent.brxt",
+        "sha256": null
+      },
+      "privacy": "public",
+      "affiliation": null,
+      "bundled_skills": [
+        {
+          "name": "scientific-web-research",
+          "job": "literature.web-research-apis.tool-usage",
+          "method_skill": "scientific-research"
+        }
+      ],
+      "overlaps_builtin": [],
+      "distinct_from": [],
+      "history": [
+        {
+          "version": "0.1.0",
+          "date": null,
+          "note": "BAAM version before the November 2026 refresh"
+        }
+      ]
+    },
+    {
+      "id": "tamarindbioagent",
+      "display_name": "TamarindBioAgent",
+      "manifest_name": "tamarindbioagent",
+      "repository": "BaranziniLab/TamarindBioAgent",
+      "group": "adapters",
+      "version": "0.1.0",
+      "status": "active",
+      "aliases": [],
+      "job": "compute.tamarind-bio-models",
+      "role": "data-access",
+      "summary": "MCP adapter for Tamarind Bio-style cloud protein, structure, docking, and design workflows with guarded API calls and result provenance.",
+      "keywords": [
+        "MCP",
+        "Tamarind",
+        "Protein Design",
+        "Docking",
+        "Apache-2.0"
+      ],
+      "source": {
+        "origin": "in-house",
+        "upstreams": [],
+        "built_with": null
+      },
+      "third_party": [],
+      "licence": "Apache-2.0",
+      "release": {
+        "tag": "v0.1.0-brxt",
+        "asset": "tamarindbioagent.brxt",
+        "sha256": null
+      },
+      "privacy": "public",
+      "affiliation": null,
+      "bundled_skills": [
+        {
+          "name": "tamarind-bio",
+          "job": "compute.tamarind-bio-models.tool-usage",
+          "method_skill": null
+        }
+      ],
+      "overlaps_builtin": [],
+      "distinct_from": [],
+      "history": [
+        {
+          "version": "0.1.0",
+          "date": null,
+          "note": "BAAM version before the November 2026 refresh"
+        }
+      ]
+    },
+    {
+      "id": "rowanmolecularmodelingagent",
+      "display_name": "RowanMolecularModelingAgent",
+      "manifest_name": "rowanmolecularmodelingagent",
+      "repository": "BaranziniLab/RowanMolecularModelingAgent",
+      "group": "adapters",
+      "version": "0.1.0",
+      "status": "active",
+      "aliases": [],
+      "job": "chemistry.rowan-molecular-modeling",
+      "role": "data-access",
+      "summary": "MCP adapter for Rowan-style cloud molecular modeling: conformers, pKa, docking, analogue docking, cofolding, and medicinal chemistry calculation provenance.",
+      "keywords": [
+        "MCP",
+        "Rowan",
+        "Molecular Modeling",
+        "MedChem",
+        "Apache-2.0"
+      ],
+      "source": {
+        "origin": "in-house",
+        "upstreams": [],
+        "built_with": null
+      },
+      "third_party": [],
+      "licence": "Apache-2.0",
+      "release": {
+        "tag": "v0.1.0-brxt",
+        "asset": "rowanmolecularmodelingagent.brxt",
+        "sha256": null
+      },
+      "privacy": "public",
+      "affiliation": null,
+      "bundled_skills": [
+        {
+          "name": "rowan-molecular-modeling",
+          "job": "chemistry.rowan-molecular-modeling.tool-usage",
+          "method_skill": null
+        }
+      ],
+      "overlaps_builtin": [],
+      "distinct_from": [],
+      "history": [
+        {
+          "version": "0.1.0",
+          "date": null,
+          "note": "BAAM version before the November 2026 refresh"
+        }
+      ]
+    },
+    {
+      "id": "unifiedpublicdatabaselookupagent",
+      "display_name": "UnifiedPublicDatabaseLookupAgent",
+      "manifest_name": "unifiedpublicdatabaselookupagent",
+      "repository": "BaranziniLab/UnifiedPublicDatabaseLookupAgent",
+      "group": "adapters",
+      "version": "0.1.0",
+      "status": "active",
+      "aliases": [],
+      "job": "bio.public-database-lookup",
+      "role": "data-access",
+      "summary": "MCP router for provenance-first public database lookups across biomedical, chemistry, materials, literature, regulatory, patent, and scientific data APIs.",
+      "keywords": [
+        "MCP",
+        "Public Databases",
+        "Provenance",
+        "Lookup",
+        "Apache-2.0"
+      ],
+      "source": {
+        "origin": "in-house",
+        "upstreams": [],
+        "built_with": null
+      },
+      "third_party": [],
+      "licence": "Apache-2.0",
+      "release": {
+        "tag": "v0.1.0-brxt",
+        "asset": "unifiedpublicdatabaselookupagent.brxt",
+        "sha256": null
+      },
+      "privacy": "public",
+      "affiliation": null,
+      "bundled_skills": [
+        {
+          "name": "unified-public-database-lookup",
+          "job": "bio.public-database-lookup.tool-usage",
+          "method_skill": "database-access"
+        }
+      ],
+      "overlaps_builtin": [],
+      "distinct_from": [],
+      "history": [
+        {
+          "version": "0.1.0",
+          "date": null,
+          "note": "BAAM version before the November 2026 refresh"
+        }
+      ]
+    }
+  ]
+}

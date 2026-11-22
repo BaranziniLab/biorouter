@@ -1250,16 +1250,17 @@ biorouter session \
 <p>A change to what new chats start with leaves chats already open as they were. In a chat on a public model, a private extension stays in the <strong>Extensions</strong> list of the <strong>+</strong> popover, grayed out, with the note “Unavailable in this chat (public model)”. Hovering it explains that a private extension needs a private model.</p>
 
 <h2>Extension agents in the marketplace</h2>
-<p>BAAM lists extensions for biomedical data, lab systems, literature and everyday research tools. Each installs as a <code>.brxt</code> bundle, and six of them are below.</p>
-<p>The Privacy column is the extension's tier, the same one BAAM shows on its card. An extension is private only when BAAM lists it as private; today that is CDWAgent and UCSFOMOPAgent. The first time one answers in a chat, the chat becomes private and stays private, and a chat on a public model cannot use its tools. The tier comes from the BAAM registry, not from the extension, so an extension cannot choose its own tier. See <a href="#privacy">Private and public</a>.</p>
+<p>BAAM lists extensions for biomedical data, lab systems, literature and everyday research tools. Each installs as a <code>.brxt</code> bundle, and seven of them are below.</p>
+<p>The Privacy column is the extension's tier, the same one BAAM shows on its card. An extension is private only when BAAM lists it as private; today that is CDWAgent, UCSFOMOPAgent and gptr Agent. The first time one answers in a chat, the chat becomes private and stays private, and a chat on a public model cannot use its tools. The tier comes from the BAAM registry, not from the extension, so an extension cannot choose its own tier. See <a href="#privacy">Private and public</a>.</p>
 <div class="doc-table-scroll"><table>
   <thead><tr><th>Agent</th><th>Privacy</th><th>What it connects</th><th>Credentials</th></tr></thead>
   <tbody>
     <tr><td><strong>UCSFOMOPAgent</strong></td><td>Private</td><td>The UCSF OMOP deidentified clinical database, queried in plain language. It cannot change the data.</td><td>UCSF credentials.</td></tr>
     <tr><td><strong>CDWAgent</strong></td><td>Private</td><td>The UCSF Clinical Data Warehouse: cohorts, labs, imaging and clinical notes. It cannot change the data.</td><td>Your UCSF network login, <code>CAMPUS\username</code>.</td></tr>
+    <tr><td><strong>gptr Agent</strong></td><td>Private</td><td>The R session you already have open, through the gptr package: inspect, analyse, plot and fix objects in memory without reloading data.</td><td>None. Needs R with gptr 1.1 or later.</td></tr>
     <tr><td><strong>SPOKEAgent</strong></td><td>Public</td><td>The SPOKE biomedical knowledge graph of genes, proteins, drugs, diseases and pathways, queried with Cypher.</td><td>A SPOKE passcode, from the UCSF wiki credentials page.</td></tr>
     <tr><td><strong>PlaywrightAgent</strong></td><td>Public</td><td>A web browser the agent drives to open, read and fill in pages.</td><td>None. Needs Node.js.</td></tr>
-    <tr><td><strong>CodeGraphAgent</strong></td><td>Public</td><td>An index of a codebase in 23 languages, including R and MATLAB, that finds who calls a function and what a change would break.</td><td>None.</td></tr>
+    <tr><td><strong>CodeGraphAgent</strong></td><td>Public</td><td>An index of a codebase in about 30 languages, including Python and R, that finds a symbol, who calls it and what a change would touch.</td><td>None.</td></tr>
     <tr><td><strong>BiorOffice</strong></td><td>Public</td><td>Word, Excel and PowerPoint files, created and edited from a chat, with four office skills.</td><td>None. Microsoft Office is not needed.</td></tr>
   </tbody>
 </table></div>
