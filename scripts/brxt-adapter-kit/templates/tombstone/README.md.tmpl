@@ -1,0 +1,35 @@
+# @@DISPLAY_NAME@@
+
+@@DESCRIPTION@@
+
+Current version: **@@VERSION@@**
+
+@@NOTICE_BLOCK@@@@INTRO@@This is the final release of a retired Biorouter extension. It replaces every
+earlier tool with one, `@@SERVICE@@_status`, which shows the notice above. It holds no
+credentials, reads no setting and calls no service. Remove the extension in
+Biorouter once you no longer need the notice.
+
+## Tools
+
+@@TOOLS_LIST@@
+
+## Bundled skills
+
+Every skill an earlier release bundled is kept, and each now says where its content
+moved. An update never deletes a file an earlier version installed, so keeping the
+paths is what replaces the old instructions.
+
+## Develop and release
+
+```bash
+uv sync
+uv run python -m unittest discover -s tests -v
+uv run python scripts/build_brxt.py
+```
+
+Do not edit `src/@@PKG@@/_kit/` or `tests/kit_testing/`: they are vendored from the BRXT
+adapter kit in the Biorouter repository (`scripts/brxt-adapter-kit/`).
+
+## License
+
+@@LICENSE@@. See `LICENSE` and `NOTICE`.

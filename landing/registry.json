@@ -520,6 +520,196 @@
       "filename": "rowanmolecularmodelingagent.brxt",
       "license": "Apache-2.0",
       "privacy": "public"
+    },
+    {
+      "id": "benchlingagent",
+      "name": "BenchlingAgent",
+      "organization": "BaranziniLab · BRXT",
+      "version": "v0.2.0",
+      "description": "Read Benchling projects, registry records, notebook entries and assay metadata, and make writes that Biorouter asks you to approve. Your key goes only to your own tenant. Tools: benchling_status, benchling_get, benchling_write.",
+      "tags": [
+        "MCP",
+        "Benchling",
+        "ELN",
+        "Registry",
+        "Apache-2.0"
+      ],
+      "github": "https://github.com/BaranziniLab/BenchlingAgent",
+      "download": "https://github.com/BaranziniLab/BenchlingAgent/releases/download/v0.2.0/benchlingagent.brxt",
+      "filename": "benchlingagent.brxt",
+      "license": "Apache-2.0",
+      "privacy": "public"
+    },
+    {
+      "id": "dnanexusagent",
+      "name": "DNAnexusAgent",
+      "organization": "BaranziniLab · BRXT",
+      "version": "v0.2.0",
+      "description": "Read DNAnexus projects, files, apps, workflows and job metadata, and make writes that Biorouter asks you to approve. Your token goes only to api.dnanexus.com. Tools: dnanexus_status, dnanexus_get, dnanexus_write.",
+      "tags": [
+        "MCP",
+        "DNAnexus",
+        "Cloud",
+        "Workflows",
+        "Apache-2.0"
+      ],
+      "github": "https://github.com/BaranziniLab/DNAnexusAgent",
+      "download": "https://github.com/BaranziniLab/DNAnexusAgent/releases/download/v0.2.0/dnanexusagent.brxt",
+      "filename": "dnanexusagent.brxt",
+      "license": "Apache-2.0",
+      "privacy": "public"
+    },
+    {
+      "id": "protocolsioagent",
+      "name": "ProtocolsIOAgent",
+      "organization": "BaranziniLab · BRXT",
+      "version": "v0.2.0",
+      "description": "Search and read protocols.io protocols for method discovery, citation and reproducible protocol review. Your access token goes only to www.protocols.io. Tools: protocolsio_status, protocolsio_get.",
+      "tags": [
+        "MCP",
+        "Protocols.io",
+        "Methods",
+        "Protocols",
+        "Apache-2.0"
+      ],
+      "github": "https://github.com/BaranziniLab/ProtocolsIOAgent",
+      "download": "https://github.com/BaranziniLab/ProtocolsIOAgent/releases/download/v0.2.0/protocolsioagent.brxt",
+      "filename": "protocolsioagent.brxt",
+      "license": "Apache-2.0",
+      "privacy": "public"
+    },
+    {
+      "id": "adaptyvbiofoundryagent",
+      "name": "AdaptyvBioFoundryAgent",
+      "organization": "BaranziniLab · BRXT",
+      "version": "v0.2.0",
+      "description": "Read Adaptyv Foundry targets, sequences, experiments, quotes and results, and make writes that Biorouter asks you to approve. Your token goes only to devs.adaptyvbio.com. Tools: adaptyv_status, adaptyv_get, adaptyv_write.",
+      "tags": [
+        "MCP",
+        "Adaptyv",
+        "Protein Engineering",
+        "Biofoundry",
+        "Apache-2.0"
+      ],
+      "github": "https://github.com/BaranziniLab/AdaptyvBioFoundryAgent",
+      "download": "https://github.com/BaranziniLab/AdaptyvBioFoundryAgent/releases/download/v0.2.0/adaptyvbiofoundryagent.brxt",
+      "filename": "adaptyvbiofoundryagent.brxt",
+      "license": "Apache-2.0",
+      "privacy": "public"
+    },
+    {
+      "id": "tamarindbioagent",
+      "name": "TamarindBioAgent",
+      "organization": "BaranziniLab · BRXT",
+      "version": "v0.2.0",
+      "description": "Read Tamarind Bio tools, jobs, files and results, and make writes that Biorouter asks you to approve. Your key goes only to app.tamarind.bio. Tools: tamarind_status, tamarind_get, tamarind_write.",
+      "tags": [
+        "MCP",
+        "Tamarind",
+        "Protein Design",
+        "Docking",
+        "Apache-2.0"
+      ],
+      "github": "https://github.com/BaranziniLab/TamarindBioAgent",
+      "download": "https://github.com/BaranziniLab/TamarindBioAgent/releases/download/v0.2.0/tamarindbioagent.brxt",
+      "filename": "tamarindbioagent.brxt",
+      "license": "Apache-2.0",
+      "privacy": "public"
+    },
+    {
+      "id": "proteinstructureagent",
+      "name": "ProteinStructureAgent",
+      "organization": "BaranziniLab · BRXT",
+      "version": "v0.2.0",
+      "description": "Read protein structure and sequence resources from RCSB PDB, AlphaFold DB and UniProt. Read only, no key needed. Tools: proteinstructure_status, proteinstructure_get.",
+      "tags": [
+        "MCP",
+        "PDB",
+        "AlphaFold",
+        "Proteins",
+        "Apache-2.0"
+      ],
+      "github": "https://github.com/BaranziniLab/ProteinStructureAgent",
+      "download": "https://github.com/BaranziniLab/ProteinStructureAgent/releases/download/v0.2.0/proteinstructureagent.brxt",
+      "filename": "proteinstructureagent.brxt",
+      "license": "Apache-2.0",
+      "privacy": "public"
+    },
+    {
+      "id": "literatureagent",
+      "name": "LiteratureAgent",
+      "organization": "BaranziniLab · BRXT",
+      "version": "v0.2.0",
+      "description": "Search and read scholarly metadata from OpenAlex, Crossref, PubMed, Semantic Scholar, bioRxiv and medRxiv, and Unpaywall for citation checks and evidence review. Your Semantic Scholar key goes only to Semantic Scholar. Replaces StructuredPaperSearchAgent. Tools: literature_status, literature_get.",
+      "tags": [
+        "MCP",
+        "Literature",
+        "PubMed",
+        "Evidence",
+        "Apache-2.0"
+      ],
+      "github": "https://github.com/BaranziniLab/LiteratureAgent",
+      "download": "https://github.com/BaranziniLab/LiteratureAgent/releases/download/v0.2.0/literatureagent.brxt",
+      "filename": "literatureagent.brxt",
+      "license": "Apache-2.0",
+      "privacy": "public"
+    },
+    {
+      "id": "unifiedpublicdatabaselookupagent",
+      "name": "UnifiedPublicDatabaseLookupAgent",
+      "organization": "BaranziniLab · BRXT",
+      "version": "v0.2.0",
+      "description": "Look up genes, sequences, proteins, variants and drug-gene annotations in NCBI E-utilities and BLAST, UniProt, Ensembl and ClinPGx. Read only, no key needed. Replaces NCBIAgent. Tools: publicdb_status, publicdb_get.",
+      "tags": [
+        "MCP",
+        "Public Databases",
+        "Provenance",
+        "Lookup",
+        "Apache-2.0"
+      ],
+      "github": "https://github.com/BaranziniLab/UnifiedPublicDatabaseLookupAgent",
+      "download": "https://github.com/BaranziniLab/UnifiedPublicDatabaseLookupAgent/releases/download/v0.2.0/unifiedpublicdatabaselookupagent.brxt",
+      "filename": "unifiedpublicdatabaselookupagent.brxt",
+      "license": "Apache-2.0",
+      "privacy": "public"
+    },
+    {
+      "id": "zoteroagent",
+      "name": "ZoteroAgent",
+      "organization": "BaranziniLab · BRXT",
+      "version": "v0.2.0",
+      "description": "Read Zotero libraries, collections, items and tags through the Zotero web API, and add items or collections with approval. Your key goes only to api.zotero.org. Tools: zotero_status, zotero_get, zotero_write.",
+      "tags": [
+        "MCP",
+        "Zotero",
+        "Citations",
+        "Library",
+        "Apache-2.0"
+      ],
+      "github": "https://github.com/BaranziniLab/ZoteroAgent",
+      "download": "https://github.com/BaranziniLab/ZoteroAgent/releases/download/v0.2.0/zoteroagent.brxt",
+      "filename": "zoteroagent.brxt",
+      "license": "Apache-2.0",
+      "privacy": "public"
+    },
+    {
+      "id": "scientificwebresearchagent",
+      "name": "ScientificWebResearchAgent",
+      "organization": "BaranziniLab · BRXT",
+      "version": "v0.2.0",
+      "description": "Search the web for scientific sources with Exa and Tavily, with typed search tools. Each key goes only to its own service. Tools: webresearch_status, webresearch_get.",
+      "tags": [
+        "MCP",
+        "Web Research",
+        "Search",
+        "Sources",
+        "Apache-2.0"
+      ],
+      "github": "https://github.com/BaranziniLab/ScientificWebResearchAgent",
+      "download": "https://github.com/BaranziniLab/ScientificWebResearchAgent/releases/download/v0.2.0/scientificwebresearchagent.brxt",
+      "filename": "scientificwebresearchagent.brxt",
+      "license": "Apache-2.0",
+      "privacy": "public"
     }
   ],
   "skills": [

@@ -50,7 +50,7 @@
         <input type="text" id="baam-search" placeholder="Search extensions" oninput="runFilter()" aria-label="Search the marketplace" autocomplete="off" spellcheck="false">
       </label>
       <div class="baam-tabs" role="tablist" aria-label="Marketplace shelves">
-        <button class="baam-tab active" type="button" id="tab-extensions" data-shelf="extensions" role="tab" aria-selected="true" aria-controls="extensions-section">Extensions <span class="tab-count" id="tab-count-extensions">27</span></button>
+        <button class="baam-tab active" type="button" id="tab-extensions" data-shelf="extensions" role="tab" aria-selected="true" aria-controls="extensions-section">Extensions <span class="tab-count" id="tab-count-extensions">37</span></button>
         <button class="baam-tab" type="button" id="tab-skills" data-shelf="skills" role="tab" aria-selected="false" aria-controls="skills-section" tabindex="-1">Skills <span class="tab-count" id="tab-count-skills">129</span></button>
         <button class="baam-tab" type="button" id="tab-workflows" data-shelf="workflows" role="tab" aria-selected="false" aria-controls="workflows-section" tabindex="-1">Workflows <span class="tab-count" id="tab-count-workflows">1</span></button>
       </div>
@@ -82,7 +82,7 @@
 
       <!-- No-JS view and the registry's source of truth. baam.js empties it once registry.json renders. -->
       <div class="ext-grid" id="extensions-grid">
-      <div class="group-head"><h2>All extensions</h2><span class="n">27</span></div>
+      <div class="group-head"><h2>All extensions</h2><span class="n">37</span></div>
 
       <!-- CDWAgent -->
       <div class="ext-card" data-license="Apache-2.0" data-privacy="private" data-extension-name="CDWAgent" data-affiliation="ucsf">
@@ -749,6 +749,246 @@
         <div class="ext-footer">
           <div class="ext-tags"><span class="tag public" data-privacy-badge>Public</span><span class="tag">MCP</span><span class="tag">Rowan</span><span class="tag">Molecular Modeling</span><span class="tag">MedChem</span><span class="tag">Apache-2.0</span></div>
           <a href="https://github.com/BaranziniLab/RowanMolecularModelingAgent/releases/download/v0.1.0-brxt/rowanmolecularmodelingagent.brxt" class="brxt-chip">
+            <svg class="icon icon-sm" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7,10 12,15 17,10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+            .brxt
+          </a>
+        </div>
+      </div>
+
+      <!-- BenchlingAgent -->
+      <div class="ext-card" data-license="Apache-2.0">
+        <div class="ext-card-header">
+          <div class="icon-tile">
+            <svg class="icon" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><path d="M14 17h7"/><path d="M17.5 13.5v7"/></svg>
+          </div>
+          <div class="ext-meta">
+            <h3>BenchlingAgent</h3>
+            <div class="ext-org">BaranziniLab · BRXT · v0.2.0</div>
+          </div>
+          <a href="https://github.com/BaranziniLab/BenchlingAgent" target="_blank" class="ext-gh-link" title="View on GitHub">
+            <svg class="icon" width="15" height="15" viewBox="0 0 24 24" fill="currentColor" stroke="none"><path d="M12 2C6.48 2 2 6.48 2 12c0 4.42 2.87 8.17 6.84 9.49.5.09.68-.22.68-.48v-1.7c-2.78.6-3.37-1.34-3.37-1.34-.45-1.16-1.11-1.47-1.11-1.47-.91-.62.07-.61.07-.61 1 .07 1.53 1.03 1.53 1.03.9 1.52 2.34 1.08 2.91.83.09-.65.35-1.08.63-1.33-2.22-.25-4.55-1.11-4.55-4.94 0-1.09.39-1.98 1.03-2.68-.1-.25-.45-1.27.1-2.64 0 0 .84-.27 2.75 1.02A9.56 9.56 0 0 1 12 6.8c.85 0 1.71.11 2.51.33 1.91-1.29 2.75-1.02 2.75-1.02.55 1.37.2 2.39.1 2.64.64.7 1.03 1.59 1.03 2.68 0 3.84-2.34 4.68-4.57 4.93.36.31.68.92.68 1.85v2.74c0 .27.18.58.69.48A10.01 10.01 0 0 0 22 12c0-5.52-4.48-10-10-10z"/></svg>
+          </a>
+        </div>
+        <p class="ext-desc">Read Benchling projects, registry records, notebook entries and assay metadata, and make writes that Biorouter asks you to approve. Your key goes only to your own tenant. Tools: <code>benchling_status</code>, <code>benchling_get</code>, <code>benchling_write</code>.</p>
+        <div class="ext-footer">
+          <div class="ext-tags"><span class="tag public" data-privacy-badge>Public</span><span class="tag mcp">MCP</span><span class="tag">Benchling</span><span class="tag">ELN</span><span class="tag">Registry</span><span class="tag">Apache-2.0</span></div>
+          <a href="https://github.com/BaranziniLab/BenchlingAgent/releases/download/v0.2.0/benchlingagent.brxt" class="brxt-chip">
+            <svg class="icon icon-sm" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7,10 12,15 17,10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+            .brxt
+          </a>
+        </div>
+      </div>
+
+      <!-- DNAnexusAgent -->
+      <div class="ext-card" data-license="Apache-2.0">
+        <div class="ext-card-header">
+          <div class="icon-tile">
+            <svg class="icon" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><path d="M14 17h7"/><path d="M17.5 13.5v7"/></svg>
+          </div>
+          <div class="ext-meta">
+            <h3>DNAnexusAgent</h3>
+            <div class="ext-org">BaranziniLab · BRXT · v0.2.0</div>
+          </div>
+          <a href="https://github.com/BaranziniLab/DNAnexusAgent" target="_blank" class="ext-gh-link" title="View on GitHub">
+            <svg class="icon" width="15" height="15" viewBox="0 0 24 24" fill="currentColor" stroke="none"><path d="M12 2C6.48 2 2 6.48 2 12c0 4.42 2.87 8.17 6.84 9.49.5.09.68-.22.68-.48v-1.7c-2.78.6-3.37-1.34-3.37-1.34-.45-1.16-1.11-1.47-1.11-1.47-.91-.62.07-.61.07-.61 1 .07 1.53 1.03 1.53 1.03.9 1.52 2.34 1.08 2.91.83.09-.65.35-1.08.63-1.33-2.22-.25-4.55-1.11-4.55-4.94 0-1.09.39-1.98 1.03-2.68-.1-.25-.45-1.27.1-2.64 0 0 .84-.27 2.75 1.02A9.56 9.56 0 0 1 12 6.8c.85 0 1.71.11 2.51.33 1.91-1.29 2.75-1.02 2.75-1.02.55 1.37.2 2.39.1 2.64.64.7 1.03 1.59 1.03 2.68 0 3.84-2.34 4.68-4.57 4.93.36.31.68.92.68 1.85v2.74c0 .27.18.58.69.48A10.01 10.01 0 0 0 22 12c0-5.52-4.48-10-10-10z"/></svg>
+          </a>
+        </div>
+        <p class="ext-desc">Read DNAnexus projects, files, apps, workflows and job metadata, and make writes that Biorouter asks you to approve. Your token goes only to api.dnanexus.com. Tools: <code>dnanexus_status</code>, <code>dnanexus_get</code>, <code>dnanexus_write</code>.</p>
+        <div class="ext-footer">
+          <div class="ext-tags"><span class="tag public" data-privacy-badge>Public</span><span class="tag mcp">MCP</span><span class="tag">DNAnexus</span><span class="tag">Cloud</span><span class="tag">Workflows</span><span class="tag">Apache-2.0</span></div>
+          <a href="https://github.com/BaranziniLab/DNAnexusAgent/releases/download/v0.2.0/dnanexusagent.brxt" class="brxt-chip">
+            <svg class="icon icon-sm" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7,10 12,15 17,10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+            .brxt
+          </a>
+        </div>
+      </div>
+
+      <!-- ProtocolsIOAgent -->
+      <div class="ext-card" data-license="Apache-2.0">
+        <div class="ext-card-header">
+          <div class="icon-tile">
+            <svg class="icon" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><path d="M14 17h7"/><path d="M17.5 13.5v7"/></svg>
+          </div>
+          <div class="ext-meta">
+            <h3>ProtocolsIOAgent</h3>
+            <div class="ext-org">BaranziniLab · BRXT · v0.2.0</div>
+          </div>
+          <a href="https://github.com/BaranziniLab/ProtocolsIOAgent" target="_blank" class="ext-gh-link" title="View on GitHub">
+            <svg class="icon" width="15" height="15" viewBox="0 0 24 24" fill="currentColor" stroke="none"><path d="M12 2C6.48 2 2 6.48 2 12c0 4.42 2.87 8.17 6.84 9.49.5.09.68-.22.68-.48v-1.7c-2.78.6-3.37-1.34-3.37-1.34-.45-1.16-1.11-1.47-1.11-1.47-.91-.62.07-.61.07-.61 1 .07 1.53 1.03 1.53 1.03.9 1.52 2.34 1.08 2.91.83.09-.65.35-1.08.63-1.33-2.22-.25-4.55-1.11-4.55-4.94 0-1.09.39-1.98 1.03-2.68-.1-.25-.45-1.27.1-2.64 0 0 .84-.27 2.75 1.02A9.56 9.56 0 0 1 12 6.8c.85 0 1.71.11 2.51.33 1.91-1.29 2.75-1.02 2.75-1.02.55 1.37.2 2.39.1 2.64.64.7 1.03 1.59 1.03 2.68 0 3.84-2.34 4.68-4.57 4.93.36.31.68.92.68 1.85v2.74c0 .27.18.58.69.48A10.01 10.01 0 0 0 22 12c0-5.52-4.48-10-10-10z"/></svg>
+          </a>
+        </div>
+        <p class="ext-desc">Search and read protocols.io protocols for method discovery, citation and reproducible protocol review. Your access token goes only to www.protocols.io. Tools: <code>protocolsio_status</code>, <code>protocolsio_get</code>.</p>
+        <div class="ext-footer">
+          <div class="ext-tags"><span class="tag public" data-privacy-badge>Public</span><span class="tag mcp">MCP</span><span class="tag">Protocols.io</span><span class="tag">Methods</span><span class="tag">Protocols</span><span class="tag">Apache-2.0</span></div>
+          <a href="https://github.com/BaranziniLab/ProtocolsIOAgent/releases/download/v0.2.0/protocolsioagent.brxt" class="brxt-chip">
+            <svg class="icon icon-sm" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7,10 12,15 17,10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+            .brxt
+          </a>
+        </div>
+      </div>
+
+      <!-- AdaptyvBioFoundryAgent -->
+      <div class="ext-card" data-license="Apache-2.0">
+        <div class="ext-card-header">
+          <div class="icon-tile">
+            <svg class="icon" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><path d="M14 17h7"/><path d="M17.5 13.5v7"/></svg>
+          </div>
+          <div class="ext-meta">
+            <h3>AdaptyvBioFoundryAgent</h3>
+            <div class="ext-org">BaranziniLab · BRXT · v0.2.0</div>
+          </div>
+          <a href="https://github.com/BaranziniLab/AdaptyvBioFoundryAgent" target="_blank" class="ext-gh-link" title="View on GitHub">
+            <svg class="icon" width="15" height="15" viewBox="0 0 24 24" fill="currentColor" stroke="none"><path d="M12 2C6.48 2 2 6.48 2 12c0 4.42 2.87 8.17 6.84 9.49.5.09.68-.22.68-.48v-1.7c-2.78.6-3.37-1.34-3.37-1.34-.45-1.16-1.11-1.47-1.11-1.47-.91-.62.07-.61.07-.61 1 .07 1.53 1.03 1.53 1.03.9 1.52 2.34 1.08 2.91.83.09-.65.35-1.08.63-1.33-2.22-.25-4.55-1.11-4.55-4.94 0-1.09.39-1.98 1.03-2.68-.1-.25-.45-1.27.1-2.64 0 0 .84-.27 2.75 1.02A9.56 9.56 0 0 1 12 6.8c.85 0 1.71.11 2.51.33 1.91-1.29 2.75-1.02 2.75-1.02.55 1.37.2 2.39.1 2.64.64.7 1.03 1.59 1.03 2.68 0 3.84-2.34 4.68-4.57 4.93.36.31.68.92.68 1.85v2.74c0 .27.18.58.69.48A10.01 10.01 0 0 0 22 12c0-5.52-4.48-10-10-10z"/></svg>
+          </a>
+        </div>
+        <p class="ext-desc">Read Adaptyv Foundry targets, sequences, experiments, quotes and results, and make writes that Biorouter asks you to approve. Your token goes only to devs.adaptyvbio.com. Tools: <code>adaptyv_status</code>, <code>adaptyv_get</code>, <code>adaptyv_write</code>.</p>
+        <div class="ext-footer">
+          <div class="ext-tags"><span class="tag public" data-privacy-badge>Public</span><span class="tag">MCP</span><span class="tag">Adaptyv</span><span class="tag">Protein Engineering</span><span class="tag">Biofoundry</span><span class="tag">Apache-2.0</span></div>
+          <a href="https://github.com/BaranziniLab/AdaptyvBioFoundryAgent/releases/download/v0.2.0/adaptyvbiofoundryagent.brxt" class="brxt-chip">
+            <svg class="icon icon-sm" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7,10 12,15 17,10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+            .brxt
+          </a>
+        </div>
+      </div>
+
+      <!-- TamarindBioAgent -->
+      <div class="ext-card" data-license="Apache-2.0">
+        <div class="ext-card-header">
+          <div class="icon-tile">
+            <svg class="icon" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><path d="M14 17h7"/><path d="M17.5 13.5v7"/></svg>
+          </div>
+          <div class="ext-meta">
+            <h3>TamarindBioAgent</h3>
+            <div class="ext-org">BaranziniLab · BRXT · v0.2.0</div>
+          </div>
+          <a href="https://github.com/BaranziniLab/TamarindBioAgent" target="_blank" class="ext-gh-link" title="View on GitHub">
+            <svg class="icon" width="15" height="15" viewBox="0 0 24 24" fill="currentColor" stroke="none"><path d="M12 2C6.48 2 2 6.48 2 12c0 4.42 2.87 8.17 6.84 9.49.5.09.68-.22.68-.48v-1.7c-2.78.6-3.37-1.34-3.37-1.34-.45-1.16-1.11-1.47-1.11-1.47-.91-.62.07-.61.07-.61 1 .07 1.53 1.03 1.53 1.03.9 1.52 2.34 1.08 2.91.83.09-.65.35-1.08.63-1.33-2.22-.25-4.55-1.11-4.55-4.94 0-1.09.39-1.98 1.03-2.68-.1-.25-.45-1.27.1-2.64 0 0 .84-.27 2.75 1.02A9.56 9.56 0 0 1 12 6.8c.85 0 1.71.11 2.51.33 1.91-1.29 2.75-1.02 2.75-1.02.55 1.37.2 2.39.1 2.64.64.7 1.03 1.59 1.03 2.68 0 3.84-2.34 4.68-4.57 4.93.36.31.68.92.68 1.85v2.74c0 .27.18.58.69.48A10.01 10.01 0 0 0 22 12c0-5.52-4.48-10-10-10z"/></svg>
+          </a>
+        </div>
+        <p class="ext-desc">Read Tamarind Bio tools, jobs, files and results, and make writes that Biorouter asks you to approve. Your key goes only to app.tamarind.bio. Tools: <code>tamarind_status</code>, <code>tamarind_get</code>, <code>tamarind_write</code>.</p>
+        <div class="ext-footer">
+          <div class="ext-tags"><span class="tag public" data-privacy-badge>Public</span><span class="tag">MCP</span><span class="tag">Tamarind</span><span class="tag">Protein Design</span><span class="tag">Docking</span><span class="tag">Apache-2.0</span></div>
+          <a href="https://github.com/BaranziniLab/TamarindBioAgent/releases/download/v0.2.0/tamarindbioagent.brxt" class="brxt-chip">
+            <svg class="icon icon-sm" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7,10 12,15 17,10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+            .brxt
+          </a>
+        </div>
+      </div>
+
+      <!-- ProteinStructureAgent -->
+      <div class="ext-card" data-license="Apache-2.0">
+        <div class="ext-card-header">
+          <div class="icon-tile">
+            <svg class="icon" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><path d="M14 17h7"/><path d="M17.5 13.5v7"/></svg>
+          </div>
+          <div class="ext-meta">
+            <h3>ProteinStructureAgent</h3>
+            <div class="ext-org">BaranziniLab · BRXT · v0.2.0</div>
+          </div>
+          <a href="https://github.com/BaranziniLab/ProteinStructureAgent" target="_blank" class="ext-gh-link" title="View on GitHub">
+            <svg class="icon" width="15" height="15" viewBox="0 0 24 24" fill="currentColor" stroke="none"><path d="M12 2C6.48 2 2 6.48 2 12c0 4.42 2.87 8.17 6.84 9.49.5.09.68-.22.68-.48v-1.7c-2.78.6-3.37-1.34-3.37-1.34-.45-1.16-1.11-1.47-1.11-1.47-.91-.62.07-.61.07-.61 1 .07 1.53 1.03 1.53 1.03.9 1.52 2.34 1.08 2.91.83.09-.65.35-1.08.63-1.33-2.22-.25-4.55-1.11-4.55-4.94 0-1.09.39-1.98 1.03-2.68-.1-.25-.45-1.27.1-2.64 0 0 .84-.27 2.75 1.02A9.56 9.56 0 0 1 12 6.8c.85 0 1.71.11 2.51.33 1.91-1.29 2.75-1.02 2.75-1.02.55 1.37.2 2.39.1 2.64.64.7 1.59 1.03 2.68 1.03 3.84 0 4.68-2.34 4.93-4.57.36.31.68.92.68 1.85v2.74c0 .27.18.58.69.48A10.01 10.01 0 0 0 22 12c0-5.52-4.48-10-10-10z"/></svg>
+          </a>
+        </div>
+        <p class="ext-desc">Read protein structure and sequence resources from RCSB PDB, AlphaFold DB and UniProt. Read only, no key needed. Tools: <code>proteinstructure_status</code>, <code>proteinstructure_get</code>.</p>
+        <div class="ext-footer">
+          <div class="ext-tags"><span class="tag public" data-privacy-badge>Public</span><span class="tag mcp">MCP</span><span class="tag">PDB</span><span class="tag">AlphaFold</span><span class="tag">Proteins</span><span class="tag">Apache-2.0</span></div>
+          <a href="https://github.com/BaranziniLab/ProteinStructureAgent/releases/download/v0.2.0/proteinstructureagent.brxt" class="brxt-chip">
+            <svg class="icon icon-sm" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7,10 12,15 17,10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+            .brxt
+          </a>
+        </div>
+      </div>
+
+      <!-- LiteratureAgent -->
+      <div class="ext-card" data-license="Apache-2.0">
+        <div class="ext-card-header">
+          <div class="icon-tile">
+            <svg class="icon" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><path d="M14 17h7"/><path d="M17.5 13.5v7"/></svg>
+          </div>
+          <div class="ext-meta">
+            <h3>LiteratureAgent</h3>
+            <div class="ext-org">BaranziniLab · BRXT · v0.2.0</div>
+          </div>
+          <a href="https://github.com/BaranziniLab/LiteratureAgent" target="_blank" class="ext-gh-link" title="View on GitHub">
+            <svg class="icon" width="15" height="15" viewBox="0 0 24 24" fill="currentColor" stroke="none"><path d="M12 2C6.48 2 2 6.48 2 12c0 4.42 2.87 8.17 6.84 9.49.5.09.68-.22.68-.48v-1.7c-2.78.6-3.37-1.34-3.37-1.34-.45-1.16-1.11-1.47-1.11-1.47-.91-.62.07-.61.07-.61 1 .07 1.53 1.03 1.53 1.03.9 1.52 2.34 1.08 2.91.83.09-.65.35-1.08.63-1.33-2.22-.25-4.55-1.11-4.55-4.94 0-1.09.39-1.98 1.03-2.68-.1-.25-.45-1.27.1-2.64 0 0 .84-.27 2.75 1.02A9.56 9.56 0 0 1 12 6.8c.85 0 1.71.11 2.51.33 1.91-1.29 2.75-1.02 2.75-1.02.55 1.37.2 2.39.1 2.64.64.7 1.59 1.03 2.68 1.03 3.84 0 4.68-2.34 4.93-4.57.36.31.68.92.68 1.85v2.74c0 .27.18.58.69.48A10.01 10.01 0 0 0 22 12c0-5.52-4.48-10-10-10z"/></svg>
+          </a>
+        </div>
+        <p class="ext-desc">Search and read scholarly metadata from OpenAlex, Crossref, PubMed, Semantic Scholar, bioRxiv and medRxiv, and Unpaywall for citation checks and evidence review. Your Semantic Scholar key goes only to Semantic Scholar. Replaces StructuredPaperSearchAgent. Tools: <code>literature_status</code>, <code>literature_get</code>.</p>
+        <div class="ext-footer">
+          <div class="ext-tags"><span class="tag public" data-privacy-badge>Public</span><span class="tag mcp">MCP</span><span class="tag">Literature</span><span class="tag">PubMed</span><span class="tag">Evidence</span><span class="tag">Apache-2.0</span></div>
+          <a href="https://github.com/BaranziniLab/LiteratureAgent/releases/download/v0.2.0/literatureagent.brxt" class="brxt-chip">
+            <svg class="icon icon-sm" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7,10 12,15 17,10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+            .brxt
+          </a>
+        </div>
+      </div>
+
+      <!-- UnifiedPublicDatabaseLookupAgent -->
+      <div class="ext-card" data-license="Apache-2.0">
+        <div class="ext-card-header">
+          <div class="icon-tile">
+            <svg class="icon" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><path d="M14 17h7"/><path d="M17.5 13.5v7"/></svg>
+          </div>
+          <div class="ext-meta">
+            <h3>UnifiedPublicDatabaseLookupAgent</h3>
+            <div class="ext-org">BaranziniLab · BRXT · v0.2.0</div>
+          </div>
+          <a href="https://github.com/BaranziniLab/UnifiedPublicDatabaseLookupAgent" target="_blank" class="ext-gh-link" title="View on GitHub">
+            <svg class="icon" width="15" height="15" viewBox="0 0 24 24" fill="currentColor" stroke="none"><path d="M12 2C6.48 2 2 6.48 2 12c0 4.42 2.87 8.17 6.84 9.49.5.09.68-.22.68-.48v-1.7c-2.78.6-3.37-1.34-3.37-1.34-.45-1.16-1.11-1.47-1.11-1.47-.91-.62.07-.61.07-.61 1 .07 1.53 1.03 1.53 1.03.9 1.52 2.34 1.08 2.91.83.09-.65.35-1.08.63-1.33-2.22-.25-4.55-1.11-4.55-4.94 0-1.09.39-1.98 1.03-2.68-.1-.25-.45-1.27.1-2.64 0 0 .84-.27 2.75 1.02A9.56 9.56 0 0 1 12 6.8c.85 0 1.71.11 2.51.33 1.91-1.29 2.75-1.02 2.75-1.02.55 1.37.2 2.39.1 2.64.64.7 1.03 1.59 1.03 2.68 0 3.84-2.34 4.68-4.57 4.93.36.31.68.92.68 1.85v2.74c0 .27.18.58.69.48A10.01 10.01 0 0 0 22 12c0-5.52-4.48-10-10-10z"/></svg>
+          </a>
+        </div>
+        <p class="ext-desc">Look up genes, sequences, proteins, variants and drug-gene annotations in NCBI E-utilities and BLAST, UniProt, Ensembl and ClinPGx. Read only, no key needed. Replaces NCBIAgent. Tools: <code>publicdb_status</code>, <code>publicdb_get</code>.</p>
+        <div class="ext-footer">
+          <div class="ext-tags"><span class="tag public" data-privacy-badge>Public</span><span class="tag">MCP</span><span class="tag">Public Databases</span><span class="tag">Provenance</span><span class="tag">Lookup</span><span class="tag">Apache-2.0</span></div>
+          <a href="https://github.com/BaranziniLab/UnifiedPublicDatabaseLookupAgent/releases/download/v0.2.0/unifiedpublicdatabaselookupagent.brxt" class="brxt-chip">
+            <svg class="icon icon-sm" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7,10 12,15 17,10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+            .brxt
+          </a>
+        </div>
+      </div>
+
+      <!-- ZoteroAgent -->
+      <div class="ext-card" data-license="Apache-2.0">
+        <div class="ext-card-header">
+          <div class="icon-tile">
+            <svg class="icon" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><path d="M14 17h7"/><path d="M17.5 13.5v7"/></svg>
+          </div>
+          <div class="ext-meta">
+            <h3>ZoteroAgent</h3>
+            <div class="ext-org">BaranziniLab · BRXT · v0.2.0</div>
+          </div>
+          <a href="https://github.com/BaranziniLab/ZoteroAgent" target="_blank" class="ext-gh-link" title="View on GitHub">
+            <svg class="icon" width="15" height="15" viewBox="0 0 24 24" fill="currentColor" stroke="none"><path d="M12 2C6.48 2 2 6.48 2 12c0 4.42 2.87 8.17 6.84 9.49.5.09.68-.22.68-.48v-1.7c-2.78.6-3.37-1.34-3.37-1.34-.45-1.16-1.11-1.47-1.11-1.47-.91-.62.07-.61.07-.61 1 .07 1.53 1.03 1.53 1.03.9 1.52 2.34 1.08 2.91.83.09-.65.35-1.08.63-1.33-2.22-.25-4.55-1.11-4.55-4.94 0-1.09.39-1.98 1.03-2.68-.1-.25-.45-1.27.1-2.64 0 0 .84-.27 2.75 1.02A9.56 9.56 0 0 1 12 6.8c.85 0 1.71.11 2.51.33 1.91-1.29 2.75-1.02 2.75-1.02.55 1.37.2 2.39.1 2.64.64.7 1.03 1.59 1.03 2.68 0 3.84-2.34 4.68-4.57 4.93.36.31.68.92.68 1.85v2.74c0 .27.18.58.69.48A10.01 10.01 0 0 0 22 12c0-5.52-4.48-10-10-10z"/></svg>
+          </a>
+        </div>
+        <p class="ext-desc">Read Zotero libraries, collections, items and tags through the Zotero web API, and add items or collections with approval. Your key goes only to api.zotero.org. Tools: <code>zotero_status</code>, <code>zotero_get</code>, <code>zotero_write</code>.</p>
+        <div class="ext-footer">
+          <div class="ext-tags"><span class="tag public" data-privacy-badge>Public</span><span class="tag">MCP</span><span class="tag">Zotero</span><span class="tag">Citations</span><span class="tag">Library</span><span class="tag">Apache-2.0</span></div>
+          <a href="https://github.com/BaranziniLab/ZoteroAgent/releases/download/v0.2.0/zoteroagent.brxt" class="brxt-chip">
+            <svg class="icon icon-sm" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7,10 12,15 17,10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+            .brxt
+          </a>
+        </div>
+      </div>
+
+      <!-- ScientificWebResearchAgent -->
+      <div class="ext-card" data-license="Apache-2.0">
+        <div class="ext-card-header">
+          <div class="icon-tile">
+            <svg class="icon" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><path d="M14 17h7"/><path d="M17.5 13.5v7"/></svg>
+          </div>
+          <div class="ext-meta">
+            <h3>ScientificWebResearchAgent</h3>
+            <div class="ext-org">BaranziniLab · BRXT · v0.2.0</div>
+          </div>
+          <a href="https://github.com/BaranziniLab/ScientificWebResearchAgent" target="_blank" class="ext-gh-link" title="View on GitHub">
+            <svg class="icon" width="15" height="15" viewBox="0 0 24 24" fill="currentColor" stroke="none"><path d="M12 2C6.48 2 2 6.48 2 12c0 4.42 2.87 8.17 6.84 9.49.5.09.68-.22.68-.48v-1.7c-2.78.6-3.37-1.34-3.37-1.34-.45-1.16-1.11-1.47-1.11-1.47-.91-.62.07-.61.07-.61 1 .07 1.53 1.03 1.53 1.03.9 1.52 2.34 1.08 2.91.83.09-.65.35-1.08.63-1.33-2.22-.25-4.55-1.11-4.55-4.94 0-1.09.39-1.98 1.03-2.68-.1-.25-.45-1.27.1-2.64 0 0 .84-.27 2.75 1.02A9.56 9.56 0 0 1 12 6.8c.85 0 1.71.11 2.51.33 1.91-1.29 2.75-1.02 2.75-1.02.55 1.37.2 2.39.1 2.64.64.7 1.03 1.59 1.03 2.68 0 3.84-2.34 4.68-4.57 4.93.36.31.68.92.68 1.85v2.74c0 .27.18.58.69.48A10.01 10.01 0 0 0 22 12c0-5.52-4.48-10-10-10z"/></svg>
+          </a>
+        </div>
+        <p class="ext-desc">Search the web for scientific sources with Exa and Tavily, with typed search tools. Each key goes only to its own service. Tools: <code>webresearch_status</code>, <code>webresearch_get</code>.</p>
+        <div class="ext-footer">
+          <div class="ext-tags"><span class="tag public" data-privacy-badge>Public</span><span class="tag">MCP</span><span class="tag">Web Research</span><span class="tag">Search</span><span class="tag">Sources</span><span class="tag">Apache-2.0</span></div>
+          <a href="https://github.com/BaranziniLab/ScientificWebResearchAgent/releases/download/v0.2.0/scientificwebresearchagent.brxt" class="brxt-chip">
             <svg class="icon icon-sm" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7,10 12,15 17,10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
             .brxt
           </a>

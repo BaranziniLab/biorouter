@@ -1,0 +1,86 @@
+{
+  "kit_spec": 1,
+  "version": "0.2.0",
+  "authors": [{"name": "Baranzini Lab"}],
+  "manifest": {
+    "name": "sampleagent",
+    "display_name": "SampleAgent",
+    "description": "Sample adapter built from the BRXT adapter kit. It exists to test the kit and is never published.",
+    "repository": "https://github.com/BaranziniLab/SampleAgent",
+    "license": "Apache-2.0",
+    "env_vars": [
+      {"key": "ALPHA_TOKEN", "required": true, "auto_propagate": false, "description": "Alpha API token", "secret": true},
+      {"key": "BETA_KEY", "required": true, "auto_propagate": false, "description": "Beta API key", "secret": true},
+      {"key": "BETA_TENANT", "required": true, "auto_propagate": true, "description": "Beta tenant name, for example mylab", "secret": false},
+      {"key": "GAMMA_KEY", "required": true, "auto_propagate": false, "description": "Gamma API key", "secret": true},
+      {"key": "DELTA_KEY", "required": false, "auto_propagate": false, "description": "Delta API key", "secret": true},
+      {"key": "SAMPLE_CONTACT_EMAIL", "required": false, "auto_propagate": true, "description": "Contact email sent to Delta", "secret": false},
+      {"key": "EPSILON_USER", "required": false, "auto_propagate": true, "description": "Epsilon user name", "secret": false},
+      {"key": "EPSILON_PASSWORD", "required": false, "auto_propagate": false, "description": "Epsilon password", "secret": true},
+      {"key": "SAMPLE_LOG_LEVEL", "required": false, "auto_propagate": true, "default": "INFO", "description": "Logging level", "secret": false}
+    ]
+  },
+  "adapter": {
+    "kit_spec": 1,
+    "service": "sample",
+    "service_title": "Sample services",
+    "kind": "adapter",
+    "log_level_env": "SAMPLE_LOG_LEVEL",
+    "instructions": "SampleAgent reaches five sample services. It is a test fixture.",
+    "targets": [
+      {
+        "name": "alpha",
+        "title": "Alpha REST API",
+        "base_url": "https://api.alpha.example/v1",
+        "credential": {"env": "ALPHA_TOKEN", "scheme": "bearer"},
+        "get_routes": ["/**", "/items"],
+        "write_routes": [{"method": "POST", "path": "/items"}, {"method": "DELETE", "path": "/items/*"}],
+        "examples": ["/items"]
+      },
+      {
+        "name": "beta",
+        "title": "Beta tenant API",
+        "base_url": "https://{BETA_TENANT}.beta.example/api/v2",
+        "host_pattern": "[a-z0-9-]+\\.beta\\.example",
+        "credential": {"env": "BETA_KEY", "scheme": "basic"},
+        "get_routes": ["/projects/**", "/entries"],
+        "examples": ["/projects"]
+      },
+      {
+        "name": "gamma",
+        "title": "Gamma platform (reads are POST)",
+        "base_url": "https://api.gamma.example",
+        "credential": {"env": "GAMMA_KEY", "scheme": "header", "header_name": "X-API-Key"},
+        "get_routes": [],
+        "read_post_routes": ["/system/find*", "/*/describe"],
+        "examples": ["/system/findProjects"]
+      },
+      {
+        "name": "delta",
+        "title": "Delta search API",
+        "base_url": "https://delta.example/api",
+        "credential": {"env": "DELTA_KEY", "scheme": "query", "query_param": "api_key", "required": false},
+        "env_query": [{"param": "mailto", "env": "SAMPLE_CONTACT_EMAIL"}],
+        "get_routes": ["/search", "/records/*"],
+        "examples": ["/search"]
+      },
+      {
+        "name": "epsilon",
+        "title": "Epsilon archive (user and password)",
+        "base_url": "https://archive.epsilon.example",
+        "credential": {"env": "EPSILON_PASSWORD", "scheme": "basic", "username_env": "EPSILON_USER", "required": false},
+        "get_routes": ["/**"]
+      },
+      {
+        "name": "open",
+        "title": "Open public API (no credential)",
+        "base_url": "https://open.example/data",
+        "get_routes": ["/**"],
+        "examples": ["/genes/BRCA1"]
+      }
+    ]
+  },
+  "skills": [
+    {"name": "sample-tools", "description": "How to call SampleAgent's tools.", "form": "tools", "method_skill": "scientific-research"}
+  ]
+}
