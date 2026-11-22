@@ -196,6 +196,20 @@ jobs:
         if: ${{ !cancelled() }}
         run: node landing/scripts/build-registry.mjs --check
 
+      # The BAAM catalogs in landing/catalog/ are the tracking system for every
+      # extension and skill (docs/extensions/baam-catalog.md). The suite grades
+      # the checker with one mutant per rule; the check holds the catalogs, the
+      # cards and the hand-written counts together.
+      - name: The BAAM catalog checker catches what it must
+        working-directory: ${{ github.workspace }}
+        if: ${{ !cancelled() }}
+        run: node --test landing/scripts/check-catalog.test.mjs
+
+      - name: The BAAM catalogs agree with the page
+        working-directory: ${{ github.workspace }}
+        if: ${{ !cancelled() }}
+        run: node landing/scripts/check-catalog.mjs
+
       # docs.html's agents table is the one privacy surface with no generator.
       # Its checker runs in the Pages deploy — which is AFTER merge, i.e. too
       # late to stop the drift landing. These two steps are the pre-merge half:
@@ -277,6 +291,16 @@ jobs:
       - name: Site layout holds still
         working-directory: .
         run: node --test landing/scripts/layout-stability.browser.test.mjs
+
+      # The shelf's search (the port of catalog_search.rs) and the access tiles,
+      # which ran in no workflow before the BAAM refresh.
+      - name: BAAM search lands on the right rows
+        working-directory: .
+        run: node --test landing/scripts/baam-search.test.mjs
+
+      - name: Access tiles
+        working-directory: .
+        run: node --test landing/scripts/access-tiles.browser.test.mjs
 
   # ── Unit tests ────────────────────────────────────────────────────────────
   # On a pull request, three shards at once (`--shard=i/3`, vitest's own file

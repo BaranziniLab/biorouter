@@ -11,9 +11,9 @@
    illustrative. The footer counts are read from registry.json at runtime.
    A tile shows its full name when every full name fits its tile, and the
    short forms otherwise; the layout decides that once, so tiles never differ.
-   PrimeKG is left out on purpose: twelve tiles make a clean grid, its own
-   description says it has no graph query engine, and SPOKE covers knowledge
-   graphs. */
+   Twelve tiles make a clean grid. Since the November 2026 BAAM refresh the
+   DepMap tile (DepMapAgent was withdrawn) gave its place to PrimeKG, which now
+   answers graph queries on the person's computer. */
 (function () {
   'use strict';
 
@@ -24,22 +24,22 @@
     { glyph: 'omop', name: 'OMOP', ucsf: true },
     { glyph: 'spoke', name: 'SPOKE', tool: 'query_spoke', what: 'Cypher query',
       result: '3 paths link metformin to multiple sclerosis.' },
-    { glyph: 'literature', name: 'Literature', tool: 'call_literatureagent_api', what: 'Crossref',
+    { glyph: 'literature', name: 'Literature', tool: 'literature_get', what: 'Crossref',
       result: 'All 12 DOIs resolve.' },
     { glyph: 'ncbi', name: 'NCBI' },
-    { glyph: 'variants', name: 'Clinical variants', short: 'Variants', tool: 'call_clinicalvariantagent_api', what: 'ClinVar',
+    { glyph: 'variants', name: 'Clinical variants', short: 'Variants', tool: 'search', what: 'ClinVar',
       result: 'rs80357914: records with review status.' },
     { glyph: 'cell', name: 'Single cell' },
-    { glyph: 'depmap', name: 'DepMap' },
+    { glyph: 'kg', name: 'PrimeKG' },
     { glyph: 'protein', name: 'Protein structure', short: 'Structure' },
-    { glyph: 'chem', name: 'Chemistry', tool: 'call_chemoinformaticsagent_api', what: 'PubChem',
+    { glyph: 'chem', name: 'Chemistry', tool: 'chem_get', what: 'PubChem',
       result: 'Caffeine: CID 2519, 194.19 g/mol.' },
     { glyph: 'imaging', name: 'Imaging' },
-    { glyph: 'opentrons', name: 'Opentrons', tool: 'call_opentronsagent_api', what: 'Health check',
-      result: 'Robot online, health OK.' }
+    { glyph: 'opentrons', name: 'Opentrons', tool: 'opentrons_get', what: 'Labware',
+      result: '96-well plate: 8 rows by 12 columns.' }
   ];
 
-  var FALLBACK = { extensions: 37, skills: 129 };
+  var FALLBACK = { extensions: 28, skills: 132 };
 
   var FIRST_HOLD = 1400; // the opening frame is already a finished result
   var FADE = 150;        // the old result leaves before the highlight moves
@@ -95,7 +95,7 @@
     // A variant lollipop plot: a gene track with two marked positions.
     variants: '<path d="M3 19.5h18"/><path d="M8 19.5V10M16 19.5v-5"/><circle cx="8" cy="7.5" r="2.5"/><circle cx="16" cy="12" r="2.5"/>',
     cell: '<circle cx="12" cy="12" r="8.75"/><circle cx="13" cy="10.75" r="3"/><circle cx="7.9" cy="14.9" r="0.9"/><circle cx="15.9" cy="16.6" r="0.9"/>',
-    depmap: '<path d="M3.5 20.5h17"/><path d="M6.5 20.5V5.5M10.5 20.5V9.5M14.5 20.5V13M18.5 20.5V16"/>',
+    kg: '<circle cx="5.5" cy="6" r="2"/><circle cx="18.5" cy="6" r="2"/><circle cx="12" cy="18" r="2"/><circle cx="12" cy="10.5" r="1.5"/><path d="M7.3 6.9l3.4 2.6M16.7 6.9l-3.4 2.6M12 12v4"/>',
     protein: strand(),
     // A benzene ring (alternating double bonds) with one substituent.
     chem: '<path d="M10.9 3.8L18.69 8.3L18.69 17.3L10.9 21.8L3.11 17.3L3.11 8.3z"/><path d="M16.36 10.66L16.36 14.94M10.03 18.6L6.32 16.45M6.32 9.15L10.03 7"/><path d="M18.69 8.3l2.94-1.7"/>',

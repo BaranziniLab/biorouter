@@ -59,6 +59,8 @@ check-registry:
     node --test landing/scripts/build-registry.test.mjs
     node --test landing/scripts/build-provider-catalog.test.mjs
     node landing/scripts/build-registry.mjs --check
+    node --test landing/scripts/check-catalog.test.mjs
+    node landing/scripts/check-catalog.mjs
 
 # The set of private extensions is committed in three places at once: the
 # published landing/registry.json, the snapshot bundled in the desktop app, and

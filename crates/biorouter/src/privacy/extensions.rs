@@ -339,10 +339,15 @@ mod tests {
     /// hand edit. The set is small, deliberate and reviewed by name, so its
     /// exact value belongs in an assertion rather than in a comment.
     #[test]
-    fn the_generated_set_is_exactly_these_two_keys() {
+    ///
+    /// `gptragent` joined in the November 2026 BAAM refresh (owner decision 1):
+    /// a live R session holds whatever the person loaded, so it is private, and
+    /// it carries no affiliation, because no institution's agreements cover the
+    /// person's own machine.
+    fn the_generated_set_is_exactly_these_three_keys() {
         assert_eq!(
             private_extension_ids().collect::<Vec<_>>(),
-            vec!["cdwagent", "ucsfomopagent"],
+            vec!["cdwagent", "gptragent", "ucsfomopagent"],
             "the compiled-in private set changed. It is generated from the \
              data-privacy annotations in landing/baam.html by \
              landing/scripts/build-registry.mjs. If that change is intended, \
@@ -642,7 +647,7 @@ mod tests {
     }
 
     /// The generated table, stated once where a human reads it — the same
-    /// reasoning as `the_generated_set_is_exactly_these_two_keys`. An assertion
+    /// reasoning as `the_generated_set_is_exactly_these_three_keys`. An assertion
     /// that merely checked `cdwagent` is UCSF would pass while a generator bug
     /// tagged a third extension, or dropped an institution from the map that the
     /// warning copy needs.

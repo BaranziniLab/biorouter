@@ -133,10 +133,10 @@ if (!existsSync(PLAYWRIGHT)) {
       els.map((e) => e.dataset.extensionName || e.querySelector('h3').textContent).sort()
     );
 
-  test('the privacy facet filters the shelf down to the two private extensions', async () => {
+  test('the privacy facet filters the shelf down to the three private extensions', async () => {
     const page = await shelfPage();
     await page.click(PRIVATE);
-    assert.deepEqual(await shownCards(page), ['cdwagent', 'ucsfomopagent']);
+    assert.deepEqual(await shownCards(page), ['cdwagent', 'gptragent', 'ucsfomopagent']);
     await page.close();
   });
 
@@ -161,7 +161,7 @@ if (!existsSync(PLAYWRIGHT)) {
       false,
       `"${planted}" is public and answered the Private chip on a substring of its prose`
     );
-    assert.deepEqual(shown, ['cdwagent', 'ucsfomopagent']);
+    assert.deepEqual(shown, ['cdwagent', 'gptragent', 'ucsfomopagent']);
     await page.close();
   });
 
@@ -177,7 +177,8 @@ if (!existsSync(PLAYWRIGHT)) {
     const pub = await shownCards(page);
     assert.equal(pub.includes('cdwagent'), false, 'a private extension answered the Public chip');
     assert.equal(pub.includes('ucsfomopagent'), false);
-    assert.equal(pub.length, all.length - 2, 'Public must be exactly everything that is not private');
+    assert.equal(pub.includes('gptragent'), false);
+    assert.equal(pub.length, all.length - 3, 'Public must be exactly everything that is not private');
 
     // Both selected is a union inside one facet, not an impossible AND.
     await page.click(PRIVATE);
@@ -260,8 +261,8 @@ if (!existsSync(PLAYWRIGHT)) {
     // Without JS nothing re-renders and nothing trims, so whatever the markup
     // says is what a visitor reads — and an unbadged card there reads as "not yet
     // reviewed" rather than "public", which is exactly the ambiguity the badge
-    // was added to remove. Badging only the two private cards leaves the other
-    // 35 saying nothing.
+    // was added to remove. Badging only the three private cards leaves the other
+    // 25 saying nothing.
     const ctx = await browser.newContext({ javaScriptEnabled: false });
     for (const width of [1280, 390]) {
       const page = await ctx.newPage();
@@ -270,8 +271,8 @@ if (!existsSync(PLAYWRIGHT)) {
 
       assert.equal(
         await page.locator('.ext-card[data-privacy="private"] .tag.private').count(),
-        2,
-        'the two private cards must declare their tier in markup'
+        3,
+        'the three private cards must declare their tier in markup'
       );
 
       const wrong = await page.$$eval('#extensions-section .ext-card', (els) =>
@@ -446,7 +447,7 @@ if (!existsSync(PLAYWRIGHT)) {
     // …and the fallback is intact, not a blank shelf.
     assert.equal(
       await page.locator('.ext-card[data-privacy="private"] .tag.private').count(),
-      2
+      3
     );
     await page.close();
   });
@@ -477,7 +478,7 @@ if (!existsSync(PLAYWRIGHT)) {
       );
       assert.equal(
         await page.locator('.ext-card[data-privacy="private"] .tag.private').count(),
-        2,
+        3,
         'the fallback is the authored cards, not a blank shelf'
       );
       await page.close();

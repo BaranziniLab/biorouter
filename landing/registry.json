@@ -1033,7 +1033,8 @@
         "risk",
         "bias",
         "evidence",
-        "apache"
+        "apache",
+        "meta-analysis"
       ],
       "download": "https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-systematic-review-prisma/systematic-review-prisma.zip",
       "filename": "systematic-review-prisma.zip",
