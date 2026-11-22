@@ -9,8 +9,8 @@
       "id": "cdwagent",
       "name": "CDWAgent",
       "organization": "BaranziniLab · UCSF",
-      "version": "v0.5.1",
-      "description": "Multimodal access to the UCSF Clinical Data Warehouse through natural language. One-call cohort building across diagnoses, medications, procedures, labs, radiology/imaging, immunizations, allergies, and vitals; clinical-notes/NLP search; read-only queries, schema discovery, and structured results. Requires UCSF network credentials (CAMPUS\\username and password).",
+      "version": "v0.7.0",
+      "description": "Multimodal access to the UCSF Clinical Data Warehouse through natural language. One-call cohort building across diagnoses, medications, procedures, labs, radiology/imaging, immunizations, allergies, and vitals; clinical-notes/NLP search; read-only queries, schema discovery, and structured results. 28 tools, including durable query jobs for long exports. Requires UCSF network credentials (CAMPUS\\username and password).",
       "tags": [
         "UCSF",
         "MCP",
@@ -18,7 +18,7 @@
         "Clinical"
       ],
       "github": "https://github.com/BaranziniLab/CDWAgent",
-      "download": "https://github.com/BaranziniLab/CDWAgent/releases/download/v0.5.1-brxt/cdwagent.brxt",
+      "download": "https://github.com/BaranziniLab/CDWAgent/releases/download/v0.7.0/cdwagent.brxt",
       "filename": "cdwagent.brxt",
       "license": "Apache-2.0",
       "privacy": "private",
@@ -31,8 +31,8 @@
       "id": "ucsfomopagent",
       "name": "UCSFOMOPAgent",
       "organization": "BaranziniLab · UCSF",
-      "version": "v0.2.0",
-      "description": "Natural language SQL on the UCSF OMOP de-identified clinical database. Read-only access to standardized EHR data under the OMOP Common Data Model. v0.2.0 adds built-in OMOP/SQL-Server context plus concept-search, lab-finder, and live schema tools so the agent reaches the right data faster and more reliably. Requires UCSF credentials.",
+      "version": "v0.4.0",
+      "description": "Natural language SQL on the UCSF OMOP de-identified clinical database. Read-only access to standardized EHR data under the OMOP Common Data Model. 11 tools: built-in OMOP/SQL-Server context, concept search, a lab finder, live schema tools, and durable query jobs for long exports. Requires UCSF credentials.",
       "tags": [
         "UCSF",
         "MCP",
@@ -40,7 +40,7 @@
         "EHR"
       ],
       "github": "https://github.com/BaranziniLab/UCSFOMOPAgent",
-      "download": "https://github.com/BaranziniLab/UCSFOMOPAgent/releases/download/v0.2.0-brxt/ucsfomopagent.brxt",
+      "download": "https://github.com/BaranziniLab/UCSFOMOPAgent/releases/download/v0.4.0/ucsfomopagent.brxt",
       "filename": "ucsfomopagent.brxt",
       "license": "Apache-2.0",
       "privacy": "private",
