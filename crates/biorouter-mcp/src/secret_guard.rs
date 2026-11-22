@@ -1769,16 +1769,26 @@ mod tests {
     /// a path root can still reach the person's real extensions.
     #[test]
     fn the_extensions_folder_follows_biorouter_path_root() {
-        let platform = Path::new("/home/u/.config/biorouter");
+        // Absolute on this platform: the resolver keeps absolute folders only, and
+        // `/home/u` has no drive on Windows.
+        let absolute = |unix: &str| {
+            if cfg!(windows) {
+                PathBuf::from(format!("C:{}", unix.replace('/', "\\")))
+            } else {
+                PathBuf::from(unix)
+            }
+        };
+        let platform = absolute("/home/u/.config/biorouter");
+        let sandbox = absolute("/srv/sandbox");
         assert_eq!(
-            resolve_extension_roots(None, Some(platform)),
-            vec![PathBuf::from("/home/u/.config/biorouter/extensions")]
+            resolve_extension_roots(None, Some(&platform)),
+            vec![platform.join("extensions")]
         );
         assert_eq!(
-            resolve_extension_roots(Some("/srv/sandbox"), Some(platform)),
+            resolve_extension_roots(Some(&sandbox.to_string_lossy()), Some(&platform)),
             vec![
-                PathBuf::from("/srv/sandbox/config/extensions"),
-                PathBuf::from("/home/u/.config/biorouter/extensions"),
+                sandbox.join("config").join("extensions"),
+                platform.join("extensions"),
             ]
         );
 
