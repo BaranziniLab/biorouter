@@ -121,6 +121,16 @@ if (!existsSync(PLAYWRIGHT)) {
   /** A page with the registry-rendered shelf already in the DOM. */
   async function shelfPage(width = 1280) {
     const page = await browser.newPage({ viewport: { width, height: 900 } });
+    // site.js refreshes the release number from the GitHub API when it answers.
+    // Answer it ourselves, so the page is painted the same way with and without
+    // a network (a card's chips were wiped only where the call succeeded: CI).
+    await page.route('https://api.github.com/**', (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({ tag_name: 'v9.9.9' }),
+      })
+    );
     await page.goto(`${BASE}/baam.html`);
     // renderExtensions() empties the static grid once the registry lands.
     await page.waitForSelector('#ext-featured .ext-card');
@@ -661,6 +671,16 @@ if (!existsSync(PLAYWRIGHT)) {
       ).length
     );
     assert.ok(chipped >= 2, `only ${chipped} skill cards wear their own licence as a chip`);
+
+    // The release-number refresh must reach the release slots only. Wait for it
+    // (the index page's link and the download page's span share its hook), then
+    // check that no card was rewritten to the release number.
+    const wiped = await page.evaluate(() =>
+      [...document.querySelectorAll('#skills-section .skill-card')].filter(
+        (card) => !card.querySelector('.tag') || card.textContent.trim() === '9.9.9'
+      ).length
+    );
+    assert.equal(wiped, 0, 'skill cards were rewritten to the release number by site.js');
 
     await page.fill('#baam-search', 'apache');
     assert.equal(await visibleSkills(), 0, 'a licence keyword matched skill cards');
