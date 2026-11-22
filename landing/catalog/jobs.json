@@ -1,0 +1,329 @@
+{
+  "format": 1,
+  "description": "Job vocabulary, built-in Biorouter jobs, required jobs (the gap list) and the look-alike screen settings. See docs/extensions/baam-catalog.md.",
+  "vocabulary": {
+    "rule": "A job is <domain>.<task>, lowercase, dotted. An extension names access to a service; a skill names a method; a bundled adapter skill ends in .tool-usage and names its method_skill; a bundle component is <bundle job>.<component folder>.",
+    "domains": [
+      "agent",
+      "analysis",
+      "apps",
+      "bio",
+      "biomedical",
+      "biorouter",
+      "browser",
+      "chemistry",
+      "clinical",
+      "code",
+      "compute",
+      "data",
+      "design",
+      "desktop",
+      "devops",
+      "documents",
+      "econ",
+      "engineering",
+      "evaluation",
+      "evidence",
+      "extension",
+      "figures",
+      "geo",
+      "git",
+      "imaging",
+      "julia",
+      "knowledge",
+      "knowledge-graph",
+      "lab",
+      "literature",
+      "ml",
+      "modeling",
+      "neuro",
+      "office",
+      "optimization",
+      "physics",
+      "publishing",
+      "python",
+      "quality",
+      "r",
+      "references",
+      "reproducibility",
+      "research",
+      "shell",
+      "skill",
+      "social",
+      "stats",
+      "terminology",
+      "writing"
+    ]
+  },
+  "similarity_threshold": 0.115,
+  "component_similarity_threshold": 0.4,
+  "generic_words": [
+    "skill",
+    "agent",
+    "biorouter",
+    "analysis",
+    "workflow",
+    "data",
+    "research",
+    "tool",
+    "apache",
+    "mcp",
+    "plan",
+    "planning",
+    "review",
+    "style",
+    "user",
+    "check",
+    "access",
+    "guarded",
+    "metadata",
+    "scientific",
+    "design",
+    "model",
+    "report",
+    "provenance",
+    "structure",
+    "api",
+    "adapter",
+    "file",
+    "read",
+    "call",
+    "run",
+    "project",
+    "across",
+    "work",
+    "task",
+    "ask",
+    "command",
+    "request",
+    "handle",
+    "system",
+    "result",
+    "support",
+    "help",
+    "need",
+    "want",
+    "make",
+    "build",
+    "create",
+    "write",
+    "include",
+    "provide"
+  ],
+  "builtin": [
+    {
+      "job": "shell.local-command",
+      "owner": "Developer (extension developer)"
+    },
+    {
+      "job": "documents.read-and-basic-write",
+      "owner": "Web & Documents (extension webdocuments)"
+    },
+    {
+      "job": "knowledge.notebook-over-sources",
+      "owner": "Knowledge (extension knowledge)"
+    },
+    {
+      "job": "memory.long-term-notes",
+      "owner": "Memory (extension memory)"
+    },
+    {
+      "job": "figures.interactive-render",
+      "owner": "Auto Visualiser (extension autovisualiser)"
+    },
+    {
+      "job": "browser.desktop-interactive",
+      "owner": "Biorouter Browser"
+    },
+    {
+      "job": "desktop.native-app-control",
+      "owner": "Biorouter Copilot (extension computercontroller)"
+    },
+    {
+      "job": "apps.agent-driven-apps",
+      "owner": "Agent Drafter (extension agent_drafter)"
+    },
+    {
+      "job": "skill.authoring",
+      "owner": "built-in skill develop-biorouter-skill"
+    },
+    {
+      "job": "extension.authoring",
+      "owner": "built-in skill develop-biorouter-extension"
+    },
+    {
+      "job": "biorouter.development",
+      "owner": "built-in skill develop-biorouter"
+    },
+    {
+      "job": "biorouter.self-help",
+      "owner": "built-in skill about-biorouter"
+    },
+    {
+      "job": "knowledge.base-formats",
+      "owner": "built-in bundle knowledge-bases"
+    },
+    {
+      "job": "office.word",
+      "owner": "built-in skill office-word"
+    },
+    {
+      "job": "office.excel",
+      "owner": "built-in skill office-excel"
+    },
+    {
+      "job": "office.powerpoint",
+      "owner": "built-in skill office-powerpoint"
+    },
+    {
+      "job": "office.pdf",
+      "owner": "built-in skill office-pdf"
+    }
+  ],
+  "required": [
+    {
+      "job": "r.live-session",
+      "why": "work inside the R session a person already has open",
+      "owner": "gptragent",
+      "planned": null
+    },
+    {
+      "job": "r.package-development",
+      "why": "build, test and release R packages",
+      "owner": "r-package-development",
+      "planned": "this round, WP-18a"
+    },
+    {
+      "job": "r.fast-data",
+      "why": "fast in-memory R (data.table, collapse, arrow)",
+      "owner": "high-performance-r",
+      "planned": "this round, WP-18a"
+    },
+    {
+      "job": "python.packaging-testing-docs",
+      "why": "package, test and document scientific Python",
+      "owner": "scientific-python-development",
+      "planned": "this round, WP-18a"
+    },
+    {
+      "job": "julia.development",
+      "why": "Julia package work",
+      "owner": "julia-development",
+      "planned": "this round, WP-18a"
+    },
+    {
+      "job": "writing.manuscript-drafting",
+      "why": "draft a manuscript section from results",
+      "owner": "scientific-manuscript-writing",
+      "planned": "this round, WP-18b"
+    },
+    {
+      "job": "writing.peer-review-and-response",
+      "why": "referee a paper and answer reviewers of one's own",
+      "owner": "manuscript-peer-review",
+      "planned": "this round, WP-18b"
+    },
+    {
+      "job": "writing.prose-line-edit",
+      "why": "line-edit scientific prose",
+      "owner": "scientific-prose-review",
+      "planned": "this round, WP-18b (CC-BY-4.0, decision 12)"
+    },
+    {
+      "job": "evidence.systematic-review-and-meta-analysis",
+      "why": "PRISMA reviews and meta-analysis",
+      "owner": "systematic-review-prisma",
+      "planned": null
+    },
+    {
+      "job": "analysis.exploratory",
+      "why": "first look at a new dataset",
+      "owner": "exploratory-data-analysis",
+      "planned": "this round, WP-18b"
+    },
+    {
+      "job": "figures.r-style",
+      "why": "one canonical R plotting style",
+      "owner": "ggplot-visualization",
+      "planned": null
+    },
+    {
+      "job": "figures.python-style",
+      "why": "one canonical Python plotting style",
+      "owner": "python-visualization",
+      "planned": "this round, WP-18b"
+    },
+    {
+      "job": "figures.rendered-qa",
+      "why": "check a rendered figure before it ships",
+      "owner": "figure-qa",
+      "planned": "this round, WP-18b"
+    },
+    {
+      "job": "apps.interactive-dashboards",
+      "why": "Shiny and Streamlit dashboards",
+      "owner": "interactive-dashboards",
+      "planned": "this round, WP-18b"
+    },
+    {
+      "job": "clinical.deidentification",
+      "why": "strip PHI before data leaves a private chat",
+      "owner": "phi-deidentification",
+      "planned": "WP-18c, after the owner names the security reviewer (decision 14)"
+    },
+    {
+      "job": "terminology.ontology-mapping",
+      "why": "map free text to ontology terms",
+      "owner": "database-access/ontology-term-resolution",
+      "planned": "this round, WP-15"
+    },
+    {
+      "job": "imaging.microscopy-analysis",
+      "why": "segment and measure microscopy images",
+      "owner": "microscopy-image-analysis",
+      "planned": "this round, WP-18b"
+    },
+    {
+      "job": "code.security-review",
+      "why": "a security pass over a change",
+      "owner": "code-review",
+      "planned": null
+    },
+    {
+      "job": "data.management-and-sharing-plan",
+      "why": "NIH DMS plans",
+      "owner": null,
+      "planned": "next round, native skill"
+    },
+    {
+      "job": "evaluation.biomedical-llm-agents",
+      "why": "evaluate biomedical LLM agents",
+      "owner": null,
+      "planned": "next round, native skill"
+    },
+    {
+      "job": "devops.containers-and-ci",
+      "why": "containers and CI for research code",
+      "owner": null,
+      "planned": "next round, native skill"
+    },
+    {
+      "job": "python.sql-duckdb-analytics",
+      "why": "SQL analytics on local files with DuckDB",
+      "owner": null,
+      "planned": "next round, native skill"
+    },
+    {
+      "job": "julia.live-session",
+      "why": "work inside a running Julia session",
+      "owner": "juliaagent",
+      "planned": "next round, juliaagent on aplavin/julia-mcp (MIT)"
+    },
+    {
+      "job": "python.live-kernel",
+      "why": "work inside a running Python kernel",
+      "owner": null,
+      "planned": "later, no candidate yet"
+    }
+  ]
+}

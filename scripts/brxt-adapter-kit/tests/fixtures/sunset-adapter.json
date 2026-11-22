@@ -1,0 +1,40 @@
+{
+  "kit_spec": 1,
+  "version": "0.2.0",
+  "manifest": {
+    "name": "oldsearchagent",
+    "display_name": "OldSearchAgent",
+    "description": "Sample sunset release: the working adapter plus a notice. It exists to test the kit and is never published.",
+    "repository": "https://github.com/BaranziniLab/OldSearchAgent",
+    "env_vars": [
+      {"key": "OLDSEARCH_KEY", "required": false, "auto_propagate": false, "description": "Optional API key", "secret": true},
+      {"key": "OLDSEARCH_LOG_LEVEL", "required": false, "auto_propagate": true, "default": "INFO", "description": "Logging level", "secret": false}
+    ]
+  },
+  "adapter": {
+    "kit_spec": 1,
+    "service": "oldsearch",
+    "service_title": "Old search API",
+    "kind": "sunset",
+    "log_level_env": "OLDSEARCH_LOG_LEVEL",
+    "notice": {
+      "status": "superseded_by",
+      "replacement": "LiteratureAgent",
+      "replacement_id": "literatureagent",
+      "reason": "Its searches are now part of the one scholarly search extension.",
+      "use_instead": "Install LiteratureAgent from BAAM and use literature_get."
+    },
+    "targets": [
+      {
+        "name": "search",
+        "base_url": "https://api.oldsearch.example/graph/v1",
+        "credential": {"env": "OLDSEARCH_KEY", "scheme": "header", "header_name": "x-api-key", "required": false},
+        "get_routes": ["/paper/search", "/paper/*"],
+        "examples": ["/paper/search"]
+      }
+    ]
+  },
+  "skills": [
+    {"name": "old-search-evidence", "form": "moved", "moved_to": "literatureagent"}
+  ]
+}

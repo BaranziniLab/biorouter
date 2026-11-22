@@ -1,0 +1,27 @@
+---
+name: @@SKILL_NAME@@
+description: @@SKILL_DESCRIPTION_JSON@@
+---
+
+# @@SKILL_TITLE@@
+
+This skill says how to call the @@DISPLAY_NAME@@ extension's tools. @@METHOD_SENTENCE@@
+
+## Tools
+
+@@TOOLS_LIST@@
+
+## Targets
+
+@@TARGETS_TABLE@@
+
+## Rules
+
+- Call `@@SERVICE@@_status` first. It shows which targets are configured and which
+  settings are missing, without showing any value.
+- Pass `path` relative to the target's base URL, for example `@@EXAMPLE_PATH@@`. Put
+  query values in `query`, not in the path.
+- A full URL is accepted only on the target's own host. The extension refuses any
+  other host, so do not try to reach other services through it.
+- Never put a credential in a tool argument. The extension attaches it.
+@@WRITE_RULE@@

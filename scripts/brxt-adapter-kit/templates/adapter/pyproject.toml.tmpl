@@ -1,0 +1,29 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "@@ID@@"
+version = "@@VERSION@@"
+description = @@DESCRIPTION_TOML@@
+readme = "README.md"
+license = {text = "@@LICENSE@@"}
+authors = @@AUTHORS_TOML@@
+requires-python = ">=3.11"
+dependencies = [
+    "fastmcp>=4.0,<5",
+    "httpx>=0.28.1,<1",
+    "pydantic>=2.11.7,<3",
+]
+
+[project.scripts]
+@@ID@@ = "@@PKG@@.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/@@PKG@@"]
+
+[tool.uv]
+# cryptography (pulled in by fastmcp) has no Intel Mac wheels from 49 on.
+constraint-dependencies = [
+    "cryptography<49; sys_platform == 'darwin' and platform_machine == 'x86_64'",
+]

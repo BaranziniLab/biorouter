@@ -79,6 +79,15 @@ jobs:
       - name: Check the three registry outputs are what baam.html generates
         run: node landing/scripts/build-registry.mjs --check
 
+      # The BAAM catalogs (landing/catalog/): the mutant suite first, then the
+      # check, which also fetches biorouter-skills catalog.json at the commit
+      # skills.json records and refuses a mirror that differs from it.
+      - name: Check the BAAM catalog checker still catches what it must
+        run: node --test landing/scripts/check-catalog.test.mjs
+
+      - name: Check the BAAM catalogs agree with the page and with biorouter-skills
+        run: node landing/scripts/check-catalog.mjs --remote
+
       # The two checks above are about the CATALOG. This one is about the PAGE
       # that is being published: the privacy facet, the tier badges in both the
       # rendered and the no-JS view, and the tag row that deletes rather than

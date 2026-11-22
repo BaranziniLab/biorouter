@@ -52,8 +52,32 @@
     return null;
   }
 
+  /* A search for the id or name of an item that moved or retired says where
+     it went, from the Moved and retired list (#baam-moved). The replacement's
+     card also carries the old name, so the search itself lands on it. */
+  function squash(s) { return String(s || '').toLowerCase().replace(/[^a-z0-9]/g, ''); }
+  function movedNote(q) {
+    const el = document.getElementById('baam-moved-note');
+    if (!el) return;
+    const k = squash(q);
+    let hit = null;
+    if (k.length >= 4) {
+      document.querySelectorAll('#baam-moved li[data-moved-id]').forEach(li => {
+        if (hit) return;
+        const name = li.dataset.movedName || '';
+        if (squash(li.dataset.movedId) === k || squash(name) === k) hit = li;
+      });
+    }
+    if (!hit) { el.hidden = true; el.textContent = ''; return; }
+    const name = hit.dataset.movedName || hit.dataset.movedId;
+    const toName = hit.dataset.movedToName || '';
+    el.textContent = toName ? name + ' is now part of ' + toName + '.' : name + ' is retired. See Moved and retired, below.';
+    el.hidden = false;
+  }
+
   function runFilter() {
     const q = (document.getElementById('baam-search').value || '').toLowerCase().trim();
+    movedNote(q);
     if (activeShelf === 'extensions') filterExtensions(q);
     else if (activeShelf === 'skills') filterSkills(q);
     else filterWorkflows(q);
@@ -103,9 +127,9 @@
     var version = '';
     if (org) {
       var orgText = String(org.textContent);
-      var tail = /[·|]\s*(v[\d.]+)\s*$/.exec(orgText);
+      var tail = /[·|]\s*(v[\d.]+(?:\+[0-9A-Za-z.-]+)?)\s*$/.exec(orgText);
       if (tail) version = tail[1];
-      fields.push([orgText.replace(/[·|]\s*v[\d.]+\s*$/, ''), W.Label]);
+      fields.push([orgText.replace(/[·|]\s*v[\d.]+(?:\+[0-9A-Za-z.-]+)?\s*$/, ''), W.Label]);
     }
     // ⚠ Not `data-tags` as it stands. That blob is
     // `name + organization + version + description + tags`, so it carries the
@@ -625,6 +649,17 @@
       if (!cat) { const g = card.closest('[data-cat]'); cat = g ? g.dataset.cat : ''; }
       card._cat = cat || '';
       if (card._cat === 'biomedical') bioGlyph(card);
+      // The catalog version (data-version), as a small chip after the type
+      // line. A sibling of .skill-type, not inside it: the type line is a
+      // searched field and the version is not.
+      const ver = card.dataset.version;
+      const meta = card.querySelector('.skill-meta');
+      if (ver && meta && !meta.querySelector('.skill-ver')) {
+        const chip = document.createElement('span');
+        chip.className = 'skill-ver';
+        chip.textContent = 'v' + ver;
+        meta.appendChild(chip);
+      }
     });
     document.querySelectorAll('#skills-section .show-all-btn').forEach(btn => {
       btn.setAttribute('aria-expanded', 'false');

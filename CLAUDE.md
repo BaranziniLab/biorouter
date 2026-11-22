@@ -2659,10 +2659,15 @@ These are pluggable MCP extensions distributed via the marketplace; each lives i
 | **UCSFOMOPAgent** | Natural-language SQL over the UCSF OMOP de-identified clinical database (OMOP CDM EHR data, read-only). | https://github.com/BaranziniLab/UCSFOMOPAgent | Requires UCSF credentials. |
 | **CDWAgent** | Multimodal natural-language access to the UCSF Clinical Data Warehouse (cohorts, labs, imaging, notes/NLP); read-only. | https://github.com/BaranziniLab/CDWAgent | Requires UCSF network credentials (`CAMPUS\username`). |
 | **PlaywrightAgent** | Browser automation via Microsoft's `@playwright/mcp` (navigate, extract, fill forms); no vision model needed, needs Node.js. | https://github.com/BaranziniLab/PlaywrightAgent | |
-| **CodeGraphAgent** | Pre-indexed code knowledge graph ("who calls X?", "what breaks if I change Z?") across 23 languages incl. R/Julia/MATLAB/Perl; tree-sitter fork of CodeGraph. | https://github.com/Broccolito/CodeGraphAgent | Broccolito org. |
-| **BiorOffice** | Create/read/edit Word/Excel/PowerPoint from chat (built on OfficeCLI, no MS Office needed); ships four bundled office skills. | https://github.com/Broccolito/BiorOffice | Broccolito org. |
+| **CodeGraphAgent** | Code knowledge graph of one project (explore, symbol lookup, search, callers) on upstream CodeGraph 1.6.4, about 30 languages; never indexes `$HOME`. | https://github.com/Broccolito/CodeGraphAgent | Broccolito org. |
+| **BiorOffice** | Create/read/edit Word/Excel/PowerPoint from chat (built on OfficeCLI 1.0.163, no MS Office needed); ships four bundled office skills. | https://github.com/BaranziniLab/BiorOffice | Moved from the Broccolito org in 1.1.0; the old URL redirects. |
+| **GptrAgent** (gptr Agent) | Works inside an R session the person already has open, through the gptr package (inspect, analyse, plot, fix objects in memory). | https://github.com/Broccolito/GptrAgent | **Private** with no institution (the third entry of the closed private set in `build-registry.mjs`). Needs gptr 1.1 or later. |
+| **BioMCPAgent** | Entity-centred biomedical search with BioMCP 0.9.3 (genes, variants, drugs, trials across ClinVar, MyVariant, ClinicalTrials.gov, OncoKB and more); replaces ClinicalVariantAgent. | https://github.com/BaranziniLab/BioMCPAgent | Each data source's own terms apply. |
+| **OpenComputerUseAgent** | Fallback desktop control on Open Computer Use 1.1.5 where the built-in Biorouter Copilot does not work (for example Linux with at-spi2-core older than 2.52). | https://github.com/BaranziniLab/OpenComputerUseAgent | Needs Biorouter 1.94.6 or later. |
 
-### Skill packs (`biorouter-skills`, ~85 skills)
+### Skill packs (`biorouter-skills`, 132 skills)
+
+The tracked source of truth for every BAAM extension and skill, active or not, is `landing/catalog/` (`extensions.json`, `skills.json`, the mirror of biorouter-skills `catalog.json`, and `jobs.json`), checked by `landing/scripts/check-catalog.mjs`; see [`docs/extensions/baam-catalog.md`](docs/extensions/baam-catalog.md). The 28 active extensions also include the 19 BRXT adapters, which are not listed one by one here. The list below is older and only illustrative.
 
 All skills are published as releases of **`BaranziniLab/biorouter-skills`** (asset path `releases/download/skill-<id>/<id>.zip`). Grouped by category in `registry.json`:
 

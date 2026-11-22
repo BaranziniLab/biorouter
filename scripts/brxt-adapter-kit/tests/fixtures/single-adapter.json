@@ -1,0 +1,29 @@
+{
+  "kit_spec": 1,
+  "version": "0.2.0",
+  "manifest": {
+    "name": "singleagent",
+    "display_name": "SingleAgent",
+    "description": "Read only sample adapter with one target. It exists to test the kit and is never published.",
+    "repository": "https://github.com/BaranziniLab/SingleAgent",
+    "env_vars": [
+      {"key": "SINGLE_TOKEN", "required": true, "auto_propagate": false, "description": "Single API token", "secret": true}
+    ]
+  },
+  "adapter": {
+    "kit_spec": 1,
+    "service": "single",
+    "service_title": "Single API",
+    "kind": "adapter",
+    "targets": [
+      {
+        "name": "single",
+        "base_url": "https://api.single.example/v3",
+        "credential": {"env": "SINGLE_TOKEN", "scheme": "header", "header_name": "Authorization", "value_prefix": "Token "},
+        "get_routes": ["/records/*", "/search"],
+        "examples": ["/search"]
+      }
+    ]
+  },
+  "skills": []
+}

@@ -533,11 +533,14 @@ if (!existsSync(PLAYWRIGHT)) {
     // and `age` 36 each (through an infix of `…Agent` in the heading).
     const page = await shelfPage();
     const total = await page.$$eval('#extensions-section .ext-card', (els) => els.length);
-    assert.ok(total >= 30, `measured against 37 cards; now ${total}`);
+    assert.ok(total >= 25, `measured against 37 cards, 28 after the November 2026 refresh; now ${total}`);
     for (const [query, was] of [['lab', 37], ['gen', 36], ['age', 36]]) {
       const shown = await search(page, query, EXTS);
+      // Ten, not eight, since the November 2026 refresh: `gen` is more than half
+      // of the word "Agent", so each card named "… Agent" as a word answers it,
+      // and the refresh added two. Still a handful, which is what this pins.
       assert.ok(
-        shown.length <= 8,
+        shown.length <= 10,
         `"${query}" showed ${shown.length} of ${total} cards (${was} before): ${shown.join(', ')}`
       );
     }

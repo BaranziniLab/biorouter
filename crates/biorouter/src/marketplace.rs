@@ -846,14 +846,14 @@ mod tests {
         let spoke = catalog
             .resolve_extension_for_install("spokeagent", ProviderTier::Public)
             .unwrap();
-        // ⚠ The ID carries no version; the ASSET does. A registry id is a name,
-        // and SPOKEAgent's used to be `spokeagent-0.4.1` — which the descriptor
-        // then advertised as the extension's name, while the extension that
-        // installs is `spokeagent`. The release asset really is versioned on
-        // GitHub, so `filename`/`download` keep the version and only the name
-        // loses it.
-        assert_eq!(spoke.version, "v0.4.1");
-        assert_eq!(spoke.filename, "spokeagent-0.4.1.brxt");
+        // ⚠ The ID carries no version. A registry id is a name, and SPOKEAgent's
+        // used to be `spokeagent-0.4.1` — which the descriptor then advertised
+        // as the extension's name, while the extension that installs is
+        // `spokeagent`. Through v0.4.1 the card downloaded the versioned asset
+        // `spokeagent-0.4.1.brxt`; from v0.5.0 it downloads the release's
+        // unversioned `spokeagent.brxt`, and the id stays `spokeagent` either way.
+        assert_eq!(spoke.version, "v0.5.0");
+        assert_eq!(spoke.filename, "spokeagent.brxt");
         assert_eq!(spoke.extension_name, "spokeagent");
         assert!(
             spoke.advertises_name,
@@ -1165,7 +1165,7 @@ mod tests {
         }
         let pacs_extensions =
             extension_ids(&catalog.search_extensions(ProviderTier::Private, "PACS"));
-        for licence_only in ["benchlingagent", "dnanexusagent", "omeroagent"] {
+        for licence_only in ["benchlingagent", "dnanexusagent", "protocolsioagent"] {
             assert!(
                 !pacs_extensions.contains(&licence_only.to_owned()),
                 "`{licence_only}` is not about PACS; its only `pac` is `Apache-2.0`: \
@@ -1203,8 +1203,9 @@ mod tests {
         let catalog = MarketplaceCatalog::from_bytes(EMBEDDED_REGISTRY).unwrap();
         let shelf = catalog.browse_extensions(ProviderTier::Private).len();
         // The shelf shrinks and grows as extensions are withdrawn, retired and restored
-        // (37 when this was measured, 27 after the 2026-11-21 key-binding withdrawal), so
-        // the floors below are relative: enough entries that a handful is not the shelf.
+        // (37 when this was measured, 27 after the 2026-11-21 key-binding withdrawal, 28 after
+        // the November 2026 refresh), so the floors below are relative: enough entries that a
+        // handful is not the shelf.
         assert!(shelf >= 20, "measured against 37 entries; now {shelf}");
 
         // Guard: the words the flood came through are still in the catalog, so a
@@ -1230,8 +1231,12 @@ mod tests {
             let now = catalog
                 .search_extensions(ProviderTier::Private, query)
                 .len();
+            // Ten, not eight, since the November 2026 refresh: `gen` is more than
+            // half of the word `Agent`, so every card NAMED "… Agent" as a word
+            // answers it, and the refresh added two (gptr Agent, Open Computer Use
+            // Agent). Still a handful, which is what this pins.
             assert!(
-                now <= 8,
+                now <= 10,
                 "`{query}` returned {now} of {shelf}; it returned {was} before an unanchored \
                  match had to be four characters or half its word"
             );

@@ -1,0 +1,27 @@
+{
+  "kit_spec": 1,
+  "version": "0.2.0",
+  "manifest": {
+    "name": "retiredagent",
+    "display_name": "RetiredAgent",
+    "description": "Sample tombstone release: one status tool that says the extension is retired. It exists to test the kit and is never published.",
+    "repository": "https://github.com/BaranziniLab/RetiredAgent",
+    "env_vars": []
+  },
+  "adapter": {
+    "kit_spec": 1,
+    "service": "retired",
+    "service_title": "Retired lab service",
+    "kind": "tombstone",
+    "notice": {
+      "status": "retired",
+      "date": "2026-11-21",
+      "reason": "The service it called has no public API.",
+      "use_instead": "The laboratory-automation-planning skill in BAAM."
+    }
+  },
+  "skills": [
+    {"name": "retired-lab-runs", "form": "moved", "moved_to": "laboratory-automation-planning"},
+    {"name": "retired-protocols", "form": "moved", "moved_to": "laboratory-automation-planning"}
+  ]
+}

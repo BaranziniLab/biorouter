@@ -67,7 +67,7 @@ scope, portability decisions, and verification commands.
 
 ## Where skills come from
 
-You can write skills yourself, or install ready-made ones. Most users do the latter: BioRouter's marketplace, **BAAM**, publishes a catalogue of installable extensions and skills that the app can install in one click, and the skills themselves live in the `BaranziniLab/biorouter-skills` repository — around 85 of them, grouped into core, developer and biomedical categories (single-cell, variant calling, differential expression, pathway analysis, clinical biostatistics, and so on). Browse them on the [BAAM skills gallery](http://biorouter.ucsf.edu/skills.html).
+You can write skills yourself, or install ready-made ones. Most users do the latter: BioRouter's marketplace, **BAAM**, publishes a catalogue of installable extensions and skills that the app can install in one click, and the skills themselves live in the `BaranziniLab/biorouter-skills` repository — 132 of them, grouped into core, developer and biomedical categories (the 63 biomedical ones are packages of 570 skills) (single-cell, variant calling, differential expression, pathway analysis, clinical biostatistics, and so on). Browse them on the [BAAM skills gallery](http://biorouter.ucsf.edu/skills.html).
 
 > **Note.** A skill's identity comes from the `name` in its frontmatter, not from its directory name. BioRouter parses each `SKILL.md` and keys the skill by `metadata.name`, so a skill stored in `run-gwas/` but declaring `name: gwas-pipeline` is known to BioRouter as `gwas-pipeline`. Keeping the two the same avoids confusion, but the frontmatter is what wins.
 

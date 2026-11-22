@@ -1,0 +1,49 @@
+"""@@DISPLAY_NAME@@ MCP server.
+
+The service surface (targets, credentials, routes, instructions and any notice)
+is declared in adapter.json. The HTTP rules live in the vendored kit under
+_kit/; never edit those files here, change the kit and vendor it again.
+
+Add typed tools for this service in register_extra_tools. A typed tool that
+reaches the network uses the kit's SafeHttpClient, never httpx or requests
+directly, and no tool runs a local command: the Developer shell is the one
+command runner in Biorouter.
+"""
+
+import logging
+import os
+from importlib import resources
+
+from fastmcp import FastMCP
+
+from @@PKG@@ import __version__
+from @@PKG@@._kit.spec import AdapterSpec, load_adapter_spec
+from @@PKG@@._kit.tools import build_server
+
+LOG_LEVEL_ENV = "@@LOG_ENV@@"
+
+
+def load_spec() -> AdapterSpec:
+    text = resources.files("@@PKG@@").joinpath("adapter.json").read_text(encoding="utf-8")
+    return load_adapter_spec(text)
+
+
+def register_extra_tools(mcp: FastMCP, spec: AdapterSpec) -> None:
+    """Typed tools for this service. None by default."""
+
+
+def create_server() -> FastMCP:
+    spec = load_spec()
+    mcp = build_server(spec, version=__version__)
+    register_extra_tools(mcp, spec)
+    return mcp
+
+
+def main() -> None:
+    level = os.getenv(LOG_LEVEL_ENV, "INFO").upper() if LOG_LEVEL_ENV else "INFO"
+    logging.basicConfig(level=getattr(logging, level, logging.INFO))
+    create_server().run(transport="stdio", show_banner=False)
+
+
+if __name__ == "__main__":
+    main()

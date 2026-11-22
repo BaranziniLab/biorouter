@@ -1,0 +1,54 @@
+# @@DISPLAY_NAME@@
+
+@@DESCRIPTION@@
+
+Current version: **@@VERSION@@**
+
+@@NOTICE_BLOCK@@@@INTRO@@This is a Biorouter extension (a `.brxt` bundle) built on the BRXT adapter kit
+@@KIT_VERSION@@. Install it from BAAM in Biorouter, or from a file:
+
+```bash
+biorouter extension install dist/@@ID@@.brxt
+```
+
+## Tools
+
+@@TOOLS_LIST@@
+
+## Targets
+
+@@TARGETS_TABLE@@
+
+## Settings
+
+@@SETTINGS_TABLE@@
+
+## How it protects your credentials
+
+- Each credential is attached only to requests for its own target's host. A full URL
+  that names another host, a path starting with `//`, plain `http` and a redirect to
+  another host are all refused, so a prompt that names a URL cannot move a key off
+  the service it belongs to.
+- Reads use `GET`, or `POST` on the routes declared as reads. Writes go through a
+  separate tool that Biorouter asks you to approve every time, and only to declared
+  routes.
+- The extension never runs a local command. Use Biorouter's Developer shell for that.
+- Credential values never appear in tool results, error messages or logs.
+
+## Develop and release
+
+```bash
+uv sync
+uv run python -m unittest discover -s tests -v   # contract tests and leak suite
+uv run python scripts/build_brxt.py               # writes dist/@@ID@@.brxt and SHA256SUMS
+uv run python scripts/version.py X.Y.Z            # moves every version string together
+```
+
+Push a tag `vX.Y.Z` equal to the manifest version to publish a release. The release
+workflow refuses any other tag. Do not edit `src/@@PKG@@/_kit/` or `tests/kit_testing/`:
+they are vendored from the kit in the Biorouter repository
+(`scripts/brxt-adapter-kit/`, documented in `docs/extensions/brxt-adapter-kit.md`).
+
+## License
+
+@@LICENSE@@. See `LICENSE` and `NOTICE`.

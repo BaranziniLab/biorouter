@@ -37,6 +37,12 @@
 //
 // `--assert-private-set` is the fixture opt-in for the closed-list assertion a
 // real run always applies — see EXPECTED_PRIVATE_EXTENSIONS below.
+//
+// A real run (and `--check`) also checks the registry it has just built against
+// the BAAM catalogs in landing/catalog/ (landing/scripts/check-catalog.mjs), so
+// the outputs are never regenerated while a catalog disagrees with the page. A
+// fixture run skips that unless it passes `--catalog <dir>`, the same opt-in
+// shape as `--assert-private-set`.
 
 import { closeSync, openSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
@@ -48,7 +54,7 @@ const SITE_BASE = 'https://biorouter.ucsf.edu/';
 
 // --- argv, so the validations can be exercised against fixtures -------------
 // Both flags are needed. `--input` alone still WRITES to landing/registry.json,
-// so a fixture run would overwrite the real 37-extension catalog with the
+// so a fixture run would overwrite the real catalog with the
 // fixture's two entries — which is why passing one without the other is an
 // error rather than a default.
 const argv = process.argv.slice(2);
@@ -71,7 +77,7 @@ const flag = (name, fallback) => {
 // `landing/registry.json` from the repo root is a different string from the
 // absolute default and the same file; so is a symlink to it. A raw string
 // comparison let both through, and a two-card fixture then replaced the
-// 37-extension catalog while skipping its two siblings entirely.
+// real catalog while skipping its two siblings entirely.
 function canonical(p) {
   const abs = resolve(p);
   try {
@@ -245,9 +251,19 @@ const INSTITUTION_NAMES = Object.fromEntries(INSTITUTIONS.map((i) => [i.id, i.na
 // 2026-08-04: prose is not the place to catch it. If that case ever needs
 // covering, the answer is an explicit field on the card, not a return to
 // guessing from the description.
+//
+// An entry's affiliation is a list of institution ids, or `null` for a private
+// extension whose card declares NO data-affiliation: private, but under no
+// institution's agreements (DR-26's "unconstrained", reachable from any private
+// model). `null` is a distinct answer, not an empty list, so it is spelled out
+// here rather than inferred from a missing value.
 const EXPECTED_PRIVATE_EXTENSIONS = [
   ['cdwagent', ['ucsf']],
   ['ucsfomopagent', ['ucsf']],
+  // gptr Agent: a live R session holds whatever the person loaded, so it is
+  // withheld from public models; it is the person's own machine, so no
+  // institution's agreements apply (BAAM refresh, owner decision 1, 2026-11).
+  ['gptragent', null],
 ];
 
 // Every closed-list failure carries this. A gate that says only "unexpected"
@@ -862,7 +878,10 @@ for (const e of extensions) {
  */
 function assertClosedPrivateSet(exts) {
   const key = (insts) => [...insts].sort().join(', ');
-  const expected = new Map(EXPECTED_PRIVATE_EXTENSIONS.map(([k, insts]) => [k, key(insts)]));
+  const ABSENT = '(absent)';
+  const expected = new Map(
+    EXPECTED_PRIVATE_EXTENSIONS.map(([k, insts]) => [k, insts === null ? ABSENT : `[${key(insts)}]`])
+  );
   const seen = new Set();
 
   for (const e of exts) {
@@ -879,8 +898,8 @@ function assertClosedPrivateSet(exts) {
     // Absent affiliation means unconstrained, which is a different answer from
     // ["ucsf"], not a milder one — so it is a mismatch, spelled out as such
     // rather than rendered as an empty list a reader would misread.
-    const declared = Array.isArray(e.affiliation) ? `[${key(e.affiliation)}]` : '(absent)';
-    const want = `[${expected.get(e.extension_name)}]`;
+    const declared = Array.isArray(e.affiliation) ? `[${key(e.affiliation)}]` : ABSENT;
+    const want = expected.get(e.extension_name);
     if (declared !== want) {
       fail(
         `${label}: "${e.extension_name}" is private with affiliation ${declared}, but the ` +
@@ -1206,6 +1225,14 @@ function readSkillCard({ attrs, inner: card }, category) {
   const download = first(/<a href="([^"]+)"[^>]*class="skill-dl-btn"/, card);
   const tags = allTags(/<div class="skill-tags">([\s\S]*?)<\/div>/, card);
   const license = attrs['data-license'] || 'Apache-2.0';
+  // data-version is the skill's catalog version. It is read by the catalog check
+  // (landing/scripts/check-catalog.mjs) and NEVER emitted: registry v2 is parsed
+  // with deny_unknown_fields by every daemon since v1.90.0, so a new field
+  // would make them fall back to a stale copy.
+  const dataVersion = attrs['data-version'];
+  if (dataVersion !== undefined && !/^\d+\.\d+\.\d+$/.test(String(dataVersion ?? ''))) {
+    fail(`skill card "${name}": data-version "${dataVersion}" is not a semver version`);
+  }
   const dataTags = String(attrs['data-tags'] ?? '')
     .split(/\s+/)
     .filter(Boolean);
@@ -1293,6 +1320,21 @@ const registry = {
   extensions,
   skills,
 };
+
+// ---- The BAAM catalogs agree with what this run built ---------------------
+// Before anything is written or compared: a catalog that disagrees with the
+// page stops the run, so the three outputs cannot be regenerated around it.
+const CATALOG = flag('--catalog', null);
+if (IS_REAL_RUN || CATALOG !== null) {
+  const { checkCatalogs, loadCatalogs, readBuiltins } = await import('./check-catalog.mjs');
+  const res = checkCatalogs({
+    registry,
+    html,
+    catalogs: loadCatalogs(CATALOG ?? undefined),
+    builtins: readBuiltins(REPO),
+  });
+  for (const e of res.errors) fail(`catalog [${e.rule}]: ${e.message}`);
+}
 
 if (violations.length) {
   for (const v of violations) console.error(`registry: ${v}`);
