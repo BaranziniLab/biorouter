@@ -1520,6 +1520,17 @@ fn generate_extension_name(
     format!("{base}_{suffix}")
 }
 
+/// Whether a roster grants the developer `shell` but not `shell_status` (#538). That is a
+/// legitimate restriction, so nothing is granted behind it, but it leaves a background job
+/// observable only through the log file its start reply names, and an operator reading the
+/// log should be able to see why. An empty roster grants every tool, so it is not flagged.
+fn grants_shell_without_job_tools(config: &ExtensionConfig) -> bool {
+    matches!(config, ExtensionConfig::Builtin { name, .. }
+        if normalize(&crate::config::extensions::name_to_key(name)) == "developer")
+        && config.is_tool_available("shell")
+        && !config.is_tool_available("shell_status")
+}
+
 fn resolve_command(cmd: &str) -> PathBuf {
     SearchPaths::builder()
         .with_npm()
@@ -2253,6 +2264,12 @@ impl ExtensionManager {
 
         if !Self::should_load_over(self.extensions.lock().await.get(&sanitized_name), origin) {
             return Ok(());
+        }
+        if grants_shell_without_job_tools(&config) {
+            tracing::warn!(
+                "extension '{config_name}' grants `shell` without `shell_status`: background \
+                 jobs can then be observed only through their log files"
+            );
         }
 
         // Resolve working_dir: session > current_dir
@@ -5183,6 +5200,50 @@ mod tests {
     use rmcp::model::CallToolResult;
     use rmcp::model::{InitializeResult, JsonObject};
     use rmcp::{object, ServiceError as Error};
+
+    /// #538: a developer roster that lists `shell` without `shell_status` is flagged at load,
+    /// and nothing else is: an empty roster grants every tool, and another extension's
+    /// `shell` is not the developer's.
+    #[test]
+    fn a_shell_only_developer_roster_is_flagged() {
+        let builtin = |name: &str, tools: &[&str]| ExtensionConfig::Builtin {
+            name: name.to_string(),
+            description: String::new(),
+            display_name: None,
+            timeout: None,
+            bundled: Some(true),
+            available_tools: tools.iter().map(|t| t.to_string()).collect(),
+        };
+        assert!(grants_shell_without_job_tools(&builtin(
+            "developer",
+            &["shell"]
+        )));
+        assert!(grants_shell_without_job_tools(&builtin(
+            "Developer",
+            &["shell", "shell_kill", "text_editor"]
+        )));
+        assert!(!grants_shell_without_job_tools(&builtin("developer", &[])));
+        assert!(!grants_shell_without_job_tools(&builtin(
+            "developer",
+            &["shell", "shell_status", "shell_kill"]
+        )));
+        assert!(!grants_shell_without_job_tools(&builtin(
+            "developer",
+            &["text_editor"]
+        )));
+        assert!(!grants_shell_without_job_tools(&builtin(
+            "memory",
+            &["shell"]
+        )));
+        assert!(!grants_shell_without_job_tools(
+            &ExtensionConfig::Platform {
+                name: "developer".into(),
+                description: String::new(),
+                bundled: Some(true),
+                available_tools: vec!["shell".into()],
+            }
+        ));
+    }
 
     /// Phase C, F-6: a private knowledge base refused in a turn whose chat was switched to a
     /// private model, or made public by a decision model, says why; every other error, and

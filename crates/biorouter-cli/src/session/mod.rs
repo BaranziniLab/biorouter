@@ -2000,6 +2000,17 @@ impl CliSession {
         let is_json_mode = self.output_format == "json";
         let is_stream_json_mode = self.output_format == "stream-json";
 
+        let run_effort = std::env::var(RUN_EFFORT_ENV).ok();
+        let reasoning_effort = match headless_run_effort(interactive, run_effort.as_deref()) {
+            Ok(effort) => effort,
+            Err(raw) => {
+                eprintln!(
+                    "Warning: {RUN_EFFORT_ENV}={raw:?} names no effort (use quick, normal or \
+                     deep), so this run keeps the session's effort"
+                );
+                None
+            }
+        };
         let session_config = SessionConfig {
             id: self.session_id.clone(),
             schedule_id: self.scheduled_job_id.clone(),
@@ -2007,7 +2018,7 @@ impl CliSession {
             max_tool_calls: None,
             budget: None,
             retry_config: self.retry_config.clone(),
-            reasoning_effort: None,
+            reasoning_effort,
         };
         let user_message = self
             .messages
@@ -3110,6 +3121,34 @@ async fn print_startup_notices() {
             );
         }
     }
+}
+
+/// The environment variable a headless `biorouter run` reads its reasoning
+/// effort from.
+const RUN_EFFORT_ENV: &str = "BIOROUTER_RUN_EFFORT";
+
+/// The reasoning effort a turn of this run asks for, from [`RUN_EFFORT_ENV`].
+///
+/// A headless run had no way to choose its effort: nobody can type `/effort`,
+/// and the session's own effort defaults to Normal, so a benchmark could only
+/// force low or high effort from a relay in front of the provider. The value
+/// takes the names `/effort` takes (`quick`, `normal`, `deep`, or `low`,
+/// `medium`, `high`). An interactive session ignores it, so `/effort` stays the
+/// one control there. `Ok(None)` leaves the turn to the session's effort (unset,
+/// blank, or interactive); `Err` carries a value that names no effort, which the
+/// caller ignores with a warning.
+///
+/// Pure (no I/O), so the caller reads the environment and this is testable.
+fn headless_run_effort(
+    interactive: bool,
+    raw: Option<&str>,
+) -> std::result::Result<Option<biorouter::agents::effort::ReasoningEffort>, String> {
+    let Some(raw) = raw.filter(|raw| !interactive && !raw.trim().is_empty()) else {
+        return Ok(None);
+    };
+    biorouter::agents::effort::ReasoningEffort::parse(raw)
+        .map(Some)
+        .ok_or_else(|| raw.to_string())
 }
 
 /// #40: the auto-decision for a tool-confirmation prompt that cannot be
@@ -4359,6 +4398,52 @@ mod tests {
             .nth(1)
             .expect("process_agent_response body");
         assert!(process.contains("result = stream.next() =>"));
+    }
+
+    /// `BIOROUTER_RUN_EFFORT` sets a headless run's effort by the names
+    /// `/effort` takes, is ignored by an interactive session, and a value that
+    /// names no effort is reported rather than read as one.
+    #[test]
+    fn a_headless_run_takes_its_effort_from_the_environment() {
+        use biorouter::agents::effort::ReasoningEffort;
+        for (raw, effort) in [
+            ("quick", ReasoningEffort::Quick),
+            ("low", ReasoningEffort::Quick),
+            ("normal", ReasoningEffort::Normal),
+            ("medium", ReasoningEffort::Normal),
+            ("deep", ReasoningEffort::Deep),
+            (" HIGH ", ReasoningEffort::Deep),
+        ] {
+            assert_eq!(
+                headless_run_effort(false, Some(raw)),
+                Ok(Some(effort)),
+                "{raw}"
+            );
+            assert_eq!(headless_run_effort(true, Some(raw)), Ok(None), "{raw}");
+        }
+        assert_eq!(headless_run_effort(false, None), Ok(None));
+        assert_eq!(headless_run_effort(false, Some("  ")), Ok(None));
+        assert_eq!(
+            headless_run_effort(false, Some("extreme")),
+            Err("extreme".to_string())
+        );
+        assert_eq!(headless_run_effort(true, Some("extreme")), Ok(None));
+        // The turn's SessionConfig carries it: the wiring is where the
+        // property is, so pin it in the source like the scope above.
+        let source = include_str!("mod.rs");
+        let process = source
+            .split("async fn process_agent_response(")
+            .nth(1)
+            .and_then(|rest| rest.split("let user_message = self").next())
+            .expect("process_agent_response head");
+        assert!(
+            process.contains("headless_run_effort(interactive, run_effort.as_deref())"),
+            "{process}"
+        );
+        assert!(
+            process.contains("            reasoning_effort,\n"),
+            "{process}"
+        );
     }
 
     #[test]
