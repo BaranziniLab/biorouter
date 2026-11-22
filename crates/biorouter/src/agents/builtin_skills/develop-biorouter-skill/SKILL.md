@@ -41,10 +41,9 @@ like; and whether to set up test cases. Skills with checkable output (file
 conversions, data extraction, code generation, fixed procedures) gain from test
 cases. Skills whose output is a matter of taste (writing style, visual design)
 are better judged by the person reading results. Ask about edge cases, example
-files and dependencies before writing test prompts.
-
-Many authors are not programmers: explain "frontmatter", "assertion" or "JSON"
-in a few words the first time unless the person clearly knows them.
+files and dependencies before writing test prompts. Many authors are not
+programmers: explain "frontmatter", "assertion" or "JSON" in a few words the
+first time unless the person clearly knows them.
 
 ## How Biorouter loads skills (why structure matters)
 
@@ -128,9 +127,8 @@ will not.
 - Write **imperative operating instructions for the agent**, not human-facing
   prose explaining concepts the model already knows. ("Run the linter, then
   fix any errors", not "Linters are tools that check code style.")
-- **Explain why** a step matters instead of stacking capitalized MUST and NEVER.
-  A reason generalizes to cases the rule did not foresee; if you find yourself
-  writing one in capitals, reframe it as the reason.
+- **Explain why** a step matters instead of stacking capitalized MUST and NEVER:
+  a reason generalizes to cases the rule did not foresee.
 - Use **consistent terminology** (pick one word per concept and stick to it).
 - Avoid **time-sensitive phrasing** ("before August 2025…") and hardcoded
   values that will drift; they rot the skill. Verify against the live codebase
@@ -367,6 +365,8 @@ the person will see and no query reaches a more public model.
   whatever the description says, so it measures nothing. Weak: `"Format this
   data"`. Strong: `"my PI sent qc_metrics_march.xlsx and wants a column with the
   percent of reads passing filter, total is in C and passing in D i think"`.
+  Put any file a query names in the trial's working folder, or the agent spends
+  its actions looking for it.
 
 **2. Have the person review the set** (a numbered list in the chat is enough)
 before anything runs: bad queries produce a bad description. **3. Split it
@@ -393,9 +393,10 @@ The second test is there because Code Execution, on by default, can make the
 `loadSkill` call inside an `execute_code` script. A new process per trial keeps
 the score about the current text: the skill catalog notices a skill folder being
 added or removed, but a description edited in place changes no folder it
-watches, so a running app or chat can keep matching the old wording. Exit status
-3 (the action cap) is normal; a skill loads in the first few actions or not at
-all.
+watches, so a running app or chat can keep matching the old wording. A trial
+that stops at the action cap (exit status 3) without a load counts as not
+loaded; if transcripts show agents still exploring files when the cap hits,
+raise `--max-turns` for every trial, not for one.
 
 A query's trigger rate is the share of its 3 runs that loaded the skill. A
 should-load query passes at 0.5 or more, a should-not query below 0.5. Score the
