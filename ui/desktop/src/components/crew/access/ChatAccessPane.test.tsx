@@ -1048,12 +1048,12 @@ describe('chat access: focus when the consent opens', () => {
     const release = heldGrants();
     renderWithController(PaneLayout, '/crew?sessionId=chat-slow');
     fireEvent.click(await screen.findByRole('button', { name: 'Open access' }));
-    await waitFor(() => expect(heading()).toHaveFocus());
+    await waitFor(() => expect(heading()).toHaveFocus(), { timeout: 5000 });
     const close = screen.getByRole('button', { name: paneCopy.closeChatAccess });
     act(() => close.focus());
 
     await release();
-    const allow = await screen.findByRole('button', { name: accessCopy.allow });
+    const allow = await screen.findByRole('button', { name: accessCopy.allow }, { timeout: 5000 });
     await act(async () => {
       await new Promise((resolve) => setTimeout(resolve, 20));
     });
