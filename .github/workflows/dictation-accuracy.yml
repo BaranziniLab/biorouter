@@ -85,7 +85,10 @@ jobs:
     runs-on: ubuntu-latest
     # About 5 minutes of decoding for small.en and an hour for turbo on 4 CPU threads,
     # plus a cold build; hosted runners are slower than the measurement machine.
-    timeout-minutes: ${{ matrix.model == 'whisper-large-v3-turbo-q5_0' && 240 || 90 }}
+    # The turbo job measured 3h16m and then 4h (cut off) on hosted runners a day apart for
+    # the same code (2026-11-22): runner speed varies by about a quarter, so it gets
+    # GitHub's 6 h ceiling less a margin. A release cannot raise this while it waits.
+    timeout-minutes: ${{ matrix.model == 'whisper-large-v3-turbo-q5_0' && 330 || 90 }}
     strategy:
       fail-fast: false
       matrix:
