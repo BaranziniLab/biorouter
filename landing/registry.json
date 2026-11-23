@@ -145,7 +145,7 @@
       "id": "opencomputeruseagent",
       "name": "Open Computer Use Agent",
       "organization": "BaranziniLab · UCSF",
-      "version": "v0.1.1",
+      "version": "v0.1.2",
       "description": "A fallback for desktop control where the built-in Biorouter Copilot does not work, for example Linux with at-spi2-core older than 2.52 (Ubuntu 22.04, Debian 12, Rocky 9) or an app whose controls Copilot cannot read. Try Copilot first. Built on Open Computer Use 1.1.5 (MIT); asks once per chat before it acts. macOS 14 or later, Windows x64, and Linux on X11. 12 tools. Needs Biorouter 1.94.6 or later.",
       "tags": [
         "MCP",
@@ -154,7 +154,7 @@
         "Linux"
       ],
       "github": "https://github.com/BaranziniLab/OpenComputerUseAgent",
-      "download": "https://github.com/BaranziniLab/OpenComputerUseAgent/releases/download/v0.1.1/opencomputeruseagent.brxt",
+      "download": "https://github.com/BaranziniLab/OpenComputerUseAgent/releases/download/v0.1.2/opencomputeruseagent.brxt",
       "filename": "opencomputeruseagent.brxt",
       "license": "Apache-2.0 AND MIT",
       "privacy": "public"
