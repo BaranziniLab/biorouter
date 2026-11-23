@@ -2404,7 +2404,7 @@
       "manifest_name": "gptragent",
       "repository": "Broccolito/GptrAgent",
       "group": "tools",
-      "version": "0.1.1",
+      "version": "0.1.2",
       "status": "active",
       "aliases": [],
       "job": "r.live-session",
@@ -2449,6 +2449,11 @@
           "version": "0.1.1",
           "date": "2026-11-22",
           "note": "reports a reused gptr server's real mode and tools, states the edits mode exactly, one floor (gptr 1.0; plan mode 1.2), and says which side is behind on a format mismatch"
+        },
+        {
+          "version": "0.1.2",
+          "date": "2026-11-22",
+          "note": "the plan-mode overview lists the session's objects on gptr 1.2.0, not the empty scratch environment each call runs in"
         }
       ],
       "summary": "Work inside an R session you already have open. Biorouter inspects, analyses, plots and fixes objects in memory through gptr, without reloading data, and every call passes gptr's permission settings. Private: a public model never sees your session. 3 tools and a bundled gptr-live-r skill. Needs R with the gptr package (1.0 or later) and uv.",
@@ -2459,9 +2464,9 @@
         "gptr"
       ],
       "release": {
-        "tag": "v0.1.1",
+        "tag": "v0.1.2",
         "asset": "gptragent.brxt",
-        "sha256": "7822065b154bba367ea2ce3a2db2c9ae5e15700ac2cc3187babd1a1158e73329"
+        "sha256": "6de59047c1e87eed76fb9e67fbb75c9ac7c404eac7cbd75ed144091087fb1ea0"
       }
     },
     {
@@ -2470,7 +2475,7 @@
       "manifest_name": "opencomputeruseagent",
       "repository": "BaranziniLab/OpenComputerUseAgent",
       "group": "tools",
-      "version": "0.1.0",
+      "version": "0.1.2",
       "status": "active",
       "aliases": [],
       "job": "desktop.native-app-control-fallback",
@@ -2496,6 +2501,16 @@
           "version": "0.1.0",
           "date": "2026-11-22",
           "note": "first release: Open Computer Use 1.1.5 behind Biorouter consent"
+        },
+        {
+          "version": "0.1.1",
+          "date": "2026-11-23",
+          "note": "the macOS permission window points at System Settings' + button, since macOS 26 no longer takes a drop onto the permission list, and the permission check reports only the two grants"
+        },
+        {
+          "version": "0.1.2",
+          "date": "2026-11-23",
+          "note": "a click on the permission window's app tile shows the app in Finder instead of being read as a drag"
         }
       ],
       "summary": "A fallback for desktop control where the built-in Biorouter Copilot does not work, for example Linux with at-spi2-core older than 2.52 (Ubuntu 22.04, Debian 12, Rocky 9) or an app whose controls Copilot cannot read. Try Copilot first. Built on Open Computer Use 1.1.5 (MIT); asks once per chat before it acts. macOS 14 or later, Windows x64, and Linux on X11. 12 tools. Needs Biorouter 1.94.6 or later.",
@@ -2506,9 +2521,9 @@
         "Linux"
       ],
       "release": {
-        "tag": "v0.1.0",
+        "tag": "v0.1.2",
         "asset": "opencomputeruseagent.brxt",
-        "sha256": "685a97ee61de8c15122bbde5e0356fa7c03369cd3e998d33e64be3bd60c5ae0b"
+        "sha256": "86daa0c2f5d543f059f2a68e8336981d7fcf6da9a57ee8e19b44c77357a36662"
       },
       "third_party": [
         {
