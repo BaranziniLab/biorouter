@@ -2475,7 +2475,7 @@
       "manifest_name": "opencomputeruseagent",
       "repository": "BaranziniLab/OpenComputerUseAgent",
       "group": "tools",
-      "version": "0.1.0",
+      "version": "0.1.1",
       "status": "active",
       "aliases": [],
       "job": "desktop.native-app-control-fallback",
@@ -2501,6 +2501,11 @@
           "version": "0.1.0",
           "date": "2026-11-22",
           "note": "first release: Open Computer Use 1.1.5 behind Biorouter consent"
+        },
+        {
+          "version": "0.1.1",
+          "date": "2026-11-23",
+          "note": "the macOS permission window points at System Settings' + button, since macOS 26 no longer takes a drop onto the permission list, and the permission check reports only the two grants"
         }
       ],
       "summary": "A fallback for desktop control where the built-in Biorouter Copilot does not work, for example Linux with at-spi2-core older than 2.52 (Ubuntu 22.04, Debian 12, Rocky 9) or an app whose controls Copilot cannot read. Try Copilot first. Built on Open Computer Use 1.1.5 (MIT); asks once per chat before it acts. macOS 14 or later, Windows x64, and Linux on X11. 12 tools. Needs Biorouter 1.94.6 or later.",
@@ -2511,9 +2516,9 @@
         "Linux"
       ],
       "release": {
-        "tag": "v0.1.0",
+        "tag": "v0.1.1",
         "asset": "opencomputeruseagent.brxt",
-        "sha256": "685a97ee61de8c15122bbde5e0356fa7c03369cd3e998d33e64be3bd60c5ae0b"
+        "sha256": "a6065faff1562a707512ac5d14f2ec5fe912f6154179560e0dbd858c2a11efa2"
       },
       "third_party": [
         {
