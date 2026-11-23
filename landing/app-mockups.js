@@ -154,7 +154,7 @@
     local: { name: 'Qwen3.8 27B', id: 'qwen3.8:27b', lock: true },            /* Ollama default */
     versaAzure: { name: 'GPT-5.6 Sol', id: 'gpt-5.6-sol-2026-07-09', lock: true },
     versaBedrock: { name: 'Claude Opus 5.5', id: 'us.anthropic.claude-opus-5-5', lock: true },
-    openai: { name: 'GPT-6 Sol', id: 'gpt-6-sol', lock: false },
+    openai: { name: 'GPT-6.2 Astra', id: 'gpt-6.2-astra', lock: false },
   };
 
   /* Composer: one card and one muted footer line, the same on Home, in a chat

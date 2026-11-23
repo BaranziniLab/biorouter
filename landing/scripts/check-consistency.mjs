@@ -351,9 +351,22 @@ const tuiSource = source('crates/biorouter-cli/src/session/tui/mod.rs');
   check(JSON.stringify(jsList(tile, 'SPINNER', label)) === JSON.stringify(spinner), `${label}: SPINNER differs from the TUI's frames`);
   const thinking = jsString(tile, 'THINKING', label);
   includes(source('crates/biorouter-cli/src/session/thinking.rs'), `"${thinking}"`, `${label}: "${thinking}" is not one of thinking.rs's labels`);
-  // hint_text's candidates, with no dictation key bound (`{dictate}` empty).
+  // hint_text's candidates, with no dictation key bound (`{dictate}` empty) and
+  // the default newline chord in `{newline}`: the chord's format in hint_text,
+  // filled with the key `get_newline_key` falls back to (session/input.rs).
   const hintBody = capture(tuiSource, /(fn hint_text\([\s\S]*?\n\}\n)/, 'hint_text in session/tui/mod.rs');
-  const candidates = new Set([...hintBody.matchAll(/"((?:↵|esc|↑↓|\{summary\})[^"]*)"/g)].map((match) => match[1].replace(/\{dictate\}/g, '')));
+  const newlineFormat = capture(hintBody, /let newline = format!\("([^"]*)", app\.newline_key\.to_ascii_uppercase\(\)\);/, 'the newline chord in hint_text');
+  const newlineKey = capture(
+    source('crates/biorouter-cli/src/session/input.rs'),
+    /pub fn get_newline_key\(\) -> char \{[\s\S]*?\.unwrap_or\('([a-z])'\)/,
+    'get_newline_key\'s default in session/input.rs'
+  );
+  const newline = newlineFormat.replace('{}', newlineKey.toUpperCase());
+  const candidates = new Set(
+    [...hintBody.matchAll(/"((?:↵|esc|↑↓|\{summary\})[^"]*)"/g)].map((match) =>
+      match[1].replace(/\{dictate\}/g, '').replace(/\{newline\}/g, newline)
+    )
+  );
   for (const hint of jsList(tile, 'HINTS', label)) {
     check(candidates.has(hint), `${label}: the hint line "${hint}" is not one of hint_text's candidates`);
   }
