@@ -524,6 +524,23 @@ this section is the ledger.
   records nothing while the master switch is off; and a dictation into a chat whose agent is not
   loaded yet has an unstated target model, so it leaves out every row that names an institution
   (kept by the owner on 2026-11-10, O-43).
+- **A public chat's model is told which enabled private extensions it does not get (WP-22,
+  2026-11-25, after this ledger was written).** Gate F2 leaves a withheld extension out of the
+  system prompt's extension list and Gate E leaves out its tools, which is right, but nothing else
+  named it: a public Claude Code chat asked about `gptragent` told the person it "is not loaded"
+  and guessed it had never been installed. `ExtensionManager::get_extensions_prompt_view` now
+  returns the list and one sentence (`privacy::refusal::withheld_extensions_note`) from the same
+  `extension_reach`, and the system prompt's Loaded Extensions section carries it on every
+  provider, the coding-agent bridge's included. The sentence names each withheld extension's key,
+  says why, and gives the person's remedy (switch the chat to a private model, or, when a decision
+  model made the chat public, change that decision model). It carries no instructions, tools,
+  configuration, paths or results, and it is information only: no gate reads it, and it tells the
+  model that changing the model, the extensions or the chat's privacy is the person's choice. It
+  is absent in a private chat, with the master switch off, and when nothing private is enabled,
+  and it is the same bytes for the same set, so the prompt prefix stays cacheable. ⚠ It names, to
+  a public model, the private extensions enabled in that chat. Finding 13's install-state oracle
+  is unchanged: the catalogue still names no private extension a public caller merely has
+  installed, and a refusal still answers a private name and an absent one alike.
 
 ### Did not ship
 

@@ -1165,8 +1165,14 @@ impl Agent {
             None
         };
 
-        // Prepare system prompt
-        let mut extensions_info = self.extension_manager.get_extensions_info().await;
+        // Prepare system prompt. The view's note names the enabled private
+        // extensions the privacy gates withheld from this public chat, so the
+        // model can tell the person why rather than call them "not loaded"
+        // (WP-22); it rides the system prompt for every provider, the
+        // coding-agent bridge's included.
+        let extensions_view = self.extension_manager.get_extensions_prompt_view().await;
+        let privacy_withheld_note = extensions_view.withheld_for_privacy;
+        let mut extensions_info = extensions_view.infos;
         let prompt_tools = active_bridge_plan
             .map_or_else(|| effective_tools.as_slice(), |plan| plan.tools.as_slice());
         add_core_platform_capability(&mut extensions_info, prompt_tools);
@@ -1232,6 +1238,7 @@ impl Agent {
         let builder = prompt_manager
             .builder()
             .with_extensions(extensions_info.into_iter())
+            .with_privacy_withheld_note(privacy_withheld_note)
             .with_frontend_instructions(self.frontend_instructions.lock().await.clone())
             .with_code_execution_mode(code_execution_active)
             .with_checklist_enforcement(checklist_enforcement)
@@ -3053,6 +3060,72 @@ mod tests {
         assert!(
             private_prompt.contains(SENTINEL),
             "the model entitled to the extension must still get its instructions"
+        );
+    }
+
+    /// WP-22, reproduced on the real system-prompt path: a public chat with a
+    /// private extension enabled used to render a prompt that never mentioned
+    /// it, so the model told the person it "is not loaded". The rendered prompt
+    /// now names it as withheld for privacy, with the remedy, and still carries
+    /// none of its instructions or tools; the private model's prompt has no
+    /// such sentence.
+    #[tokio::test]
+    async fn a_public_system_prompt_names_the_private_extensions_it_withholds() {
+        use crate::privacy::refusal::WITHHELD_EXTENSIONS_MARKER;
+        use crate::privacy::ProviderTier::{Private, Public};
+
+        let dir = tempfile::tempdir().unwrap();
+        let agent = crate::agents::Agent::with_config(crate::agents::AgentConfig::new(
+            Arc::new(crate::session::SessionManager::new(
+                dir.path().to_path_buf(),
+            )),
+            Arc::new(crate::config::permission::PermissionManager::new(
+                dir.path().to_path_buf(),
+            )),
+            None,
+            crate::config::BioRouterMode::Auto,
+        ));
+        let session = agent
+            .config
+            .session_manager
+            .create_session(
+                dir.path().to_path_buf(),
+                "wp-22".to_string(),
+                SessionType::Hidden,
+            )
+            .await
+            .unwrap();
+        agent
+            .extension_manager
+            .add_inprocess_server(PRIVATE_EXTENSION, InstructedServer::new())
+            .await
+            .expect("inject the private extension");
+
+        let public_prompt = system_prompt_under(&agent, &session.id, dir.path(), Public).await;
+        let note = public_prompt
+            .split(WITHHELD_EXTENSIONS_MARKER)
+            .nth(1)
+            .and_then(|rest| rest.split("\n\n").next())
+            .unwrap_or_else(|| panic!("no withheld note in the public prompt:\n{public_prompt}"));
+        assert!(note.contains(&format!("`{PRIVATE_EXTENSION}`")), "{note}");
+        assert!(
+            note.contains("switch this chat to a private model"),
+            "{note}"
+        );
+        assert!(!public_prompt.contains(SENTINEL), "Gate F2 unchanged");
+        assert!(
+            !public_prompt.contains("fixture_tool"),
+            "the withheld extension's tools stay out of the prompt"
+        );
+        // Stable for an unchanged set: the next turn's prompt carries the same
+        // sentence, so a provider's prompt cache is not broken by it.
+        let again = system_prompt_under(&agent, &session.id, dir.path(), Public).await;
+        assert!(again.contains(note), "the note changed between two turns");
+
+        let private_prompt = system_prompt_under(&agent, &session.id, dir.path(), Private).await;
+        assert!(
+            !private_prompt.contains(WITHHELD_EXTENSIONS_MARKER),
+            "a private chat withholds nothing, so it reads no note"
         );
     }
 
