@@ -252,6 +252,11 @@ struct SystemPromptContext {
     /// use it. False on a coding-agent bridge surface and on a roster without
     /// the checklist tools, where no tool offers the field.
     todo_sidecar: bool,
+    /// The sentence naming the enabled private extensions Gate E withholds
+    /// from this public chat (`privacy::refusal::withheld_extensions_note`,
+    /// WP-22). `None` in a private chat, with the master switch off, or when
+    /// nothing private is enabled.
+    privacy_withheld_note: Option<String>,
 }
 
 pub struct SystemPromptBuilder<'a, M> {
@@ -264,6 +269,7 @@ pub struct SystemPromptBuilder<'a, M> {
     code_execution_mode: bool,
     checklist_enforcement: bool,
     todo_sidecar: bool,
+    privacy_withheld_note: Option<String>,
     variant: PromptVariant,
 }
 
@@ -309,6 +315,15 @@ impl<'a> SystemPromptBuilder<'a, PromptManager> {
     /// own: the prompt names the field only while a tool offers it.
     pub fn with_todo_sidecar(mut self, offered: bool) -> Self {
         self.todo_sidecar = offered;
+        self
+    }
+
+    /// The withheld-extensions sentence for this turn. Pass
+    /// `ExtensionsPromptView::withheld_for_privacy` from the same view whose
+    /// `infos` went to [`Self::with_extensions`], never a sentence of your own:
+    /// the prompt states it as the privacy gates' verdict (WP-22).
+    pub fn with_privacy_withheld_note(mut self, note: Option<String>) -> Self {
+        self.privacy_withheld_note = note;
         self
     }
 
@@ -360,6 +375,7 @@ impl<'a> SystemPromptBuilder<'a, PromptManager> {
             code_execution_mode,
             checklist_enforcement,
             todo_sidecar,
+            privacy_withheld_note,
             variant,
         } = self;
         let mut extensions_info = extensions_info;
@@ -384,6 +400,8 @@ impl<'a> SystemPromptBuilder<'a, PromptManager> {
         );
         context.checklist_enforcement = checklist_enforcement;
         context.todo_sidecar = todo_sidecar;
+        context.privacy_withheld_note =
+            privacy_withheld_note.map(|note| sanitize_unicode_tags(&note));
         let base_prompt = render_base_prompt(manager, variant, &context);
         append_system_prompt_extras(manager, base_prompt, hints, biorouter_mode)
     }
@@ -684,6 +702,7 @@ fn build_system_prompt_context(
         code_execution_mode,
         checklist_enforcement: false,
         todo_sidecar: false,
+        privacy_withheld_note: None,
     }
 }
 
@@ -889,6 +908,7 @@ impl PromptManager {
             code_execution_mode: false,
             checklist_enforcement: false,
             todo_sidecar: false,
+            privacy_withheld_note: None,
             variant: PromptVariant::Default,
         }
     }

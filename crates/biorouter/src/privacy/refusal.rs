@@ -20,6 +20,7 @@
 //! | DR-31 | [`PrivacyRefusal::SpawnCrossesAffiliation`] and [`PrivacyRefusal::spawn_affiliation`] — the spawn gate's third axis |
 //! | test drive M18 | [`private_or_absent_refusal`] — [`privacy_refusal`]'s sentence, restated for the ONE gate that reads an unknown name as Private and therefore cannot claim the extension is private |
 //! | findings 4+13's seam | [`extension_enable_refusal`] — the WHOLE enable gate, tier arm above the operator pin, called by both agent enable doors — and [`tier_refuses`], the boolean under [`privacy_refusal`] that the user's HTTP enable door asks instead of re-typing |
+//! | WP-22 | [`withheld_extensions_note`]: not a refusal but the system prompt's statement of which enabled private extensions Gate E withholds from a public chat, so the model can tell the person why |
 
 use super::{ProviderTier, SessionClassification};
 use crate::session::session_manager::Session;
@@ -745,6 +746,77 @@ pub fn decision_drop_note(
          not ask the subagent to use them, and do not re-spawn it to try again; the boundary is \
          the same every time. Do not retry; tell the person if the task needs them.",
         dropped.join(", ")
+    ))
+}
+
+/// The marker the system prompt's withheld-extensions note opens with
+/// ([`withheld_extensions_note`]). Tests key on it, so a reworded note that
+/// dropped it would fail them rather than pass vacuously.
+pub const WITHHELD_EXTENSIONS_MARKER: &str = "Withheld for privacy:";
+
+/// Issue #56 (WP-22): what the system prompt says about the extensions the
+/// person enabled in this chat that Gate E withholds from it, because they are
+/// private and the chat is public.
+///
+/// Gate F2 (`ExtensionManager::get_extensions_info`) leaves such an extension
+/// out of the prompt's extension list entirely, and Gate E leaves out its tool
+/// schemas. Both are right, but together they left the model with nothing to
+/// say when the person asked for it: in WP-22 a public Claude Code chat told
+/// the person `gptragent` "is not loaded" and guessed it had never been
+/// installed, when it was enabled and withheld on purpose. This note is the
+/// missing sentence, so the model can tell the person why and what clears it.
+///
+/// What it carries is bounded the way the subagent drop note's is (§14.4):
+/// each extension's key, the boundary, and the person's remedy. Never its
+/// instructions, tools, configuration, environment, paths or anything it
+/// returned. The key is the person's own configuration, and it is what the
+/// composer's extension list already shows them as unavailable here.
+///
+/// It is information only. Nothing here moves a tier, enables an extension or
+/// reaches a tool: Gates C and E are unchanged, and the note tells the model
+/// that changing the model, the extensions or the chat's privacy is the
+/// person's choice, never its own (DR-19, "a warning for the user, a wall for
+/// the agent").
+///
+/// `withheld` must be sorted and free of duplicates, so the prompt prefix stays
+/// byte-identical while the withheld set is unchanged (provider prompt caches
+/// key on it). `lowered_by_decision` is [`super::CallCapability::lowered_by_decision`]
+/// off the same sample that decided `withheld`: the chat's own model is private
+/// and one of its decision models made it public (DR-33), so the remedy is the
+/// decision model, not the chat model. `None` when nothing was withheld.
+pub fn withheld_extensions_note(withheld: &[String], lowered_by_decision: bool) -> Option<String> {
+    if withheld.is_empty() {
+        return None;
+    }
+    let names = withheld
+        .iter()
+        .map(|name| format!("`{name}`"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let (why, remedy) = if lowered_by_decision {
+        (
+            "this chat is public because the person gave it a public decision model",
+            "give this chat's decision models (its monitors, gates and default decision model) \
+             private models, or remove the public ones; the chat becomes private at their next \
+             message",
+        )
+    } else {
+        (
+            "this chat runs on a public model",
+            "switch this chat to a private model, in the desktop app under Settings > Models or \
+             with the model chip in the composer; the extensions are offered from their next \
+             message",
+        )
+    };
+    Some(format!(
+        "{WITHHELD_EXTENSIONS_MARKER} the person enabled these private extensions in this chat, \
+         but {why}, so Biorouter does not offer you their tools: {names}. A private extension \
+         reaches data held inside the institution, so only a private model may call it. They are \
+         not missing, uninstalled or broken. If the person asks for one of them, or why one is not \
+         available, tell them it is withheld because this chat is public, and that to use it they \
+         can {remedy}. Do not try to reach these extensions through another tool, a script or a \
+         resource read, and do not change this chat's model, extensions or privacy yourself; that \
+         choice is the person's."
     ))
 }
 
@@ -2293,5 +2365,75 @@ mod tests {
             "{note}"
         );
         assert!(!note.contains("running on a public model"), "{note}");
+    }
+
+    /// WP-22: nothing withheld, no note, so a chat with nothing private enabled
+    /// (or a private chat, or one with the master switch off, where the gate
+    /// withholds nothing) reads no sentence about privacy at all.
+    #[test]
+    fn the_withheld_note_is_absent_when_nothing_was_withheld() {
+        assert_eq!(withheld_extensions_note(&[], false), None);
+        assert_eq!(withheld_extensions_note(&[], true), None);
+    }
+
+    /// WP-22: the note names every withheld extension, in the order given, says
+    /// why, and gives the person's remedy; and it tells the model the choice is
+    /// the person's, never its own.
+    #[test]
+    fn the_withheld_note_names_the_extensions_the_reason_and_the_remedy() {
+        let note =
+            withheld_extensions_note(&["cdwagent".to_string(), "gptragent".to_string()], false)
+                .expect("two withheld extensions");
+        assert!(note.starts_with(WITHHELD_EXTENSIONS_MARKER), "{note}");
+        assert!(note.contains("`cdwagent`, `gptragent`"), "{note}");
+        assert!(note.contains("this chat runs on a public model"), "{note}");
+        assert!(
+            note.contains("switch this chat to a private model"),
+            "{note}"
+        );
+        assert!(note.contains("Settings > Models"), "{note}");
+        assert!(
+            note.contains("not missing, uninstalled or broken"),
+            "{note}"
+        );
+        assert!(
+            note.contains("do not change this chat's model, extensions or privacy yourself"),
+            "{note}"
+        );
+        // House style for text a person may be shown: no em dashes.
+        assert!(!note.contains('\u{2014}'), "{note}");
+    }
+
+    /// WP-22 on a chat a decision model made public (DR-33): the chat's own
+    /// model is private, so "switch to a private model" would send the person
+    /// to a step that changes nothing. The note names the decision model instead.
+    #[test]
+    fn the_withheld_note_for_a_lowered_chat_points_at_the_decision_model() {
+        let note = withheld_extensions_note(&["gptragent".to_string()], true)
+            .expect("one withheld extension");
+        assert!(note.contains("`gptragent`"), "{note}");
+        assert!(note.contains("public decision model"), "{note}");
+        assert!(!note.contains("runs on a public model"), "{note}");
+        assert!(
+            !note.contains("switch this chat to a private model"),
+            "{note}"
+        );
+    }
+
+    /// WP-22, §14.4: the note is built from keys alone, so it cannot carry an
+    /// extension's tools, configuration or anything it returned. The rendering
+    /// is the same bytes for the same set, which is what keeps the system
+    /// prompt's prefix cacheable while nothing changes.
+    #[test]
+    fn the_withheld_note_is_stable_for_the_same_set() {
+        let set = ["gptragent".to_string()];
+        assert_eq!(
+            withheld_extensions_note(&set, false),
+            withheld_extensions_note(&set, false)
+        );
+        assert_ne!(
+            withheld_extensions_note(&set, false),
+            withheld_extensions_note(&["cdwagent".to_string()], false)
+        );
     }
 }

@@ -412,6 +412,27 @@ struct ExtensionReach {
     /// `warning`, Gate E's tool descriptions take the budgeted `mark` — and
     /// composing them separately is how a tool ends up marked but not refused.
     marked: Vec<(String, crate::privacy::CrossAffiliation)>,
+    /// Keys the tier axis hid from this caller: enabled here, private, and
+    /// refused to it while the master switch is on. Disjoint from `allowed`.
+    /// Read only by [`ExtensionManager::get_extensions_prompt_view`], which
+    /// NAMES them (never their tools or prose) so the model can tell the person
+    /// why they are missing (WP-22). Nothing decides reach from this list.
+    withheld: Vec<String>,
+    /// The sampled capability was public because a decision model lowered a
+    /// private chat (DR-33). Picks the withheld note's remedy; decides nothing.
+    lowered_by_decision: bool,
+}
+
+/// What the system prompt is told about this chat's extensions.
+///
+/// `infos` is Gate F2's list ([`ExtensionManager::get_extensions_info`]);
+/// `withheld_for_privacy` is the sentence naming the enabled private extensions
+/// the same verdict left out of it ([`crate::privacy::refusal::withheld_extensions_note`]).
+/// Both come off ONE [`ExtensionManager::extension_reach`], so the list and the
+/// note can never disagree about which extension is which.
+pub struct ExtensionsPromptView {
+    pub infos: Vec<ExtensionInfo>,
+    pub withheld_for_privacy: Option<String>,
 }
 
 pub struct ExtensionManager {
@@ -2709,8 +2730,46 @@ impl ExtensionManager {
     /// ([`crate::privacy::affiliation::MARK_BUDGET`]); they are not why this
     /// surface stays silent.
     pub async fn get_extensions_info(&self) -> Vec<ExtensionInfo> {
-        let allowed = self.allowed_extension_keys(None).await;
-        self.extensions
+        self.extensions_prompt_view(None).await.infos
+    }
+
+    /// [`Self::get_extensions_info`], plus the sentence naming the enabled
+    /// private extensions that the same verdict withheld from this chat (WP-22).
+    ///
+    /// Without the sentence a public chat's model saw no trace of an extension
+    /// the person had enabled, and told them it "is not loaded" when it was
+    /// withheld for privacy. The sentence names keys only; the extension's
+    /// prose stays out (this function's Gate F2 rule) and its tool schemas stay
+    /// out (Gate E). One [`Self::extension_reach`] decides both halves, so this
+    /// adds no sample of the provider and no second spelling of the rule.
+    ///
+    /// ⚠ This names, to a public model, private extensions enabled in THIS
+    /// chat. It does not reopen finding 13's install-state oracle: the
+    /// catalogue still names no private extension a public caller merely has
+    /// installed, and a refusal still answers a private name and an absent one
+    /// alike. What is named here is the person's own enabled set, which the
+    /// composer's extension list already shows them as unavailable in a public
+    /// chat, and naming it is what lets the model say why.
+    pub async fn get_extensions_prompt_view(&self) -> ExtensionsPromptView {
+        self.extensions_prompt_view(None).await
+    }
+
+    /// The view under `admitted`, or under a fresh sample when `None` (the
+    /// system prompt's case, per [`Self::allowed_extension_keys`]). Tests pass
+    /// a capability so the master switch and the tier can be varied without
+    /// touching process-global state.
+    async fn extensions_prompt_view(
+        &self,
+        admitted: Option<crate::privacy::CallCapability>,
+    ) -> ExtensionsPromptView {
+        let ExtensionReach {
+            allowed,
+            mut withheld,
+            lowered_by_decision,
+            ..
+        } = self.extension_reach(admitted).await;
+        let infos = self
+            .extensions
             .lock()
             .await
             .iter()
@@ -2727,7 +2786,23 @@ impl ExtensionManager {
                     },
                 )
             })
-            .collect()
+            .collect();
+        // Map keys are already normalized; normalizing again keeps the note to
+        // `[a-z0-9_-]` whatever a future caller inserts under. Sorted, so the
+        // sentence is the same bytes for the same set (`extensions` is a
+        // `HashMap`, whose order is randomised per process).
+        for name in &mut withheld {
+            *name = normalize(name);
+        }
+        withheld.sort();
+        withheld.dedup();
+        ExtensionsPromptView {
+            infos,
+            withheld_for_privacy: crate::privacy::refusal::withheld_extensions_note(
+                &withheld,
+                lowered_by_decision,
+            ),
+        }
     }
 
     /// Get aggregated usage statistics
@@ -2978,12 +3053,16 @@ impl ExtensionManager {
         };
         let caller = cap.tier();
         let enforce = cap.enforced();
-        let mut reach = ExtensionReach::default();
+        let mut reach = ExtensionReach {
+            lowered_by_decision: cap.lowered_by_decision(),
+            ..ExtensionReach::default()
+        };
         for (key, entry) in self.extensions.lock().await.iter() {
             let class = crate::privacy::resolve_extension(key, Some(&entry.config));
             if enforce
                 && crate::privacy::refusal::privacy_refusal(key, class.tier, caller).is_some()
             {
+                reach.withheld.push(key.clone());
                 continue;
             }
             if let Some(finding) = cap.cross_affiliation(key, &class) {
@@ -3203,7 +3282,7 @@ impl ExtensionManager {
             &snapshot.keys,
             &ExtensionReach {
                 allowed: snapshot.keys.clone(),
-                marked: Vec::new(),
+                ..ExtensionReach::default()
             },
         ))
     }
@@ -9476,6 +9555,126 @@ mod tests {
             sm.get_session(&id, false).await.unwrap().privacy_tier,
             crate::privacy::SessionClassification::Public,
             "a refused call disclosed nothing"
+        );
+    }
+
+    // ----------------------------------------------------------------------
+    // WP-22: a public chat's model must be able to say WHY an enabled private
+    // extension is missing. Gate F2 leaves it out of the prompt's list and
+    // Gate E leaves out its tools; before this, nothing else named it, and a
+    // public Claude Code chat told the person `gptragent` "is not loaded".
+    // ----------------------------------------------------------------------
+
+    /// A manager holding one private extension (`ucsfomopagent`, private in the
+    /// compiled-in BAAM baseline), one third-party public one and one
+    /// capability, so a note that named everything, or nothing, fails.
+    async fn a_manager_with_a_private_a_public_and_a_capability() -> (TempDir, ExtensionManager) {
+        let dir = tempfile::tempdir().unwrap();
+        let em = ExtensionManager::new_without_provider(dir.path().to_path_buf());
+        em.add_mock_extension("ucsfomopagent".to_string(), Arc::new(MockClient {}))
+            .await;
+        em.add_mock_third_party_extension("custom", Arc::new(MockClient {}))
+            .await;
+        em.add_mock_extension("developer".to_string(), Arc::new(MockClient {}))
+            .await;
+        (dir, em)
+    }
+
+    #[tokio::test]
+    async fn a_public_chat_is_told_which_enabled_private_extensions_were_withheld() {
+        let (_dir, em) = a_manager_with_a_private_a_public_and_a_capability().await;
+        let view = em.extensions_prompt_view(Some(a_public_caller())).await;
+
+        let listed: Vec<&str> = view.infos.iter().map(|i| i.name.as_str()).collect();
+        assert!(
+            !listed.contains(&"ucsfomopagent"),
+            "Gate F2 still hides it: {listed:?}"
+        );
+        assert!(listed.contains(&"custom"), "{listed:?}");
+
+        let note = view
+            .withheld_for_privacy
+            .expect("a public chat with a private extension enabled gets the note");
+        assert!(
+            note.starts_with(crate::privacy::refusal::WITHHELD_EXTENSIONS_MARKER),
+            "{note}"
+        );
+        assert!(note.contains("`ucsfomopagent`"), "{note}");
+        assert!(note.contains("public model"), "{note}");
+        // Only the withheld set is named: not the public extension that is
+        // listed anyway, not a capability.
+        assert!(!note.contains("custom"), "{note}");
+        assert!(!note.contains("developer"), "{note}");
+        // Names only: no tool of the withheld extension, prefixed or bare.
+        assert!(!note.contains("__"), "{note}");
+        for tool in ["`tool`", "available_tool", "hidden_tool"] {
+            assert!(!note.contains(tool), "{tool} reached the note: {note}");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_private_chat_gets_no_withheld_note() {
+        let (_dir, em) = a_manager_with_a_private_a_public_and_a_capability().await;
+        let view = em.extensions_prompt_view(Some(a_private_caller())).await;
+        assert_eq!(view.withheld_for_privacy, None);
+        let listed: Vec<&str> = view.infos.iter().map(|i| i.name.as_str()).collect();
+        assert!(listed.contains(&"ucsfomopagent"), "{listed:?}");
+    }
+
+    /// The master switch off withholds nothing, so there is nothing to explain;
+    /// a note here would claim a boundary the chat does not have.
+    #[tokio::test]
+    async fn no_withheld_note_while_privacy_tiers_are_off() {
+        let (_dir, em) = a_manager_with_a_private_a_public_and_a_capability().await;
+        let off =
+            crate::privacy::CallCapability::for_test(crate::privacy::ProviderTier::Public, false);
+        let view = em.extensions_prompt_view(Some(off)).await;
+        assert_eq!(view.withheld_for_privacy, None);
+        let listed: Vec<&str> = view.infos.iter().map(|i| i.name.as_str()).collect();
+        assert!(listed.contains(&"ucsfomopagent"), "{listed:?}");
+    }
+
+    /// A chat a decision model made public (DR-33) is told the decision model
+    /// is the cause, off the same sample that withheld the extension.
+    #[tokio::test]
+    async fn a_chat_lowered_by_a_decision_model_is_pointed_at_it() {
+        let (_dir, em) = a_manager_with_a_private_a_public_and_a_capability().await;
+        let lowered = crate::privacy::CallCapability::for_test_lowered_by_decision(true);
+        let note = em
+            .extensions_prompt_view(Some(lowered))
+            .await
+            .withheld_for_privacy
+            .expect("a lowered chat is public and withholds the private extension");
+        assert!(note.contains("`ucsfomopagent`"), "{note}");
+        assert!(note.contains("public decision model"), "{note}");
+        assert!(
+            !note.contains("switch this chat to a private model"),
+            "{note}"
+        );
+    }
+
+    /// The production door samples (the system prompt has no admitted turn to
+    /// inherit), and a manager with no model bound samples Public with the
+    /// master switch at its default, ON. So the door itself names the withheld
+    /// extension, not only the seam the tests above drive.
+    #[tokio::test]
+    async fn the_sampling_door_names_the_withheld_extension_too() {
+        let (_dir, em) = a_manager_with_a_private_a_public_and_a_capability().await;
+        let view = em.get_extensions_prompt_view().await;
+        let note = view
+            .withheld_for_privacy
+            .expect("no model bound reads Public");
+        assert!(note.contains("`ucsfomopagent`"), "{note}");
+
+        let sorted_names = |infos: Vec<ExtensionInfo>| {
+            let mut names: Vec<String> = infos.into_iter().map(|i| i.name).collect();
+            names.sort();
+            names
+        };
+        assert_eq!(
+            sorted_names(view.infos),
+            sorted_names(em.get_extensions_info().await),
+            "get_extensions_info is the view's list"
         );
     }
 
