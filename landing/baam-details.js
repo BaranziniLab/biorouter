@@ -212,28 +212,33 @@ window.BAAM_DETAILS = {
   },
   opentronsagent: {
     domain: 'Lab & ELN',
-    what: 'Built on the BRXT adapter kit: every request goes to a fixed address, and a key is sent only to its own service. It reads Opentrons labware, pipette, deck and module definitions from Opentrons shared data on GitHub. The robot calls and the local command runner of 0.1.0 are removed; simulation as a typed tool is planned for a later release.',
+    what: 'Simulates protocols written with the Opentrons Python API through the opentrons 10.1.0 package (Apache-2.0) and returns the run log, step counts and any error, such as a pipette asked to hold more than its volume or labware in a slot that cannot take it. A simulation runs the protocol\'s Python on this computer, so the source must first pass a static check (only opentrons and a few standard modules may be imported; no eval, exec, open, str.format or underscore attributes), a run stops after 60 seconds or 2 million protocol lines, and Biorouter asks before each run. Opentrons 10 simulates Flex protocols only. It also searches and shows the standard labware definitions that ship with the package, with no network call, and reads Opentrons shared data on GitHub. It never talks to a robot.',
     asks: [
-      'Check the health endpoint of my Opentrons robot and report its API version.',
-      'Simulate protocol.py with opentrons_simulate and summarize the steps.',
-      'List the runs recorded on the robot without starting or changing anything.'
+      'Simulate this Flex protocol and tell me which step fails, if any.',
+      'Find the 96 well plates that ship with opentrons and show the well volume and depth of corning_96_wellplate_360ul_flat.',
+      'List the pipette definitions in Opentrons shared data on GitHub.'
     ],
-    tools: ['opentrons_status', 'opentrons_get'],
+    tools: ['opentrons_simulate', 'opentrons_labware_search', 'opentrons_labware_definition', 'opentrons_status', 'opentrons_get'],
     skills: ['opentrons-lab-automation'],
-    needs: 'Nothing. No API keys. It needs uv.',
-    sources: ['Opentrons robot HTTP API (http://localhost:31950 by default)', 'opentrons_simulate on your machine']
+    needs: 'Nothing. No account or API key. It needs uv and Python 3.12 or later; the opentrons package installs with the extension.',
+    sources: [
+      'The opentrons 10.1.0 simulator and its labware definitions, on this computer',
+      'Opentrons shared data on GitHub (raw.githubusercontent.com/Opentrons/opentrons)',
+      'GitHub contents API for the Opentrons repository (api.github.com)'
+    ]
   },
   lamindbagent: {
     domain: 'Lab & ELN',
-    what: 'Built on the BRXT adapter kit: every request goes to a fixed address, and a key is sent only to its own service. It reads LaminDB instance, dataset, artifact and collection metadata from the lamin.ai address you set. The lamin.ai/api address 0.1.0 used no longer exists, and the local command runner is removed.',
+    what: 'Connects to the LaminDB instance named in LAMINDB_INSTANCE (owner/name) with the lamindb 2.12.2 library (Apache-2.0) and reads its registry: LaminDB\'s ranked text search, field filters over one registry, and one record\'s description with its features, labels, storage path and lineage. Every tool only reads; filter, field and sort names are checked against the registry\'s model before a query runs, and nothing is saved, deleted or moved. lamindb keeps its settings in the extension\'s own data folder, so your ~/.lamin is neither read nor changed, and your key is handed to lamindb inside the extension\'s own process. lamindb_get reaches a LaminHub API address only if you set LAMINDB_API_URL.',
     asks: [
-      'Run lamin to show which LaminDB instance I am connected to.',
-      'List the artifacts in my LaminDB instance with their versions.',
-      'Summarize the lineage and version fields in this exported collection record.'
+      'Which LaminDB instance am I connected to, and how many artifacts and collections does it hold?',
+      'Find the .h5ad artifacts whose key starts with scrna/ and list their keys and versions.',
+      'Describe this artifact by its uid and show the run and transform that produced it.'
     ],
-    tools: ['lamindb_status', 'lamindb_get'],
-    needs: 'A LaminDB account and instance. LAMINDB_API_KEY (secret) goes only to the lamin.ai address you set. It needs uv.',
-    sources: ['LaminDB API (lamin.ai/api)', 'The lamin CLI on your machine']
+    tools: ['lamindb_instance', 'lamindb_search', 'lamindb_query', 'lamindb_describe', 'lamindb_status', 'lamindb_get'],
+    skills: ['lamindb-data-registry'],
+    needs: 'A LaminDB instance, named in LAMINDB_INSTANCE as owner/name. For a LaminHub instance, LAMINDB_API_KEY (secret), which goes only to Lamin. It needs uv; lamindb installs with the extension.',
+    sources: ['Your LaminDB instance (its registry database and storage), through the lamindb library', 'LaminHub (lamin.ai)']
   },
   cellxgenecensusagent: {
     domain: 'Genomics & omics',
@@ -321,15 +326,16 @@ window.BAAM_DETAILS = {
   },
   rowanmolecularmodelingagent: {
     domain: 'Chemistry & structure',
-    what: 'Built on the BRXT adapter kit: every request goes to a fixed address, and a key is sent only to its own service. It reads and submits Rowan cloud molecular modelling workflows, such as pKa, conformers, docking and cofolding. rowan_get only reads, so it runs without asking; rowan_write changes data, so Biorouter asks you before each call.',
+    what: 'Submits Rowan cloud molecular modelling workflows for one molecule (a SMILES), polls their status and reads their results, through rowan-python 3.3.4 (MIT). rowan_workflow_types lists the workflow types it can submit, such as pKa, conformer search, descriptors, solubility and docking, with no network call. A submission spends credits from your Rowan account, so rowan_submit_workflow is marked destructive and Biorouter asks before every call; it takes max_credits to cap the cost, and a draft is saved in Rowan without starting and costs nothing. rowan-python\'s address is pinned to api.rowansci.com, so a ROWAN_API_URL in the environment cannot move the key, and the key is removed from every error. rowan_get and rowan_write reach the same API route by route, and Biorouter asks before each rowan_write call.',
     asks: [
-      'Show me the status of my recent Rowan workflows, with their IDs.',
-      'Fetch the results of a Rowan workflow by its ID and summarize which fields came back.',
-      'Prepare a pKa calculation request for this SMILES, but do not submit it until I approve.'
+      'List the Rowan workflow types this extension can submit.',
+      'Save a pKa workflow for this SMILES as a draft in Rowan so I can check its parameters first.',
+      'Check the status of these Rowan workflow ids and read the results of the completed ones.'
     ],
-    tools: ['rowan_status', 'rowan_get', 'rowan_write'],
-    needs: 'ROWAN_API_KEY (secret) from your Rowan account, sent only to api.rowansci.com. It needs uv.',
-    sources: ['Rowan API (api.rowansci.com)']
+    tools: ['rowan_workflow_types', 'rowan_submit_workflow', 'rowan_workflow_status', 'rowan_workflow_results', 'rowan_status', 'rowan_get', 'rowan_write'],
+    skills: ['rowan-molecular-modeling'],
+    needs: 'ROWAN_API_KEY (secret) from your Rowan account, sent only to api.rowansci.com. A submission spends your Rowan credits. It needs uv and Python 3.13 or later; rowan-python and RDKit install with the extension.',
+    sources: ['Rowan API (api.rowansci.com), through rowan-python']
   },
   gptragent: {
     domain: 'Code',

@@ -238,8 +238,8 @@
       "id": "opentronsagent",
       "name": "OpentronsAgent",
       "organization": "BaranziniLab · BRXT",
-      "version": "v0.2.0",
-      "description": "Read Opentrons labware, pipette, deck and module definitions from Opentrons shared data. Robot calls and the local command runner are removed; no key needed.",
+      "version": "v0.3.0",
+      "description": "Simulate Opentrons Flex protocols with the opentrons 10.1.0 package and look up the labware definitions it ships, plus Opentrons shared data on GitHub. A simulation runs the protocol's Python on this computer after a static check, stops after 60 seconds, and Biorouter asks before each run. It never talks to a robot. No key needed. 5 tools.",
       "tags": [
         "MCP",
         "Opentrons",
@@ -248,7 +248,7 @@
         "Apache-2.0"
       ],
       "github": "https://github.com/BaranziniLab/OpentronsAgent",
-      "download": "https://github.com/BaranziniLab/OpentronsAgent/releases/download/v0.2.0/opentronsagent.brxt",
+      "download": "https://github.com/BaranziniLab/OpentronsAgent/releases/download/v0.3.0/opentronsagent.brxt",
       "filename": "opentronsagent.brxt",
       "license": "Apache-2.0",
       "privacy": "public"
@@ -257,8 +257,8 @@
       "id": "lamindbagent",
       "name": "LaminDBAgent",
       "organization": "BaranziniLab · BRXT",
-      "version": "v0.2.0",
-      "description": "LaminDB instance metadata, datasets, artifacts and collections. Your LaminDB key goes only to the lamin.ai address you set. Registry tools on the lamindb library are planned for a later release.",
+      "version": "v0.3.0",
+      "description": "Search, filter and describe a LaminDB instance's artifacts, collections, runs, features and labels, with their lineage, through the lamindb 2.12.2 library. Read only: nothing is saved, deleted or moved. Your LaminDB key goes only to Lamin. 6 tools.",
       "tags": [
         "MCP",
         "LaminDB",
@@ -267,7 +267,7 @@
         "Apache-2.0"
       ],
       "github": "https://github.com/BaranziniLab/LaminDBAgent",
-      "download": "https://github.com/BaranziniLab/LaminDBAgent/releases/download/v0.2.0/lamindbagent.brxt",
+      "download": "https://github.com/BaranziniLab/LaminDBAgent/releases/download/v0.3.0/lamindbagent.brxt",
       "filename": "lamindbagent.brxt",
       "license": "Apache-2.0",
       "privacy": "public"
@@ -333,8 +333,8 @@
       "id": "rowanmolecularmodelingagent",
       "name": "RowanMolecularModelingAgent",
       "organization": "BaranziniLab · BRXT",
-      "version": "v0.2.0",
-      "description": "Read and submit Rowan cloud molecular modelling workflows (pKa, conformers, docking, cofolding and more). Your Rowan key goes only to api.rowansci.com, and Biorouter asks before every submission.",
+      "version": "v0.3.0",
+      "description": "Submit Rowan cloud molecular modelling workflows (pKa, conformers, descriptors, solubility, docking and more) for a molecule, poll their status and read their results, through rowan-python 3.3.4. A submission spends Rowan credits, so Biorouter asks before every one. Your Rowan key goes only to api.rowansci.com. 7 tools. Needs Python 3.13 or later.",
       "tags": [
         "MCP",
         "Rowan",
@@ -343,7 +343,7 @@
         "Apache-2.0"
       ],
       "github": "https://github.com/BaranziniLab/RowanMolecularModelingAgent",
-      "download": "https://github.com/BaranziniLab/RowanMolecularModelingAgent/releases/download/v0.2.0/rowanmolecularmodelingagent.brxt",
+      "download": "https://github.com/BaranziniLab/RowanMolecularModelingAgent/releases/download/v0.3.0/rowanmolecularmodelingagent.brxt",
       "filename": "rowanmolecularmodelingagent.brxt",
       "license": "Apache-2.0",
       "privacy": "public"

@@ -1550,12 +1550,12 @@
       "manifest_name": "opentronsagent",
       "repository": "BaranziniLab/OpentronsAgent",
       "group": "adapters",
-      "version": "0.2.0",
+      "version": "0.3.0",
       "status": "active",
       "aliases": [],
       "job": "lab.opentrons-robots",
       "role": "data-access",
-      "summary": "Read Opentrons labware, pipette, deck and module definitions from Opentrons shared data. Robot calls and the local command runner are removed; no key needed.",
+      "summary": "Simulate Opentrons Flex protocols with the opentrons 10.1.0 package and look up the labware definitions it ships, plus Opentrons shared data on GitHub. A simulation runs the protocol's Python on this computer after a static check, stops after 60 seconds, and Biorouter asks before each run. It never talks to a robot. No key needed. 5 tools.",
       "keywords": [
         "MCP",
         "Opentrons",
@@ -1568,12 +1568,19 @@
         "upstreams": [],
         "built_with": "brxt-adapter-kit 1.0.1"
       },
-      "third_party": [],
+      "third_party": [
+        {
+          "name": "opentrons",
+          "version": "10.1.0",
+          "licence": "Apache-2.0",
+          "how": "Python dependency, with opentrons-shared-data 10.1.0; its jsonschema pin is overridden to >=4.20,<5"
+        }
+      ],
       "licence": "Apache-2.0",
       "release": {
-        "tag": "v0.2.0",
+        "tag": "v0.3.0",
         "asset": "opentronsagent.brxt",
-        "sha256": "2490993835a487b7ed4e856ade9ba522ce33c9bfa155626ac86fe8816eb56459"
+        "sha256": "2dd95a619820b31b2e929e8bd7c040d3291e8fed5cdce55d69bb5d8f8a382d0f"
       },
       "privacy": "public",
       "affiliation": null,
@@ -1596,6 +1603,11 @@
           "version": "0.2.0",
           "date": "2026-11-22",
           "note": "BRXT adapter kit: credential bound to its own host"
+        },
+        {
+          "version": "0.3.0",
+          "date": "2026-11-25",
+          "note": "Flex protocol simulation behind a static check and time and line limits, and labware lookup, on opentrons 10.1.0; asks before each simulation"
         }
       ]
     },
@@ -1664,12 +1676,12 @@
       "manifest_name": "lamindbagent",
       "repository": "BaranziniLab/LaminDBAgent",
       "group": "adapters",
-      "version": "0.2.0",
+      "version": "0.3.0",
       "status": "active",
       "aliases": [],
       "job": "data.lamindb-registry",
       "role": "data-access",
-      "summary": "LaminDB instance metadata, datasets, artifacts and collections. Your LaminDB key goes only to the lamin.ai address you set. Registry tools on the lamindb library are planned for a later release.",
+      "summary": "Search, filter and describe a LaminDB instance's artifacts, collections, runs, features and labels, with their lineage, through the lamindb 2.12.2 library. Read only: nothing is saved, deleted or moved. Your LaminDB key goes only to Lamin. 6 tools.",
       "keywords": [
         "MCP",
         "LaminDB",
@@ -1682,12 +1694,19 @@
         "upstreams": [],
         "built_with": "brxt-adapter-kit 1.0.1"
       },
-      "third_party": [],
+      "third_party": [
+        {
+          "name": "lamindb",
+          "version": "2.12.2",
+          "licence": "Apache-2.0",
+          "how": "Python dependency, with lamindb-core and lamindb-setup"
+        }
+      ],
       "licence": "Apache-2.0",
       "release": {
-        "tag": "v0.2.0",
+        "tag": "v0.3.0",
         "asset": "lamindbagent.brxt",
-        "sha256": "0febce31b7af897fd6d4773e56f996e7e084db17a0aab4b1b59fcb02d8a8f05d"
+        "sha256": "3c8e08bb2a6da7f906966843678cf4c4b45f810ef34ac90a0305419f04663c08"
       },
       "privacy": "public",
       "affiliation": null,
@@ -1715,6 +1734,11 @@
           "version": "0.2.0",
           "date": "2026-11-22",
           "note": "BRXT adapter kit: credential bound to its own host"
+        },
+        {
+          "version": "0.3.0",
+          "date": "2026-11-25",
+          "note": "read-only registry tools on lamindb 2.12.2: lamindb_instance, lamindb_search, lamindb_query and lamindb_describe"
         }
       ]
     },
@@ -2289,12 +2313,12 @@
       "manifest_name": "rowanmolecularmodelingagent",
       "repository": "BaranziniLab/RowanMolecularModelingAgent",
       "group": "adapters",
-      "version": "0.2.0",
+      "version": "0.3.0",
       "status": "active",
       "aliases": [],
       "job": "chemistry.rowan-molecular-modeling",
       "role": "data-access",
-      "summary": "Read and submit Rowan cloud molecular modelling workflows (pKa, conformers, docking, cofolding and more). Your Rowan key goes only to api.rowansci.com, and Biorouter asks before every submission.",
+      "summary": "Submit Rowan cloud molecular modelling workflows (pKa, conformers, descriptors, solubility, docking and more) for a molecule, poll their status and read their results, through rowan-python 3.3.4. A submission spends Rowan credits, so Biorouter asks before every one. Your Rowan key goes only to api.rowansci.com. 7 tools. Needs Python 3.13 or later.",
       "keywords": [
         "MCP",
         "Rowan",
@@ -2307,12 +2331,25 @@
         "upstreams": [],
         "built_with": "brxt-adapter-kit 1.0.1"
       },
-      "third_party": [],
+      "third_party": [
+        {
+          "name": "rowan-python",
+          "version": "3.3.4",
+          "licence": "MIT",
+          "how": "Python dependency, with stjames (MIT)"
+        },
+        {
+          "name": "RDKit",
+          "version": "2026.09.2",
+          "licence": "BSD-3-Clause",
+          "how": "Python dependency (2025.09.3 on Intel Macs)"
+        }
+      ],
       "licence": "Apache-2.0",
       "release": {
-        "tag": "v0.2.0",
+        "tag": "v0.3.0",
         "asset": "rowanmolecularmodelingagent.brxt",
-        "sha256": "34289300fc5a8dbaaac2c6a8f40504881c22a4fd106eeeed6d2d0b5292426165"
+        "sha256": "e803e65c1d88449402b2cbefbd3e6f725816df9e703acdc37211eeb53ced49d3"
       },
       "privacy": "public",
       "affiliation": null,
@@ -2335,6 +2372,11 @@
           "version": "0.2.0",
           "date": "2026-11-22",
           "note": "BRXT adapter kit: credential bound to its own host"
+        },
+        {
+          "version": "0.3.0",
+          "date": "2026-11-25",
+          "note": "typed workflow tools on rowan-python 3.3.4: types, submit (asks first, spends credits), status and results; needs Python 3.13"
         }
       ]
     },
