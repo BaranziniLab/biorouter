@@ -1,8 +1,9 @@
 /* Biorouter video theme — mirrors landing-site shared.css :root.
    Shared by all compositions under video/. See frame.md for the spec. */
 :root {
-  /* Full token set — identical to the landing site's shared.css :root, so the
-     vendored app-mockups.css/.js render byte-identical to the real app. */
+  /* The motion palette (frame.md), taken from an earlier version of the
+     landing site's shared.css :root. The brand scenes use it; the app mockups
+     use the .bw block below instead. */
   --bg: #faf8f3;
   --bg-2: #ffffff;
   --bg-3: #f4f0e6;
@@ -29,6 +30,43 @@
   --ink: #2a2520;
   --ink-2: #7a736c;
   --ink-3: #b6ae93;
+}
+/* The app window mockups (.bw, from the vendored app-mockups.css/.js) read the
+   site's CURRENT light tokens, copied from landing/shared.css :root, so the app
+   UI in the videos matches the live mockups on the site. The :root block above
+   stays the motion palette in frame.md for the brand scenes. Re-copy this block
+   whenever shared.css :root changes and app-mockups.js is re-vendored. */
+.bw {
+  --bg: #faf8f3;
+  --bg-2: #ffffff;
+  --bg-3: #f4f0e6;
+  --bg-4: #e8e1d2;
+  --sidebar: #f3ede1;
+  --border: rgba(40, 30, 15, 0.09);
+  --border-2: rgba(40, 30, 15, 0.16);
+  --text: #2a2520;
+  --text-2: #635c54;
+  --text-3: #6e6760;
+  --text-on-accent: #ffffff;
+  --accent: #b85a32;
+  --accent-hover: #a44f2b;
+  --accent-bar: #cf6d47;
+  --accent-soft: rgba(184, 90, 50, 0.1);
+  --accent-soft2: rgba(184, 90, 50, 0.18);
+  --ucsf: #052049;
+  --ucsf-hover: #083570;
+  --radius-sm: 6px;
+  --radius: 8px;
+  --radius-lg: 12px;
+  --radius-xl: 16px;
+  --shadow: none;
+  --shadow-float: 0 8px 24px rgba(32, 25, 15, 0.1), 0 0 1px rgba(0, 0, 0, 0.14);
+  --shadow-lg: 0 24px 60px -20px rgba(32, 25, 15, 0.22), 0 10px 28px -22px rgba(32, 25, 15, 0.16);
+  --ease-out: cubic-bezier(0.24, 1, 0.4, 1);
+  --motion-fast: 120ms;
+  --motion-base: 180ms;
+  --motion-slow: 260ms;
+  --transition: 150ms cubic-bezier(0.24, 1, 0.4, 1);
 }
 * { margin: 0; padding: 0; box-sizing: border-box; }
 html, body { width: 1920px; height: 1080px; overflow: hidden; }

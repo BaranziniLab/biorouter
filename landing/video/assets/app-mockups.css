@@ -105,7 +105,7 @@
 .bw-side-foot { margin-top: auto; display: flex; align-items: center; gap: 8px; padding: 8px 6px 2px; }
 .bw-side-foot img { width: 22px; height: 22px; border-radius: 5px; }
 .bw-side-foot b { font-size: 13px; font-weight: 700; }
-.bw-side-foot .status { width: 7px; height: 7px; border-radius: 50%; background: var(--accent);
+.bw-side-foot .status { width: 7px; height: 7px; border-radius: 50%; background: var(--accent-bar);
   margin-left: 1px; }
 
 /* Main content area */
@@ -225,7 +225,7 @@
   width: 12px; height: 12px; flex-shrink: 0; color: var(--text-3); }
 .bw-tab-dot svg { width: 11px; height: 11px; stroke: currentColor; fill: none;
   stroke-width: 1.8; stroke-linecap: round; }
-.bw-tab-dot.busy { border-radius: 50%; background: var(--accent);
+.bw-tab-dot.busy { border-radius: 50%; background: var(--accent-bar);
   width: 7px; height: 7px; margin: 0 2px; animation: bw-breathe 1.4s ease-in-out infinite; }
 .bw-tab-add { display: inline-flex; align-items: center; justify-content: center;
   width: 22px; height: 22px; border-radius: 6px; flex-shrink: 0; color: var(--text-3); }

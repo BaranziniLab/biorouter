@@ -37,7 +37,9 @@ vendor the site's own `assets/app-mockups.js` + `assets/app-mockups.css` and
 mount the real `[data-screen]` mockups (Home / Chat / Tabs / Knowledge /
 Workflows / Models), so the UI in the videos is byte-identical to the live app.
 A small `fitMock()` in each composition scales each `.bw` window to fit the
-frame. `assets/icon.svg` (also copied to `video/icon.svg`) is the real logo used
+frame. To refresh them, copy `../app-mockups.js` and `../app-mockups.css` over
+the copies in `assets/`, and copy the light `:root` tokens of `../shared.css`
+into the `.bw` block of `assets/theme.css`, which the mockups read. `assets/icon.svg` (also copied to `video/icon.svg`) is the real logo used
 in the intro, the HUD wordmarks, and the mockups' sidebar footer.
 
 Videos are rendered at **4K** and downscaled (Lanczos) to a crisp **1440p**
