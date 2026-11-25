@@ -51,7 +51,7 @@
       </label>
       <div class="baam-tabs" role="tablist" aria-label="Marketplace shelves">
         <button class="baam-tab active" type="button" id="tab-extensions" data-shelf="extensions" role="tab" aria-selected="true" aria-controls="extensions-section">Extensions <span class="tab-count" id="tab-count-extensions">28</span></button>
-        <button class="baam-tab" type="button" id="tab-skills" data-shelf="skills" role="tab" aria-selected="false" aria-controls="skills-section" tabindex="-1">Skills <span class="tab-count" id="tab-count-skills">132</span></button>
+        <button class="baam-tab" type="button" id="tab-skills" data-shelf="skills" role="tab" aria-selected="false" aria-controls="skills-section" tabindex="-1">Skills <span class="tab-count" id="tab-count-skills">133</span></button>
         <button class="baam-tab" type="button" id="tab-workflows" data-shelf="workflows" role="tab" aria-selected="false" aria-controls="workflows-section" tabindex="-1">Workflows <span class="tab-count" id="tab-count-workflows">1</span></button>
       </div>
       <noscript><p class="noscript-note">Skills and workflows need JavaScript. Browse them on GitHub: <a href="https://github.com/BaranziniLab/biorouter-skills">skills</a> and <a href="https://github.com/BaranziniLab/biorouter-workflows">workflows</a>.</p></noscript>
@@ -859,7 +859,7 @@
 
     <!-- Core Biorouter skills subsection -->
     <div class="subsection-title">
-      <h2>Core skills</h2> <span class="sub-count" id="count-core">57 skills</span>
+      <h2>Core skills</h2> <span class="sub-count" id="count-core">58 skills</span>
       <a class="sub-link" href="https://github.com/BaranziniLab/biorouter-skills" target="_blank" rel="noopener">All on GitHub</a>
     </div>
 
@@ -1700,6 +1700,22 @@
         </div>
       </div>
 
+      <div class="skill-card" data-tags="phi-deidentification phi deidentification de-identification hipaa safe-harbor anonymization pseudonymization privacy clinical-data ehr" data-license="Apache-2.0 AND MIT" data-version="1.0.0">
+        <div class="skill-card-header">
+          <div class="icon-tile icon-tile-sm">
+            <svg class="icon" viewBox="0 0 24 24"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="M9 12l2 2 4-4"/></svg>
+          </div>
+          <div class="skill-meta"><h3>PHI De-identification</h3><div class="skill-type">Auto-applied</div></div>
+        </div>
+        <p class="skill-desc">De-identify a clinical CSV, TSV or Excel table before analysis or sharing: a local script that makes no network calls checks it for the 18 HIPAA Safe Harbor identifiers and replaces, redacts or pseudonymizes what it finds, and the agent never reads the raw data. A person must spot-check the output before it leaves the institution. Adapted from the MIT-licensed deidentify skill in Aperivue/medsci-skills.</p>
+        <div class="skill-footer">
+          <div class="skill-tags"><span class="tag">Clinical</span><span class="tag">Privacy</span><span class="tag">HIPAA</span></div>
+          <a href="https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-phi-deidentification/phi-deidentification.zip" class="skill-dl-btn">
+            <svg class="icon icon-sm" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7,10 12,15 17,10"/><line x1="12" y1="15" x2="12" y2="3"/></svg> .zip
+          </a>
+        </div>
+      </div>
+
       <div class="skill-card" data-tags="python-visualization python matplotlib seaborn plotly publication-figures multi-panel colour-blind journal-size export chart-selection" data-license="Apache-2.0 AND MIT" data-version="1.0.0">
         <div class="skill-card-header">
           <div class="icon-tile icon-tile-sm">
@@ -1782,7 +1798,7 @@
 
     </div>
 
-    <button class="show-all-btn" type="button" data-target="core-skill-grid"><span class="lbl">Show all 57</span><svg class="chev" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg></button>
+    <button class="show-all-btn" type="button" data-target="core-skill-grid"><span class="lbl">Show all 58</span><svg class="chev" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg></button>
 
     <!-- Developer & authoring skills subsection -->
     <div class="subsection-title">

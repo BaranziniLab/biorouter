@@ -1,5 +1,5 @@
 {
-  "source_commit": "11818db50399c9db33d8082788c30589dc277fef",
+  "source_commit": "928fb27e79a6f92651c03c2393093e82b32d9896",
   "format": 1,
   "description": "Source of truth for every BAAM skill and bundle, active or not. See docs in README.md, \"The catalog\".",
   "done_work_packages": [
@@ -13390,6 +13390,97 @@
       },
       "notices": [
         "scientific-python-development includes material from uw-ssec/savvy (plugins/scientific-python-development/skills/python-testing, plugins/scientific-python-development/skills/python-packaging, plugins/scientific-python-development/skills/code-quality-tools, plugins/scientific-python-development/skills/scientific-documentation, plugins/scientific-python-development/skills/pixi-package-manager, commit e1084bba4ef18cfe9ce16a459e69df1ebe5018b0),\nCopyright (c) 2026 University of Washington, eScience Institute, Scientific Software Engineering Center, licensed under BSD-3-Clause. Changes: frontmatter rewritten for Biorouter; two components renamed with a python- prefix and cross-references updated; text otherwise kept.\nNeither the name of the University of Washington, the eScience Institute or the Scientific Software Engineering Center nor the names of its contributors are used to endorse or promote Biorouter."
+      ]
+    },
+    {
+      "summary": "De-identifies clinical CSV, TSV and Excel tables under HIPAA Safe Harbor with a local script that makes no network calls; the agent never reads the raw data.",
+      "keywords": [
+        "phi",
+        "deidentification",
+        "de-identification",
+        "hipaa",
+        "safe-harbor",
+        "anonymization",
+        "pseudonymization",
+        "privacy",
+        "clinical-data",
+        "ehr"
+      ],
+      "invocation": "auto",
+      "aliases": [],
+      "distinct_from": [
+        {
+          "id": "clinical-ai-modeling",
+          "boundary": "clinical-ai-modeling plans models on clinical data and keeps PHI out by checklist; phi-deidentification removes the identifiers from the table before anything reads it"
+        }
+      ],
+      "notice_file": "LICENSE-UPSTREAM",
+      "components": null,
+      "release": {
+        "tag": "skill-phi-deidentification",
+        "asset": "phi-deidentification.zip",
+        "sha256": "51dbf2f0a44107151ab70a8449f1e5fb08602a701a68ca04a1ba41804c5d13eb"
+      },
+      "id": "phi-deidentification",
+      "display_name": "PHI De-identification",
+      "kind": "skill",
+      "category": "core",
+      "path": "phi-deidentification",
+      "version": "1.0.0",
+      "status": "active",
+      "job": "clinical.deidentification",
+      "source": {
+        "origin": "adapted",
+        "upstreams": [
+          {
+            "repo": "Aperivue/medsci-skills",
+            "path": "skills/deidentify",
+            "ref": "main@7e9d133",
+            "commit": "7e9d133dd0216c29b0e030729e3719c3db5e0973",
+            "licence": "MIT",
+            "copyright": "Copyright (c) 2026 Aperivue (https://aperivue.com)",
+            "taken": "2026-11-25"
+          }
+        ],
+        "maintained_here": false,
+        "changes": "deidentify.py, its locale packs, references and tests copied (the test now points at scripts/); SKILL.md rewritten for an agent that never sees raw data; safe_harbor.py added, a non-interactive HIPAA Safe Harbor mode with a residual check and no network calls."
+      },
+      "licence": "Apache-2.0 AND MIT",
+      "history": [
+        {
+          "version": "1.0.0",
+          "date": "2026-11-25",
+          "note": "first release; security review: owner sign-off 2026-11-25"
+        }
+      ],
+      "card": {
+        "title": "PHI De-identification",
+        "category": "Core",
+        "description": "De-identify a clinical table before analysis or sharing: a local script that makes no network calls removes the 18 HIPAA Safe Harbor identifiers (names, dates, geography, contact details, record and account numbers, device and vehicle IDs, URLs, IP addresses, biometrics and photos), and the agent sees only its report and the de-identified output.",
+        "tags": [
+          "Clinical",
+          "Privacy",
+          "HIPAA"
+        ],
+        "keywords": [
+          "phi",
+          "deidentification",
+          "de-identification",
+          "hipaa",
+          "safe-harbor",
+          "anonymization",
+          "pseudonymization",
+          "privacy",
+          "clinical-data",
+          "ehr"
+        ],
+        "data-license": "Apache-2.0 AND MIT",
+        "data-version": "1.0.0",
+        "data-tags": "phi-deidentification phi deidentification de-identification hipaa safe-harbor anonymization pseudonymization privacy clinical-data ehr",
+        "download": "https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-phi-deidentification/phi-deidentification.zip"
+      },
+      "notices": [
+        "phi-deidentification includes material from Aperivue/medsci-skills (skills/deidentify, commit 7e9d133dd0216c29b0e030729e3719c3db5e0973),\nCopyright (c) 2026 Aperivue (https://aperivue.com), licensed under MIT. Changes: deidentify.py, its locale packs, references and tests copied (the test now points at scripts/); SKILL.md rewritten for an agent that never sees raw data; safe_harbor.py added, a non-interactive HIPAA Safe Harbor mode with a residual check and no network calls."
       ]
     }
   ]
