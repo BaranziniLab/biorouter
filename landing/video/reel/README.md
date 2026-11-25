@@ -19,7 +19,7 @@ cd video/reel
 
 # 1. Capture one PNG per slide into ./frames (needs Playwright + Chrome).
 #    Install Playwright here (npm i playwright) or point NODE_PATH at one:
-NODE_PATH=/path/to/node_modules node capture-reel.js
+NODE_PATH=/path/to/node_modules node capture-reel.cjs
 
 # 2. Stitch the frames into biorouter-reel.mp4 (+ poster) with crossfades.
 python3 encode.py

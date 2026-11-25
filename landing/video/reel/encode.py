@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # Stitch the captured ./frames PNGs into biorouter-reel.mp4 with crossfades.
-# Run `node capture-reel.js` first to produce ./frames, then `python3 encode.py`.
+# Run `node capture-reel.cjs` first to produce ./frames, then `python3 encode.py`.
 import subprocess, os
 
 HERE = os.path.dirname(os.path.abspath(__file__))

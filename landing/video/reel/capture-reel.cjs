@@ -2,7 +2,7 @@
 // Run from this directory; outputs to ./frames. Requires Playwright
 // (e.g. `npm i playwright`, or run with NODE_PATH pointing at an install).
 //
-//   NODE_PATH=/path/to/node_modules node capture-reel.js
+//   NODE_PATH=/path/to/node_modules node capture-reel.cjs
 //
 // Then encode the frames with `python3 encode.py`.
 const { chromium } = require('playwright');
