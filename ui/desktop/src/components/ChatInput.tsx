@@ -60,7 +60,11 @@ import {
   type DictationTarget,
 } from './dictation/dictationSession';
 import { clearPrivateDraft, isPrivateDraft, markPrivateDraft } from './dictation/privateDraft';
-import { dictationContext, useDictationComposer } from './dictation/useDictationComposer';
+import {
+  dictationContext,
+  useDictationComposer,
+  type DictationNotesBinding,
+} from './dictation/useDictationComposer';
 import { readResolvedProviderTier } from './privacy/useBoundProviderTier';
 import { ConfirmationModal } from './ui/ConfirmationModal';
 import type { UserAttachment } from '../types/message';
@@ -125,6 +129,94 @@ import {
 import { isDecisionProvider } from './decisions/decisionWire';
 import type { DecisionSettings, PrivacyBasis } from '../utils/sessionDecisions';
 import { draftDecisionModels } from './decisions/draftDecisionSettings';
+
+/**
+ * The two dictation notes the chat composer draws itself, because each carries actions of its
+ * own (DD-98, "Inserting text" in `docs/dictation/surfaces.md`): MSG-INSERT-LOST, when a
+ * transcript's field was gone, with **Insert here** (into this composer, at its caret) and
+ * **Copy** (from this click only); and the one-time fn note (MSG-FN-CONFLICT), with **More in
+ * Settings**. Each has **Dismiss**. The session decides which composer offers each one
+ * (`dictationSession.ts`, `fnGestureClient.ts`), and only that one draws it.
+ */
+function DictationComposerNotes({
+  notes,
+  dictationKey,
+  onOpenSpeechSettings,
+}: {
+  notes: DictationNotesBinding;
+  dictationKey: string;
+  onOpenSpeechSettings: () => void;
+}) {
+  const lost = React.useSyncExternalStore(notes.subscribeLost, notes.lost, notes.lost);
+  const fnNote = React.useSyncExternalStore(notes.subscribeFnNote, notes.fnNote, notes.fnNote);
+  const showLost = lost !== null && lost.home === dictationKey;
+  const showFnNote = fnNote !== null && fnNote.key === dictationKey;
+  if (!showLost && !showFnNote) return null;
+  const action = 'h-auto px-0 text-supporting';
+  return (
+    <div className="br-dictation-notices" data-testid="dictation-composer-notes">
+      {showLost && (
+        // No live region here: the session announces the sentence through the notice row's own.
+        <div className="br-composer-notice" data-testid="dictation-lost-notice">
+          <span className="text-supporting">{dictationMessage('MSG-INSERT-LOST')}</span>
+          <Button
+            type="button"
+            variant="link"
+            size="xs"
+            className={action}
+            onClick={() => notes.insertLost(dictationKey)}
+          >
+            {DICTATION_ACTIONS.insertHere}
+          </Button>
+          <Button
+            type="button"
+            variant="link"
+            size="xs"
+            className={action}
+            onClick={() => void notes.copyLost()}
+          >
+            {DICTATION_ACTIONS.copy}
+          </Button>
+          <Button
+            type="button"
+            variant="link"
+            size="xs"
+            className={action}
+            onClick={notes.dismissLost}
+          >
+            {DICTATION_ACTIONS.dismiss}
+          </Button>
+        </div>
+      )}
+      {showFnNote && (
+        <div className="br-composer-notice" data-testid="dictation-fn-note">
+          <span className="text-supporting">{fnNote.text}</span>
+          <Button
+            type="button"
+            variant="link"
+            size="xs"
+            className={action}
+            onClick={() => {
+              notes.dismissFnNote();
+              onOpenSpeechSettings();
+            }}
+          >
+            {DICTATION_ACTIONS.moreInSettings}
+          </Button>
+          <Button
+            type="button"
+            variant="link"
+            size="xs"
+            className={action}
+            onClick={notes.dismissFnNote}
+          >
+            {DICTATION_ACTIONS.dismiss}
+          </Button>
+        </div>
+      )}
+    </div>
+  );
+}
 
 /**
  * Queued messages as a draft, for a composer with no chat to keep a queue for.
@@ -1951,6 +2043,8 @@ export default function ChatInput({
       if (event.transcript.bias_scope === 'private') markPrivateDraft(dictationKey);
     },
     isEmpty: () => !composerProseRef.current,
+    // MSG-INSERT-LOST and the one-time fn note show here with their own actions.
+    showsDictationNotes: true,
   });
   const dictationHoldsComposer = dictation.available && dictation.holdsComposer;
   // Every change to the prose moves the anchor of a dictation that will still
@@ -3549,6 +3643,15 @@ export default function ChatInput({
         {/* Dictation's notice row: MSG-WAIT, the muted partial line, a result or
             a failure with its one action; never a toast. */}
         {dictation.available && <DictationNotices dictationKey={dictationKey} />}
+        {dictation.available && dictation.notes && (
+          <DictationComposerNotes
+            notes={dictation.notes}
+            dictationKey={dictationKey}
+            onOpenSpeechSettings={() =>
+              setView('settings', { section: 'dictation' } as ViewOptions)
+            }
+          />
+        )}
 
         {/* What goes with the message, in one row above the text: the `/bug`
             command chip first, then references (issue #65), images and files. */}

@@ -1,5 +1,15 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { insertDictatedText, mapAnchor, spliceDictation, type Anchor } from './dictatedText';
+import {
+  composerOwnsFocus,
+  dictationFieldKind,
+  fieldSelection,
+  fieldText,
+  insertDictatedText,
+  mapAnchor,
+  setFieldTextByState,
+  spliceDictation,
+  type Anchor,
+} from './dictatedText';
 
 const at = (n: number): Anchor => ({ start: n, end: n });
 
@@ -205,5 +215,155 @@ describe('insertDictatedText', () => {
     expect(insertDictatedText(field, at(3), 'def', setByState)).toBe('draft');
     expect(insertDictatedText(null, at(3), 'def', setByState)).toBe('draft');
     expect(setByState).not.toHaveBeenCalled();
+  });
+});
+
+describe('the fields dictation writes into', () => {
+  afterEach(() => {
+    document.body.innerHTML = '';
+    vi.restoreAllMocks();
+  });
+
+  const make = (html: string) => {
+    document.body.innerHTML = html;
+    return document.body.firstElementChild as HTMLElement;
+  };
+
+  it('a textarea, a text-like input and an editable region; never a password or a locked control', () => {
+    expect(dictationFieldKind(make('<textarea></textarea>'))).toBe('textarea');
+    for (const type of ['text', 'search', 'url', 'tel']) {
+      expect(dictationFieldKind(make(`<input type="${type}">`)), type).toBe('input');
+    }
+    expect(dictationFieldKind(make('<input>'))).toBe('input');
+    expect(dictationFieldKind(make('<div contenteditable="true"></div>'))).toBe('contenteditable');
+    expect(dictationFieldKind(make('<div contenteditable=""></div>'))).toBe('contenteditable');
+    expect(dictationFieldKind(make('<div contenteditable="plaintext-only"></div>'))).toBe(
+      'contenteditable'
+    );
+    const nested = make('<div contenteditable="true"><p>x</p></div>').querySelector('p');
+    expect(dictationFieldKind(nested)).toBe('contenteditable');
+    for (const html of [
+      '<input type="password">',
+      '<input type="checkbox">',
+      '<input type="number">',
+      '<input type="email">',
+      '<input disabled>',
+      '<input readonly>',
+      '<textarea disabled></textarea>',
+      '<textarea readonly></textarea>',
+      '<div contenteditable="false"></div>',
+      '<div></div>',
+    ]) {
+      expect(dictationFieldKind(make(html)), html).toBeNull();
+    }
+    expect(dictationFieldKind(null)).toBeNull();
+  });
+
+  it('reads an editable region’s text and the selection inside it', () => {
+    const region = make('<div contenteditable="true">Check <b>the</b> gene</div>');
+    expect(fieldText(region)).toBe('Check the gene');
+    const bold = region.querySelector('b')!.firstChild!;
+    const range = document.createRange();
+    range.setStart(bold, 1);
+    range.setEnd(bold, 3);
+    const selection = document.getSelection()!;
+    selection.removeAllRanges();
+    selection.addRange(range);
+    expect(fieldSelection(region)).toEqual({ start: 7, end: 9 });
+    // A selection outside the region is none of its.
+    const outside = document.createElement('p');
+    outside.textContent = 'elsewhere';
+    document.body.append(outside);
+    selection.removeAllRanges();
+    const away = document.createRange();
+    away.setStart(outside.firstChild!, 2);
+    selection.addRange(away);
+    expect(fieldSelection(region)).toBeNull();
+  });
+
+  it('a field owns focus when focus is inside its editable region', () => {
+    const region = make('<div contenteditable="true"><p tabindex="-1">x</p></div><input />');
+    region.querySelector('p')!.focus();
+    expect(composerOwnsFocus(region)).toBe(true);
+    (document.querySelector('input') as HTMLInputElement).focus();
+    expect(composerOwnsFocus(region)).toBe(false);
+  });
+
+  it('a field’s own state path sets the value, fires input, and reads it back', () => {
+    const field = make('<input value="abc">') as HTMLInputElement;
+    const onInput = vi.fn();
+    field.addEventListener('input', onInput);
+    expect(setFieldTextByState(field, 'abc def', 7)).toBe(true);
+    expect(field.value).toBe('abc def');
+    expect(onInput).toHaveBeenCalledTimes(1);
+    // A controlled field that puts its old value back did not keep the text.
+    field.addEventListener('input', () => {
+      field.value = 'abc';
+    });
+    expect(setFieldTextByState(field, 'abc xyz', 7)).toBe(false);
+  });
+
+  it('a text input takes the undoable path like a textarea, and the state path elsewhere', () => {
+    document.body.innerHTML = '<input id="field" value="Untitled"><input id="other">';
+    const field = document.getElementById('field') as HTMLInputElement;
+    if (typeof document.execCommand !== 'function') {
+      Object.assign(document, { execCommand: () => false });
+    }
+    vi.spyOn(document, 'execCommand').mockImplementation((_c, _u, text) => {
+      const target = document.activeElement as HTMLInputElement;
+      const start = target.selectionStart ?? 0;
+      target.value =
+        target.value.slice(0, start) + (text ?? '') + target.value.slice(target.selectionEnd ?? 0);
+      target.dispatchEvent(new Event('input', { bubbles: true }));
+      return true;
+    });
+    field.focus();
+    const state = (value: string, caret: number) => setFieldTextByState(field, value, caret);
+    expect(insertDictatedText(field, at(8), 'notes', state)).toBe('undoable');
+    expect(field.value).toBe('Untitled notes');
+    (document.getElementById('other') as HTMLInputElement).focus();
+    expect(insertDictatedText(field, at(14), 'today', state)).toBe('state');
+    expect(field.value).toBe('Untitled notes today');
+  });
+
+  it('answers refused when the state path did not keep the text', () => {
+    const field = make('<textarea>abc</textarea>') as HTMLTextAreaElement;
+    expect(insertDictatedText(field, at(3), 'def', () => false)).toBe('refused');
+    expect(insertDictatedText(field, at(3), 'def', () => undefined)).toBe('state');
+  });
+
+  it('an editable region without focus gets the words in place, with an input event', () => {
+    document.body.innerHTML = '<div id="region" contenteditable="true">Check gene</div><input>';
+    const region = document.getElementById('region')!;
+    (document.querySelector('input') as HTMLInputElement).focus();
+    const events: Event[] = [];
+    region.addEventListener('input', (event) => events.push(event));
+    const setByState = vi.fn();
+    expect(insertDictatedText(region, at(5), 'EPAS1', setByState)).toBe('state');
+    expect(region.textContent).toBe('Check EPAS1 gene');
+    expect(events).toHaveLength(1);
+    expect(events[0]).toBeInstanceOf(InputEvent);
+    expect((events[0] as InputEvent).data).toBe(' EPAS1');
+    // The composer's state path is for controls; a region writes itself.
+    expect(setByState).not.toHaveBeenCalled();
+  });
+
+  it('an editable region with focus takes the undoable path when the command lands', () => {
+    document.body.innerHTML = '<div id="region" contenteditable="true">Check</div>';
+    const region = document.getElementById('region')!;
+    region.focus();
+    if (typeof document.execCommand !== 'function') {
+      Object.assign(document, { execCommand: () => false });
+    }
+    const exec = vi.spyOn(document, 'execCommand').mockImplementation((_c, _u, text) => {
+      const range = document.getSelection()!.getRangeAt(0);
+      range.deleteContents();
+      // Chromium writes a space at the region's edge as a no-break space.
+      range.insertNode(document.createTextNode((text ?? '').replace(/^ /, '\u00a0')));
+      return true;
+    });
+    expect(insertDictatedText(region, at(5), 'EPAS1', vi.fn())).toBe('undoable');
+    expect(exec).toHaveBeenCalledWith('insertText', false, ' EPAS1');
+    expect(region.textContent?.replace(/\u00a0/g, ' ')).toBe('Check EPAS1');
   });
 });

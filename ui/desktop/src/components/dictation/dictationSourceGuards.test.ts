@@ -407,3 +407,63 @@ describe('one module talks to the daemon’s dictation routes', () => {
     expect(spellers).toEqual(['components/dictation/dictationApi.ts']);
   });
 });
+
+describe('where an fn dictation may go, and what it may do there', () => {
+  const session = read(join(here, 'dictationSession.ts'));
+  const client = read(join(here, 'fnGestureClient.ts'));
+
+  it('a message editor offers itself only while it is open, so a closed one is never chosen', () => {
+    const message = read(join(src, 'components/UserMessage.tsx'));
+    const call = message.slice(message.indexOf('useDictationComposer({'));
+    expect(call.slice(0, call.indexOf('\n  });'))).toMatch(/\n {4}enabled: isEditing,$/);
+    // And the hook gates both doors on it.
+    const hook = read(join(here, 'useDictationComposer.ts'));
+    expect(hook).toMatch(/const available = options\.enabled \?\? true;/);
+    for (const door of ['attachDictationComposer({', 'registerFnGestureTarget(key, {']) {
+      const at = hook.indexOf(door);
+      expect(at, door).toBeGreaterThan(0);
+      expect(hook.slice(hook.lastIndexOf('useEffect(() => {', at), at), door).toMatch(
+        /if \(!available\) return;/
+      );
+    }
+  });
+
+  it('a field no composer owns dictates with public terms only', () => {
+    expect(client).toMatch(/startDictation\(\{ key, target: \{ target_kind: 'external' \} \}\)/);
+    expect(client).not.toMatch(/include_private_terms/);
+  });
+
+  it('kept text reaches the clipboard only from the person’s click on Copy', () => {
+    // The session writes it in one function, and nothing else in these modules writes the clipboard.
+    expect(session.match(/navigator\.clipboard/g)).toHaveLength(1);
+    const copy = session.slice(session.indexOf('export async function copyLostDictation'));
+    expect(copy.slice(0, copy.indexOf('\n}\n'))).toMatch(/navigator\.clipboard\.writeText\(text\)/);
+    expect(client).not.toMatch(/clipboard/);
+    // It reaches a composer only through the composer's notes, and is called from a click.
+    const names = (pattern: RegExp) =>
+      walk(src)
+        .filter((file) => !/\.test\.tsx?$/.test(file))
+        .filter((file) => pattern.test(read(file)))
+        .map((file) => relative(src, file))
+        .sort();
+    expect(names(/copyLostDictation/)).toEqual([
+      'components/dictation/dictationSession.ts',
+      'components/dictation/useDictationComposer.ts',
+    ]);
+    expect(names(/\.copyLost\(/)).toEqual(['components/ChatInput.tsx']);
+    const composer = read(join(src, 'components/ChatInput.tsx'));
+    expect(composer.match(/\.copyLost\(/g)).toHaveLength(1);
+    expect(composer).toMatch(/onClick=\{\(\) => void notes\.copyLost\(\)\}/);
+  });
+
+  it('the one-time fn note touches storage only inside try', () => {
+    const lines = client.split('\n');
+    const uses = lines
+      .map((text, index) => ({ text, index }))
+      .filter(({ text }) => /localStorage/.test(text) && !/^\s*(\/?\*|\/\/)/.test(text));
+    expect(uses.length).toBeGreaterThan(0);
+    for (const { text, index } of uses) {
+      expect(lines[index - 1].trim(), text).toBe('try {');
+    }
+  });
+});

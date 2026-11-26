@@ -31,7 +31,11 @@
  * 4. The text goes in at the anchor, as one undo step where the field still has
  *    focus (`utils/dictatedText.ts`), or into the stored draft when the composer
  *    is gone. The anchor follows the person's edits until then, also while the
- *    recording waits in the background or is kept for **Retry**.
+ *    recording waits in the background or is kept for **Retry**. A transcript
+ *    whose field is gone and that has no stored draft is never dropped: it is
+ *    kept for five minutes and the visible composer says MSG-INSERT-LOST, with
+ *    **Insert here** and **Copy** ({@link getLostDictation}). Inserted is
+ *    announced only when the text went in.
  *
  * Who owns the microphone, and what happens to speech in each case:
  *
@@ -54,10 +58,14 @@
  */
 import { insertIntoComposerDraft, type DictationRecording } from '../../utils/composerDrafts';
 import {
+  fieldSelection,
+  fieldText,
   insertDictatedText,
   mapAnchor,
   type Anchor,
+  type DictationField,
   type InsertPath,
+  type InsertResult,
 } from '../../utils/dictatedText';
 import { isBrowserSurface } from '../../utils/surface';
 import { needsSharedOriginNotice } from './sharedOriginGate';
@@ -84,6 +92,7 @@ import {
   type DictationStatusSnapshot,
   type PhaseDecision,
 } from './dictationStore';
+import { visibleComposer } from './fieldTarget';
 import { micErrorNotice } from './micErrors';
 import { markPrivateDraft } from './privateDraft';
 import {
@@ -102,10 +111,23 @@ export const NO_AUDIO_AFTER_S = 3;
 export const KEEP_FAILED_MS = 5 * 60 * 1000;
 /** How long an insert waits for an IME composition to end before taking the state path. */
 export const COMPOSITION_WAIT_MS = 3_000;
+/** A transcript whose field was gone is kept this long for **Insert here** and **Copy**. */
+export const KEEP_LOST_MS = 5 * 60 * 1000;
+/**
+ * How long after a transcript is published {@link notifyDictationTranscribed} tells its listeners:
+ * the daemon adds the dictation to the history after the text is out, so a read at once can miss it.
+ */
+export const DICTATION_TRANSCRIBED_DELAY_MS = 500;
+/** The window event {@link notifyDictationTranscribed} also fires, for a listener outside React. */
+export const DICTATION_TRANSCRIBED_EVENT = 'biorouter:dictation-transcribed';
 
 export type DictationActivity = 'idle' | 'arming' | 'recording' | 'transcribing' | 'error';
 
-export type DictationNoticeAction = 'retry' | 'open-settings' | null;
+/**
+ * A notice's action: **Retry**, the system's microphone settings, or MSG-INSERT-LOST's **Insert
+ * here** and **Copy** ({@link insertLostDictation}, {@link copyLostDictation}).
+ */
+export type DictationNoticeAction = 'retry' | 'open-settings' | 'insert-lost' | null;
 
 export interface DictationNotice {
   /** The catalog id, or `server` for a sentence the daemon wrote (a policy refusal). */
@@ -155,10 +177,14 @@ const IDLE: DictationSnapshot = {
 export interface DictationComposer {
   /** The composer's draft key (`utils/composerDrafts.ts`), or another key unique in this window. */
   key: string;
-  /** The field, while it is mounted. */
-  field(): HTMLTextAreaElement | null;
-  /** The composer's state path (DD-63 step 4). */
-  setByState(value: string, caret: number): void;
+  /** The field, while it is mounted: a textarea, or for a loose field an `input` or editable region. */
+  field(): DictationField | null;
+  /**
+   * The composer's state path (DD-63 step 4). A field that reads its value back answers false
+   * when it did not keep the text (a loose field's own setter does); the text is then kept for
+   * the person rather than announced as inserted.
+   */
+  setByState(value: string, caret: number): void | boolean;
   /** Whether an IME composition is running in the field. */
   isComposing?(): boolean;
   /**
@@ -175,6 +201,18 @@ export interface DictationComposer {
   draftPrefix?(): number;
   /** After the text went in: the composer marks the box typed and records the span. */
   onInserted?(event: DictationInserted): void;
+  /**
+   * The composer draws MSG-INSERT-LOST itself, with **Insert here** and **Copy**, from
+   * {@link getLostDictation} (the chat composer and Home do). Such a composer is where a lost
+   * transcript is offered first.
+   */
+  showsLostText?: boolean;
+  /**
+   * A field no composer owns (a rename box, a search field: `fnGestureClient.ts`). It has no
+   * notice row, so what its dictation ends with shows in the visible composer, and it keeps no
+   * recording for **Retry**, whose button would be in that other composer.
+   */
+  loose?: boolean;
 }
 
 export interface DictationInserted {
@@ -261,6 +299,25 @@ let inserting: string | null = null;
 let sessionEra = 0;
 let busyReported = false;
 const busyListeners = new Set<() => void>();
+
+/** A transcript whose field was gone, kept for the person (MSG-INSERT-LOST). */
+export interface LostDictation {
+  /** The composer that offers it, or null while no composer can (the next one to mount takes it). */
+  home: string | null;
+  /** The text, as it would have gone in. */
+  text: string;
+}
+let lost:
+  | (LostDictation & {
+      transcript: Transcript;
+      streamId: string | null;
+      timer: ReturnType<typeof setTimeout>;
+    })
+  | null = null;
+/** What {@link getLostDictation} answers: a stable object, so a render reads it as a store. */
+let lostView: LostDictation | null = null;
+const transcribedListeners = new Set<() => void>();
+let transcribedTimer: ReturnType<typeof setTimeout> | null = null;
 
 function publish(next: Partial<DictationSnapshot>): void {
   snapshot = { ...snapshot, ...next };
@@ -379,6 +436,8 @@ function installLockScreen(): void {
  */
 export function attachDictationComposer(composer: DictationComposer): () => void {
   composers.set(composer.key, composer);
+  // A lost transcript no composer could offer goes to the first one that can.
+  if (lost && lost.home === null && composer.showsLostText) setLostHome(composer.key);
   return () => {
     if (composers.get(composer.key) !== composer) return;
     composers.delete(composer.key);
@@ -388,8 +447,49 @@ export function attachDictationComposer(composer: DictationComposer): () => void
       if (active && active.key === composer.key) active.stop();
       if (kept?.key === composer.key) forgetKept();
       if (pendingFailure?.key === composer.key) pendingFailure = null;
+      // The composer offering a lost transcript went away: another one offers it, or the next.
+      if (lost?.home === composer.key) setLostHome(lostTextHome());
     }, 0);
   };
+}
+
+/**
+ * Whether a dictation still owes `key` something: it records or transcribes into it, waits for
+ * the macOS prompt or the plain HTTP question for it, or keeps its audio for **Retry**. The fn
+ * client lets a loose field go only once nothing does.
+ */
+export function isDictationHolding(key: string): boolean {
+  if (active?.key === key || kept?.key === key || pendingRemoteStart?.key === key) return true;
+  for (const dictation of running) if (dictation.key === key) return true;
+  return false;
+}
+
+/** The mounted composers that have a notice row of their own, as `fieldTarget.ts` reads them. */
+function noticeCandidates(except?: string) {
+  return [...composers.values()]
+    .filter((composer) => !composer.loose && composer.key !== except)
+    .map((composer) => ({ key: composer.key, field: () => composer.field() }));
+}
+
+/** The composer that shows a notice for `key`: `key` itself, or for a loose field the visible one. */
+function noticeHome(key: string, loose: boolean): string {
+  if (!loose) return key;
+  return visibleComposer(noticeCandidates()) ?? key;
+}
+
+/** Where a lost transcript is offered: the visible composer that draws it, else any visible one. */
+function lostTextHome(except?: string): string | null {
+  return visibleComposer(
+    noticeCandidates(except),
+    (key) => composers.get(key)?.showsLostText === true
+  );
+}
+
+function setLostHome(home: string | null): void {
+  if (!lost || lost.home === home) return;
+  lost = { ...lost, home };
+  lostView = { home, text: lost.text };
+  for (const listener of [...listeners]) listener();
 }
 
 /**
@@ -552,20 +652,22 @@ class Dictation {
    * A key no composer was attached under gets no draft written.
    */
   private readonly storesDraft: boolean;
+  /** The composer is a loose field ({@link DictationComposer.loose}): its notices show elsewhere. */
+  private readonly loose: boolean;
   /** The composer's {@link DictationComposer.draftPrefix}, as last read. */
   draftPrefix: number;
 
   constructor(private readonly options: StartDictationOptions) {
     this.key = options.key;
     this.storesDraft = composers.get(options.key)?.storesDraft ?? false;
+    this.loose = composers.get(options.key)?.loose === true;
     this.draftPrefix = composers.get(options.key)?.draftPrefix?.() ?? 0;
     const field = composers.get(options.key)?.field() ?? null;
-    const end = field?.value.length ?? 0;
-    const anchor = options.anchor ?? {
-      start: field?.selectionStart ?? end,
-      end: field?.selectionEnd ?? end,
-    };
-    this.anchor = field ? anchorOutsideWord(field.value, anchor) : anchor;
+    const value = field ? fieldText(field) : '';
+    const end = value.length;
+    const selection = field ? fieldSelection(field) : null;
+    const anchor = options.anchor ?? selection ?? { start: end, end };
+    this.anchor = field ? anchorOutsideWord(value, anchor) : anchor;
   }
 
   private isCurrent(): boolean {
@@ -886,6 +988,8 @@ class Dictation {
       this.done(notice('MSG-NOTHING', false));
       return;
     }
+    // The daemon may now hold it in the dictation history (DD-96); the History tab reads again.
+    notifyDictationTranscribed();
     let composer = composers.get(this.key);
     let field = composer?.field() ?? null;
     if (composer?.isComposing?.() && field) {
@@ -896,12 +1000,12 @@ class Dictation {
       field = composer?.field() ?? null;
     }
     const anchor = this.anchor;
-    const before = field?.value ?? '';
-    let path: InsertPath;
+    const before = field ? fieldText(field) : '';
+    let result: InsertResult;
     if (composer && field) {
       inserting = this.key;
       try {
-        path = insertDictatedText(
+        result = insertDictatedText(
           field,
           anchor,
           transcript.text,
@@ -912,9 +1016,18 @@ class Dictation {
         inserting = null;
       }
     } else {
-      path = 'draft';
+      result = 'draft';
     }
-    if (path === 'draft' && (composer?.storesDraft ?? this.storesDraft)) {
+    const storesDraft = composer?.storesDraft ?? this.storesDraft;
+    if (result === 'refused' || (result === 'draft' && !storesDraft)) {
+      // The field is gone, or did not keep the text, and there is no stored draft: the text is
+      // kept for the person and offered in the visible composer, never thrown away.
+      stream.release();
+      this.keepLost(transcript, stream.id);
+      return;
+    }
+    const path: InsertPath = result;
+    if (path === 'draft') {
       // The anchor counts in the field's text; the stored draft also holds what
       // the field does not show before it (a `/bug ` command chip).
       const prefix = composer?.draftPrefix?.() ?? this.draftPrefix;
@@ -951,6 +1064,20 @@ class Dictation {
     );
   }
 
+  /** MSG-INSERT-LOST: the text is held for **Insert here** and **Copy**, and nothing says Inserted. */
+  private keepLost(transcript: Transcript, streamId: string | null): void {
+    holdLostDictation(transcript, streamId, lostTextHome(this.key));
+    const home = lost?.home ?? null;
+    const text = dictationMessage('MSG-INSERT-LOST');
+    // A composer that draws the lost text shows it in its own row; any other shows the sentence.
+    const drawsIt = home !== null && composers.get(home)?.showsLostText === true;
+    this.done(
+      drawsIt ? null : { id: 'MSG-INSERT-LOST', text, action: 'insert-lost', failure: false },
+      text,
+      home ?? this.key
+    );
+  }
+
   private fail(error: unknown): void {
     if (this.cancelled) return;
     this.cancelled = true;
@@ -968,7 +1095,8 @@ class Dictation {
       running.delete(this);
       if (this.isCurrent()) {
         active = null;
-        publish({ ...IDLE, key: this.key, setupRequest: { key: this.key } });
+        const home = noticeHome(this.key, this.loose);
+        publish({ ...IDLE, key: home, setupRequest: { key: home } });
       } else {
         reportBusy();
       }
@@ -976,9 +1104,11 @@ class Dictation {
     }
     let failure = failureNotice(error);
     // The audio is kept only where a Retry can be shown for it: this dictation's
-    // card, now or once another pane's dictation has ended.
+    // card, now or once another pane's dictation has ended. A loose field has no
+    // card of its own, so it keeps none.
     const shown =
-      this.isCurrent() || (composers.has(this.key) && cardTakesDisplacedFailure(this.key));
+      !this.loose &&
+      (this.isCurrent() || (composers.has(this.key) && cardTakesDisplacedFailure(this.key)));
     if (failure.action === 'retry' && stream && shown) {
       keepForRetry(this, stream);
     } else {
@@ -988,21 +1118,26 @@ class Dictation {
     this.done(failure);
   }
 
-  private done(result: DictationNotice | null, announcement?: string): void {
+  /**
+   * The dictation ended. `home` is the composer that shows `result`; by default this one's, or for
+   * a loose field the visible composer's.
+   */
+  private done(result: DictationNotice | null, announcement?: string, home?: string): void {
     this.finished = true;
     this.stopBusyCountdown();
     for (const off of this.unsubscribe.splice(0)) off();
     running.delete(this);
     this.prepareNext();
+    const shownIn = home ?? noticeHome(this.key, this.loose);
     if (!this.isCurrent()) {
-      if (result?.failure) noteDisplacedFailure(this.key, result);
+      if (result?.failure) noteDisplacedFailure(shownIn, result);
       reportBusy();
       return;
     }
     active = null;
     publish({
       ...IDLE,
-      key: this.key,
+      key: shownIn,
       activity: result?.failure ? 'error' : 'idle',
       notice: result,
       announcement: announcement ?? result?.text ?? '',
@@ -1034,7 +1169,7 @@ class Dictation {
   }
 }
 
-function waitForCompositionEnd(field: HTMLTextAreaElement): Promise<void> {
+function waitForCompositionEnd(field: Element): Promise<void> {
   return new Promise((resolve) => {
     const done = () => {
       clearTimeout(timer);
@@ -1337,6 +1472,139 @@ export function dropKeptDictation(key?: string): void {
   if (kept && (key === undefined || kept.key === key)) dropKept();
 }
 
+// ── a transcript whose field was gone (MSG-INSERT-LOST) ─────────────────────
+
+function holdLostDictation(
+  transcript: Transcript,
+  streamId: string | null,
+  home: string | null
+): void {
+  if (lost) clearTimeout(lost.timer);
+  const timer = setTimeout(() => {
+    if (lost?.timer === timer) dismissLostDictation();
+  }, KEEP_LOST_MS);
+  lost = { home, text: transcript.text, transcript, streamId, timer };
+  lostView = { home, text: transcript.text };
+  // A dictation another pane displaced publishes nothing when it ends: its offer still shows.
+  for (const listener of [...listeners]) listener();
+}
+
+/**
+ * The transcript kept because its field was gone, for five minutes or until the person inserts,
+ * dismisses or replaces it; null when there is none. `home` is the composer that offers it. A
+ * stable object: read it with {@link subscribeDictation}, whose listeners run whenever it changes.
+ */
+export function getLostDictation(): LostDictation | null {
+  return lostView;
+}
+
+/**
+ * **Insert here**: the kept text goes into composer `key` at its selection, as dictated text would
+ * (the composer records the span, and flags the draft when private terms were used). True when it
+ * went in; the kept text is then forgotten.
+ */
+export function insertLostDictation(key: string): boolean {
+  const held = lost;
+  const composer = composers.get(key);
+  const field = composer?.field() ?? null;
+  if (!held || !composer || !field) return false;
+  const value = fieldText(field);
+  const anchor = anchorOutsideWord(
+    value,
+    fieldSelection(field) ?? { start: value.length, end: value.length }
+  );
+  let result: InsertResult;
+  inserting = key;
+  try {
+    result = insertDictatedText(
+      field,
+      anchor,
+      held.transcript.text,
+      (next, caret) => composer.setByState(next, caret),
+      { composing: composer.isComposing?.() ?? false }
+    );
+  } finally {
+    inserting = null;
+  }
+  if (result === 'refused' || result === 'draft') return false;
+  composer.onInserted?.({
+    key,
+    path: result,
+    transcript: held.transcript,
+    anchor,
+    streamId: held.streamId,
+    before: value,
+  });
+  clearTimeout(held.timer);
+  lost = null;
+  lostView = null;
+  // A dictation that runs keeps its card; otherwise the row says Inserted, as a dictation would.
+  publish(active ? {} : { ...IDLE, key, announcement: DICTATION_LABELS.announceInserted });
+  return true;
+}
+
+/**
+ * **Copy**: the kept text onto the clipboard, from the person's click only. True when the
+ * clipboard took it. The text stays kept, so **Insert here** still works after it.
+ */
+export async function copyLostDictation(): Promise<boolean> {
+  const text = lost?.transcript.text;
+  if (!text) return false;
+  try {
+    await navigator.clipboard.writeText(text);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** Forget the kept text (**Dismiss**, or five minutes passed). */
+export function dismissLostDictation(): void {
+  const held = lost;
+  if (!held) return;
+  clearTimeout(held.timer);
+  lost = null;
+  lostView = null;
+  if (!active && snapshot.notice?.id === 'MSG-INSERT-LOST') {
+    publish({ notice: null, activity: 'idle' });
+  } else {
+    for (const listener of [...listeners]) listener();
+  }
+}
+
+// ── a transcript was published ──────────────────────────────────────────────
+
+/**
+ * A transcript was published, so the daemon may have added it to the dictation history: about
+ * {@link DICTATION_TRANSCRIBED_DELAY_MS} later, every {@link subscribeDictationTranscribed}
+ * listener runs and the window fires {@link DICTATION_TRANSCRIBED_EVENT}. Several in a row
+ * coalesce into one. It carries nothing, no text and no id.
+ */
+export function notifyDictationTranscribed(): void {
+  if (transcribedTimer !== null) clearTimeout(transcribedTimer);
+  transcribedTimer = setTimeout(() => {
+    transcribedTimer = null;
+    for (const listener of [...transcribedListeners]) {
+      try {
+        listener();
+      } catch {
+        // One listener's failure is its own.
+      }
+    }
+    try {
+      window.dispatchEvent(new Event(DICTATION_TRANSCRIBED_EVENT));
+    } catch {
+      // No window: nothing outside this module listens.
+    }
+  }, DICTATION_TRANSCRIBED_DELAY_MS);
+}
+
+/** Called after each transcript, as {@link notifyDictationTranscribed} says; answers the unsubscribe. */
+export function subscribeDictationTranscribed(listener: () => void): () => void {
+  transcribedListeners.add(listener);
+  return () => transcribedListeners.delete(listener);
+}
+
 // ── tests ───────────────────────────────────────────────────────────────────
 
 export function resetDictationSessionForTests(overrides: Partial<Deps> = {}): void {
@@ -1357,6 +1625,12 @@ export function resetDictationSessionForTests(overrides: Partial<Deps> = {}): vo
   busyReported = false;
   lockScreenInstalled = false;
   inserting = null;
+  if (lost) clearTimeout(lost.timer);
+  lost = null;
+  lostView = null;
+  if (transcribedTimer !== null) clearTimeout(transcribedTimer);
+  transcribedTimer = null;
+  transcribedListeners.clear();
   deps = { ...DEFAULT_DEPS, ...overrides };
 }
 
