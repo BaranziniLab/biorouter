@@ -376,6 +376,11 @@ fn every_read_ratchet_goes_through_raise_reader_privacy() {
     assert_eq!(count(include_str!("extension_manager.rs")), 3);
     // Chat recall's LOAD, search and recent modes share one helper.
     assert_eq!(count(include_str!("chatrecall_extension.rs")), 1);
+    // DD-100: `dictionary__search_dictations`'s `ratchet_reader`, before a private
+    // dictation is handed to an enforced private call whose reader row is still Public.
+    // One call for the page, whichever private entry it holds: a failed ratchet returns
+    // nothing.
+    assert_eq!(count(include_str!("dictionary_extension.rs")), 1);
 }
 
 /// A private provider whose slot a decision model lowered, for Gate C's words.

@@ -470,9 +470,26 @@ const REGISTRY: &[Guard] = &[
                 kind: SiteKind::Guard,
                 what: "`POST /dictation/streams` into a chat (PR-15, DD-29, DD-30): the gate \
                        before the chat's tier and live model are read, a refusal degrading to \
-                       public terms with a byte identical answer. The three refs are the \
-                       MODULE qualifier on this call, `target_tier` and `http_caller`, and the \
-                       import is the `use` that brings the module in",
+                       public terms with a byte identical answer. The same admission is what \
+                       lets a recorded stream read the chat's institutions and incarnation for \
+                       its history entry (DD-96), and a refusal stamps the entry as an \
+                       unreachable chat's, private. The three refs are the MODULE qualifier on \
+                       this call, `target_tier` and `http_caller`, and the import is the `use` \
+                       that brings the module in",
+            },
+            Site {
+                file: "crates/biorouter-server/src/routes/dictation_history.rs",
+                counts: c(0, 9, 1),
+                kind: SiteKind::Unrelated,
+                what: "the MODULE qualifier nine times, on no occasion this function (DD-96): \
+                       `http_caller` in each of the seven handlers (the listing, the single and \
+                       bulk delete, the clear, the tier change and both halves of the \
+                       settings), `target_tier` in `linked_chats`, and \
+                       `gate_dictation_history_entry` on `entry_routes()`; the import is the \
+                       `use` that brings the module in. The history names a chat only as a link \
+                       on an entry, so no route here refuses a request for a chat: `linked_chats` \
+                       drops the link through `lists_session` instead, a listing's omission, \
+                       which is why `calls` is 0",
             },
             Site {
                 file: "crates/biorouter-server/src/routes/dictionary.rs",
@@ -795,7 +812,19 @@ const REGISTRY: &[Guard] = &[
                 counts: c(1, 0, 0),
                 kind: SiteKind::Guard,
                 what: "`POST /dictation/streams` (PR-15, DD-30), resolved once per stream for \
-                       `dictation_standing`, which reads only its proof and stated capability",
+                       `dictation_standing`, which reads only its proof and stated capability, \
+                       and for `records_dictation_history` (DD-96), whether the stream is the \
+                       person's and so kept in the history",
+            },
+            Site {
+                file: "crates/biorouter-server/src/routes/dictation_history.rs",
+                counts: c(7, 0, 0),
+                kind: SiteKind::Guard,
+                what: "every `/dictation/history` handler (DD-96, SD-20), each resolving its \
+                       caller once, before the store is read, for the listing decision and the \
+                       write rules: the listing, the single and bulk delete, the clear, the \
+                       tier change, and both halves of the settings, whose answer's \
+                       `authority` is asked of the same caller",
             },
             Site {
                 file: "crates/biorouter-server/src/routes/dictionary.rs",
@@ -855,11 +884,12 @@ const REGISTRY: &[Guard] = &[
             },
             Site {
                 file: SESSION_REACH,
-                counts: c(2, 0, 0),
+                counts: c(3, 0, 0),
                 kind: SiteKind::Guard,
                 what: "`gate_knowledge_base`, the layer on every `/knowledge/bases/{id}` route, \
-                       and `gate_dictionary_entry`, the layer on every `/dictionary/entries/{id}` \
-                       route (PR-16)",
+                       `gate_dictionary_entry`, the layer on every `/dictionary/entries/{id}` \
+                       route (PR-16), and `gate_dictation_history_entry`, the layer on every \
+                       `/dictation/history/{id}` route (DD-96)",
             },
             Site {
                 file: "crates/biorouter-server/src/routes/workflow.rs",
@@ -878,6 +908,18 @@ const REGISTRY: &[Guard] = &[
                   redaction",
         status: Status::Wired,
         sites: &[
+            Site {
+                file: "crates/biorouter-server/src/routes/dictation_history.rs",
+                counts: c(2, 0, 0),
+                kind: SiteKind::Guard,
+                what: "`linked_chats` (DD-96), whether a history entry's chat id is shown: only \
+                       when the chat now holding the id has the incarnation the entry recorded \
+                       and this caller may list it at the tier it has NOW, so an entry \
+                       dictated into a private chat and then made public never hands that \
+                       chat's id to a public caller. ONE decision written as two calls, one \
+                       per arm of the resolved tier (`Public`, `Private`); an unreadable chat \
+                       shows no id at all. Omission of the field, never a refusal",
+            },
             Site {
                 file: "crates/biorouter-server/src/routes/schedule.rs",
                 counts: c(1, 0, 0),
@@ -1190,6 +1232,15 @@ const REGISTRY: &[Guard] = &[
                        `session_reach` admitted the caller",
             },
             Site {
+                file: "crates/biorouter-server/src/routes/dictation_history.rs",
+                counts: c(1, 0, 0),
+                kind: SiteKind::Guard,
+                what: "`linked_chats` (DD-96): the tier, metadata only, of the chat now holding \
+                       an entry's recorded id, asked only after its incarnation matched and \
+                       handed straight to `lists_session`, so an unreadable chat fails closed \
+                       to no link",
+            },
+            Site {
                 file: "crates/biorouter-server/src/routes/dictionary.rs",
                 counts: c(1, 0, 0),
                 kind: SiteKind::Guard,
@@ -1340,6 +1391,110 @@ const REGISTRY: &[Guard] = &[
                    middleware never appears with parentheses",
         }],
     },
+    // ------------------------------------------------- the dictation history
+    // (DD-96, P-17, SD-20). The person's own record of what they dictated: stricter
+    // than the dictionary on purpose, because a stated private capability is a
+    // model's, and no model lists the history over HTTP.
+    Guard {
+        ident: "lists_dictation_history_entry",
+        defined_in: SESSION_REACH,
+        decides: "whether a caller may be shown a dictation history entry of a tier (DD-96, \
+                  P-17): public entries to every holder of the secret, private entries to the \
+                  person alone (the user action proof, or the served person on a daemon with \
+                  no key, SD-20) and to everyone with tiers switched off; never to a stated \
+                  private capability or the served operator's tier. Omission, never a count",
+        status: Status::Wired,
+        sites: &[
+            Site {
+                file: "crates/biorouter-server/src/routes/dictation_history.rs",
+                counts: c(7, 0, 0),
+                kind: SiteKind::Guard,
+                what: "the listing's `visible` predicate, which the store applies BEFORE the \
+                       limit and the `total`, so a private entry never uses up a public \
+                       caller's page or shows in its count; the `admits` predicate of every \
+                       write the store applies under its lock (the single delete, the bulk \
+                       delete, the clear and the tier change), so an entry the caller may not \
+                       list is skipped as missing; `entry_view`'s `private_terms`, shown only \
+                       to a caller that may list private entries; and the settings answer's \
+                       `list_private` allowance",
+            },
+            Site {
+                file: SESSION_REACH,
+                counts: c(2, 0, 0),
+                kind: SiteKind::Guard,
+                what: "`authorizes_dictation_history_write`'s keyless arm, which answers a \
+                       write naming an entry the caller cannot list as a missing one, and \
+                       `gate_dictation_history_entry`, which answers an unlisted id exactly as \
+                       a missing one, before the handler runs",
+            },
+        ],
+    },
+    Guard {
+        ident: "records_dictation_history",
+        defined_in: SESSION_REACH,
+        decides: "whether a dictation stream is kept in the history (DD-96, P-17): a stream \
+                  the person started, the user action proof on a daemon that holds a key and \
+                  the served person on one that holds none (SD-20). A holder of the secret \
+                  who uploads audio gets its transcript and leaves no entry",
+        status: Status::Wired,
+        sites: &[Site {
+            file: "crates/biorouter-server/src/routes/dictation.rs",
+            counts: c(1, 0, 0),
+            kind: SiteKind::Guard,
+            what: "`stream_dictionary`, once per stream, beside `dictation_standing`: whether \
+                   the stream is recorded at all, and so whether `stream_target` reads the \
+                   chat's institutions and incarnation for the entry. Its answer rides the \
+                   stream's `HistoryFacts`, and for a stream it refuses `history_draft` keeps \
+                   nothing, so `record_history` is never reached",
+        }],
+    },
+    Guard {
+        ident: "authorizes_dictation_history_write",
+        defined_in: SESSION_REACH,
+        decides: "whether a caller may make a dictation history write (DD-96, SD-20), from the \
+                  request alone, before any entry is read: the proof on a daemon that holds a \
+                  key (MSG-HISTORY-AGENT otherwise); on one that holds none, deletes and clears \
+                  of listable entries and lowered settings, with tier changes and raised \
+                  settings the served person's and otherwise refused with the host sentences",
+        status: Status::Wired,
+        sites: &[
+            Site {
+                file: "crates/biorouter-server/src/routes/dictation_history.rs",
+                counts: c(6, 0, 0),
+                kind: SiteKind::Guard,
+                what: "every write, each before the store is touched: the single delete, the \
+                       bulk delete, the clear, the tier change (again after the gate, so the \
+                       handler refuses on its own if it is ever mounted without it) and the \
+                       settings change; and `authority_of`'s one `ask`, which the settings \
+                       answer's `write`, `tier_change` and `raise_settings` allowances are all \
+                       built from, so no control is offered when its route would refuse",
+            },
+            Site {
+                file: SESSION_REACH,
+                counts: c(1, 0, 0),
+                kind: SiteKind::Guard,
+                what: "`gate_dictation_history_entry`, which decides the tier route before it \
+                       reads the id, so its answer is the same for every id",
+            },
+        ],
+    },
+    Guard {
+        ident: "gate_dictation_history_entry",
+        defined_in: SESSION_REACH,
+        decides: "the route layer on every `/dictation/history/{id}` route (DD-96): 404 with \
+                  MSG-HISTORY-NOT-FOUND for a malformed, missing or unlisted id alike, and the \
+                  tier route's authority and the managed `history` key decided before the id \
+                  is read",
+        status: Status::Wired,
+        sites: &[Site {
+            file: "crates/biorouter-server/src/routes/dictation_history.rs",
+            counts: c(0, 1, 0),
+            kind: SiteKind::Guard,
+            what: "`route_layer(from_fn(session_reach::gate_dictation_history_entry))` on \
+                   `entry_routes()` in `routes`. A REFERENCE, as `gate_dictionary_entry`'s is: \
+                   a middleware never appears with parentheses",
+        }],
+    },
     // ----------------------------------------------------- extension tiering
     Guard {
         ident: "resolve_extension",
@@ -1488,6 +1643,16 @@ const REGISTRY: &[Guard] = &[
                        and its caller's standing give",
             },
             Site {
+                file: "crates/biorouter/src/dictation/history.rs",
+                counts: c(1, 0, 0),
+                kind: SiteKind::Guard,
+                what: "`agent_reads_dictation` (DD-100, Gate D's rule): whether a history entry \
+                       may reach the model of a tool call, an entry's tier read as a \
+                       classification against the call's ADMITTED capability, asked only when \
+                       that sample enforced the tiers, never the master switch or the slot \
+                       read again",
+            },
+            Site {
                 file: VISIBILITY,
                 counts: c(3, 0, 1),
                 kind: SiteKind::Guard,
@@ -1568,8 +1733,9 @@ const REGISTRY: &[Guard] = &[
         defined_in: "crates/biorouter/src/dictation/target.rs",
         decides: "whether a chat is private, from its stored tier and its live agent's \
                   bound model (DD-30): the one answer the dictation stream target, the \
-                  observation stamp and the extractor stamp share, a target counting \
-                  `Unknown` as public and a stamp as private",
+                  observation stamp, the extractor stamp and the history stamp's chat \
+                  target (DD-96) share, a bias target counting `Unknown` as public and a \
+                  stamp as private",
         status: Status::Wired,
         sites: &[
             Site {
@@ -1579,11 +1745,21 @@ const REGISTRY: &[Guard] = &[
                 what: "terminal adds and observations use the session's stored tier and live model to stamp a row",
             },
             Site {
+                file: "crates/biorouter-cli/src/dictation/history_record.rs",
+                counts: c(1, 0, 1),
+                kind: SiteKind::Guard,
+                what: "`chat_target` (DD-96): the terminal's history entry for a dictation into \
+                       a chat, its reach from the chat's stored tier and its live model, so \
+                       `history_stamp` reads a chat on a private model as private even before \
+                       its first turn ratchets the row; plus the `use` that brings it in",
+            },
+            Site {
                 file: "crates/biorouter-server/src/routes/dictation.rs",
                 counts: c(1, 0, 0),
                 kind: SiteKind::Guard,
                 what: "`POST /dictation/streams` into a chat (PR-15), after `session_reach` \
-                       admitted the caller",
+                       admitted the caller. The same `reach` is the bias target and, since \
+                       DD-96, the history entry's chat target, so the two cannot disagree",
             },
             Site {
                 file: "crates/biorouter-server/src/routes/dictionary.rs",
@@ -1608,6 +1784,63 @@ const REGISTRY: &[Guard] = &[
                 what: "the `pub use` re-export",
             },
         ],
+    },
+    // DD-96 and DD-100: the two privacy decisions of the dictation history in the core
+    // crate. Curated rows, since `dictation/history.rs` is not a complete module: its other
+    // public functions (`history_dir`, `open_history`) are places, not decisions, and
+    // `dictation_history_readers.rs` holds which files may open them.
+    Guard {
+        ident: "history_stamp",
+        defined_in: "crates/biorouter/src/dictation/history.rs",
+        decides: "the tier and institutions a finished dictation is kept with (DD-96, 6.3 of \
+                  the history design): private unless the person turned on public by default \
+                  and the dictation used no private term and went into a public chat, a public \
+                  new chat or no chat; a private entry's institutions the union of its chat's \
+                  and its private rows', unknown failing toward a model on this computer only \
+                  (P-16)",
+        status: Status::Wired,
+        sites: &[
+            Site {
+                file: "crates/biorouter-cli/src/dictation/history_record.rs",
+                counts: c(1, 0, 1),
+                kind: SiteKind::Guard,
+                what: "`record_in`, the terminal's one recorder (`biorouter dictate` and the \
+                       terminal front ends, never `transcribe` or `--no-history`), over the \
+                       destination `chat_target` read and the private rows of the recording's \
+                       own bias set; plus the `use` that brings it in",
+            },
+            Site {
+                file: "crates/biorouter-server/src/routes/dictation.rs",
+                counts: c(1, 0, 0),
+                kind: SiteKind::Guard,
+                what: "`record_history`, once per stream a person started, over the target \
+                       `stream_target` decided after `session_reach` and the private rows of \
+                       the stream's own bias set, with the person's switches and the managed \
+                       `history` key read at the moment the entry is written. ⚠ Exactly two \
+                       files, the daemon's and the terminal's: a third caller is a door that \
+                       keeps text with a tier of its own choosing",
+            },
+        ],
+    },
+    Guard {
+        ident: "agent_reads_dictation",
+        defined_in: "crates/biorouter/src/dictation/history.rs",
+        decides: "whether one dictation history entry may reach the model of a tool call \
+                  (DD-100, P-18's one exception): Gate D's rule on the call's admitted \
+                  `CallCapability`, then P-16's institution rule through the same \
+                  capability's DR-26 check, one allowlist per stored institution",
+        status: Status::Wired,
+        sites: &[Site {
+            file: "crates/biorouter/src/agents/dictionary_extension.rs",
+            counts: c(1, 0, 0),
+            kind: SiteKind::Guard,
+            what: "`search_dictations_in`, the `visible` closure built once per call from \
+                   `meta.capability` and handed to both the store's search, which applies it \
+                   BEFORE the limit, and `resume_point`, which reads a cursor naming an \
+                   entry this call may not see as one naming none. One call site for both, \
+                   deliberately: a page and its cursor judged by two predicates is how a \
+                   withheld entry becomes a paging oracle",
+        }],
     },
     Guard {
         ident: "assert_alt_provider_matches_session",
