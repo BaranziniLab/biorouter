@@ -23,6 +23,9 @@ const windowsFiles = ['*.exe', '*.dll', '*.cmd', 'biorouter-npm/**/*', 'git/**/*
 
 const macosFiles = ['biorouterd', 'biorouter', 'jbang', 'npx', 'uvx', '*.db', '*.log', '.gitkeep'];
 
+// Helpers that exist only for macOS (crates/biorouter-fnkey, crates/biorouter-textinsert).
+const MACOS_ONLY_HELPERS = ['biorouter-fnkey', 'biorouter-textinsert'];
+
 // Helper function to check if file matches patterns
 function matchesPattern(filename, patterns) {
   return patterns.some((pattern) => {
@@ -69,9 +72,10 @@ function cleanBinDirectory(targetPlatform, binDir = srcBinDir) {
       return;
     }
 
-    // The fn key helper is macOS-only (build-fn-key-helper.mjs); a Linux package left with one
-    // from an earlier Mac build would carry a program that cannot run there.
-    if (targetPlatform === 'linux' && file.name === 'biorouter-fnkey') {
+    // The fn key helper and the text insertion helper are macOS-only (build-fn-key-helper.mjs,
+    // build-text-insert-helper.mjs); a Linux package left with one from an earlier Mac build
+    // would carry a program that cannot run there.
+    if (targetPlatform === 'linux' && MACOS_ONLY_HELPERS.includes(file.name)) {
       console.log(`Removing macOS-only file: ${file.name}`);
       fs.unlinkSync(filePath);
       return;
@@ -404,6 +408,7 @@ if (require.main === module) {
 }
 
 module.exports = {
+  MACOS_ONLY_HELPERS,
   cleanBinDirectory,
   foreignBinaries,
   preparePlatformBinaries,

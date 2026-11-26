@@ -1,0 +1,49 @@
+[package]
+name = "biorouter-textinsert"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "The macOS helper that pastes a finished dictation into the app in front"
+
+[lints]
+workspace = true
+
+[[bin]]
+name = "biorouter-textinsert"
+path = "src/main.rs"
+
+# The protocol (`src/protocol.rs`) is built and tested on every system; only macOS
+# runs the helper. Every crate here is already in the workspace's lock file.
+[dependencies]
+serde = { version = "1.0", features = ["derive"] }
+serde_json = { workspace = true }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
+objc2-foundation = { version = "0.3", default-features = false, features = [
+    "std",
+    "NSArray",
+    "NSData",
+    "NSEnumerator",
+    "NSObject",
+    "NSString",
+] }
+objc2-app-kit = { version = "0.3", default-features = false, features = [
+    "std",
+    "libc",
+    "NSPasteboard",
+    "NSPasteboardItem",
+    "NSRunningApplication",
+    "NSWorkspace",
+] }
+objc2-core-graphics = { version = "0.3", default-features = false, features = [
+    "std",
+    "libc",
+    "CGEvent",
+    "CGEventSource",
+    "CGEventTypes",
+    "CGRemoteOperation",
+] }
+dispatch2 = { version = "0.3", default-features = false, features = ["std"] }
