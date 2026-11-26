@@ -34,6 +34,15 @@
 //! computes the path walks past the inspector, which sees only the call a model wrote.
 //! These are accident prevention for cooperative actors, as everywhere in Biorouter's
 //! privacy tiers, not a boundary against a determined one.
+//!
+//! # The dictation history
+//!
+//! The same inspector, and the same refusal at the uninspected doors, cover the dictation
+//! history's folder, `<local data>/dictation/history/` (P-18,
+//! `crate::dictation::history::history_dir`). It holds the text of everything the person
+//! dictated, private dictations included, and the only door a chat has to it is the
+//! capability's search, which applies the tier and institution rules; `cat` of the file
+//! would apply none. The refusal names the dictation history.
 
 use std::path::{Path, PathBuf};
 
@@ -77,8 +86,16 @@ pub fn open_store() -> store::DictionaryStore {
 /// Whether `path` is the store folder or inside it, compared as written and, where the
 /// path exists, after resolving links.
 pub fn is_in_dictionary_store(path: &Path) -> bool {
-    let dir = dictionary_dir();
-    if path.starts_with(&dir) {
+    is_inside(path, &dictionary_dir())
+}
+
+/// Whether `path` is the dictation history's folder or inside it, compared the same way.
+pub fn is_in_dictation_history(path: &Path) -> bool {
+    is_inside(path, &crate::dictation::history::history_dir())
+}
+
+fn is_inside(path: &Path, dir: &Path) -> bool {
+    if path.starts_with(dir) {
         return true;
     }
     match (path.canonicalize(), dir.canonicalize()) {
@@ -87,10 +104,28 @@ pub fn is_in_dictionary_store(path: &Path) -> bool {
     }
 }
 
-/// Every spelling of the store folder a tool argument might carry: the absolute path,
+/// The folders this module keeps tools out of.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ProtectedFolder {
+    Dictionary,
+    History,
+}
+
+impl ProtectedFolder {
+    const ALL: [ProtectedFolder; 2] = [ProtectedFolder::Dictionary, ProtectedFolder::History];
+
+    fn dir(self) -> PathBuf {
+        match self {
+            ProtectedFolder::Dictionary => dictionary_dir(),
+            ProtectedFolder::History => crate::dictation::history::history_dir(),
+        }
+    }
+}
+
+/// Every spelling of a protected folder a tool argument might carry: the absolute path,
 /// and when the folder is under the home folder the `~`, `$HOME` and `${HOME}` forms.
-fn store_path_forms() -> Vec<String> {
-    let dir = dictionary_dir();
+fn store_path_forms(folder: ProtectedFolder) -> Vec<String> {
+    let dir = folder.dir();
     let home = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE"));
     let mut forms = vec![dir.to_string_lossy().into_owned()];
     if let Some(home) = home.as_ref() {
@@ -168,8 +203,15 @@ fn shell_command_names_store(command: &str, forms: &[String]) -> bool {
         || redirect_targets(command).iter().any(|t| token_is_store(t))
 }
 
-/// Does `args` name the store in an argument that would open it?
-fn references_dictionary_store(args: &Map<String, Value>) -> bool {
+/// Which protected folder `args` names in an argument that would open it, if any.
+fn referenced_folder(args: &Map<String, Value>) -> Option<ProtectedFolder> {
+    ProtectedFolder::ALL
+        .into_iter()
+        .find(|&folder| references_folder(args, &store_path_forms(folder)))
+}
+
+/// Does `args` name the folder these forms spell in an argument that would open it?
+fn references_folder(args: &Map<String, Value>, forms: &[String]) -> bool {
     fn in_map(map: &Map<String, Value>, forms: &[String]) -> bool {
         map.iter().any(|(key, value)| match argument_role(key) {
             Some(role) => in_role(value, forms, role),
@@ -199,7 +241,7 @@ fn references_dictionary_store(args: &Map<String, Value>) -> bool {
         }
     }
 
-    in_map(args, &store_path_forms())
+    in_map(args, forms)
 }
 
 /// What the model is told when a call names the store. It names the doors that work.
@@ -212,6 +254,19 @@ fn path_refusal() -> String {
      person views and changes their dictionary on the Dictionary page in Biorouter, or \
      with `biorouter dictionary` in their own terminal. This project's own files are not \
      affected."
+        .to_string()
+}
+
+/// What the model is told when a call names the dictation history's folder.
+fn history_path_refusal() -> String {
+    "Refused: this call names Biorouter's dictation history by path. That folder holds the \
+     text of everything the person dictated, including dictations kept only for private \
+     chats, and reading or writing it as a file bypasses every check that decides which \
+     dictations a chat may see. The refusal is about the channel, not about your \
+     capability: it applies to a private-capability session exactly as it does to a public \
+     one. The person views their dictation history on the Dictionary page in Biorouter, or \
+     with `biorouter dictation history` in their own terminal. This project's own files are \
+     not affected."
         .to_string()
 }
 
@@ -230,15 +285,19 @@ fn is_writing_tool(tool_name: &str) -> bool {
     tool_name == ADD_TERMS_TOOL || tool_name == REMOVE_ADDED_TERMS_TOOL
 }
 
-/// Classify a tool call against the store's path. `None` for every call that does not
-/// name it.
+/// Classify a tool call against the store's path and the dictation history's. `None` for
+/// every call that names neither.
 pub fn dictionary_store_gate(args: &Map<String, Value>) -> Option<String> {
-    references_dictionary_store(args).then(path_refusal)
+    referenced_folder(args).map(|folder| match folder {
+        ProtectedFolder::Dictionary => path_refusal(),
+        ProtectedFolder::History => history_path_refusal(),
+    })
 }
 
 /// The refusal a dispatch door that no [`ToolInspector`] reaches owes (DD-42):
 /// `dictionary__add_terms` and `dictionary__remove_added_terms` whatever their
-/// arguments, and any call whose already evaluated arguments name the store's folder.
+/// arguments, and any call whose already evaluated arguments name the store's folder or
+/// the dictation history's.
 /// `boundary` is logged, never read by the decision.
 pub fn uninspected_boundary_refusal(
     tool_name: &str,
@@ -259,8 +318,8 @@ pub fn uninspected_boundary_refusal(
     Some(reason)
 }
 
-/// Refuses tool reads and writes of the store's folder, in every mode that runs tools,
-/// for both tiers.
+/// Refuses tool reads and writes of the store's folder and the dictation history's, in
+/// every mode that runs tools, for both tiers.
 pub struct DictionaryStoreInspector;
 
 #[async_trait]
@@ -598,6 +657,147 @@ mod tests {
         )
         .await;
         assert!(ordinary.is_empty());
+    }
+
+    /// The dictation history's files, built apart from the production helper.
+    fn history_files() -> Vec<String> {
+        let dir = Paths::local_data_dir().join("dictation").join("history");
+        ["history.jsonl", "settings.json", ".lock"]
+            .iter()
+            .map(|f| dir.join(f).to_string_lossy().into_owned())
+            .collect()
+    }
+
+    #[test]
+    fn the_history_folder_is_the_local_data_folders() {
+        let dir = Paths::local_data_dir().join("dictation").join("history");
+        assert!(is_in_dictation_history(&dir.join("history.jsonl")));
+        assert!(is_in_dictation_history(&dir));
+        assert!(!is_in_dictation_history(
+            &Paths::local_data_dir().join("dictation").join("models")
+        ));
+        assert!(!is_in_dictation_history(&dictionary_dir()));
+        assert!(!is_in_dictionary_store(&dir));
+    }
+
+    /// P-18: every read and write of the history's files is refused, with a refusal that
+    /// names the dictation history, and the speech models beside it are not.
+    #[test]
+    fn every_read_and_write_of_the_history_is_refused() {
+        let dir = Paths::local_data_dir()
+            .join("dictation")
+            .join("history")
+            .to_string_lossy()
+            .into_owned();
+        for file in history_files() {
+            for (label, arguments) in [
+                ("cat", json!({ "command": format!("cat {file}") })),
+                ("view", json!({ "command": "view", "path": file.clone() })),
+                (
+                    "write",
+                    json!({ "command": "write", "path": file.clone(), "file_text": "{}" }),
+                ),
+                ("quoted", json!({ "command": format!("cat \"{file}\"") })),
+                ("grep", json!({ "command": format!("grep EPAS1 {file}") })),
+                (
+                    "redirect",
+                    json!({ "command": format!("echo x >> {file}") }),
+                ),
+                ("nested", json!({ "opts": { "paths": [file.clone()] } })),
+                (
+                    "script",
+                    json!({ "code": format!("shell({{command: 'cat {file}'}})") }),
+                ),
+            ] {
+                let refusal = dictionary_store_gate(&args(arguments.clone()))
+                    .unwrap_or_else(|| panic!("{label} reached the history: {arguments}"));
+                assert!(refusal.contains("dictation history"), "{refusal}");
+                assert!(refusal.contains("Dictionary page"), "{refusal}");
+            }
+        }
+        for arguments in [
+            json!({ "command": format!("ls -la {dir}") }),
+            json!({ "working_directory": dir.clone() }),
+        ] {
+            assert!(
+                dictionary_store_gate(&args(arguments.clone())).is_some(),
+                "the folder is the history: {arguments}"
+            );
+        }
+        let data = Paths::local_data_dir().to_string_lossy().into_owned();
+        for arguments in [
+            json!({ "command": format!("ls {data}/dictation/models") }),
+            json!({ "command": format!("cat {data}/dictation/history-notes/a.txt") }),
+            json!({ "command": "biorouter dictation history --limit 5" }),
+            json!({
+                "command": format!("git commit -m \"docs: the history is {dir}\"")
+            }),
+        ] {
+            assert!(
+                dictionary_store_gate(&args(arguments.clone())).is_none(),
+                "{arguments} is not the history and must not be refused"
+            );
+        }
+        // The dictionary's own refusal still names the dictionary.
+        let refusal = dictionary_store_gate(&args(
+            json!({ "command": format!("cat {}", store_files().remove(0)) }),
+        ))
+        .unwrap();
+        assert!(refusal.contains("dictionary store"), "{refusal}");
+    }
+
+    /// The doors no inspector reaches refuse the history's path too.
+    #[test]
+    fn both_uninspected_doors_refuse_the_history_path() {
+        let file = history_files().remove(0);
+        for boundary in [
+            UninspectedBoundary::ExecuteCodeScript,
+            UninspectedBoundary::AgentCallToolRoute,
+        ] {
+            let refusal = uninspected_boundary_refusal(
+                "developer__shell",
+                Some(&args(json!({ "command": format!("cat {file}") }))),
+                boundary,
+            )
+            .unwrap_or_else(|| panic!("the history was read at {boundary:?}"));
+            assert_eq!(refusal, history_path_refusal());
+        }
+    }
+
+    /// P-18, through the inspector: `cat` and `text_editor view` of the history are
+    /// refused for both tiers, in every mode that runs tools.
+    #[tokio::test]
+    async fn cat_and_view_of_the_history_are_refused_for_both_tiers() {
+        let file = history_files().remove(0);
+        for tier in [
+            SessionClassification::Public,
+            SessionClassification::Private,
+        ] {
+            for mode in [
+                BioRouterMode::Auto,
+                BioRouterMode::Approve,
+                BioRouterMode::SmartApprove,
+            ] {
+                for (name, arguments) in [
+                    (
+                        "developer__shell",
+                        json!({ "command": format!("cat {file}") }),
+                    ),
+                    (
+                        "developer__text_editor",
+                        json!({ "command": "view", "path": file.clone() }),
+                    ),
+                ] {
+                    let results = inspect(mode, tier, name, arguments).await;
+                    let refusal = results
+                        .first()
+                        .unwrap_or_else(|| panic!("{name} in {mode:?} for {tier:?} ran"));
+                    assert_eq!(refusal.action, InspectionAction::Deny);
+                    assert_eq!(refusal.inspector_name, DICTIONARY_STORE_INSPECTOR_NAME);
+                    assert!(refusal.reason.contains("dictation history"));
+                }
+            }
+        }
     }
 
     /// The store keeps institution ids as the core normalizes them (`name_to_key`), so a

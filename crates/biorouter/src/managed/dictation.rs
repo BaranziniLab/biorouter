@@ -45,7 +45,13 @@ pub const DICTIONARY_TOOL_PREFIX: &str = "dictionary__";
 
 /// Every key a `dictation:` block may carry. Any other key turns dictation off
 /// (O-27), so a newer key on an older binary narrows rather than being ignored.
-pub const DICTATION_POLICY_KEYS: [&str; 8] = [
+///
+/// ⚠ The laptop's own reader in the desktop app keeps a copy of this list
+/// (`ui/desktop/src/utils/managedDictationPolicy.ts`, `LAPTOP_DICTATION_POLICY_KEYS`),
+/// and a key missing there turns dictation off on the laptop for every policy that
+/// names it. The two change together; `managedDictationPolicy.test.ts` reads this
+/// list and fails when they differ.
+pub const DICTATION_POLICY_KEYS: [&str; 9] = [
     "enabled",
     "capture",
     "model_downloads",
@@ -54,6 +60,7 @@ pub const DICTATION_POLICY_KEYS: [&str; 8] = [
     "external_engine",
     "dictionary",
     "dictionary_agent_writes",
+    "history",
 ];
 
 /// MSG-POLICY-DOWNLOADS, naming the folder models must come from.
@@ -221,6 +228,11 @@ pub struct DictationPolicy {
     /// The agent's dictionary tools and the chat extractor; when forbidden,
     /// `agent_writes` is pinned to `suggest`.
     pub dictionary_agent_writes: Rule,
+    /// The dictation history (DD-96). When forbidden nothing new is recorded, the
+    /// agent's history search is denied, and tier changes and raised settings are
+    /// refused; listing, delete and clear stay allowed, so a person can still remove
+    /// what was kept.
+    pub history: Rule,
 }
 
 impl DictationPolicy {
@@ -247,6 +259,7 @@ impl DictationPolicy {
             external_engine: off(),
             dictionary: off(),
             dictionary_agent_writes: off(),
+            history: off(),
         }
     }
 
@@ -290,6 +303,7 @@ impl DictationPolicy {
                 "dictionary_agent_writes" => {
                     raw.dictionary_agent_writes = flag("dictionary_agent_writes", value)?
                 }
+                "history" => raw.history = flag("history", value)?,
                 other => return Err(BlockError::UnknownKey(other.to_string())),
             }
         }
@@ -323,9 +337,15 @@ impl DictationPolicy {
 
     /// Whether this policy denies a tool by name: every `dictionary__*` tool
     /// while the agent may not write the dictionary, which `enabled: false` and
-    /// `dictionary: false` both imply.
+    /// `dictionary: false` both imply, and the history search while `history` is
+    /// forbidden.
     pub fn denies_tool(&self, tool_name: &str) -> bool {
-        tool_name.starts_with(DICTIONARY_TOOL_PREFIX) && !self.dictionary_agent_writes.is_allowed()
+        if !tool_name.starts_with(DICTIONARY_TOOL_PREFIX) {
+            return false;
+        }
+        !self.dictionary_agent_writes.is_allowed()
+            || (tool_name == crate::dictation::history::SEARCH_DICTATIONS_TOOL
+                && !self.history.is_allowed())
     }
 }
 
@@ -339,6 +359,7 @@ struct RawBlock {
     external_engine: bool,
     dictionary: bool,
     dictionary_agent_writes: bool,
+    history: bool,
 }
 
 impl Default for RawBlock {
@@ -353,6 +374,7 @@ impl Default for RawBlock {
             external_engine: true,
             dictionary: true,
             dictionary_agent_writes: true,
+            history: true,
         }
     }
 }
@@ -381,6 +403,7 @@ impl RawBlock {
             external_engine: Rule::gate(self.external_engine, MANAGED_DENY_REASON),
             dictionary,
             dictionary_agent_writes,
+            history: Rule::gate(self.history, MANAGED_DENY_REASON),
         }
     }
 }
@@ -434,6 +457,8 @@ mod tests {
     use super::*;
     use crate::managed::{ManagedPolicy, ManagedPolicyFile, ManagedVerdict};
 
+    const SEARCH: &str = crate::dictation::history::SEARCH_DICTATIONS_TOOL;
+
     fn parse(yaml: &str) -> Result<DictationPolicy, BlockError> {
         let value: Value = serde_yaml::from_str(yaml).unwrap();
         DictationPolicy::parse_block(&value)
@@ -458,6 +483,7 @@ mod tests {
             ("external_engine", &policy.external_engine),
             ("dictionary", &policy.dictionary),
             ("dictionary_agent_writes", &policy.dictionary_agent_writes),
+            ("history", &policy.history),
         ] {
             assert_eq!(
                 rule.reason(),
@@ -471,6 +497,7 @@ mod tests {
             "{case}"
         );
         assert!(policy.denies_tool("dictionary__add_terms"), "{case}");
+        assert!(policy.denies_tool(SEARCH), "{case}");
     }
 
     fn assert_all_allowed(policy: &DictationPolicy, case: &str) {
@@ -481,6 +508,7 @@ mod tests {
             ("external_engine", &policy.external_engine),
             ("dictionary", &policy.dictionary),
             ("dictionary_agent_writes", &policy.dictionary_agent_writes),
+            ("history", &policy.history),
         ] {
             assert!(rule.is_allowed(), "{case}: {name}");
             assert_eq!(rule.allowance(), Allowance::granted(), "{case}: {name}");
@@ -489,6 +517,7 @@ mod tests {
         assert_eq!(policy.models_dir, None, "{case}");
         assert_eq!(policy.install("any-model"), Allowance::granted(), "{case}");
         assert!(!policy.denies_tool("dictionary__add_terms"), "{case}");
+        assert!(!policy.denies_tool(SEARCH), "{case}");
     }
 
     #[test]
@@ -515,7 +544,7 @@ mod tests {
 
         let all_true = parse(
             "enabled: true\ncapture: true\nmodel_downloads: true\nexternal_engine: true\n\
-             dictionary: true\ndictionary_agent_writes: true\n",
+             dictionary: true\ndictionary_agent_writes: true\nhistory: true\n",
         )
         .unwrap();
         assert_eq!(all_true, empty, "true must equal absent for every key");
@@ -670,6 +699,60 @@ mod tests {
         }
     }
 
+    /// `history: false` stops recording and the agent's history search, and narrows
+    /// nothing else: the dictionary, its other tools, capture and installs stay open.
+    #[test]
+    fn history_false_denies_the_search_and_nothing_else() {
+        let policy = parse("history: false\n").unwrap();
+        assert!(policy.managed);
+        assert_eq!(policy.history.reason(), Some(MANAGED_DENY_REASON));
+        assert_eq!(
+            policy.history.allowance(),
+            Allowance::refused(MANAGED_DENY_REASON)
+        );
+        assert!(policy.denies_tool(SEARCH));
+        for tool in [
+            "dictionary__add_terms",
+            "dictionary__list_terms",
+            "dictionary__remove_added_terms",
+        ] {
+            assert!(!policy.denies_tool(tool), "{tool}");
+        }
+        for (name, rule) in [
+            ("enabled", &policy.enabled),
+            ("capture", &policy.capture),
+            ("model_downloads", &policy.model_downloads),
+            ("dictionary", &policy.dictionary),
+            ("dictionary_agent_writes", &policy.dictionary_agent_writes),
+        ] {
+            assert!(rule.is_allowed(), "{name}");
+        }
+        assert!(!policy.denies_tool("developer__shell"));
+
+        // Through the whole file, the managed inspector denies the search.
+        let file = policy_from("dictation:\n  history: false\n");
+        assert_eq!(file.permission_for(SEARCH), Some(ManagedVerdict::Deny));
+        assert_eq!(file.permission_for("dictionary__list_terms"), None);
+
+        // Every existing dictionary denial denies the search too.
+        for yaml in [
+            "enabled: false\n",
+            "dictionary: false\n",
+            "dictionary_agent_writes: false\n",
+        ] {
+            assert!(parse(yaml).unwrap().denies_tool(SEARCH), "{yaml}");
+        }
+        assert!(DictationPolicy::off().denies_tool(SEARCH));
+        assert!(!DictationPolicy::unmanaged().denies_tool(SEARCH));
+        assert_eq!(
+            parse("history: yes\n").unwrap_err(),
+            BlockError::WrongType {
+                key: "history",
+                expected: "true or false",
+            }
+        );
+    }
+
     #[test]
     fn external_engine_false_is_parsed_and_narrows_only_itself() {
         let policy = parse("external_engine: false\n").unwrap();
@@ -685,7 +768,8 @@ mod tests {
         let yaml = format!(
             "enabled: true\ncapture: false\nmodel_downloads: false\n\
              allowed_models: [whisper-small.en-q8_0]\nmodels_dir: {}\n\
-             external_engine: false\ndictionary: true\ndictionary_agent_writes: false\n",
+             external_engine: false\ndictionary: true\ndictionary_agent_writes: false\n\
+             history: false\n",
             serde_yaml::to_string(&dir.display().to_string())
                 .unwrap()
                 .trim()
@@ -702,6 +786,7 @@ mod tests {
         assert!(!policy.external_engine.is_allowed());
         assert!(policy.dictionary.is_allowed());
         assert!(!policy.dictionary_agent_writes.is_allowed());
+        assert!(!policy.history.is_allowed());
     }
 
     /// O-27: a key this version does not know turns dictation off, and the

@@ -1795,4 +1795,55 @@ mod tests {
         );
         assert!(text.contains("(1 at the long-context rate)"), "{text}");
     }
+
+    /// P-18: a diagnostics bundle never carries the dictation history. The history sits
+    /// in the local data folder, which on macOS and Linux is the data folder the bundle
+    /// reads `schedule.json` from, so the sentinel is planted there, beside a schedule the
+    /// bundle does ship.
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_bundle_never_holds_the_dictation_history() {
+        let temp = TempDir::new().unwrap();
+        let sources = sources_in(&temp);
+        let sentinel = "HISTORY-SENTINEL-EPAS1-20261126";
+        let history = temp.path().join("data").join("dictation").join("history");
+        fs::create_dir_all(&history).unwrap();
+        fs::write(
+            history.join("history.jsonl"),
+            format!(
+                "{{\"format\":\"biorouter.dictation.history\",\"version\":1}}\n{{\"text\":\"{sentinel}\"}}\n"
+            ),
+        )
+        .unwrap();
+        fs::write(history.join("settings.json"), sentinel).unwrap();
+        fs::write(temp.path().join("data").join("schedule.json"), "[]").unwrap();
+        let sm = SessionManager::new(temp.path().join("sessions"));
+        let session = sm
+            .create_session(
+                temp.path().to_path_buf(),
+                "diagnostics".into(),
+                SessionType::User,
+            )
+            .await
+            .unwrap();
+
+        let bundle = generate_diagnostics_from(&sm, &session.id, &sources)
+            .await
+            .unwrap();
+        let entries = bundle_entries(bundle);
+        let names: Vec<&str> = entries.iter().map(|(name, _)| name.as_str()).collect();
+        assert!(
+            names.contains(&"schedule.json"),
+            "the data folder is read: {names:?}"
+        );
+        for (name, bytes) in &entries {
+            assert!(
+                !name.contains("dictation") && !name.contains("history.jsonl"),
+                "the bundle holds {name}"
+            );
+            assert!(
+                !String::from_utf8_lossy(bytes).contains(sentinel),
+                "{name} holds dictation history text"
+            );
+        }
+    }
 }
