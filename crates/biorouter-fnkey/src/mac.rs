@@ -1,7 +1,8 @@
-//! The Quartz side: Input Monitoring, the listen-only event tap, and what macOS
-//! itself does with fn. Declared by hand against the system frameworks, so the
-//! helper links nothing but them.
+//! The Quartz side: Input Monitoring, the listen-only event tap, the hold timer on the
+//! tap's run loop, and what macOS itself does with fn. Declared by hand against the
+//! system frameworks, so the helper links nothing but them.
 
+use std::cell::Cell;
 use std::ffi::{c_char, c_void, CString};
 use std::io::BufRead;
 use std::ptr::null_mut;
@@ -11,8 +12,8 @@ use std::time::Duration;
 
 use crate::outbox::{LineKind, SharedOutbox, CAPACITY};
 use crate::protocol::{
-    classify_event, parse_command, permission_line, ready_line, signal_line, Command, EventClass,
-    FnTracker, Permission, Signal, EVENT_MASK, LISTENER_LOST_LINE,
+    classify_event, event_ms, parse_command, permission_line, ready_line, signal_line, Command,
+    EventClass, FnTracker, KeyFacts, Permission, Signal, Source, EVENT_MASK, LISTENER_LOST_LINE,
 };
 
 type CFTypeRef = *const c_void;
@@ -24,11 +25,21 @@ type CGEventRef = *mut c_void;
 type CGEventTapProxy = *mut c_void;
 type CGEventTapCallBack =
     extern "C" fn(CGEventTapProxy, u32, CGEventRef, *mut c_void) -> CGEventRef;
+type CFRunLoopTimerRef = *mut c_void;
+type CFAbsoluteTime = f64;
+type CFRunLoopTimerCallBack = extern "C" fn(CFRunLoopTimerRef, *mut c_void);
 
 const SESSION_EVENT_TAP: u32 = 1;
 const HEAD_INSERT_EVENT_TAP: u32 = 0;
 const TAP_OPTION_LISTEN_ONLY: u32 = 1;
+/// `CGEventField`s read from a key event, all judged inside this process and never written.
+/// `kCGKeyboardEventAutorepeat`: non-zero when the key down is a repeat.
+const KEYBOARD_EVENT_AUTOREPEAT: u32 = 8;
+/// `kCGKeyboardEventKeycode`.
 const KEYBOARD_EVENT_KEYCODE: u32 = 9;
+/// `kCGEventSourceStateID`: which event source state made the event; the keyboard's own
+/// events carry `kCGEventSourceStateHIDSystemState`.
+const EVENT_SOURCE_STATE_ID: u32 = 45;
 const CF_STRING_ENCODING_UTF8: u32 = 0x0800_0100;
 const CF_NUMBER_SINT64_TYPE: isize = 4;
 
@@ -75,6 +86,18 @@ extern "C" {
     fn CFRunLoopGetCurrent() -> CFRunLoopRef;
     fn CFRunLoopAddSource(run_loop: CFRunLoopRef, source: CFRunLoopSourceRef, mode: CFStringRef);
     fn CFRunLoopRun();
+    fn CFAbsoluteTimeGetCurrent() -> CFAbsoluteTime;
+    fn CFRunLoopTimerCreate(
+        allocator: CFTypeRef,
+        fire_date: CFAbsoluteTime,
+        interval: f64,
+        flags: usize,
+        order: isize,
+        callout: CFRunLoopTimerCallBack,
+        context: *mut c_void,
+    ) -> CFRunLoopTimerRef;
+    fn CFRunLoopAddTimer(run_loop: CFRunLoopRef, timer: CFRunLoopTimerRef, mode: CFStringRef);
+    fn CFRunLoopTimerInvalidate(timer: CFRunLoopTimerRef);
     fn CFStringCreateWithCString(
         allocator: CFTypeRef,
         text: *const c_char,
@@ -91,6 +114,13 @@ static TRACKER: Mutex<FnTracker> = Mutex::new(FnTracker::new());
 static TAP: AtomicPtr<c_void> = AtomicPtr::new(null_mut());
 /// Every line to the app goes through here, so they reach it in the order they were made.
 static OUTBOX: SharedOutbox = SharedOutbox::new(CAPACITY);
+
+thread_local! {
+    /// The hold timer while one is armed, with the threshold it is armed for (the press's down
+    /// time plus `FN_HOLD_MS`, on the events' clock). At most one exists. Only the run loop's
+    /// thread touches it: the tap's callback and the timer's both run there.
+    static HOLD_TIMER: Cell<Option<(CFRunLoopTimerRef, u64)>> = const { Cell::new(None) };
+}
 
 /// How long a leaving process waits for its queued lines to reach the app.
 const EXIT_FLUSH: Duration = Duration::from_millis(250);
@@ -167,6 +197,121 @@ fn fn_usage() -> Option<i64> {
     }
 }
 
+/// Run one event through the tracker, write what it reports at `at_ms`, and keep the hold
+/// timer in step with the press it waits on.
+fn track(at_ms: u64, step: impl FnOnce(&mut FnTracker) -> Vec<Signal>) {
+    let (signals, wanted) = match TRACKER.lock() {
+        Ok(mut tracker) => (step(&mut tracker), tracker.hold_deadline()),
+        Err(_) => return,
+    };
+    for signal in signals {
+        emit_signal(signal, at_ms);
+    }
+    follow_hold(wanted);
+}
+
+/// Bring the hold timer in line with what the tracker waits for: no timer, or one armed for
+/// `wanted`. Runs on the run loop's thread only.
+fn follow_hold(wanted: Option<u64>) {
+    let armed = HOLD_TIMER.with(Cell::get).map(|(_, deadline)| deadline);
+    if armed == wanted {
+        return;
+    }
+    cancel_hold_timer();
+    if let Some(deadline) = wanted {
+        arm_hold_timer(deadline);
+    }
+}
+
+fn cancel_hold_timer() {
+    if let Some((timer, _)) = HOLD_TIMER.with(Cell::take) {
+        // SAFETY: `timer` was created by `arm_hold_timer` (the Create rule) and is held only by
+        // `HOLD_TIMER`, which no longer names it; invalidating a fired timer again is harmless.
+        unsafe {
+            CFRunLoopTimerInvalidate(timer);
+            CFRelease(timer.cast_const());
+        }
+    }
+}
+
+/// A one-shot timer on this thread's run loop, the tap's, for `deadline` on the events' clock.
+/// A threshold already passed is given at once.
+fn arm_hold_timer(deadline: u64) {
+    let now = now_ms();
+    if deadline <= now {
+        give_held(now);
+        return;
+    }
+    let wait = Duration::from_millis(deadline - now).as_secs_f64();
+    // SAFETY: a plain timer with no context; the callback is a plain function. The timer is
+    // added to the run loop of the thread this runs on, the one that runs the tap.
+    let timer = unsafe {
+        CFRunLoopTimerCreate(
+            std::ptr::null(),
+            CFAbsoluteTimeGetCurrent() + wait,
+            0.0,
+            0,
+            0,
+            on_hold_timer,
+            null_mut(),
+        )
+    };
+    if timer.is_null() {
+        // No timer, no `held`: the app still reads a release after the threshold as a hold.
+        return;
+    }
+    // SAFETY: `timer` is the non-NULL timer created above, and this is the tap's thread.
+    unsafe { CFRunLoopAddTimer(CFRunLoopGetCurrent(), timer, kCFRunLoopCommonModes) };
+    HOLD_TIMER.with(|cell| cell.set(Some((timer, deadline))));
+}
+
+/// The threshold has passed by the clock now: write `held` if the press still waits for it.
+/// Should a timer ever fire a moment early, the press still waits, and it is armed again.
+fn give_held(now: u64) {
+    let (held, wanted) = match TRACKER.lock() {
+        Ok(mut tracker) => (tracker.held_due(now), tracker.hold_deadline()),
+        Err(_) => return,
+    };
+    if let Some(at_ms) = held {
+        emit_signal(Signal::Held, at_ms);
+    }
+    follow_hold(wanted);
+}
+
+extern "C" fn on_hold_timer(timer: CFRunLoopTimerRef, _info: *mut c_void) {
+    // A one-shot timer is spent once it fires, and the run loop invalidates it after this call:
+    // forget it, so the next press arms a new one.
+    HOLD_TIMER.with(|cell| {
+        if cell.get().is_some_and(|(armed, _)| armed == timer) {
+            cell.set(None);
+            // SAFETY: ours (the Create rule) and named nowhere else now; the run loop keeps its
+            // own reference while it calls this function.
+            unsafe { CFRelease(timer.cast_const()) };
+        }
+    });
+    give_held(now_ms());
+}
+
+/// macOS turned the tap off. Turn it on again, and end a hold its blind gap may have hidden
+/// the release of.
+fn on_tap_disabled() {
+    let tap = TAP.load(Ordering::Acquire);
+    if tap.is_null() {
+        return;
+    }
+    // SAFETY: `tap` is the port this process created; it is never freed.
+    unsafe { CGEventTapEnable(tap, true) };
+    // The tap was blind while it was off and may have missed fn's release, which
+    // would leave the app holding fn until some later modifier event.
+    track(now_ms(), |tracker| {
+        tracker.reset_after_blind_gap().into_iter().collect()
+    });
+    // SAFETY: as above.
+    if !unsafe { CGEventTapIsEnabled(tap) } {
+        emit(LineKind::ListenerLost, LISTENER_LOST_LINE.to_string());
+    }
+}
+
 extern "C" fn on_event(
     _proxy: CGEventTapProxy,
     kind: u32,
@@ -174,54 +319,45 @@ extern "C" fn on_event(
     _user_info: *mut c_void,
 ) -> CGEventRef {
     match classify_event(kind) {
-        // `event` is NULL for these: nothing below reads it.
-        EventClass::Disabled => {
-            let tap = TAP.load(Ordering::Acquire);
-            if !tap.is_null() {
-                // SAFETY: `tap` is the port this process created; it is never freed.
-                unsafe { CGEventTapEnable(tap, true) };
-                // The tap was blind while it was off and may have missed fn's release, which
-                // would leave the app holding fn until some later modifier event.
-                let signal = TRACKER
-                    .lock()
-                    .ok()
-                    .and_then(|mut tracker| tracker.reset_after_blind_gap());
-                if let Some(signal) = signal {
-                    emit_signal(signal, now_ms());
-                }
-                // SAFETY: as above.
-                if !unsafe { CGEventTapIsEnabled(tap) } {
-                    emit(LineKind::ListenerLost, LISTENER_LOST_LINE.to_string());
-                }
-            }
-        }
+        // `event` is NULL for these: nothing reads it.
+        EventClass::Disabled => on_tap_disabled(),
         EventClass::FlagsChanged => {
             // SAFETY: macOS hands the callback a valid event for its duration.
-            let (key_code, flags, at_ms) = unsafe {
+            let (key_code, flags, state_id, stamp) = unsafe {
                 (
                     CGEventGetIntegerValueField(event, KEYBOARD_EVENT_KEYCODE),
                     CGEventGetFlags(event),
-                    CGEventGetTimestamp(event) / 1_000_000,
+                    CGEventGetIntegerValueField(event, EVENT_SOURCE_STATE_ID),
+                    CGEventGetTimestamp(event),
                 )
             };
-            let signals = match TRACKER.lock() {
-                Ok(mut tracker) => tracker.flags_changed(key_code, flags, at_ms),
-                Err(_) => Vec::new(),
-            };
-            for signal in signals {
-                emit_signal(signal, at_ms);
-            }
+            let at_ms = event_ms(stamp, now_ms());
+            let source = Source::of_state(state_id);
+            track(at_ms, |tracker| {
+                tracker.flags_changed(key_code, flags, source, at_ms)
+            });
         }
         EventClass::KeyDown => {
-            // SAFETY: as above.
-            let at_ms = unsafe { CGEventGetTimestamp(event) } / 1_000_000;
-            let signal = TRACKER
-                .lock()
-                .ok()
-                .and_then(|mut tracker| tracker.key_down(at_ms));
-            if let Some(signal) = signal {
-                emit_signal(signal, at_ms);
-            }
+            // SAFETY: as above. The facts stay in this process: the tracker judges them and
+            // keeps none, and no line carries them.
+            let (facts, stamp) = unsafe {
+                (
+                    KeyFacts {
+                        key_code: CGEventGetIntegerValueField(event, KEYBOARD_EVENT_KEYCODE),
+                        autorepeat: CGEventGetIntegerValueField(event, KEYBOARD_EVENT_AUTOREPEAT)
+                            != 0,
+                        source: Source::of_state(CGEventGetIntegerValueField(
+                            event,
+                            EVENT_SOURCE_STATE_ID,
+                        )),
+                    },
+                    CGEventGetTimestamp(event),
+                )
+            };
+            let at_ms = event_ms(stamp, now_ms());
+            track(at_ms, |tracker| {
+                tracker.key_down(at_ms, facts).into_iter().collect()
+            });
         }
         EventClass::Ignore => {}
     }

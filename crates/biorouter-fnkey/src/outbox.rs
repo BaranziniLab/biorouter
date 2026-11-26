@@ -4,7 +4,8 @@
 //! (`kCGEventTapDisabledByTimeout`) when the callback is slow. A write to standard output blocks
 //! while the app is not reading the pipe, so the callback never writes: it queues the line in a
 //! bounded [`Outbox`] and returns, and one writer thread ([`SharedOutbox::write_lines`]) does the
-//! writing. The lines themselves are unchanged (`protocol.rs`).
+//! writing. The hold timer queues its `held` line the same way. The lines themselves are
+//! unchanged (`protocol.rs`).
 //!
 //! When the app has stopped reading long enough to fill the queue, a line has to go. Which one is
 //! decided by what the app does with it (`ui/desktop/src/utils/fnGesture.ts`), so that what it
@@ -15,20 +16,22 @@
 //!    release ends the wait for a second tap; the app ignores the rest.
 //! 2. A status line (`ready`, `permission`, `listener-lost`) with a newer one of its kind queued
 //!    behind it: the app keeps only the latest.
-//! 3. The oldest whole press: its fn down, its fn up, the keys inside it and the key that followed
-//!    it, all together, so the app never sees half of a press.
+//! 3. The oldest whole press: its fn down, its `held`, its fn up, the keys inside it and the key
+//!    that followed it, all together, so the app never sees half of a press.
 //!
 //! The first `other` of a press is never dropped on its own, although it is only timing: it is
 //! what marks fn with an arrow or a letter as a shortcut, and without it the app would read that
-//! press as dictation. An fn up whose fn down was already written is never dropped, nor the fn
-//! down of a press still held, so a hold the app saw begin is always seen to end (a blind gap's
-//! reset in `FnTracker::reset_after_blind_gap` reports its fn up through the same queue).
+//! press as dictation. A `held` line is never dropped on its own either: it is what starts a
+//! push to talk while fn is still down. An fn up whose fn down was already written is never
+//! dropped, nor the fn down of a press still held, so a hold the app saw begin is always seen to
+//! end (a blind gap's reset in `FnTracker::reset_after_blind_gap` reports its fn up through the
+//! same queue).
 //!
-//! With none of those left to drop, the queue holds at most eight lines: an fn up, an fn down,
-//! one `other` in each of the three stretches around them and one line of each status kind. So
-//! with any bound above eight a full queue always has a line to drop, and the queue never grows
-//! past [`CAPACITY`]. (Were it ever to have none, the new line would be queued anyway: a line
-//! the app needs is worth more than the bound.)
+//! With none of those left to drop, the queue holds at most ten lines: an fn up, an fn down, one
+//! `other` in each of the three stretches around them, the `held` of each of the two presses and
+//! one line of each status kind. So with any bound above ten a full queue always has a line to
+//! drop, and the queue never grows past [`CAPACITY`]. (Were it ever to have none, the new line
+//! would be queued anyway: a line the app needs is worth more than the bound.)
 
 use std::collections::VecDeque;
 use std::io::Write;
@@ -39,13 +42,14 @@ use crate::protocol::Signal;
 
 /// Lines the queue holds before it drops one. A busy app reads far fewer behind.
 pub const CAPACITY: usize = 256;
-const _: () = assert!(CAPACITY > 8);
+const _: () = assert!(CAPACITY > 10);
 
 /// What a queued line is, for the overflow policy.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LineKind {
     FnDown,
     FnUp,
+    Held,
     Other,
     Ready,
     Permission,
@@ -57,6 +61,7 @@ impl LineKind {
         match signal {
             Signal::FnDown => Self::FnDown,
             Signal::FnUp => Self::FnUp,
+            Signal::Held => Self::Held,
             Signal::Other => Self::Other,
         }
     }
@@ -171,8 +176,9 @@ impl<T> Outbox<T> {
             })
     }
 
-    /// Rule 3: the oldest fn down whose fn up is queued too, with the `other` lines between them
-    /// and the `other` right after the up (before the next fn line). Status lines in between stay.
+    /// Rule 3: the oldest fn down whose fn up is queued too, with the `held` and `other` lines
+    /// between them and the `other` right after the up (before the next fn line). Status lines in
+    /// between stay.
     fn first_whole_press(&self) -> Option<Vec<usize>> {
         let down = self
             .lines
@@ -182,7 +188,7 @@ impl<T> Outbox<T> {
         let mut released = false;
         for (index, (kind, _)) in self.lines.iter().enumerate().skip(down + 1) {
             match (released, kind) {
-                (false, LineKind::Other) => press.push(index),
+                (false, LineKind::Other | LineKind::Held) => press.push(index),
                 (false, LineKind::FnUp) => {
                     press.push(index);
                     released = true;
@@ -299,8 +305,24 @@ impl SharedOutbox {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::protocol::{signal_line, FnTracker, SECONDARY_FN};
-    use LineKind::{FnDown, FnUp, Other};
+    use crate::protocol::{signal_line, FnTracker, KeyFacts, Source, FN_HOLD_MS, SECONDARY_FN};
+    use LineKind::{FnDown, FnUp, Held, Other};
+
+    /// A key down of one of the kinds the tracker tells apart: a letter from the keyboard,
+    /// the globe key, a made-up letter, a repeat.
+    fn some_key(roll: u64) -> KeyFacts {
+        let (key_code, source, autorepeat) = match roll % 4 {
+            0 => (0, Source::Hardware, false),
+            1 => (179, Source::Hardware, false),
+            2 => (0, Source::Synthesized, false),
+            _ => (123, Source::Hardware, true),
+        };
+        KeyFacts {
+            key_code,
+            autorepeat,
+            source,
+        }
+    }
 
     fn drain<T>(outbox: &mut Outbox<T>) -> Vec<T> {
         std::iter::from_fn(|| outbox.pop()).collect()
@@ -408,6 +430,30 @@ mod tests {
         assert_eq!(outbox.dropped(), 0);
     }
 
+    /// A `held` goes only with its whole press, never on its own: a press still down keeps it,
+    /// and so does a press whose down the app already read.
+    #[test]
+    fn a_held_line_goes_only_with_its_whole_press() {
+        let mut outbox = filled(
+            4,
+            &[(FnDown, "d1"), (Held, "h1"), (FnUp, "u1"), (FnDown, "d2")],
+        );
+        outbox.push(Held, "h2");
+        assert_eq!(drain(&mut outbox), vec!["d2", "h2"]);
+        assert_eq!(outbox.dropped(), 3);
+
+        let mut outbox = Outbox::new(2);
+        outbox.push(FnDown, "d1");
+        assert_eq!(outbox.pop(), Some("d1"));
+        outbox.push(Held, "h1");
+        outbox.push(Other, "o1");
+        outbox.push(FnUp, "u1");
+        outbox.push(FnDown, "d2");
+        outbox.push(Held, "h2");
+        assert_eq!(drain(&mut outbox), vec!["h1", "o1", "u1", "d2", "h2"]);
+        assert_eq!(outbox.dropped(), 0);
+    }
+
     /// What the tracker would really report, pushed through a small queue the app reads only
     /// now and then: the queue never passes its bound, the policy has to drop, and what is
     /// written alternates fn down and fn up, so every up the app reads ends a down it read. A
@@ -430,13 +476,22 @@ mod tests {
                 0..=2 => {
                     fn_down = !fn_down;
                     let flags = if fn_down { SECONDARY_FN } else { 0 };
-                    tracker.flags_changed(63, flags, at * 10)
+                    tracker.flags_changed(63, flags, Source::Hardware, at * 10)
                 }
                 3 => {
                     fn_down = false;
                     tracker.reset_after_blind_gap().into_iter().collect()
                 }
-                _ => tracker.key_down(at * 10).into_iter().collect(),
+                // The hold timer, firing once the threshold has passed.
+                4 => tracker
+                    .held_due(at * 10 + FN_HOLD_MS)
+                    .map(|_| Signal::Held)
+                    .into_iter()
+                    .collect(),
+                roll => tracker
+                    .key_down(at * 10, some_key(roll))
+                    .into_iter()
+                    .collect(),
             };
             for signal in signals {
                 outbox.push(LineKind::of(signal), signal);
@@ -451,25 +506,35 @@ mod tests {
         assert_alternates(&written);
     }
 
+    /// Every up the app reads ends a down it read, no down follows a down, and a `held` comes
+    /// only inside a press it read the down of, at most once per press.
     fn assert_alternates(written: &[Signal]) {
+        let mut down = false;
         let mut held = false;
         for signal in written {
             match signal {
                 Signal::FnDown => {
-                    assert!(!held, "a down while one was held: {written:?}");
-                    held = true;
+                    assert!(!down, "a down while one was held: {written:?}");
+                    down = true;
+                    held = false;
                 }
                 Signal::FnUp => {
-                    assert!(held, "an up with no down: {written:?}");
-                    held = false;
+                    assert!(down, "an up with no down: {written:?}");
+                    down = false;
+                }
+                Signal::Held => {
+                    assert!(down, "a held with no press down: {written:?}");
+                    assert!(!held, "two helds in one press: {written:?}");
+                    held = true;
                 }
                 Signal::Other => {}
             }
         }
+        assert!(written.contains(&Signal::Held), "no hold was ever written");
     }
 
-    /// The same, checked over the whole written stream: every up follows a down, and no down
-    /// follows a down.
+    /// The same, checked over the whole written stream: every up follows a down, no down
+    /// follows a down, and a `held` comes only inside a press, once.
     #[test]
     fn the_written_stream_alternates_down_and_up() {
         let mut tracker = FnTracker::new();
@@ -480,13 +545,19 @@ mod tests {
             let signals: Vec<Signal> = match at % 7 {
                 0 | 3 => {
                     fn_down = !fn_down;
-                    tracker.flags_changed(63, if fn_down { SECONDARY_FN } else { 0 }, at)
+                    let flags = if fn_down { SECONDARY_FN } else { 0 };
+                    tracker.flags_changed(63, flags, Source::Hardware, at)
                 }
                 5 if at % 11 == 0 => {
                     fn_down = false;
                     tracker.reset_after_blind_gap().into_iter().collect()
                 }
-                _ => tracker.key_down(at).into_iter().collect(),
+                2 => tracker
+                    .held_due(at + FN_HOLD_MS)
+                    .map(|_| Signal::Held)
+                    .into_iter()
+                    .collect(),
+                _ => tracker.key_down(at, some_key(at)).into_iter().collect(),
             };
             for signal in signals {
                 outbox.push(LineKind::of(signal), signal);

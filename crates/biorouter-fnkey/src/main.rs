@@ -5,6 +5,9 @@
 //! deliver it to a page reliably, so the desktop app starts this program and
 //! reads what it reports on standard output (`protocol.rs`). It is a listen-only
 //! Quartz event tap: it can see key presses but never change, block or make one.
+//! A timer on the tap's own run loop says when fn has stayed down long enough to
+//! be a hold (`held`), so the app learns of a hold on the events' clock and in
+//! order with the release, however busy it is.
 //!
 //! The tap needs macOS **Input Monitoring**. The program reads that permission
 //! with `CGPreflightListenEventAccess`, which never shows a prompt, and creates
