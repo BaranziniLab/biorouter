@@ -6,6 +6,8 @@
 //! starts a worker; `--verbose` does, to show its `hello`, unless the organization's
 //! policy turns dictation off.
 //!
+//! `history` (DD-96) lists and changes the dictation history, in [`history`].
+//!
 //! The model commands take catalog ids, never URLs (DD-17). Installing is a person's
 //! choice (DD-20): `install`, `remove` and `use` refuse in an agent's shell
 //! (`BIOROUTER_TERMINAL` set) even with `--yes`, and without a terminal they need `--yes`.
@@ -27,6 +29,12 @@ use console::{style, Color};
 use serde_json::{json, Value};
 
 use crate::commands::needs_terminal;
+
+/// `biorouter dictation history` (DD-96): the text of the person's dictations. Declared
+/// here rather than in `commands/mod.rs`, which this change does not own; a later change
+/// may move the declaration there.
+#[path = "dictation_history.rs"]
+pub mod history;
 
 /// Brand warm tan-brown accent, as in `doctor`.
 const ACCENT: Color = Color::Color256(137);

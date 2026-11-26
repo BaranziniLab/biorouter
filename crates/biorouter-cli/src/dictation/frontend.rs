@@ -16,7 +16,9 @@ use tokio_util::sync::CancellationToken;
 use super::capture::{CaptureChild, CaptureEvent};
 use super::consent::CaptureConsent;
 use super::controller::{self, Ended, FixedText, LiveDecode, Notice, Recorder, ServiceEngine};
+use super::history_record;
 use super::messages;
+use biorouter::dictation::history::Surface;
 
 const STREAM: u64 = 1 << 58;
 
@@ -177,20 +179,23 @@ impl FrontendSession {
         })
     }
 
+    /// Hands `text` to the front end while `operation` is still live, and says whether it
+    /// did; a cancelled operation's text is dropped.
     fn send_text_if_live(
         &self,
         operation: u64,
         events: &mpsc::UnboundedSender<Event>,
         text: String,
-    ) {
+    ) -> bool {
         let state = self.0.lock().unwrap_or_else(|e| e.into_inner());
         if state
             .active
             .is_some_and(|active| active.id == operation && !active.cancelled)
         {
-            let _ = events.send(Event::Text(text));
+            events.send(Event::Text(text)).is_ok()
         } else {
             let _ = events.send(Event::Cancelled);
+            false
         }
     }
 
@@ -330,15 +335,18 @@ async fn retry_run(
     events: mpsc::UnboundedSender<Event>,
     mut audio: Vec<i16>,
 ) {
+    let duration_ms = audio.len() as u64 / 16;
     let _ = events.send(Event::Transcribing(messages::line_transcribing(
-        audio.len() as u64 / 16,
+        duration_ms,
     )));
+    let chat = session_id.clone();
     let result = async {
         let svc = service::service();
         svc.spawn_ahead().map_err(|e| e.to_string())?;
         let language = service::configured_language();
         let spec = svc.resolve_for(None, Some(&language)).await.map_err(|e| e.to_string())?;
         svc.prepare_with(spec.clone()).await.map_err(|e| e.to_string())?;
+        let model = service::model_id(&spec);
         let dictionary = dictionary(session_id, model_affiliation).await;
         let cancel = CancellationToken::new();
         let request = TranscribeRequest { language, cancel: cancel.clone(), dictionary: dictionary.clone(), decode: None };
@@ -357,11 +365,18 @@ async fn retry_run(
         };
         let raw = decoded.raw_text();
         let text = dictionary.as_ref().map_or_else(|| raw.clone(), |dictionary| dictionary.correct(&raw, &dictionary.prompt_terms()).text);
-        Ok::<Option<String>, String>(Some(text))
+        Ok::<Option<(String, Option<Arc<DictionaryRequest>>, String)>, String>(Some((text, dictionary, model)))
     }.await;
     match result {
-        Ok(Some(text)) if !text.trim().is_empty() => {
-            state.send_text_if_live(operation, &events, text)
+        Ok(Some((text, dictionary, model))) if !text.trim().is_empty() => {
+            // A retry is a new dictation, kept once it succeeds. It reuses audio the person
+            // recorded here, so it is kept only while a person is still at this terminal.
+            let kept = terminal_dictation(&text, duration_ms, model, dictionary);
+            if state.send_text_if_live(operation, &events, text) {
+                if let Ok(person) = CaptureConsent::at_this_terminal() {
+                    keep_in_history(&person, chat, model_affiliation, kept).await;
+                }
+            }
         }
         Ok(Some(_)) => {
             let _ = events.send(Event::Failed(messages::MSG_NO_SPEECH.into()));
@@ -949,6 +964,8 @@ async fn run_inner(
         let spec = spec.clone();
         async move { svc.prepare_with(spec).await }
     });
+    let model = service::model_id(&spec);
+    let chat = session_id.clone();
     let dictionary = tokio::spawn(dictionary(session_id, model_affiliation));
     open_microphone(&mut child, &consent).await?;
     let title = TerminalTitle::push();
@@ -978,6 +995,7 @@ async fn run_inner(
     drop(title);
     drain(&mut child, &mut recorder).await;
     tokio::spawn(child.close());
+    let duration_ms = recorder.duration_ms();
     let pcm = recorder.finish().map_err(|ended| match ended {
         Ended::TooShort => messages::MSG_TOO_SHORT.to_string(),
         Ended::Silent => messages::MSG_NO_SPEECH.to_string(),
@@ -1007,8 +1025,46 @@ async fn run_inner(
     if text.trim().is_empty() {
         return Err(messages::MSG_NO_SPEECH.into());
     }
-    state.send_text_if_live(operation, events, text);
+    let kept = terminal_dictation(&text, duration_ms, model, dictionary);
+    if state.send_text_if_live(operation, events, text) {
+        keep_in_history(&consent, chat, model_affiliation, kept).await;
+    }
     Ok(())
+}
+
+/// The history entry for a terminal capture's `text`, before it goes to the front end.
+fn terminal_dictation(
+    text: &str,
+    duration_ms: u64,
+    model: String,
+    dictionary: Option<Arc<DictionaryRequest>>,
+) -> history_record::Dictation {
+    history_record::Dictation {
+        text: text.to_owned(),
+        surface: Surface::Terminal,
+        duration_ms,
+        model,
+        dictionary,
+    }
+}
+
+/// The dictation history's entry for a capture whose text reached the front end (DD-96):
+/// `terminal`, for the chat the front end dictates into, by the person who opened the
+/// microphone. A history that cannot be written never fails the dictation.
+async fn keep_in_history(
+    person: &CaptureConsent,
+    session_id: Option<String>,
+    model_affiliation: Option<biorouter::privacy::ModelAffiliation>,
+    dictation: history_record::Dictation,
+) {
+    let into = match session_id {
+        Some(id) => history_record::DictatedInto::Chat {
+            id,
+            model: model_affiliation,
+        },
+        None => history_record::DictatedInto::NoChat,
+    };
+    history_record::record(person, dictation, into).await;
 }
 
 /// The live decode for this capture, on the worker's model (or a test's fixed text): its
