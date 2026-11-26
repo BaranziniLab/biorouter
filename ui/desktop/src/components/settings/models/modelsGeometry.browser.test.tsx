@@ -290,6 +290,8 @@ const STUBS: Array<{ filter: RegExp; contents: string }> = [
       export const llamacppEnsure = async () => ({ data: status });
       export const llamacppWarmup = async () => ({ data: { output: 'ok', sidecar: status.sidecar } });
       export const llamacppDelete = async () => ({ data: { deleted_fallback_cache: false, status } });
+      export const getDictationHistorySettings = async () => ({ response: { ok: false, status: 404 } });
+      export const changeDictationHistorySettings = async () => ({ response: { ok: false, status: 404 } });
     `,
   },
   {

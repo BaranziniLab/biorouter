@@ -204,6 +204,11 @@ const DICTATION_CHANNELS: Record<string, Array<keyof typeof SENDER_CHECKS>> = {
   'dictation:fn:set': ['app'],
   // The on-screen indicator hears every page that records: composers and the hidden capture page.
   'dictation:indicator': ['app', 'capture'],
+  // Typing a dictation into the app in front (DD-97, macOS): the setting and the one
+  // Accessibility request.
+  'dictation:insert:get': ['app'],
+  'dictation:insert:open-settings': ['app'],
+  'dictation:insert:set': ['app'],
   // The hidden capture window asks for the microphone as a composer does.
   'dictation:mic-request': ['app', 'capture'],
   'dictation:mic-status': ['app', 'capture'],
