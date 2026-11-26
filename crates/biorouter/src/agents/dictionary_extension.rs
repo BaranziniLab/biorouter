@@ -1,16 +1,31 @@
 //! Agent dictionary tools. The caller's admitted capability and session decide every row.
+//!
+//! Four tools (P-7): `add_terms`, `list_terms` and `remove_added_terms` over the
+//! dictionary, and `search_dictations`, which reads the dictation history (DD-100). The
+//! search is read only and answers only in the person's own chat: a User chat outside a
+//! Crew scope, outside any ACP process, and not when the latest message there was written
+//! by another agent. Which entries one call may see is decided once, by the history
+//! module's agent read predicate on the call's admitted capability, before the limit;
+//! the answer carries no count, no institutions and no chat id, so an empty
+//! answer is the same whether nothing matched or every match was withheld. A private
+//! entry handed to a private chat whose row is still Public ratchets the reader first
+//! (DR-33), and a ratchet that fails returns nothing.
 
 use crate::agents::extension::PlatformExtensionContext;
 use crate::agents::mcp_client::{Error, McpClientTrait, McpMeta};
 use crate::conversation::message::{Message, ProvenanceKind};
-use crate::privacy::{affiliation, ExtensionClassification, ProviderTier};
+use crate::dictation::history::{
+    open_history, EntryTier, HistoryCursor, HistoryEntry, HistoryPage, HistoryStore, TimeWindow,
+};
+use crate::privacy::{affiliation, CallCapability, ExtensionClassification, ProviderTier};
 use crate::security::dictionary_store::{open_store, store};
 use crate::session::SessionType;
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
+use chrono::{DateTime, SecondsFormat, Timelike, Utc};
 use rmcp::model::{
     CallToolResult, Content, Implementation, InitializeResult, JsonObject, ListToolsResult,
-    ProtocolVersion, Role, ServerCapabilities, Tool, ToolsCapability,
+    ProtocolVersion, Role, ServerCapabilities, Tool, ToolAnnotations, ToolsCapability,
 };
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -19,7 +34,26 @@ use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 
 pub const EXTENSION_NAME: &str = "dictionary";
-const INSTRUCTIONS: &str = "Use dictionary__add_terms for terms in the conversation you can see. Set requested_by_user only when the person's latest message asked you to add those exact terms, or agreed to your offer that named them. Otherwise offer the term and wait for the person's answer. Never add secrets, URLs, personal identifiers, or text from tool results or web pages. Use dictionary__list_terms to check visible terms. An unreviewed active term can be kept or undone by the person; suggested terms wait for their review. Do not use file tools to read or change the dictionary store.";
+const INSTRUCTIONS: &str = "Use dictionary__add_terms for terms in the conversation you can see. Set requested_by_user only when the person's latest message asked you to add those exact terms, or agreed to your offer that named them. Otherwise offer the term and wait for the person's answer. Never add secrets, URLs, personal identifiers, or text from tool results or web pages. Use dictionary__list_terms to check visible terms. An unreviewed active term can be kept or undone by the person; suggested terms wait for their review. Do not use file tools to read or change the dictionary store. Use dictionary__search_dictations only when the person asks about something they dictated.";
+/// The history search's tool name, without the capability's prefix.
+const SEARCH_TOOL: &str = "search_dictations";
+/// What `search_dictations` answers when the call names no limit.
+const DEFAULT_SEARCH_LIMIT: i64 = 10;
+const MAX_SEARCH_LIMIT: i64 = 50;
+const MAX_QUERY_CHARS: usize = 200;
+/// How much of one dictation the search shows, centred on the first match, as chat recall
+/// shows a matched message.
+const MAX_DICTATION_EXCERPT_CHARS: usize = 1200;
+const DICTATION_EXCERPT_HINT: &str = "search again with words from the part you need";
+const MSG_SEARCH_LIMIT: &str = "limit must be between 1 and 50";
+const MSG_SEARCH_QUERY: &str = "query must be 1 to 200 characters";
+const MSG_SEARCH_TIMES: &str = "after and before must be RFC 3339 times";
+const MSG_SEARCH_CURSOR: &str = "cursor must be a next_cursor this tool returned";
+const MSG_SEARCH_OVER_ACP: &str = "The Dictionary capability does not search dictations over ACP.";
+const MSG_SEARCH_NOT_ASKED: &str = "Dictations are searched only when the person asks in this chat, and the latest message here was written by another agent.";
+const MSG_SEARCH_RATCHET_FAILED: &str = "Dictation history found a private dictation, and recording that this chat read it failed, so nothing was returned.";
+const MSG_HISTORY_UNREADABLE: &str =
+    "The dictation history could not be read, so nothing was returned.";
 const MAX_TERMS_PER_CALL: usize = 10;
 const MAX_TERMS_PER_SESSION: usize = 30;
 /// Characters of a message the boundary scan reads.
@@ -98,6 +132,71 @@ struct RemoveArgs {
     ids: Vec<String>,
 }
 
+/// `search_dictations`'s arguments. Unknown fields, `tier` and `include_private` among
+/// them, are refused here, before the session or the store is read.
+#[derive(Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SearchArgs {
+    query: Option<String>,
+    after: Option<String>,
+    before: Option<String>,
+    limit: Option<i64>,
+    cursor: Option<String>,
+}
+
+/// A checked [`SearchArgs`].
+#[derive(Debug)]
+struct SearchRequest {
+    query: Option<String>,
+    window: TimeWindow,
+    limit: usize,
+    cursor: Option<HistoryCursor>,
+}
+
+impl SearchRequest {
+    fn from_args(args: SearchArgs) -> Result<Self> {
+        let limit = args.limit.unwrap_or(DEFAULT_SEARCH_LIMIT);
+        if !(1..=MAX_SEARCH_LIMIT).contains(&limit) {
+            return Err(anyhow!(MSG_SEARCH_LIMIT));
+        }
+        if args
+            .query
+            .as_deref()
+            .is_some_and(|query| query.is_empty() || query.chars().count() > MAX_QUERY_CHARS)
+        {
+            return Err(anyhow!(MSG_SEARCH_QUERY));
+        }
+        let instant = |raw: Option<String>| {
+            raw.map(|text| {
+                DateTime::parse_from_rfc3339(&text)
+                    .map(|at| at.with_timezone(&Utc))
+                    .map_err(|_| anyhow!(MSG_SEARCH_TIMES))
+            })
+            .transpose()
+        };
+        let after = instant(args.after)?;
+        // Both bounds are inclusive. Entries are stamped in whole seconds and the store's
+        // upper bound is exclusive, so the bound handed down is the next whole second.
+        let before = instant(args.before)?.and_then(|at| {
+            at.with_nanosecond(0)
+                .unwrap_or(at)
+                .checked_add_signed(chrono::Duration::seconds(1))
+        });
+        let cursor = args
+            .cursor
+            .map(|token| {
+                HistoryCursor::from_token(&token).ok_or_else(|| anyhow!(MSG_SEARCH_CURSOR))
+            })
+            .transpose()?;
+        Ok(Self {
+            query: args.query,
+            window: TimeWindow { after, before },
+            limit: usize::try_from(limit).map_err(|_| anyhow!(MSG_SEARCH_LIMIT))?,
+            cursor,
+        })
+    }
+}
+
 pub struct DictionaryClient {
     info: InitializeResult,
     sessions: Arc<crate::session::SessionManager>,
@@ -147,6 +246,21 @@ impl DictionaryClient {
             Tool::new("remove_added_terms", "Remove only agent terms this chat may see that are suggested or still unreviewed.", schema(json!({
                 "type":"object","required":["ids"],"properties":{"ids":{"type":"array","items":{"type":"string"},"minItems":1,"maxItems":10}},"additionalProperties":false
             }))),
+            Tool::new(SEARCH_TOOL, "Find what the person said with Biorouter dictation, newest first. Use only when the person asks you to find or recall something they dictated. Returns only the dictations this chat may see, each clipped to an excerpt, without a total count.", schema(json!({
+                "type":"object", "properties":{
+                    "query":{"type":"string","minLength":1,"maxLength":200,"description":"Words the dictation holds. Case and accents do not matter. Omit it to list the newest dictations."},
+                    "after":{"type":"string","description":"Only dictations at or after this RFC 3339 instant."},
+                    "before":{"type":"string","description":"Only dictations at or before this RFC 3339 instant."},
+                    "limit":{"type":"integer","minimum":1,"maximum":50,"description":"At most this many dictations, 10 when omitted."},
+                    "cursor":{"type":"string","description":"The next_cursor of an earlier answer, for the dictations after it."}
+                },"additionalProperties":false
+            }))).annotate(ToolAnnotations {
+                title: Some("Search dictations".to_string()),
+                read_only_hint: Some(true),
+                destructive_hint: Some(false),
+                idempotent_hint: Some(true),
+                open_world_hint: Some(false),
+            }),
         ]
     }
 
@@ -289,24 +403,43 @@ impl DictionaryClient {
         })
     }
 
-    fn person_named_term_in_messages(messages: &[Message], term: &str) -> bool {
-        // Tool results are stored with the user role, and so are rows only the model
-        // reads (hook context, post-edit diagnostics, loop warnings, nudges, compaction
-        // summaries), which can echo text from files or the web. The person's latest
-        // message is the newest user message the person can see that carries no tool
-        // result, and the offer it answers is the newest message before it that the
-        // person can see.
-        let Some((index, latest)) = messages.iter().enumerate().rev().find(|(_, message)| {
+    /// The person's latest message and its position. Tool results are stored with the user
+    /// role, and so are rows only the model reads (hook context, post-edit diagnostics,
+    /// loop warnings, nudges, compaction summaries), which can echo text from files or the
+    /// web. The person's latest message is the newest user message the person can see that
+    /// carries no tool result.
+    fn latest_person_message(messages: &[Message]) -> Option<(usize, &Message)> {
+        messages.iter().enumerate().rev().find(|(_, message)| {
             message.role == Role::User && message.is_user_visible() && !message.is_tool_response()
-        }) else {
-            return false;
-        };
-        if latest.metadata.provenance.as_ref().is_some_and(|stamp| {
+        })
+    }
+
+    /// Whether another agent wrote `message` into this chat (`workspace_open` with a
+    /// prompt, `workspace_send_prompt`) or it is a subagent's spawn context, so it is not
+    /// the person's request.
+    fn written_by_an_agent(message: &Message) -> bool {
+        message.metadata.provenance.as_ref().is_some_and(|stamp| {
             matches!(
                 stamp.kind,
                 ProvenanceKind::AgentInjection | ProvenanceKind::SpawnContext
             )
-        }) {
+        })
+    }
+
+    /// Whether the chat's latest message was put there by another agent, which never
+    /// starts a history search (the person asks, an agent never does).
+    fn an_agent_wrote_the_latest_message(messages: &[Message]) -> bool {
+        Self::latest_person_message(messages)
+            .is_some_and(|(_, latest)| Self::written_by_an_agent(latest))
+    }
+
+    fn person_named_term_in_messages(messages: &[Message], term: &str) -> bool {
+        // The offer the person's latest message answers is the newest message before it
+        // that the person can see.
+        let Some((index, latest)) = Self::latest_person_message(messages) else {
+            return false;
+        };
+        if Self::written_by_an_agent(latest) {
             return false;
         }
         if Self::named_at_boundary(&latest.as_concat_text(), term) {
@@ -593,6 +726,136 @@ impl DictionaryClient {
         })?;
         Ok(json!({"removed":removed}))
     }
+
+    async fn search_dictations(&self, args: Value, meta: &McpMeta) -> Result<Value> {
+        self.search_dictations_in(&open_history(), args, meta).await
+    }
+
+    /// `search_dictations` over `history`. Arguments are checked first, then the session,
+    /// and only then is the store read. One visibility decision, on the admitted
+    /// capability, serves the cursor and the page, and it runs before the limit, so
+    /// entries this call may not see never use up its results.
+    async fn search_dictations_in(
+        &self,
+        history: &HistoryStore,
+        args: Value,
+        meta: &McpMeta,
+    ) -> Result<Value> {
+        let request = SearchRequest::from_args(serde_json::from_value(args)?)?;
+        let session = self.allowed_session(&meta.session_id).await?;
+        // ACP stdio keeps the capability for suggestions, and a client such as the Jupyter
+        // AI persona delivers other people's messages as user messages.
+        if crate::dictation::activation::process_surface()
+            == crate::dictation::activation::Surface::Acp
+        {
+            return Err(anyhow!(MSG_SEARCH_OVER_ACP));
+        }
+        if session.conversation.as_ref().is_some_and(|conversation| {
+            Self::an_agent_wrote_the_latest_message(conversation.messages())
+        }) {
+            return Err(anyhow!(MSG_SEARCH_NOT_ASKED));
+        }
+        let cap = meta.capability;
+        let visible = move |entry: &HistoryEntry| {
+            crate::dictation::history::agent_reads_dictation(entry, cap)
+        };
+        let cursor = request
+            .cursor
+            .map(|cursor| Self::resume_point(history, cursor, &visible));
+        let page = history
+            .search(
+                request.query.as_deref(),
+                request.window,
+                cursor.as_ref(),
+                request.limit,
+                &visible,
+            )
+            .map_err(|_| anyhow!(MSG_HISTORY_UNREADABLE))?;
+        if let Some(private) = page
+            .entries
+            .iter()
+            .find(|entry| entry.tier == EntryTier::Private)
+        {
+            self.ratchet_reader(&meta.session_id, cap, &private.id)
+                .await?;
+        }
+        Ok(Self::search_answer(&page, request.query.as_deref()))
+    }
+
+    /// Where a page after `cursor` starts. A cursor naming an entry this call may not see
+    /// is read as one naming no entry, so a made up cursor tells the caller nothing about
+    /// entries it cannot see.
+    fn resume_point(
+        history: &HistoryStore,
+        cursor: HistoryCursor,
+        visible: &dyn Fn(&HistoryEntry) -> bool,
+    ) -> HistoryCursor {
+        match history.get(&cursor.id) {
+            Ok(Some(entry)) if visible(&entry) => cursor,
+            _ => HistoryCursor {
+                at: cursor.at,
+                id: crate::dictation::history::store::new_entry_id(),
+            },
+        }
+    }
+
+    /// The reader ratchet (DR-33): a private dictation is about to reach this chat, so the
+    /// chat is private from now on, recorded before anything is returned. Only an enforced,
+    /// private capability can see a private entry, so only such a call is asked, and a
+    /// reader whose row is already private changes nothing. `Err` withholds the whole
+    /// answer, because a read this process cannot record is one it must not perform.
+    async fn ratchet_reader(
+        &self,
+        reader: &str,
+        cap: CallCapability,
+        entry_id: &str,
+    ) -> Result<()> {
+        if !cap.enforced() || !cap.tier().is_private() {
+            return Ok(());
+        }
+        if self
+            .sessions
+            .get_session(reader, false)
+            .await
+            .is_ok_and(|row| row.privacy_tier.is_private())
+        {
+            return Ok(());
+        }
+        crate::agents::extension_manager::raise_reader_privacy(
+            &self.sessions,
+            reader,
+            &format!("dictation:{entry_id}"),
+        )
+        .await
+        .map_err(|_| anyhow!(MSG_SEARCH_RATCHET_FAILED))
+    }
+
+    /// The answer: each entry's id, time, surface word, tier and an excerpt, and the next
+    /// page's cursor. No count, no institutions, no chat id.
+    fn search_answer(page: &HistoryPage, query: Option<&str>) -> Value {
+        let dictations = page
+            .entries
+            .iter()
+            .map(|entry| {
+                json!({
+                    "id": entry.id,
+                    "at": entry.created_at.to_rfc3339_opts(SecondsFormat::Secs, true),
+                    "where": entry.surface.as_str(),
+                    "tier": entry.tier.as_str(),
+                    "text": crate::agents::chatrecall_extension::excerpt_around(
+                        &entry.text,
+                        query.unwrap_or_default(),
+                        MAX_DICTATION_EXCERPT_CHARS,
+                        DICTATION_EXCERPT_HINT,
+                    ),
+                })
+            })
+            .collect::<Vec<_>>();
+        json!({
+            "dictations": dictations,
+            "next_cursor": page.next_cursor.as_ref().map(HistoryCursor::to_token),
+        })
+    }
 }
 
 #[async_trait]
@@ -625,6 +888,10 @@ impl McpClientTrait for DictionaryClient {
                 .map(|value| vec![Content::text(value.to_string())]),
             "remove_added_terms" => self
                 .remove_added_terms(args, &meta)
+                .await
+                .map(|value| vec![Content::text(value.to_string())]),
+            SEARCH_TOOL => self
+                .search_dictations(args, &meta)
                 .await
                 .map(|value| vec![Content::text(value.to_string())]),
             _ => Err(anyhow!("Unknown dictionary tool")),
@@ -2080,5 +2347,1101 @@ mod tests {
             );
         }
         assert_eq!(instructions, INSTRUCTIONS);
+    }
+
+    /// `dictionary__search_dictations` (DD-100): the dictation history, searched by a
+    /// person's own chat under the call's admitted capability.
+    mod dictation_search {
+        use super::*;
+        use crate::conversation::message::MessageProvenance;
+        use crate::dictation::history::{store as history_store, Surface};
+        use crate::privacy::{CallCapability, ModelAffiliation, SessionClassification};
+        use crate::session::SessionManager;
+
+        const EMPTY_ANSWER: &str = r#"{"dictations":[],"next_cursor":null}"#;
+
+        fn at(seconds: i64) -> DateTime<Utc> {
+            DateTime::from_timestamp(1_795_707_552 + seconds, 0).unwrap()
+        }
+
+        fn dictation(seconds: i64, text: &str, tier: EntryTier) -> HistoryEntry {
+            HistoryEntry {
+                id: history_store::new_entry_id(),
+                created_at: at(seconds),
+                text: text.to_string(),
+                tier,
+                institutions: None,
+                surface: Surface::Composer,
+                duration_ms: 1_000,
+                model: "whisper-small.en-q8_0".to_string(),
+                private_terms: false,
+                session_id: None,
+                session_incarnation: None,
+                truncated: None,
+            }
+        }
+
+        fn public_cap() -> CallCapability {
+            CallCapability::for_test(ProviderTier::Public, true)
+        }
+
+        fn private_cap() -> CallCapability {
+            CallCapability::for_test(ProviderTier::Private, true)
+        }
+
+        fn affiliated(name: &str) -> CallCapability {
+            CallCapability::for_test_affiliated(
+                ProviderTier::Private,
+                true,
+                Some(ModelAffiliation::institution(
+                    crate::privacy::affiliation::InstitutionId::new(name),
+                )),
+            )
+        }
+
+        /// One isolated session store, one isolated history, the extension under test and
+        /// a person's chat to search from. Nothing here resolves `Paths`, so these tests
+        /// share the test process.
+        struct Searcher {
+            _temp: tempfile::TempDir,
+            sessions: Arc<SessionManager>,
+            history: HistoryStore,
+            client: DictionaryClient,
+            chat: String,
+        }
+
+        impl Searcher {
+            async fn new() -> Self {
+                let temp = tempfile::TempDir::new().unwrap();
+                let sessions = Arc::new(SessionManager::new(temp.path().join("sessions")));
+                let history = HistoryStore::open(temp.path().join("history"));
+                let client = client_over(&sessions);
+                let chat = sessions
+                    .create_session(
+                        temp.path().to_path_buf(),
+                        "person".into(),
+                        SessionType::User,
+                    )
+                    .await
+                    .unwrap()
+                    .id;
+                Self {
+                    _temp: temp,
+                    sessions,
+                    history,
+                    client,
+                    chat,
+                }
+            }
+
+            fn seed(&self, entry: HistoryEntry) -> String {
+                let id = entry.id.clone();
+                self.history.append(entry).unwrap();
+                id
+            }
+
+            async fn search(&self, cap: CallCapability, args: Value) -> Result<Value> {
+                self.search_from(&self.chat, cap, args).await
+            }
+
+            async fn search_from(
+                &self,
+                chat: &str,
+                cap: CallCapability,
+                args: Value,
+            ) -> Result<Value> {
+                self.client
+                    .search_dictations_in(&self.history, args, &McpMeta::new(chat, cap))
+                    .await
+            }
+
+            async fn chat_of(&self, kind: SessionType, messages: &[Message]) -> String {
+                let session = self
+                    .sessions
+                    .create_session(self._temp.path().to_path_buf(), format!("{kind}"), kind)
+                    .await
+                    .unwrap();
+                for message in messages {
+                    self.sessions
+                        .add_message(&session.id, message)
+                        .await
+                        .unwrap();
+                }
+                session.id
+            }
+
+            async fn row(&self) -> crate::session::Session {
+                self.sessions.get_session(&self.chat, false).await.unwrap()
+            }
+        }
+
+        fn rows(answer: &Value) -> Vec<Value> {
+            answer["dictations"].as_array().unwrap().clone()
+        }
+
+        fn texts(answer: &Value) -> Vec<String> {
+            rows(answer)
+                .iter()
+                .map(|row| row["text"].as_str().unwrap().to_string())
+                .collect()
+        }
+
+        /// The filter runs before the limit: sixty private dictations newer than ten
+        /// public ones never use up a public chat's results, and paging walks the public
+        /// ones newest first with nothing private in any page.
+        #[tokio::test]
+        async fn a_public_chat_gets_its_full_quota_when_private_dictations_are_newer() {
+            let s = Searcher::new().await;
+            for i in 0..10 {
+                s.seed(dictation(
+                    i,
+                    &format!("EPAS1 public note {i}"),
+                    EntryTier::Public,
+                ));
+            }
+            for i in 0..60 {
+                s.seed(dictation(
+                    100 + i,
+                    &format!("EPAS1 PRIVATESENTINEL {i}"),
+                    EntryTier::Private,
+                ));
+            }
+
+            let answer = s
+                .search(public_cap(), json!({"query": "epas1", "limit": 10}))
+                .await
+                .unwrap();
+            let found = rows(&answer);
+            assert_eq!(found.len(), 10, "{answer}");
+            assert!(found.iter().all(|row| row["tier"] == "public"), "{answer}");
+            assert_eq!(found[0]["text"], "EPAS1 public note 9", "newest first");
+            assert_eq!(answer["next_cursor"], Value::Null, "{answer}");
+            assert!(!answer.to_string().contains("PRIVATESENTINEL"));
+            assert!(answer.get("total").is_none(), "no count is returned");
+
+            let mut seen = Vec::new();
+            let mut cursor = Value::Null;
+            for expected in [4, 4, 2] {
+                let mut args = json!({"query": "EPAS1", "limit": 4});
+                if let Some(token) = cursor.as_str() {
+                    args["cursor"] = json!(token);
+                }
+                let page = s.search(public_cap(), args).await.unwrap();
+                assert_eq!(rows(&page).len(), expected, "{page}");
+                assert!(!page.to_string().contains("PRIVATESENTINEL"), "{page}");
+                seen.extend(texts(&page));
+                cursor = page["next_cursor"].clone();
+            }
+            assert_eq!(cursor, Value::Null, "the last page has no cursor");
+            let expected: Vec<String> = (0..10)
+                .rev()
+                .map(|i| format!("EPAS1 public note {i}"))
+                .collect();
+            assert_eq!(seen, expected);
+        }
+
+        /// P-6: an empty answer is the same, byte for byte, whether nothing matched or
+        /// every match was withheld, and whether the history exists at all.
+        #[tokio::test]
+        async fn an_empty_answer_says_nothing_about_withheld_dictations() {
+            let withheld = Searcher::new().await;
+            withheld.seed(dictation(0, "EPAS1 PRIVATESENTINEL", EntryTier::Private));
+            withheld.seed(dictation(1, "HIF2A in the clinic", EntryTier::Private));
+            let unmatched = Searcher::new().await;
+            unmatched.seed(dictation(0, "HIF2A in the clinic", EntryTier::Public));
+            let empty = Searcher::new().await;
+
+            let mut answers = Vec::new();
+            for searcher in [&withheld, &unmatched, &empty] {
+                let answer = searcher
+                    .search(public_cap(), json!({"query": "EPAS1"}))
+                    .await
+                    .unwrap();
+                answers.push(answer.to_string());
+            }
+            for answer in &answers {
+                assert_eq!(answer, EMPTY_ANSWER);
+            }
+            // Without a query too: withheld entries leave no trace in an empty page.
+            let listed = withheld.search(public_cap(), json!({})).await.unwrap();
+            assert_eq!(listed.to_string(), EMPTY_ANSWER);
+            assert!(
+                !withheld.row().await.privacy_tier.is_private(),
+                "nothing was returned, so nothing ratcheted"
+            );
+        }
+
+        /// A private chat sees both tiers, each private dictation also passing its
+        /// institutions under P-16: one from Stanford's model only reaches a model every
+        /// listed institution admits, here Stanford's or one on this computer.
+        #[tokio::test]
+        async fn a_private_chat_sees_both_tiers() {
+            let s = Searcher::new().await;
+            s.seed(dictation(0, "EPAS1 PUBLICSENTINEL", EntryTier::Public));
+            s.seed(dictation(1, "EPAS1 PRIVATESENTINEL", EntryTier::Private));
+            let mut stanford_only = dictation(2, "EPAS1 STANFORDSENTINEL", EntryTier::Private);
+            stanford_only.institutions = Some(vec!["stanford".to_string()]);
+            s.seed(stanford_only);
+
+            let both = s
+                .search(private_cap(), json!({"query": "EPAS1"}))
+                .await
+                .unwrap()
+                .to_string();
+            for sentinel in ["PUBLICSENTINEL", "PRIVATESENTINEL", "STANFORDSENTINEL"] {
+                assert!(both.contains(sentinel), "{sentinel}: {both}");
+            }
+            let ucsf = s
+                .search(affiliated("ucsf"), json!({"query": "EPAS1"}))
+                .await
+                .unwrap()
+                .to_string();
+            assert!(ucsf.contains("PUBLICSENTINEL") && ucsf.contains("PRIVATESENTINEL"));
+            assert!(
+                !ucsf.contains("STANFORDSENTINEL"),
+                "a Stanford dictation reached a UCSF model: {ucsf}"
+            );
+            let stanford = s
+                .search(affiliated("stanford"), json!({"query": "EPAS1"}))
+                .await
+                .unwrap()
+                .to_string();
+            assert!(stanford.contains("STANFORDSENTINEL"), "{stanford}");
+            let public = s
+                .search(public_cap(), json!({"query": "EPAS1"}))
+                .await
+                .unwrap()
+                .to_string();
+            assert!(public.contains("PUBLICSENTINEL"));
+            assert!(!public.contains("PRIVATESENTINEL") && !public.contains("STANFORDSENTINEL"));
+        }
+
+        /// DR-33: a private dictation handed to a private chat whose row is still Public
+        /// ratchets the row first, with the dictation's id as the reason.
+        #[tokio::test]
+        async fn a_private_dictation_ratchets_a_public_reader_before_it_is_returned() {
+            let s = Searcher::new().await;
+            // Appended in time order, as the daemon records them.
+            s.seed(dictation(0, "EPAS1 PUBLICSENTINEL", EntryTier::Public));
+            s.seed(dictation(1, "EPAS1 older private", EntryTier::Private));
+            let first_private = s.seed(dictation(2, "EPAS1 PRIVATESENTINEL", EntryTier::Private));
+            assert!(!s.row().await.privacy_tier.is_private(), "precondition");
+
+            let answer = s
+                .search(private_cap(), json!({"query": "EPAS1"}))
+                .await
+                .unwrap();
+            assert!(answer.to_string().contains("PRIVATESENTINEL"));
+            let row = s.row().await;
+            assert_eq!(row.privacy_tier, SessionClassification::Private);
+            assert_eq!(
+                row.privacy_reason.as_deref(),
+                Some(format!("dictation:{first_private}").as_str()),
+                "the reason names the first private dictation returned"
+            );
+        }
+
+        /// The reader keeps its tier when no private dictation is returned: a private
+        /// capability whose page holds only public ones, a public capability, and any
+        /// capability sampled with the master switch off (AR-7), which sees every entry.
+        #[tokio::test]
+        async fn the_reader_keeps_its_tier_when_no_private_dictation_reaches_a_private_capability()
+        {
+            for (case, cap, query, sees_private) in [
+                (
+                    "private, public results only",
+                    private_cap(),
+                    "PUBLICSENTINEL",
+                    false,
+                ),
+                ("public", public_cap(), "EPAS1", false),
+                (
+                    "public, switch off",
+                    CallCapability::for_test(ProviderTier::Public, false),
+                    "EPAS1",
+                    true,
+                ),
+                (
+                    "private, switch off",
+                    CallCapability::for_test(ProviderTier::Private, false),
+                    "EPAS1",
+                    true,
+                ),
+            ] {
+                let s = Searcher::new().await;
+                s.seed(dictation(0, "EPAS1 PUBLICSENTINEL", EntryTier::Public));
+                s.seed(dictation(1, "EPAS1 PRIVATESENTINEL", EntryTier::Private));
+                let answer = s.search(cap, json!({"query": query})).await.unwrap();
+                assert!(answer.to_string().contains("PUBLICSENTINEL"), "{case}");
+                assert_eq!(
+                    answer.to_string().contains("PRIVATESENTINEL"),
+                    sees_private,
+                    "{case}: {answer}"
+                );
+                let row = s.row().await;
+                assert_eq!(row.privacy_tier, SessionClassification::Public, "{case}");
+                assert_eq!(row.privacy_reason, None, "{case}");
+            }
+        }
+
+        /// A read this process cannot record is one it must not perform: when the ratchet's
+        /// write fails, the answer is the refusal and no dictation text.
+        #[tokio::test]
+        async fn a_failed_ratchet_returns_nothing() {
+            let s = Searcher::new().await;
+            s.seed(dictation(0, "EPAS1 PUBLICSENTINEL", EntryTier::Public));
+            s.seed(dictation(1, "EPAS1 PRIVATESENTINEL", EntryTier::Private));
+            let pool = s.sessions.storage().pool().await.unwrap();
+            sqlx::query(&format!(
+                "CREATE TRIGGER dictation_ratchet_fault BEFORE UPDATE ON sessions \
+                 WHEN NEW.id = '{}' BEGIN SELECT RAISE(ABORT, 'injected fault'); END",
+                s.chat
+            ))
+            .execute(pool)
+            .await
+            .unwrap();
+
+            let refused = s
+                .search(private_cap(), json!({"query": "EPAS1"}))
+                .await
+                .unwrap_err()
+                .to_string();
+            assert_eq!(refused, MSG_SEARCH_RATCHET_FAILED);
+            assert!(!refused.contains("SENTINEL"));
+            assert!(!s.row().await.privacy_tier.is_private());
+            // The control: the same store answers a call that needs no ratchet, so the
+            // refusal above came from the failed write.
+            let public = s
+                .search(public_cap(), json!({"query": "EPAS1"}))
+                .await
+                .unwrap()
+                .to_string();
+            assert!(public.contains("PUBLICSENTINEL") && !public.contains("PRIVATESENTINEL"));
+        }
+
+        /// The schema refuses `tier`, `include_private` and every unknown field, and the
+        /// bounds are checked, before the session or the store is read: a fresh handle on
+        /// a history full of entries has parsed nothing after every refusal.
+        #[tokio::test]
+        async fn the_schema_refuses_a_tier_or_any_unknown_field_before_the_store_is_read() {
+            let s = Searcher::new().await;
+            s.seed(dictation(0, "EPAS1 PRIVATESENTINEL", EntryTier::Private));
+            let fresh = HistoryStore::open(s.history.dir());
+            let ask = |args: Value, chat: &str| {
+                let meta = McpMeta::new(chat, private_cap());
+                let client = &s.client;
+                let fresh = &fresh;
+                async move { client.search_dictations_in(fresh, args, &meta).await }
+            };
+            for args in [
+                json!({"tier": "private"}),
+                json!({"include_private": true}),
+                json!({"query": "EPAS1", "tier": "public"}),
+                json!({"query": "EPAS1", "session_id": "anything"}),
+            ] {
+                for chat in [s.chat.as_str(), "no-such-chat"] {
+                    let refused = ask(args.clone(), chat).await.unwrap_err().to_string();
+                    assert!(refused.contains("unknown field"), "{args}: {refused}");
+                }
+            }
+            for (args, sentence) in [
+                (json!({"limit": 0}), MSG_SEARCH_LIMIT),
+                (json!({"limit": 51}), MSG_SEARCH_LIMIT),
+                (json!({"limit": -1}), MSG_SEARCH_LIMIT),
+                (json!({"query": ""}), MSG_SEARCH_QUERY),
+                (json!({"query": "x".repeat(201)}), MSG_SEARCH_QUERY),
+                (json!({"after": "yesterday"}), MSG_SEARCH_TIMES),
+                (json!({"before": "2026-11-26"}), MSG_SEARCH_TIMES),
+                (json!({"cursor": "not a cursor"}), MSG_SEARCH_CURSOR),
+            ] {
+                let refused = ask(args.clone(), "no-such-chat")
+                    .await
+                    .unwrap_err()
+                    .to_string();
+                assert_eq!(refused, sentence, "{args}");
+            }
+            assert_eq!(fresh.parses(), 0, "a refused call read the history");
+            // The instrument can fail: an accepted call parses the file once.
+            ask(json!({"query": "EPAS1", "limit": 50}), &s.chat)
+                .await
+                .unwrap();
+            assert_eq!(fresh.parses(), 1);
+        }
+
+        /// The advertised schema matches what the tool accepts.
+        #[test]
+        fn the_advertised_search_schema_is_closed_and_bounded() {
+            let tool = DictionaryClient::tools()
+                .into_iter()
+                .find(|tool| tool.name.as_ref() == SEARCH_TOOL)
+                .unwrap();
+            let schema = serde_json::to_value(&tool.input_schema).unwrap();
+            assert_eq!(schema["additionalProperties"], false);
+            let mut properties = schema["properties"]
+                .as_object()
+                .unwrap()
+                .keys()
+                .cloned()
+                .collect::<Vec<_>>();
+            properties.sort();
+            assert_eq!(properties, ["after", "before", "cursor", "limit", "query"]);
+            assert_eq!(schema["properties"]["limit"]["minimum"], 1);
+            assert_eq!(schema["properties"]["limit"]["maximum"], 50);
+            assert_eq!(schema["properties"]["query"]["maxLength"], 200);
+            let annotations = tool.annotations.expect("the search is annotated");
+            assert_eq!(annotations.read_only_hint, Some(true));
+            assert_eq!(annotations.destructive_hint, Some(false));
+            assert!(INSTRUCTIONS.contains(
+                "Use dictionary__search_dictations only when the person asks about something they dictated."
+            ));
+        }
+
+        /// The session checks: a person's own chat only. SubAgent, Scheduled, Hidden and
+        /// Terminal sessions and a Crew scoped chat are refused in the tool itself, which
+        /// is what holds on the doors that skip the agent loop.
+        #[tokio::test]
+        async fn the_search_answers_only_in_a_persons_own_chat() {
+            let s = Searcher::new().await;
+            s.seed(dictation(0, "EPAS1 PUBLICSENTINEL", EntryTier::Public));
+            for kind in [
+                SessionType::SubAgent,
+                SessionType::Scheduled,
+                SessionType::Hidden,
+                SessionType::Terminal,
+            ] {
+                let other = s.chat_of(kind, &[]).await;
+                let refused = s
+                    .search_from(&other, public_cap(), json!({"query": "EPAS1"}))
+                    .await
+                    .unwrap_err()
+                    .to_string();
+                assert_eq!(
+                    refused, "The Dictionary capability is unavailable in this session.",
+                    "{kind}"
+                );
+            }
+            let crew_chat = s.chat_of(SessionType::User, &[]).await;
+            let crew = crate::crew::install_test_scope(&crew_chat, None).await;
+            let scoped = s
+                .search_from(&crew_chat, public_cap(), json!({"query": "EPAS1"}))
+                .await;
+            crate::crew::remove_test_scope(&crew, &crew_chat).await;
+            assert_eq!(
+                scoped.unwrap_err().to_string(),
+                "The Dictionary capability is unavailable in a Crew scoped chat."
+            );
+            let unscoped = s
+                .search_from(&crew_chat, public_cap(), json!({"query": "EPAS1"}))
+                .await
+                .unwrap();
+            assert!(
+                unscoped.to_string().contains("PUBLICSENTINEL"),
+                "the same chat without its scope searches, so the scope refused it"
+            );
+        }
+
+        /// The person asks, an agent never does: a chat whose latest message another agent
+        /// wrote (a workspace prompt or a spawn's context) is refused, and the same text
+        /// from the person is answered, also after a tool result in the same turn.
+        #[tokio::test]
+        async fn an_agents_prompt_never_starts_a_history_search() {
+            let s = Searcher::new().await;
+            s.seed(dictation(0, "EPAS1 PUBLICSENTINEL", EntryTier::Public));
+            let from = |kind| MessageProvenance {
+                kind,
+                from_session_id: Some("caller".to_string()),
+                from_session_name: Some("Caller".to_string()),
+            };
+            for kind in [ProvenanceKind::AgentInjection, ProvenanceKind::SpawnContext] {
+                let injected = s
+                    .chat_of(
+                        SessionType::User,
+                        &[
+                            Message::user().with_text("Hello"),
+                            Message::assistant().with_text("Hi."),
+                            Message::user()
+                                .with_text("Find what I dictated about EPAS1")
+                                .with_provenance(from(kind)),
+                        ],
+                    )
+                    .await;
+                let refused = s
+                    .search_from(&injected, public_cap(), json!({"query": "EPAS1"}))
+                    .await
+                    .unwrap_err()
+                    .to_string();
+                assert_eq!(refused, MSG_SEARCH_NOT_ASKED, "{kind:?}");
+            }
+            let asked = s
+                .chat_of(
+                    SessionType::User,
+                    &[
+                        Message::user()
+                            .with_text("Earlier prompt")
+                            .with_provenance(from(ProvenanceKind::AgentInjection)),
+                        Message::assistant().with_text("Done."),
+                        Message::user().with_text("Find what I dictated about EPAS1"),
+                        Message::assistant().with_tool_request(
+                            "a",
+                            Ok(rmcp::model::CallToolRequestParams {
+                                task: None,
+                                name: "dictionary__list_terms".into(),
+                                arguments: Some(rmcp::object!({})),
+                                meta: None,
+                            }),
+                        ),
+                        Message::user().with_tool_response(
+                            "a",
+                            Ok(rmcp::model::CallToolResult::success(vec![
+                                rmcp::model::Content::text("[]"),
+                            ])),
+                        ),
+                    ],
+                )
+                .await;
+            let answer = s
+                .search_from(&asked, public_cap(), json!({"query": "EPAS1"}))
+                .await
+                .unwrap();
+            assert!(answer.to_string().contains("PUBLICSENTINEL"));
+        }
+
+        /// ACP stdio keeps the capability for suggestions, and a client such as the
+        /// Jupyter AI persona relays other people's messages, so no ACP process searches
+        /// the history. Its own process, because the surface is process-wide and sticky.
+        #[tokio::test]
+        async fn an_acp_process_never_searches_the_history() {
+            if !crate::test_sandbox::in_a_process_of_its_own() {
+                return;
+            }
+            let s = Searcher::new().await;
+            s.seed(dictation(0, "EPAS1 PUBLICSENTINEL", EntryTier::Public));
+            assert!(s
+                .search(public_cap(), json!({"query": "EPAS1"}))
+                .await
+                .is_ok());
+            crate::dictation::activation::set_process_surface(
+                crate::dictation::activation::Surface::Acp,
+            );
+            let refused = s
+                .search(private_cap(), json!({"query": "EPAS1"}))
+                .await
+                .unwrap_err()
+                .to_string();
+            assert_eq!(refused, MSG_SEARCH_OVER_ACP);
+        }
+
+        /// `after` and `before` are inclusive instants.
+        #[tokio::test]
+        async fn the_time_window_is_inclusive_at_both_ends() {
+            let s = Searcher::new().await;
+            for seconds in [0, 10, 20] {
+                s.seed(dictation(
+                    seconds,
+                    &format!("note at {seconds}"),
+                    EntryTier::Public,
+                ));
+            }
+            let stamp = |seconds: i64| at(seconds).to_rfc3339_opts(SecondsFormat::Secs, true);
+            let window = |after: Option<String>, before: Option<String>| {
+                let mut args = json!({});
+                if let Some(after) = after {
+                    args["after"] = json!(after);
+                }
+                if let Some(before) = before {
+                    args["before"] = json!(before);
+                }
+                args
+            };
+            let only_ten = s
+                .search(public_cap(), window(Some(stamp(10)), Some(stamp(10))))
+                .await
+                .unwrap();
+            assert_eq!(texts(&only_ten), ["note at 10"]);
+            let fraction = |seconds: i64| {
+                (at(seconds) + chrono::Duration::milliseconds(500))
+                    .to_rfc3339_opts(SecondsFormat::Millis, true)
+            };
+            let after_half = s
+                .search(public_cap(), window(Some(fraction(10)), None))
+                .await
+                .unwrap();
+            assert_eq!(texts(&after_half), ["note at 20"]);
+            let before_half = s
+                .search(public_cap(), window(None, Some(fraction(10))))
+                .await
+                .unwrap();
+            assert_eq!(texts(&before_half), ["note at 10", "note at 0"]);
+            assert_eq!(
+                s.search(public_cap(), window(Some(stamp(20)), Some(stamp(0))))
+                    .await
+                    .unwrap()
+                    .to_string(),
+                EMPTY_ANSWER
+            );
+        }
+
+        /// Each row is the id, time, surface word, tier and an excerpt: no chat id, no
+        /// institutions, no model, no count.
+        #[tokio::test]
+        async fn a_row_names_where_and_when_and_nothing_else() {
+            let s = Searcher::new().await;
+            let mut entry = dictation(5, "EPAS1 typed elsewhere", EntryTier::Private);
+            entry.surface = Surface::OtherApp;
+            entry.session_id = Some("20261126_7".to_string());
+            entry.session_incarnation = Some(3);
+            entry.institutions = Some(vec!["ucsf".to_string()]);
+            let id = s.seed(entry);
+            let answer = s
+                .search(affiliated("ucsf"), json!({"query": "EPAS1"}))
+                .await
+                .unwrap();
+            let found = rows(&answer);
+            assert_eq!(found.len(), 1);
+            let mut keys = found[0]
+                .as_object()
+                .unwrap()
+                .keys()
+                .cloned()
+                .collect::<Vec<_>>();
+            keys.sort();
+            assert_eq!(keys, ["at", "id", "text", "tier", "where"]);
+            assert_eq!(found[0]["id"], id.as_str());
+            assert_eq!(found[0]["at"], stamp_of(5));
+            assert_eq!(found[0]["where"], "other_app");
+            assert_eq!(found[0]["tier"], "private");
+            let text = answer.to_string();
+            for absent in ["20261126_7", "ucsf", "whisper", "total"] {
+                assert!(!text.contains(absent), "{absent}: {text}");
+            }
+        }
+
+        fn stamp_of(seconds: i64) -> String {
+            at(seconds).to_rfc3339_opts(SecondsFormat::Secs, true)
+        }
+
+        /// A long dictation is clipped to 1,200 characters around the first match, with a
+        /// marker on each side that was cut; without a query it is clipped from the start.
+        #[tokio::test]
+        async fn a_long_dictation_is_clipped_around_the_first_match() {
+            let s = Searcher::new().await;
+            let text = format!("{} EPAS1 {}", "a".repeat(2_000), "b".repeat(2_000));
+            s.seed(dictation(0, &text, EntryTier::Public));
+            let matched = texts(
+                &s.search(public_cap(), json!({"query": "epas1"}))
+                    .await
+                    .unwrap(),
+            )
+            .remove(0);
+            assert!(matched.contains("EPAS1"), "the excerpt shows the match");
+            assert!(matched.starts_with("…[earlier text not shown] "));
+            assert!(matched.ends_with(&format!("… [truncated; {DICTATION_EXCERPT_HINT}]")));
+            let shown = matched
+                .trim_start_matches("…[earlier text not shown] ")
+                .trim_end_matches(&format!("… [truncated; {DICTATION_EXCERPT_HINT}]"));
+            assert_eq!(shown.chars().count(), MAX_DICTATION_EXCERPT_CHARS);
+            let listed = texts(&s.search(public_cap(), json!({})).await.unwrap()).remove(0);
+            assert!(listed.starts_with("aaaa") && !listed.contains("EPAS1"));
+            assert!(listed.ends_with(&format!("… [truncated; {DICTATION_EXCERPT_HINT}]")));
+        }
+
+        /// A cursor naming a dictation the caller may not see reads as one naming none, so
+        /// a made up cursor tells a public chat nothing; a private chat, which may see it,
+        /// resumes right after it.
+        #[tokio::test]
+        async fn a_cursor_naming_a_withheld_dictation_reads_as_one_naming_none() {
+            let s = Searcher::new().await;
+            s.seed(dictation(9, "older public", EntryTier::Public));
+            s.seed(dictation(10, "same second public", EntryTier::Public));
+            let hidden = s.seed(dictation(10, "PRIVATESENTINEL", EntryTier::Private));
+            let token = |id: &str| format!("{}:{id}", at(10).timestamp());
+            let public_named = s
+                .search(public_cap(), json!({"cursor": token(&hidden)}))
+                .await
+                .unwrap();
+            let public_unknown = s
+                .search(
+                    public_cap(),
+                    json!({"cursor": token(&history_store::new_entry_id())}),
+                )
+                .await
+                .unwrap();
+            assert_eq!(public_named, public_unknown);
+            assert_eq!(texts(&public_named), ["older public"]);
+            let private_named = s
+                .search(private_cap(), json!({"cursor": token(&hidden)}))
+                .await
+                .unwrap();
+            assert_eq!(
+                texts(&private_named),
+                ["same second public", "older public"]
+            );
+        }
+
+        /// Managed policy denies the search in the agent loop under `enabled: false`,
+        /// `dictionary: false` and `history: false`, and `history: false` leaves the other
+        /// dictionary tools alone.
+        #[tokio::test]
+        async fn managed_policy_denies_the_search_in_the_loop() {
+            use crate::managed::{ManagedPolicy, ManagedPolicyFile};
+            use crate::permission::managed_inspector::{
+                ManagedPolicyInspector, MANAGED_DENY_REASON,
+            };
+            use crate::tool_inspection::{InspectionAction, ToolInspector};
+            let request = |name: &str| crate::conversation::message::ToolRequest {
+                id: name.to_string(),
+                tool_call: Ok(rmcp::model::CallToolRequestParams {
+                    task: None,
+                    name: name.to_string().into(),
+                    arguments: Some(rmcp::object!({"query": "EPAS1"})),
+                    meta: None,
+                }),
+                metadata: None,
+                tool_meta: None,
+            };
+            let denied = |yaml: &str, name: &str| {
+                let file: ManagedPolicyFile = serde_yaml::from_str(yaml).unwrap();
+                let inspector =
+                    ManagedPolicyInspector::new(Arc::new(ManagedPolicy::from_file(file)));
+                let name = name.to_string();
+                async move {
+                    let results = inspector
+                        .inspect(
+                            &[request(&name)],
+                            &[],
+                            crate::config::BioRouterMode::Auto,
+                            &crate::session::Session::default(),
+                        )
+                        .await
+                        .unwrap();
+                    results.iter().any(|result| {
+                        result.action == InspectionAction::Deny
+                            && result.reason == MANAGED_DENY_REASON
+                    })
+                }
+            };
+            let search = crate::dictation::history::SEARCH_DICTATIONS_TOOL;
+            assert_eq!(search, format!("{EXTENSION_NAME}__{SEARCH_TOOL}"));
+            for yaml in [
+                "dictation:\n  enabled: false\n",
+                "dictation:\n  dictionary: false\n",
+                "dictation:\n  history: false\n",
+            ] {
+                assert!(denied(yaml, search).await, "{yaml:?}");
+            }
+            assert!(
+                !denied("dictation:\n  history: false\n", "dictionary__list_terms").await,
+                "history: false denies only the history search"
+            );
+            assert!(!denied("dictation:\n  capture: false\n", search).await);
+        }
+
+        /// The history's folder is refused to tools in the agent loop for both tiers: a
+        /// shell `cat` of `history.jsonl` from a public chat and from a private one.
+        #[tokio::test]
+        async fn a_shell_read_of_the_history_file_is_refused_in_both_tiers() {
+            use crate::agents::agent::{Agent, AgentConfig};
+            use crate::tool_inspection::InspectionAction;
+            let temp = tempfile::TempDir::new().unwrap();
+            let sessions = Arc::new(SessionManager::new(temp.path().join("sessions")));
+            let agent = Agent::with_config(AgentConfig::new(
+                Arc::clone(&sessions),
+                Arc::new(crate::config::permission::PermissionManager::new(
+                    temp.path().to_path_buf(),
+                )),
+                None,
+                crate::config::BioRouterMode::Auto,
+            ));
+            let file = crate::dictation::history::history_dir().join("history.jsonl");
+            let request = crate::conversation::message::ToolRequest {
+                id: "cat-history".to_string(),
+                tool_call: Ok(rmcp::model::CallToolRequestParams {
+                    task: None,
+                    name: "developer__shell".into(),
+                    arguments: Some(rmcp::object!({"command": format!("cat {}", file.display())})),
+                    meta: None,
+                }),
+                metadata: None,
+                tool_meta: None,
+            };
+            for (tier, cap) in [
+                (SessionClassification::Public, public_cap()),
+                (SessionClassification::Private, private_cap()),
+            ] {
+                let chat = sessions
+                    .create_session(
+                        temp.path().to_path_buf(),
+                        "reader".into(),
+                        SessionType::User,
+                    )
+                    .await
+                    .unwrap();
+                if tier == SessionClassification::Private {
+                    sessions
+                        .update(&chat.id)
+                        .raise_privacy(SessionClassification::Private, "turn:test")
+                        .apply()
+                        .await
+                        .unwrap();
+                }
+                let chat = sessions.get_session(&chat.id, false).await.unwrap();
+                let results = agent
+                    .tool_inspection_manager
+                    .inspect_tools_with_capability(
+                        std::slice::from_ref(&request),
+                        &[],
+                        crate::config::BioRouterMode::Auto,
+                        &chat,
+                        Some(cap),
+                    )
+                    .await
+                    .unwrap();
+                let refusal = results
+                    .iter()
+                    .find(|result| {
+                        result.inspector_name
+                            == crate::security::dictionary_store::DICTIONARY_STORE_INSPECTOR_NAME
+                    })
+                    .unwrap_or_else(|| panic!("{tier:?}: the history was read: {results:?}"));
+                assert_eq!(refusal.action, InspectionAction::Deny, "{tier:?}");
+                assert!(
+                    refusal.reason.contains("dictation history"),
+                    "{}",
+                    refusal.reason
+                );
+            }
+        }
+
+        /// The tool reads only the capability it is handed: its production text never
+        /// re-reads the master switch or samples the provider slot. The needles are
+        /// assembled so this test's own text is not a match.
+        #[test]
+        fn the_search_reads_only_the_admitted_capability() {
+            let source = include_str!("dictionary_extension.rs");
+            let production = source
+                .split_once(concat!("#[cfg(test)]\n", "mod tests {"))
+                .map_or(source, |(before, _)| before);
+            for needle in [
+                concat!("privacy_tiers", "_enabled"),
+                concat!("CallCapability::", "sample"),
+                concat!("public_", "enforced("),
+            ] {
+                assert!(
+                    !production.contains(needle),
+                    "dictionary_extension.rs must not spell {needle}"
+                );
+            }
+        }
+
+        // ─────────── Through the real dispatch ───────────
+
+        /// A provider whose only interesting property is its tier. No test here runs a
+        /// turn.
+        struct TierProvider(ProviderTier);
+
+        #[async_trait]
+        impl crate::providers::base::Provider for TierProvider {
+            fn metadata() -> crate::providers::base::ProviderMetadata {
+                crate::providers::base::ProviderMetadata::new(
+                    "tier",
+                    "Tier",
+                    "tier test provider",
+                    "m",
+                    vec!["m"],
+                    "",
+                    vec![],
+                )
+            }
+            fn get_name(&self) -> &str {
+                "tier-test-provider"
+            }
+            fn tier(&self) -> ProviderTier {
+                self.0
+            }
+            async fn complete_with_model(
+                &self,
+                _model_config: &crate::model::ModelConfig,
+                _system: &str,
+                _messages: &[Message],
+                _tools: &[Tool],
+            ) -> std::result::Result<
+                (Message, crate::providers::base::ProviderUsage),
+                crate::providers::errors::ProviderError,
+            > {
+                unreachable!("no test here runs a turn")
+            }
+            fn get_model_config(&self) -> crate::model::ModelConfig {
+                crate::model::ModelConfig::new_or_fail("m")
+            }
+        }
+
+        fn provider(tier: ProviderTier) -> Arc<dyn crate::providers::base::Provider> {
+            Arc::new(TierProvider(tier))
+        }
+
+        /// A real agent with the Dictionary capability on a public model, a person's chat,
+        /// and the process history (its own sandbox root) holding one dictation per tier.
+        async fn dispatch_fixture(
+            root: &std::path::Path,
+        ) -> (Arc<crate::agents::agent::Agent>, crate::session::Session) {
+            use crate::agents::agent::{Agent, AgentConfig};
+            let sessions = Arc::new(SessionManager::new(root.join("sessions")));
+            let agent = Arc::new(Agent::with_config(AgentConfig::new(
+                Arc::clone(&sessions),
+                Arc::new(crate::config::permission::PermissionManager::new(
+                    root.to_path_buf(),
+                )),
+                None,
+                crate::config::BioRouterMode::Auto,
+            )));
+            let target = crate::agents::extension_manager::resolve_bundled_extension("dictionary")
+                .expect("Dictionary is a bundled capability");
+            agent
+                .add_extension(target.into_config("dictation search dispatch".into()))
+                .await
+                .unwrap();
+            *agent.provider.lock().await = Some(provider(ProviderTier::Public));
+            let chat = sessions
+                .create_session(root.to_path_buf(), "person".into(), SessionType::User)
+                .await
+                .unwrap();
+            let history = open_history();
+            history
+                .append(dictation(0, "EPAS1 PUBLICSENTINEL", EntryTier::Public))
+                .unwrap();
+            history
+                .append(dictation(1, "EPAS1 PRIVATESENTINEL", EntryTier::Private))
+                .unwrap();
+            (agent, chat)
+        }
+
+        /// `Agent::dispatch_tool_call` samples the capability; the tool reads it.
+        async fn dispatch_search(
+            agent: &crate::agents::agent::Agent,
+            chat: &crate::session::Session,
+        ) -> std::result::Result<String, String> {
+            let (_, dispatched) = agent
+                .dispatch_tool_call(
+                    rmcp::model::CallToolRequestParams {
+                        meta: None,
+                        name: crate::dictation::history::SEARCH_DICTATIONS_TOOL.into(),
+                        arguments: Some(rmcp::object!({"query": "EPAS1"})),
+                        task: None,
+                    },
+                    "req".to_string(),
+                    None,
+                    chat,
+                )
+                .await;
+            let dispatched = dispatched.map_err(|error| error.message.to_string())?;
+            let result = dispatched
+                .result
+                .await
+                .map_err(|error| error.message.to_string())?;
+            Ok(result
+                .content
+                .iter()
+                .filter_map(|content| content.as_text().map(|text| text.text.clone()))
+                .collect::<Vec<_>>()
+                .join("\n"))
+        }
+
+        /// The capability is the one the call was admitted on: a call admitted Public,
+        /// parked past admission while the chat moves to a private model, still finds only
+        /// public dictations and ratchets nothing.
+        #[tokio::test]
+        async fn a_swap_after_admission_does_not_change_what_this_call_may_search() {
+            if !crate::test_sandbox::in_a_process_of_its_own() {
+                return;
+            }
+            let root = tempfile::TempDir::new().unwrap();
+            let _root = crate::test_sandbox::relocate_path_root(root.path().to_str().unwrap());
+            let (agent, chat) = dispatch_fixture(root.path()).await;
+
+            // Keyed on this chat and this tool, so only the dispatch below takes it.
+            let held = crate::agents::agent::seams::hold_dispatch_queue(
+                &chat.id,
+                crate::dictation::history::SEARCH_DICTATIONS_TOOL,
+            );
+            let call = tokio::spawn({
+                let agent = Arc::clone(&agent);
+                let chat = chat.clone();
+                async move { dispatch_search(&agent, &chat).await }
+            });
+            let release = tokio::time::timeout(std::time::Duration::from_secs(60), held)
+                .await
+                .expect("the search never reached the seam: the key or the hold point drifted")
+                .unwrap();
+            agent
+                .update_provider(provider(ProviderTier::Private), &chat.id)
+                .await
+                .unwrap();
+            release.send(()).unwrap();
+
+            let text = call.await.unwrap().unwrap();
+            assert!(text.contains("PUBLICSENTINEL"), "{text}");
+            assert!(
+                !text.contains("PRIVATESENTINEL"),
+                "a call admitted as public found a private dictation: {text}"
+            );
+            let row = agent
+                .config
+                .session_manager
+                .get_session(&chat.id, false)
+                .await
+                .unwrap();
+            assert!(!row.privacy_tier.is_private(), "a public search ratcheted");
+        }
+
+        /// A turn that started Public keeps its calls Public after a switch to a private
+        /// model (`no_wider_than`); once the turn's hold is gone, the same chat on the
+        /// private model finds both tiers and is ratcheted.
+        #[tokio::test]
+        async fn a_turn_that_started_public_on_a_private_slot_searches_public_dictations_only() {
+            if !crate::test_sandbox::in_a_process_of_its_own() {
+                return;
+            }
+            let root = tempfile::TempDir::new().unwrap();
+            let _root = crate::test_sandbox::relocate_path_root(root.path().to_str().unwrap());
+            let (agent, chat) = dispatch_fixture(root.path()).await;
+
+            let started_public = agent.call_capability(&chat.id).await;
+            assert_eq!(started_public.tier(), ProviderTier::Public);
+            let held = agent.turn_ceilings.open(&chat.id, started_public);
+            agent
+                .update_provider(provider(ProviderTier::Private), &chat.id)
+                .await
+                .unwrap();
+            let text = dispatch_search(&agent, &chat).await.unwrap();
+            assert!(text.contains("PUBLICSENTINEL"), "{text}");
+            assert!(
+                !text.contains("PRIVATESENTINEL"),
+                "a turn that started public found a private dictation: {text}"
+            );
+            let row = agent
+                .config
+                .session_manager
+                .get_session(&chat.id, false)
+                .await
+                .unwrap();
+            assert!(!row.privacy_tier.is_private());
+
+            drop(held);
+            let text = dispatch_search(&agent, &chat).await.unwrap();
+            assert!(
+                text.contains("PUBLICSENTINEL") && text.contains("PRIVATESENTINEL"),
+                "with no turn running, the private model finds both tiers: {text}"
+            );
+            let row = agent
+                .config
+                .session_manager
+                .get_session(&chat.id, false)
+                .await
+                .unwrap();
+            assert!(
+                row.privacy_tier.is_private(),
+                "the private read ratcheted the chat"
+            );
+        }
     }
 }

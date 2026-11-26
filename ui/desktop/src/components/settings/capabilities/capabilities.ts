@@ -113,7 +113,7 @@ export const CAPABILITIES: CapabilityMeta[] = [
   {
     key: 'dictionary',
     label: 'Dictionary',
-    description: 'Suggest words from chats and add the terms you ask for.',
+    description: 'Suggest words, add the terms you ask for, and find what you dictated.',
     // On by default (owner, 2026-11-19), as `PLATFORM_EXTENSIONS` has it; a saved choice
     // in `config.yaml` is the row's value whenever one exists.
     defaultEnabled: true,

@@ -189,9 +189,17 @@ fn render_load_parts(parts: &[String]) -> String {
 fn excerpt(content: &str, query: &str) -> String {
     const HINT: &str =
         "if Workspace Control offers workspace_read_conversation, use it for the full message";
+    excerpt_around(content, query, MAX_EXCERPT_CHARS, HINT)
+}
 
+/// `content` clipped to `max` characters around the first of `query`'s words it
+/// holds, with a marker on each side that was cut and `hint` naming where the rest
+/// can be read; a head clip when no word of `query` is found. Shared with the
+/// Dictionary's dictation search, which shows each dictation the way a search hit
+/// is shown here.
+pub(crate) fn excerpt_around(content: &str, query: &str, max: usize, hint: &str) -> String {
     let total = content.chars().count();
-    if total <= MAX_EXCERPT_CHARS {
+    if total <= max {
         return content.to_string();
     }
 
@@ -213,7 +221,7 @@ fn excerpt(content: &str, query: &str) -> String {
     let Some(byte_hit) = hit else {
         // Nothing to centre on (the match was in another part of the message, or
         // came from stemming). Head clip is the honest fallback.
-        return clip(content, MAX_EXCERPT_CHARS, HINT);
+        return clip(content, max, hint);
     };
 
     // Byte offset -> char offset, then back off half a window so the match sits
@@ -231,8 +239,8 @@ fn excerpt(content: &str, query: &str) -> String {
         .char_indices()
         .take_while(|(byte, _)| *byte < byte_hit)
         .count();
-    let start = char_hit.saturating_sub(MAX_EXCERPT_CHARS / 2);
-    let end = std::cmp::min(total, start + MAX_EXCERPT_CHARS);
+    let start = char_hit.saturating_sub(max / 2);
+    let end = std::cmp::min(total, start + max);
 
     let window: String = content.chars().skip(start).take(end - start).collect();
     let mut out = String::new();
@@ -241,14 +249,14 @@ fn excerpt(content: &str, query: &str) -> String {
     }
     out.push_str(&window);
     if end < total {
-        out.push_str(&format!("… [truncated; {HINT}]"));
+        out.push_str(&format!("… [truncated; {hint}]"));
     }
     out
 }
 
 /// Clip `content` to `max` CHARACTERS (never bytes — slicing by byte offset
 /// would panic mid-codepoint on any non-ASCII transcript).
-fn clip(content: &str, max: usize, hint: &str) -> String {
+pub(crate) fn clip(content: &str, max: usize, hint: &str) -> String {
     if content.chars().count() <= max {
         return content.to_string();
     }
