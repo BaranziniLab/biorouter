@@ -1843,6 +1843,34 @@
       "license": "Apache-2.0 AND MIT"
     },
     {
+      "id": "phi-deidentification",
+      "name": "PHI De-identification",
+      "category": "Core",
+      "type": "Auto-applied",
+      "description": "De-identify a clinical CSV, TSV or Excel table before analysis or sharing: a local script that makes no network calls checks it for the 18 HIPAA Safe Harbor identifiers and replaces, redacts or pseudonymizes what it finds. Text it cannot verify is redacted unless the person keeps the column, and the agent never reads the raw data. A person must spot-check the output before it leaves the institution. Adapted from the MIT-licensed deidentify skill in Aperivue/medsci-skills.",
+      "tags": [
+        "Clinical",
+        "Privacy",
+        "HIPAA"
+      ],
+      "keywords": [
+        "phi-deidentification",
+        "phi",
+        "deidentification",
+        "de-identification",
+        "hipaa",
+        "safe-harbor",
+        "anonymization",
+        "pseudonymization",
+        "privacy",
+        "clinical-data",
+        "ehr"
+      ],
+      "download": "https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-phi-deidentification/phi-deidentification.zip",
+      "filename": "phi-deidentification.zip",
+      "license": "Apache-2.0 AND MIT"
+    },
+    {
       "id": "python-visualization",
       "name": "Python Visualization",
       "category": "Core",
