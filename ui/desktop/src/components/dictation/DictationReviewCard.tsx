@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import { MainAppearanceThemeProvider } from '../../contexts/ThemeContext';
 import { PageHeader } from '../Layout/PageHeader';
 import { ReadableContent } from '../Layout/ReadableContent';
 import { Button } from '../ui/button';
@@ -11,7 +12,20 @@ function copyKey(): string {
   return window.electron?.platform === 'darwin' ? '⌘C' : 'Ctrl+C';
 }
 
+/**
+ * The Dictate to clipboard review card. Its window shows main's appearance (DD-99): the family
+ * and the mode the person chose in a chat window, followed live while the card is open, even
+ * when no chat window exists and this window's session holds no theme of its own.
+ */
 export default function DictationReviewCard() {
+  return (
+    <MainAppearanceThemeProvider>
+      <ReviewCard />
+    </MainAppearanceThemeProvider>
+  );
+}
+
+function ReviewCard() {
   const [text, setText] = useState('');
   const [message, setMessage] = useState('');
   const [confirmPrivate, setConfirmPrivate] = useState(false);

@@ -63,8 +63,8 @@ export type ThemeModeData = {
    */
   wellGround: string;
   /**
-   * Resolved literal values for the five semantic tokens a CSP-sandboxed
-   * surface has to inline.
+   * Resolved literal values for the semantic tokens a CSP-sandboxed surface
+   * has to inline.
    *
    * A `srcdoc` iframe under `default-src 'none'` cannot reach the app
    * stylesheet, so `var(--text-default)` is empty inside it. The notebook and
@@ -84,6 +84,21 @@ export type ThemeModeData = {
     card: string;
     /** --border-subtle — hairlines and table cell rules. */
     border: string;
+    /**
+     * The armed Send button's fill (--background-accent), a 6-digit hex: the
+     * dictation indicator's capsule (DD-99).
+     */
+    accent: string;
+    /**
+     * The ink on `accent`, Send's arrow (--text-on-accent), a 6-digit hex held
+     * to 4.5:1 against it: the indicator's bars and dot.
+     */
+    onAccent: string;
+    /**
+     * The floating surface's lift and hairline (--shadow-default), as one line
+     * of px lengths and rgba() colours: the indicator's edge on the desktop.
+     */
+    shadow: string;
   };
   /** Which token the terminal dock paints. Families genuinely differ. */
   terminalGround: string;
@@ -125,6 +140,9 @@ export const GENERATED_THEMES = {
         muted: '#635c54',
         card: '#ffffff',
         border: '#e4e4e0',
+        accent: '#b85a32',
+        onAccent: '#ffffff',
+        shadow: '0px 1px 3px 0px rgba(31, 30, 28, 0.07), 0px 0px 1px 0px rgba(31, 30, 28, 0.13)',
       },
       terminalGround: '--background-muted',
       terminal: {
@@ -173,6 +191,9 @@ export const GENERATED_THEMES = {
         muted: '#b0a892',
         card: '#1b1b19',
         border: '#302f2c',
+        accent: '#e8895f',
+        onAccent: '#16120c',
+        shadow: '0px 1px 3px 0px rgba(0, 0, 0, 0.25), 0px 0px 1px 0px rgba(0, 0, 0, 0.35)',
       },
       terminalGround: '--background-muted',
       terminal: {
@@ -226,6 +247,9 @@ export const GENERATED_THEMES = {
         muted: '#506380',
         card: '#ffffff',
         border: '#e4e4e0',
+        accent: '#14828c',
+        onAccent: '#ffffff',
+        shadow: '0px 1px 3px 0px rgba(31, 30, 28, 0.07), 0px 0px 1px 0px rgba(31, 30, 28, 0.13)',
       },
       terminalGround: '--background-muted',
       terminal: {
@@ -274,6 +298,9 @@ export const GENERATED_THEMES = {
         muted: '#b4b9bf',
         card: '#1b1b19',
         border: '#302f2c',
+        accent: '#60d0da',
+        onAccent: '#052049',
+        shadow: '0px 1px 3px 0px rgba(0, 0, 0, 0.25), 0px 0px 1px 0px rgba(0, 0, 0, 0.35)',
       },
       terminalGround: '--background-muted',
       terminal: {
@@ -327,6 +354,9 @@ export const GENERATED_THEMES = {
         muted: '#5c5a55',
         card: '#ffffff',
         border: '#e4e4e0',
+        accent: '#ee6c1a',
+        onAccent: '#1f1e1c',
+        shadow: '0px 1px 3px 0px rgba(31, 30, 28, 0.07), 0px 0px 1px 0px rgba(31, 30, 28, 0.13)',
       },
       terminalGround: '--background-muted',
       terminal: {
@@ -375,6 +405,9 @@ export const GENERATED_THEMES = {
         muted: '#a5a39d',
         card: '#1b1b19',
         border: '#302f2c',
+        accent: '#ee6c1a',
+        onAccent: '#131312',
+        shadow: '0px 1px 3px 0px rgba(0, 0, 0, 0.25), 0px 0px 1px 0px rgba(0, 0, 0, 0.35)',
       },
       terminalGround: '--background-muted',
       terminal: {
