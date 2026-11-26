@@ -29,6 +29,8 @@ const api = vi.hoisted(() => ({
   getDictionarySuggestionScan: vi.fn(),
   startDictionarySuggestionScan: vi.fn(),
   stopDictionarySuggestionScan: vi.fn(),
+  listDictationHistory: vi.fn(),
+  getDictationHistorySettings: vi.fn(),
 }));
 vi.mock('../../api', () => api);
 vi.mock('../../utils/userAction', () => ({
@@ -42,13 +44,16 @@ vi.mock('../ui/scroll-area', () => ({
 
 import DictionaryView from './DictionaryView';
 import { resetDictionaryStoreForTests } from './useDictionary';
+import { resetHistoryStoreForTests } from './useDictationHistory';
 import { resetSuggestionScanForTests } from './useSuggestionScan';
 
 let rows: DictionaryEntryView[] = [];
 
 beforeEach(() => {
   resetDictionaryStoreForTests();
+  resetHistoryStoreForTests();
   resetSuggestionScanForTests();
+  window.localStorage.clear();
   resetDictationStoreForTests(fakeStatusApi(() => speechStatus()).api);
   for (const fn of Object.values(api)) fn.mockReset();
   rows = [];
@@ -839,5 +844,50 @@ describe('the page holds the words alone', () => {
     await userEvent.click(screen.getByRole('button', { name: DICTIONARY_LABELS.pageMenu }));
     expect(await screen.findByTestId('dictionary-delete-all')).toBeInTheDocument();
     expect(screen.queryByTestId('dictionary-settings-link')).toBeNull();
+  });
+});
+
+describe('the band’s tabs (DD-96)', () => {
+  it('opens on Terms with its own band, and reads nothing of the history there', async () => {
+    rows = [entry({ written: 'EPAS1' })];
+    renderPage();
+    await screen.findByText('EPAS1');
+    expect(screen.getByRole('tab', { name: DICTIONARY_LABELS.tabs.terms })).toHaveAttribute(
+      'aria-selected',
+      'true'
+    );
+    expect(screen.getByRole('tab', { name: DICTIONARY_LABELS.tabs.history })).toHaveAttribute(
+      'aria-selected',
+      'false'
+    );
+    expect(screen.getByTestId('dictionary-add')).toHaveTextContent(DICTIONARY_LABELS.add);
+    expect(screen.getByRole('searchbox', { name: /Filter terms/ })).toBeInTheDocument();
+    expect(api.listDictationHistory).not.toHaveBeenCalled();
+    expect(api.getDictationHistorySettings).not.toHaveBeenCalled();
+  });
+
+  it('keeps the Terms filter and the Add menu out of the History band', async () => {
+    api.listDictationHistory.mockResolvedValue({
+      data: JSON.stringify({ entries: [], next_cursor: null, total: 0 }),
+      response: new Response('{}', { status: 200 }),
+    });
+    api.getDictationHistorySettings.mockResolvedValue(
+      answer(200, {
+        keep_history: true,
+        public_by_default: false,
+        authority: {
+          list_private: { allowed: true, reason: null },
+          write: { allowed: true, reason: null },
+          tier_change: { allowed: true, reason: null },
+          raise_settings: { allowed: true, reason: null },
+        },
+      })
+    );
+    renderPage();
+    await userEvent.click(screen.getByRole('tab', { name: DICTIONARY_LABELS.tabs.history }));
+    expect(await screen.findByTestId('history-tab')).toBeInTheDocument();
+    expect(screen.queryByTestId('dictionary-add')).toBeNull();
+    expect(screen.queryByRole('searchbox', { name: /Filter terms/ })).toBeNull();
+    expect(screen.getByRole('searchbox', { name: /Search dictations/ })).toBeInTheDocument();
   });
 });

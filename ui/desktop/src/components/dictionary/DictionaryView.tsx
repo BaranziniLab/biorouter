@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useLocation, useNavigate } from 'react-router-dom';
 import type { DictionaryEntryView } from '../../api';
 import { toastError, toastSuccess } from '../../toasts';
 import { savedFileParts } from '../../utils/exportConversation';
@@ -24,12 +24,22 @@ import { Note } from '../ui/note';
 import { RowActionMenuItems, type RowActionItem } from '../ui/row-actions';
 import { ScrollArea } from '../ui/scroll-area';
 import { Skeleton } from '../ui/skeleton';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '../ui/tabs';
 import AddTermsDialog, { type AddTermsSource } from './AddTermsDialog';
 import { DICTIONARY_EXPORT_FILE, DICTIONARY_LABELS, dictionaryMessage } from './copy';
 import DictionaryList from './DictionaryList';
 import type { DictionaryRowActions } from './DictionaryRow';
 import ReviewSuggestionsDialog from './ReviewSuggestionsDialog';
+import HistoryTab from './history/HistoryTab';
+import { historyPolicyOf } from './history/historyRows';
 import { useHoverHold } from './hoverHold';
+import {
+  DICTIONARY_BANDS,
+  dictionaryTabFromSearch,
+  initialDictionaryTab,
+  rememberDictionaryTab,
+  type DictionaryTab,
+} from './navigation';
 import { fileOverImportBytes } from './parseTermList';
 import { groupEntries, publicizeWarning, reviewRows, type SettledKind } from './rows';
 import TermDialog, { type TermDialogMode } from './TermDialog';
@@ -41,6 +51,7 @@ import {
   useDictionary,
   type Outcome,
 } from './useDictionary';
+import { useDictationHistory } from './useDictationHistory';
 import './dictionary.css';
 
 type Confirm =
@@ -89,11 +100,33 @@ async function copyTerm(entry: DictionaryEntryView): Promise<void> {
  * **Settings > Models > Speech models** (`DictionarySettingsRows`), which the band's quiet
  * **Dictionary settings** icon opens. When the person's own Keep and Dismiss counts show most
  * suggestions were dismissed, one note at the top of the list offers to turn suggestions off.
+ *
+ * Two underline tabs sit in the band (DD-96, `history-design.md` 10.1), with one `Tabs` root
+ * around the band and the content, as Knowledge's: **Terms** (all of the above) and **History**,
+ * the dictations kept on this computer (`history/HistoryTab.tsx`). Each tab has its own band
+ * (`DICTIONARY_BANDS`): History's holds **Search dictations** (⌘F, searched on the daemon),
+ * the quiet link to its settings and a `⋯` with **Clear history…**, and no primary. The tab a
+ * person chose is remembered, and `#/dictionary?tab=history` opens History directly.
  */
 export default function DictionaryView() {
   const dictionary = useDictionary();
   const navigate = useNavigate();
+  const location = useLocation();
   const { status } = useDictationStatus();
+  const [tab, setTab] = useState<DictionaryTab>(() => initialDictionaryTab(location.search));
+  // A link to `#/dictionary?tab=history` while the page is open moves it to that tab.
+  const routeTab = dictionaryTabFromSearch(location.search);
+  useEffect(() => {
+    if (routeTab) setTab(routeTab);
+  }, [routeTab]);
+  const chooseTab = (next: string) => {
+    if (next !== 'terms' && next !== 'history') return;
+    setTab(next);
+    rememberDictionaryTab(next);
+  };
+  const [historyQuery, setHistoryQuery] = useState('');
+  const [clearOpen, setClearOpen] = useState(false);
+  const history = useDictationHistory({ enabled: tab === 'history', query: historyQuery });
   const [query, setQuery] = useState('');
   const [termMode, setTermMode] = useState<TermDialogMode | null>(null);
   const [termKey, setTermKey] = useState(0);
@@ -278,7 +311,7 @@ export default function DictionaryView() {
         <DropdownMenuTrigger asChild>
           <Button variant={variant} data-testid="dictionary-add">
             <Plus aria-hidden />
-            {DICTIONARY_LABELS.add}
+            {DICTIONARY_BANDS.terms.primary}
           </Button>
         </DropdownMenuTrigger>
         <DropdownMenuContent align={variant === 'default' ? 'end' : 'center'}>
@@ -293,169 +326,288 @@ export default function DictionaryView() {
       ? (status?.policy.dictionary.reason ?? dictationMessage('MSG-POLICY'))
       : dictionary.error;
 
+  const band = DICTIONARY_BANDS[tab];
+  const historyPolicy = historyPolicyOf(status);
+  const historyPolicyOff = historyPolicy?.allowed === false;
+  const historyAuthority = history.settings?.authority ?? null;
+  const historyWriteAllowed =
+    !history.absent && (historyAuthority?.write.allowed ?? !isBrowserSurface());
+  const historyTotal = history.total;
+  const everything = history.everything.total;
+
+  const clearAll = async () => {
+    setBusy(true);
+    try {
+      const outcome = await history.clear();
+      if (!outcome.ok) {
+        toastError({
+          title: DICTIONARY_LABELS.history.clearDialog.title,
+          msg: outcome.error.message,
+        });
+      }
+    } finally {
+      setBusy(false);
+      setClearOpen(false);
+    }
+  };
+
+  const termsActions = (
+    <>
+      <FilterInput value={query} onValueChange={setQuery} label={DICTIONARY_BANDS.terms.filter} />
+      <Button
+        variant="ghost"
+        onClick={startExport}
+        disabled={dictionary.absent || total === 0}
+        data-testid="dictionary-export"
+      >
+        {DICTIONARY_BANDS.terms.ghost}
+      </Button>
+      {/* The one way from here to the dictionary's options in Settings, a quiet icon
+                  in the band, shown where Settings shows them: not under managed policy, not
+                  on a backend without the dictionary. */}
+      {dictionary.absent || policyOff ? null : (
+        <PageHeaderAction
+          icon={Settings}
+          label={DICTIONARY_BANDS.terms.settingsLabel}
+          onClick={() =>
+            navigate('/settings', {
+              state: { section: DICTIONARY_BANDS.terms.settingsSection },
+            })
+          }
+          data-testid="dictionary-settings-link"
+        />
+      )}
+      {addMenu('default')}
+      <PageHeaderMenu
+        label={DICTIONARY_LABELS.pageMenu}
+        items={[
+          {
+            label: DICTIONARY_LABELS.deleteAll,
+            onSelect: () => setDeleteAllOpen(true),
+            destructive: true,
+            disabled: !canDelete || total === 0,
+            testId: 'dictionary-delete-all',
+          },
+        ]}
+      />
+    </>
+  );
+
+  const historyActions = (
+    <>
+      <FilterInput
+        value={historyQuery}
+        onValueChange={setHistoryQuery}
+        label={band.filter}
+        data-testid="history-search"
+      />
+      {/* The quiet way to the history's switches in Settings, shown where Settings shows them:
+          not under managed policy, not on a backend without the history. */}
+      {history.absent || historyPolicyOff ? null : (
+        <PageHeaderAction
+          icon={Settings}
+          label={band.settingsLabel}
+          onClick={() => navigate('/settings', { state: { section: band.settingsSection } })}
+          data-testid="history-settings-link"
+        />
+      )}
+      <PageHeaderMenu
+        label={DICTIONARY_LABELS.history.pageMenu}
+        items={[
+          {
+            label: DICTIONARY_LABELS.history.clear,
+            onSelect: () => setClearOpen(true),
+            destructive: true,
+            disabled: !historyWriteAllowed || everything === 0,
+            testId: 'history-clear',
+          },
+        ]}
+      />
+    </>
+  );
+
   return (
     <MainPanelLayout removeTopPadding>
       <div className="flex min-h-0 flex-1 flex-col" data-testid="dictionary-view">
-        {/* The band sits outside the scroller, as Skills' does: it is the window's drag
-            region on this route, and the filter and Add go with it otherwise. */}
-        <PageHeader
-          title={DICTIONARY_LABELS.title}
-          info={dictionaryMessage('MSG-DICTIONARY-HELP')}
-          adornment={shownTotal > 0 ? shownTotal : undefined}
-          actions={
-            <>
-              <FilterInput
-                value={query}
-                onValueChange={setQuery}
-                label={DICTIONARY_LABELS.filter}
-              />
-              <Button
-                variant="ghost"
-                onClick={startExport}
-                disabled={dictionary.absent || total === 0}
-                data-testid="dictionary-export"
-              >
-                {DICTIONARY_LABELS.export}
-              </Button>
-              {/* The one way from here to the dictionary's options in Settings, a quiet icon
-                  in the band, shown where Settings shows them: not under managed policy, not
-                  on a backend without the dictionary. */}
-              {dictionary.absent || policyOff ? null : (
-                <PageHeaderAction
-                  icon={Settings}
-                  label={DICTIONARY_LABELS.settingsLink}
-                  onClick={() => navigate('/settings', { state: { section: 'dictionary' } })}
-                  data-testid="dictionary-settings-link"
-                />
-              )}
-              {addMenu('default')}
-              <PageHeaderMenu
-                label={DICTIONARY_LABELS.pageMenu}
-                items={[
-                  {
-                    label: DICTIONARY_LABELS.deleteAll,
-                    onSelect: () => setDeleteAllOpen(true),
-                    destructive: true,
-                    disabled: !canDelete || total === 0,
-                    testId: 'dictionary-delete-all',
-                  },
-                ]}
-              />
-            </>
-          }
-        />
-        <input
-          ref={fileRef}
-          type="file"
-          accept=".txt,.csv,.tsv,.json,text/plain,text/csv,text/tab-separated-values,application/json"
-          hidden
-          onChange={(event) => {
-            void importFile(event.target.files?.[0]);
-            event.target.value = '';
-          }}
-          data-testid="dictionary-import-input"
-        />
+        {/* ONE `Tabs` root spanning the band and the content, because the triggers live in the
+            band and the panels below it, and Radix links them by id (Knowledge's pattern).
+            `text-text-default` undoes the root's muted ink for everything inside it. */}
+        <Tabs
+          value={tab}
+          onValueChange={chooseTab}
+          className="flex min-h-0 flex-1 flex-col text-text-default"
+        >
+          {/* The band sits outside the scroller, as Skills' does: it is the window's drag
+              region on this route, and the filter and Add go with it otherwise. */}
+          <PageHeader
+            title={DICTIONARY_LABELS.title}
+            info={
+              tab === 'history'
+                ? dictionaryMessage('MSG-HISTORY-HELP')
+                : dictionaryMessage('MSG-DICTIONARY-HELP')
+            }
+            adornment={
+              tab === 'history'
+                ? historyTotal > 0
+                  ? historyTotal
+                  : undefined
+                : shownTotal > 0
+                  ? shownTotal
+                  : undefined
+            }
+            tabs={
+              // `border-b-0`: the band's hairline is the one rule, and the underline lands on it.
+              <TabsList className="border-b-0">
+                <TabsTrigger value="terms" data-testid="dictionary-tab-terms">
+                  {DICTIONARY_LABELS.tabs.terms}
+                </TabsTrigger>
+                <TabsTrigger value="history" data-testid="dictionary-tab-history">
+                  {DICTIONARY_LABELS.tabs.history}
+                </TabsTrigger>
+              </TabsList>
+            }
+            actions={tab === 'history' ? historyActions : termsActions}
+          />
+          <input
+            ref={fileRef}
+            type="file"
+            accept=".txt,.csv,.tsv,.json,text/plain,text/csv,text/tab-separated-values,application/json"
+            hidden
+            onChange={(event) => {
+              void importFile(event.target.files?.[0]);
+              event.target.value = '';
+            }}
+            data-testid="dictionary-import-input"
+          />
 
-        <ReadableContent size="chat" className="relative min-h-0 flex-1 px-6">
-          <ScrollArea className="h-full">
-            <div className="relative py-4">
-              {/* The note every composer shows while the privacy tiers are off: here a private
-                  term shapes dictation into any chat, public ones included. */}
-              <PrivacyTiersOffNote className="mb-4" />
-              {notice ? (
-                <Note
-                  tone={dictionary.absent || policyOff ? 'warning' : 'danger'}
-                  role="alert"
-                  className="mb-4"
-                  testId="dictionary-notice"
-                >
-                  {notice}
-                </Note>
-              ) : null}
+          <TabsContent
+            value="terms"
+            className="mt-0 flex min-h-0 flex-1 flex-col"
+            data-testid="dictionary-terms-panel"
+          >
+            <ReadableContent size="chat" className="relative min-h-0 flex-1 px-6">
+              <ScrollArea className="h-full">
+                <div className="relative py-4">
+                  {/* The note every composer shows while the privacy tiers are off: here a private
+                      term shapes dictation into any chat, public ones included. */}
+                  <PrivacyTiersOffNote className="mb-4" />
+                  {notice ? (
+                    <Note
+                      tone={dictionary.absent || policyOff ? 'warning' : 'danger'}
+                      role="alert"
+                      className="mb-4"
+                      testId="dictionary-notice"
+                    >
+                      {notice}
+                    </Note>
+                  ) : null}
 
-              {offerTurningOff ? (
-                <Note tone="neutral" role="status" className="mb-4" testId="dictionary-back-off">
-                  {/* One line and its actions (owner rule, 2026-11-13: no walls of text); how
-                      many chats a word now needs is the InfoTip's. */}
-                  <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
-                    <p className="flex min-w-0 flex-1 items-center gap-1">
-                      <span data-testid="dictionary-back-off-line">
-                        {dictionaryMessage('MSG-SUGGESTIONS-BACK-OFF')}
-                      </span>
-                      <InfoTip
-                        label={DICTIONARY_LABELS.backOff.why}
-                        help={dictionaryMessage('MSG-SUGGESTIONS-BACK-OFF-HELP', {
-                          n: String(dictionary.settings?.suggestions.required_chats ?? 2),
-                        })}
-                        data-testid="dictionary-back-off-help"
-                      />
-                    </p>
-                    <div className="flex flex-wrap gap-2">
-                      <Button
-                        type="button"
-                        size="sm"
-                        variant="secondary"
-                        disabled={answeringOffer}
-                        onClick={() => void answerOffer(true)}
-                        data-testid="dictionary-back-off-turn-off"
-                      >
-                        {DICTIONARY_LABELS.backOff.turnOff}
-                      </Button>
-                      <Button
-                        type="button"
-                        size="sm"
-                        variant="ghost"
-                        disabled={answeringOffer}
-                        onClick={() => void answerOffer(false)}
-                        data-testid="dictionary-back-off-keep"
-                      >
-                        {DICTIONARY_LABELS.backOff.keepSuggesting}
-                      </Button>
+                  {offerTurningOff ? (
+                    <Note
+                      tone="neutral"
+                      role="status"
+                      className="mb-4"
+                      testId="dictionary-back-off"
+                    >
+                      {/* One line and its actions (owner rule, 2026-11-13: no walls of text); how
+                          many chats a word now needs is the InfoTip's. */}
+                      <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
+                        <p className="flex min-w-0 flex-1 items-center gap-1">
+                          <span data-testid="dictionary-back-off-line">
+                            {dictionaryMessage('MSG-SUGGESTIONS-BACK-OFF')}
+                          </span>
+                          <InfoTip
+                            label={DICTIONARY_LABELS.backOff.why}
+                            help={dictionaryMessage('MSG-SUGGESTIONS-BACK-OFF-HELP', {
+                              n: String(dictionary.settings?.suggestions.required_chats ?? 2),
+                            })}
+                            data-testid="dictionary-back-off-help"
+                          />
+                        </p>
+                        <div className="flex flex-wrap gap-2">
+                          <Button
+                            type="button"
+                            size="sm"
+                            variant="secondary"
+                            disabled={answeringOffer}
+                            onClick={() => void answerOffer(true)}
+                            data-testid="dictionary-back-off-turn-off"
+                          >
+                            {DICTIONARY_LABELS.backOff.turnOff}
+                          </Button>
+                          <Button
+                            type="button"
+                            size="sm"
+                            variant="ghost"
+                            disabled={answeringOffer}
+                            onClick={() => void answerOffer(false)}
+                            data-testid="dictionary-back-off-keep"
+                          >
+                            {DICTIONARY_LABELS.backOff.keepSuggesting}
+                          </Button>
+                        </div>
+                      </div>
+                    </Note>
+                  ) : null}
+
+                  {firstLoad ? (
+                    <div className="biorouter-list-shell br-rows-flat" aria-hidden>
+                      <TermRowSkeleton />
+                      <TermRowSkeleton />
+                      <TermRowSkeleton />
                     </div>
-                  </div>
-                </Note>
-              ) : null}
+                  ) : null}
 
-              {firstLoad ? (
-                <div className="biorouter-list-shell br-rows-flat" aria-hidden>
-                  <TermRowSkeleton />
-                  <TermRowSkeleton />
-                  <TermRowSkeleton />
+                  <DictionaryList
+                    groups={groups}
+                    settled={hold.settled}
+                    readOnly={!canWrite}
+                    deleteAllowed={canDelete}
+                    tierChangeAllowed={tierChangeAllowed}
+                    tierChangeReason={tierChangeReason}
+                    actions={rowActions}
+                    onReviewAll={canWrite && waitingRows.length > 0 ? openReview : undefined}
+                    holding={hold.holding}
+                    handlers={hold.handlers}
+                  />
+
+                  {dictionary.load === 'loaded' && shownTotal === 0 && !dictionary.absent ? (
+                    <EmptyState
+                      icon={ENTITY_ICONS.dictionary}
+                      title={DICTIONARY_LABELS.title}
+                      description={dictionaryMessage('MSG-EMPTY')}
+                      actions={addMenu('secondary')}
+                    />
+                  ) : null}
+                  {shownTotal > 0 && query.trim() && groups[0]?.entries.length === 0 ? (
+                    <EmptyState
+                      icon={ENTITY_ICONS.dictionary}
+                      title={DICTIONARY_LABELS.noMatches}
+                      description={dictionaryMessage('MSG-DICTIONARY-NO-MATCH')}
+                      compact
+                    />
+                  ) : null}
                 </div>
-              ) : null}
-
-              <DictionaryList
-                groups={groups}
-                settled={hold.settled}
-                readOnly={!canWrite}
-                deleteAllowed={canDelete}
-                tierChangeAllowed={tierChangeAllowed}
-                tierChangeReason={tierChangeReason}
-                actions={rowActions}
-                onReviewAll={canWrite && waitingRows.length > 0 ? openReview : undefined}
-                holding={hold.holding}
-                handlers={hold.handlers}
-              />
-
-              {dictionary.load === 'loaded' && shownTotal === 0 && !dictionary.absent ? (
-                <EmptyState
-                  icon={ENTITY_ICONS.dictionary}
-                  title={DICTIONARY_LABELS.title}
-                  description={dictionaryMessage('MSG-EMPTY')}
-                  actions={addMenu('secondary')}
-                />
-              ) : null}
-              {shownTotal > 0 && query.trim() && groups[0]?.entries.length === 0 ? (
-                <EmptyState
-                  icon={ENTITY_ICONS.dictionary}
-                  title={DICTIONARY_LABELS.noMatches}
-                  description={dictionaryMessage('MSG-DICTIONARY-NO-MATCH')}
-                  compact
-                />
-              ) : null}
-            </div>
-          </ScrollArea>
-        </ReadableContent>
+              </ScrollArea>
+            </ReadableContent>
+          </TabsContent>
+          <TabsContent
+            value="history"
+            className="mt-0 flex min-h-0 flex-1 flex-col"
+            data-testid="dictionary-history-panel"
+          >
+            <HistoryTab
+              history={history}
+              policy={historyPolicy}
+              host={status?.host ?? null}
+              canAddToDictionary={canWrite}
+              onAddToDictionary={(mode) => {
+                setTermMode(mode);
+                setTermKey((key) => key + 1);
+              }}
+            />
+          </TabsContent>
+        </Tabs>
       </div>
 
       {termMode ? (
@@ -545,6 +697,21 @@ export default function DictionaryView() {
         busy={busy}
         onConfirm={() => void deleteAll()}
         onCancel={() => setDeleteAllOpen(false)}
+      />
+
+      <DangerousConfirmDialog
+        open={clearOpen}
+        title={DICTIONARY_LABELS.history.clearDialog.title}
+        description={dictionaryMessage('MSG-HISTORY-CLEAR', {
+          n: everything.toLocaleString('en-US'),
+        })}
+        phrase="delete"
+        fieldLabel={DICTIONARY_LABELS.history.clearDialog.field}
+        confirmLabel={DICTIONARY_LABELS.history.clearDialog.confirm}
+        cancelLabel={DICTIONARY_LABELS.cancel}
+        busy={busy}
+        onConfirm={() => void clearAll()}
+        onCancel={() => setClearOpen(false)}
       />
     </MainPanelLayout>
   );

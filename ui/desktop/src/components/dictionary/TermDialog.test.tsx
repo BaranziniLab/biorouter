@@ -32,7 +32,7 @@ import { refreshDictationStatus, resetDictationStoreForTests } from '../dictatio
 import { fakeStatusApi, speechStatus } from '../dictation/dictationTestKit';
 import DictionaryTermDoor, { prepareAddFromMenu, startsPrivate } from './DictionaryTermDoor';
 import TermDialog, { addRequestOf, editPatchOf, spokenFormsOf } from './TermDialog';
-import { originAt } from './termOrigin';
+import { historyEntryOrigin, originAt } from './termOrigin';
 import { resetDictionaryStoreForTests } from './useDictionary';
 
 /** A status whose managed policy turns the dictionary off. */
@@ -98,7 +98,25 @@ function page(): { inPrivatePane: HTMLElement; inShared: HTMLElement; outside: H
       <aside class="br-preview-panel"><span id="artifact-word">HIF2A</span></aside>
     </div>
     <main><div data-preview-transcript=""><p id="shared-word">PHD2</p></div></main>
-    <nav id="outside">Settings</nav>`;
+    <nav id="outside">Settings</nav>
+    <section>
+      <div data-history-row="dch_1" data-dictation-history-entry="dch_1" data-history-tier="private"
+           data-history-surface="composer" data-history-session="public-chat">
+        <p id="history-private-in-public-chat">EGLN1 and EPAS1</p>
+      </div>
+      <div data-history-row="dch_2" data-dictation-history-entry="dch_2" data-history-tier="public"
+           data-history-surface="composer" data-history-session="private-chat">
+        <p id="history-public-in-private-chat">VHL</p>
+      </div>
+      <div data-history-row="dch_3" data-dictation-history-entry="dch_3" data-history-tier="private"
+           data-history-surface="other_app">
+        <p id="history-private-elsewhere">HIF1A</p>
+      </div>
+      <div data-history-row="dch_4" data-dictation-history-entry="dch_4" data-history-tier="sideways"
+           data-history-surface="composer">
+        <p id="history-unknown-tier">ARNT</p>
+      </div>
+    </section>`;
   return {
     inPrivatePane: document.getElementById('private-word')!,
     inShared: document.getElementById('shared-word')!,
@@ -184,6 +202,117 @@ describe('where a word came from', () => {
         headers: { 'X-User-Action': 'proof' },
       })
     );
+  });
+});
+
+describe('a word taken from a dictation (history-design.md 10.6)', () => {
+  it('names the dictation’s verified chat, an unresolved chat, or none, by tier and surface', () => {
+    expect(historyEntryOrigin({ tier: 'private', sessionId: 'c1', surface: 'composer' })).toEqual({
+      kind: 'chat',
+      sessionId: 'c1',
+      history: { tier: 'private' },
+    });
+    // A composer or a terminal that names no chat: a chat gone, reissued, unlisted, or never saved.
+    for (const surface of ['composer', 'terminal'] as const) {
+      expect(historyEntryOrigin({ tier: 'private', sessionId: null, surface })).toEqual({
+        kind: 'unresolved',
+        history: { tier: 'private' },
+      });
+    }
+    for (const surface of ['crew', 'clipboard', 'other_app', 'app_preview'] as const) {
+      expect(historyEntryOrigin({ tier: 'private', surface })).toEqual({
+        kind: 'none',
+        history: { tier: 'private' },
+      });
+    }
+    expect(historyEntryOrigin({ tier: 'public', sessionId: 'c2', surface: 'composer' })).toEqual({
+      kind: 'chat',
+      sessionId: 'c2',
+      history: { tier: 'public' },
+    });
+    expect(historyEntryOrigin({ tier: 'public', surface: 'composer' })).toEqual({
+      kind: 'none',
+      history: { tier: 'public' },
+    });
+  });
+
+  it('reads a History row under the point before any pane, failing toward private', () => {
+    page();
+    const at = (id: string) => originAt(0, 0, { elementAt: () => document.getElementById(id) });
+    expect(at('history-private-in-public-chat')).toEqual({
+      kind: 'chat',
+      sessionId: 'public-chat',
+      history: { tier: 'private' },
+    });
+    expect(at('history-private-elsewhere')).toEqual({ kind: 'none', history: { tier: 'private' } });
+    expect(at('history-unknown-tier')).toEqual({
+      kind: 'unresolved',
+      history: { tier: 'private' },
+    });
+  });
+
+  it('starts the box at the dictation’s tier, not its chat’s', () => {
+    render(
+      <TermDialog
+        mode={{
+          kind: 'add',
+          text: 'VHL',
+          origin: historyEntryOrigin({
+            tier: 'public',
+            sessionId: 'private-chat',
+            surface: 'composer',
+          }),
+          startPrivate: true,
+        }}
+        authority={settings().authority}
+        onClose={() => undefined}
+      />
+    );
+    expect(screen.getByTestId('dictionary-term-private')).not.toBeChecked();
+  });
+
+  it('opens from the context menu ticked for a private dictation into a public chat, warning in its words', async () => {
+    let deliver: ((payload: DictionaryAddTermPayload) => void) | null = null;
+    (window as { electron?: unknown }).electron = {
+      onDictionaryAddTerm: (callback: (payload: DictionaryAddTermPayload) => void) => {
+        deliver = callback;
+        return () => (deliver = null);
+      },
+    };
+    page();
+    render(<DictionaryTermDoor />);
+    document.elementFromPoint = vi.fn(() =>
+      document.getElementById('history-private-in-public-chat')
+    );
+    await act(async () => deliver!({ text: 'EPAS1', x: 10, y: 10 }));
+    const box = await screen.findByTestId('dictionary-term-private');
+    expect(box).toBeChecked();
+    await userEvent.click(box);
+    expect(screen.getByTestId('dictionary-term-private-help')).toHaveTextContent(
+      DICTIONARY_MESSAGES['MSG-PUBLICIZE-WARN-HISTORY']
+    );
+    await userEvent.click(box);
+    await userEvent.click(screen.getByTestId('dictionary-term-save'));
+    await waitFor(() => expect(api.addDictionaryEntry).toHaveBeenCalled());
+    expect(api.addDictionaryEntry.mock.calls[0][0].body).toMatchObject({
+      written: 'EPAS1',
+      private: true,
+      origin_session_id: 'public-chat',
+    });
+  });
+
+  it('sends no origin for a private dictation outside any chat', () => {
+    expect(
+      addRequestOf({
+        written: 'HIF1A',
+        spoken: '',
+        note: '',
+        private: true,
+        match: null,
+        always: false,
+        origin: historyEntryOrigin({ tier: 'private', surface: 'clipboard' }),
+      })
+    ).toEqual({ written: 'HIF1A', spoken_forms: [], private: true });
   });
 });
 
