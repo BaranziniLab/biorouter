@@ -5,12 +5,15 @@ import {
   DICTATION_ACTIONS,
   DICTATION_LABELS,
   DICTATION_MESSAGES,
+  FN_USAGE_ACTIONS,
+  INSERT_REFUSAL_MESSAGES,
   SETUP_SUGGEST_LAST_SENTENCE,
   SETUP_WHERE_THIS_COMPUTER,
   WHERE_THIS_COMPUTER,
   dictationMessage,
   fillMessage,
   formatDictationClock,
+  insertRefusalMessage,
   setupWhereOnServer,
   whereOnServer,
 } from './copy';
@@ -107,6 +110,66 @@ describe('dictation copy', () => {
     ]) {
       expect(DICTATION_MESSAGES).toHaveProperty(id);
     }
+  });
+
+  it('carries every sentence typing the text where the person is shows (DD-97)', () => {
+    for (const id of [
+      'MSG-INSERT-LOST',
+      'MSG-INSERT-NO-PERMISSION',
+      'MSG-INSERT-SECURE',
+      'MSG-INSERT-TARGET-CHANGED',
+      'MSG-INSERT-FAILED',
+      'MSG-INSERT-HELP',
+      'MSG-INSERT-PERMISSION',
+    ]) {
+      expect(DICTATION_MESSAGES).toHaveProperty(id);
+    }
+    // The buttons the catalog gives these sentences are labels here, not part of the text.
+    const raw = readFileSync(catalogPath, 'utf8');
+    expect(raw).toContain(
+      `| MSG-INSERT-LOST | ${DICTATION_MESSAGES['MSG-INSERT-LOST']} (buttons **${DICTATION_ACTIONS.insertHere}**, **${DICTATION_ACTIONS.copy}**) |`
+    );
+    expect(raw).toContain(
+      `${DICTATION_MESSAGES['MSG-INSERT-PERMISSION']} (button **${DICTATION_ACTIONS.openAccessibility}**) |`
+    );
+  });
+
+  it('names a notification for every reason the insertion helper refuses, filled with the paste key', () => {
+    expect(Object.keys(INSERT_REFUSAL_MESSAGES).sort()).toEqual(
+      ['failed', 'no-permission', 'secure-input', 'target-changed'].sort()
+    );
+    for (const reason of Object.keys(INSERT_REFUSAL_MESSAGES) as Array<
+      keyof typeof INSERT_REFUSAL_MESSAGES
+    >) {
+      const sentence = insertRefusalMessage(reason, '⌘V');
+      expect(sentence, reason).not.toMatch(/<[^>]+>/);
+      expect(sentence, reason).toBe(
+        dictationMessage(INSERT_REFUSAL_MESSAGES[reason], { key: '⌘V' })
+      );
+    }
+    expect(insertRefusalMessage('target-changed', '⌘V')).toBe(
+      'You switched apps before the text was ready, so Biorouter copied it. Paste with ⌘V.'
+    );
+  });
+
+  it('warns that macOS acts on fn for a double-tap as well as a hold, for every fn action', () => {
+    for (const action of Object.values(FN_USAGE_ACTIONS)) {
+      const sentence = dictationMessage('MSG-FN-CONFLICT', { action });
+      expect(sentence).toContain(`macOS also uses fn to ${action}, so a hold or a double-tap`);
+      expect(sentence).not.toMatch(/<[^>]+>/);
+    }
+    expect(DICTATION_MESSAGES['MSG-FN-CONFLICT-UNKNOWN']).toContain('a double-tap can do it twice');
+  });
+
+  it('keeps the disclosures true now that the text is kept in the dictation history (DD-96)', () => {
+    expect(DICTATION_MESSAGES['MSG-DISCLOSE-HOST-DETAIL']).toContain(
+      'does not save your voice or send it anywhere else'
+    );
+    expect(DICTATION_MESSAGES['MSG-DISCLOSE-HOST-DETAIL']).toContain('dictation history');
+    expect(DICTATION_MESSAGES['MSG-CLIPBOARD-EXPLAIN']).toContain('dictation history');
+    expect(DICTATION_MESSAGES['MSG-CLIPBOARD-EXPLAIN']).toContain(
+      'Biorouter puts back what was there'
+    );
   });
 
   it('keeps the two other endings of MSG-SETUP-SUGGEST as the catalog words them', () => {

@@ -1,4 +1,4 @@
-import { readFileSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import {
@@ -92,6 +92,81 @@ describe('Dictionary page copy', () => {
     ]) {
       expect(DICTIONARY_MESSAGES).toHaveProperty(id);
     }
+  });
+
+  it('carries every sentence the History tab and the history settings show (DD-96)', () => {
+    for (const id of [
+      'MSG-HISTORY-HELP',
+      'MSG-HISTORY-EMPTY',
+      'MSG-HISTORY-OFF',
+      'MSG-HISTORY-NO-MATCH',
+      'MSG-HISTORY-PUBLICIZE-WARN',
+      'MSG-HISTORY-PUBLICIZE-WARN-TERMS',
+      'MSG-HISTORY-DELETE',
+      'MSG-HISTORY-CLEAR',
+      'MSG-HISTORY-PUBLIC-HELP',
+      'MSG-HISTORY-PUBLIC-CONFIRM',
+      'MSG-HISTORY-PRIVATE-ELSEWHERE',
+      'MSG-HISTORY-HOST-TIER',
+      'MSG-HISTORY-HOST-SETTINGS',
+      'MSG-HISTORY-FILE',
+      'MSG-HISTORY-NOT-FOUND',
+      'MSG-PUBLICIZE-WARN-HISTORY',
+    ]) {
+      expect(DICTIONARY_MESSAGES).toHaveProperty(id);
+    }
+    const rows = catalogRows();
+    // The confirmations' buttons are the labels the dialogs use.
+    expect(rows.get('MSG-HISTORY-PUBLICIZE-WARN')!.raw).toContain(
+      `(buttons **${DICTIONARY_LABELS.history.publicize.confirm}**, **${DICTIONARY_LABELS.cancel}**)`
+    );
+    expect(rows.get('MSG-HISTORY-DELETE')!.raw).toContain(
+      `(buttons **${DICTIONARY_LABELS.history.deleteOne.confirm}**, **${DICTIONARY_LABELS.cancel}**)`
+    );
+    expect(rows.get('MSG-HISTORY-CLEAR')!.raw).toContain(
+      `(button **${DICTIONARY_LABELS.history.clearDialog.confirm}**, after typing \`delete\`)`
+    );
+    expect(rows.get('MSG-HISTORY-PUBLIC-CONFIRM')!.raw).toContain(
+      `(buttons **${DICTIONARY_LABELS.historySettings.publicConfirm}**, **${DICTIONARY_LABELS.cancel}**)`
+    );
+    expect(dictionaryMessage('MSG-HISTORY-CLEAR', { n: '12' })).toBe(
+      'This deletes the 12 dictations listed here. It cannot be undone.'
+    );
+    expect(dictionaryMessage('MSG-HISTORY-HOST-TIER', { verb: 'publicize' })).toBe(
+      'Do this on the server: `biorouter dictation history publicize <id>` (as the service user).'
+    );
+  });
+
+  it('names every surface the history stores, in the stored words', () => {
+    const designed = ['app_preview', 'clipboard', 'composer', 'crew', 'other_app', 'terminal'];
+    expect(Object.keys(DICTIONARY_LABELS.history.surfaces).sort()).toEqual(designed);
+    // Once the store's `Surface` enum exists, its variants (serde snake case) are these words.
+    const dir = resolve(repo, 'crates/biorouter-dictation/src/history');
+    if (!existsSync(dir)) return;
+    const source = readdirSync(dir)
+      .filter((name) => name.endsWith('.rs'))
+      .map((name) => readFileSync(resolve(dir, name), 'utf8'))
+      .join('\n');
+    const body = /pub enum Surface\s*\{([^}]*)\}/.exec(source)?.[1];
+    if (body === undefined) return;
+    const variants = body
+      .replace(/\/\/[^\n]*/g, '')
+      .replace(/#\[[^\]]*\]/g, '')
+      .split(',')
+      .map((variant) => variant.trim().split(/[\s({=]/)[0])
+      .filter(Boolean)
+      .map((name) => name.replace(/([a-z])([A-Z])/g, '$1_$2').toLowerCase());
+    expect(variants.sort()).toEqual(designed);
+  });
+
+  it('formats a dictation’s length the way its meta line reads', () => {
+    const { duration, count } = DICTIONARY_LABELS.history;
+    expect(duration(14_000)).toBe('14 s');
+    expect(duration(400)).toBe('0 s');
+    expect(duration(65_000)).toBe('1 min 5 s');
+    expect(duration(600_000)).toBe('10 min');
+    expect(count(1)).toBe('1 dictation');
+    expect(count(5000)).toBe('5,000 dictations');
   });
 
   it('gives every validation code the store answers its catalog sentence', () => {

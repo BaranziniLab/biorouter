@@ -1,6 +1,8 @@
 /**
  * Every sentence and label the Dictionary page shows, one source (DD-67, DD-68,
- * "The left sidebar Dictionary page" in `docs/dictation/dictionary.md`).
+ * "The left sidebar Dictionary page" in `docs/dictation/dictionary.md`), its
+ * **History** tab and the **Dictation history** settings included (DD-96,
+ * "Dictation history" in `docs/dictation/surfaces.md`).
  *
  * The sentences are the message catalog in `docs/dictation/surfaces.md`
  * ("Message catalog"), word for word; `copy.test.ts` reads that table and fails
@@ -78,6 +80,36 @@ export const DICTIONARY_MESSAGES = {
     'Dictation then uses this term only when you dictate into private chats.',
   'MSG-EXPORT-SAVED': 'Saved <file> to <folder>.',
   'MSG-EXPORT-WRITE-FAILED': 'The file could not be written to <folder>. Nothing was saved.',
+  // The dictation history (DD-96): the Dictionary page's **History** tab and the **Dictation
+  // history** group in Settings > Models > Speech models. MSG-HISTORY-HOST-TIER to
+  // MSG-HISTORY-NOT-FOUND are also the daemon's own sentences in `routes/dictation_history.rs`.
+  'MSG-HISTORY-HELP':
+    'Biorouter keeps the text of each dictation, never its audio, on the computer that transcribed it, up to the 5,000 most recent.',
+  'MSG-HISTORY-EMPTY':
+    'Text you dictate shows here, so you can copy it again or add its words to your dictionary.',
+  'MSG-HISTORY-OFF': 'History is off, so new dictations are not saved.',
+  'MSG-HISTORY-NO-MATCH': 'No dictation contains these words.',
+  'MSG-HISTORY-PUBLICIZE-WARN': 'Public dictations may be read by chats on public models.',
+  'MSG-HISTORY-PUBLICIZE-WARN-TERMS':
+    'This dictation used your private dictionary terms, so it may contain them. Public dictations may be read by chats on public models.',
+  'MSG-HISTORY-DELETE': 'This deletes the dictation from your history. It cannot be undone.',
+  'MSG-HISTORY-CLEAR': 'This deletes the <n> dictations listed here. It cannot be undone.',
+  'MSG-HISTORY-PUBLIC-HELP':
+    'Dictations are private by default, because dictation cannot tell which model will read the text. Dictations into private chats, or with your private terms, stay private.',
+  'MSG-HISTORY-PUBLIC-CONFIRM':
+    'New dictations will be public unless they go to a private chat or use your private terms. Public dictations may be read by chats on public models.',
+  'MSG-HISTORY-PRIVATE-ELSEWHERE':
+    'Private dictations are shown only to you in Biorouter on <host>.',
+  'MSG-HISTORY-HOST-TIER':
+    'Do this on the server: `biorouter dictation history <verb> <id>` (as the service user).',
+  'MSG-HISTORY-HOST-SETTINGS':
+    'Do this on the server: `biorouter dictation history settings <option>` (as the service user).',
+  'MSG-HISTORY-FILE':
+    'The dictation history file at <path> could not be read, so nothing was changed. Fix or remove it, then try again.',
+  'MSG-HISTORY-NOT-FOUND': 'No dictation with that id.',
+  /** The term dialog's warning when a word taken from a private dictation is unticked private. */
+  'MSG-PUBLICIZE-WARN-HISTORY':
+    'This word came from a private dictation. Making it public lets it appear when you dictate into chats on public models.',
 } as const;
 
 export type DictionaryMessageId = keyof typeof DICTIONARY_MESSAGES;
@@ -311,7 +343,98 @@ export const DICTIONARY_LABELS = {
   /** The link from the setup popover and Settings to this page. */
   editYourDictionary: 'Edit your dictionary',
   waiting: (n: number) => (n === 1 ? '1 suggestion waiting' : `${n} suggestions waiting`),
+  /** The page band's underline tabs (DD-96); the sidebar row stays **Dictionary**. */
+  tabs: {
+    terms: 'Terms',
+    history: 'History',
+  },
+  /** The **History** tab: its band, rows, menus, dialogs and states. */
+  history: {
+    /** The band's filter, which searches on the daemon (`q`), named and placed as **Filter terms**. */
+    search: 'Search dictations',
+    /** The band's `⋯` item, in the place of **Delete all terms…**. */
+    clear: 'Clear history…',
+    pageMenu: 'More history actions',
+    /** The band's quiet icon that opens the history settings (deep link `dictation-history`). */
+    settingsLink: 'Dictation history settings',
+    /** The band's count: entries the caller may list (`total`). */
+    count: (n: number) => (n === 1 ? '1 dictation' : `${n.toLocaleString('en-US')} dictations`),
+    /** The row's one hover action, and its toast. */
+    copy: 'Copy',
+    copied: 'Copied',
+    /** The row's `⋯` menu, in order. */
+    copyText: 'Copy text',
+    addToDictionary: 'Add to dictionary…',
+    openChat: 'Open the chat',
+    makePublic: 'Make public…',
+    makePrivate: 'Make private',
+    delete: 'Delete…',
+    moreActions: 'More actions for this dictation',
+    /** The row glyph's name and hover label: the microphone, with the lock badge when private. */
+    privateDictation: 'Private dictation',
+    publicDictation: 'Public dictation',
+    /** The expanded row's first word ("Private · Nov 26, 2026, 3:39 PM · Chat · 14 s · <model>"). */
+    tier: { private: 'Private', public: 'Public' },
+    /**
+     * Where the text went, by the stored surface word (`Surface` in
+     * `crates/biorouter-dictation/src/history/`), the word the agent tool returns as `where`.
+     */
+    surfaces: {
+      composer: 'Chat',
+      crew: 'Crew',
+      clipboard: 'Clipboard',
+      other_app: 'Another app',
+      app_preview: 'App preview',
+      terminal: 'Terminal',
+    },
+    /** The recording's length in the meta line: "14 s", "1 min 5 s", "10 min". */
+    duration: (ms: number) => {
+      const whole = Math.max(0, Math.round(ms / 1000));
+      if (whole < 60) return `${whole} s`;
+      const minutes = Math.floor(whole / 60);
+      const rest = whole % 60;
+      return rest ? `${minutes} min ${rest} s` : `${minutes} min`;
+    },
+    /** A row acted on keeps this in its meta until the pointer leaves, as term rows do. */
+    settled: {
+      deleted: 'Deleted',
+      madePublic: 'Made public',
+      madePrivate: 'Made private',
+    },
+    /** The empty and special states' titles; their sentences are the MSG-HISTORY rows. */
+    empty: 'No dictations yet',
+    off: 'Dictation history is off',
+    turnOn: 'Turn on',
+    noMatches: 'No matches',
+    publicize: {
+      title: 'Make this dictation public?',
+      confirm: 'Make public',
+    },
+    deleteOne: {
+      title: 'Delete this dictation?',
+      confirm: 'Delete',
+    },
+    clearDialog: {
+      title: 'Clear history?',
+      field: 'Type delete to confirm',
+      confirm: 'Clear history',
+    },
+  },
+  /**
+   * The **Dictation history** group at the end of **Settings > Models > Speech models** (id
+   * `settings-dictation-history`, deep link `dictation-history`), beside the dictionary's own rows.
+   */
+  historySettings: {
+    keep: 'Dictation history',
+    publicByDefault: 'Save new dictations as public',
+    /** The question before **Save new dictations as public** turns on (MSG-HISTORY-PUBLIC-CONFIRM). */
+    publicConfirmTitle: 'Save new dictations as public?',
+    publicConfirm: 'Save as public',
+  },
 } as const;
+
+/** The surface words the history stores (`Surface`, serde snake case). */
+export type DictationHistorySurface = keyof typeof DICTIONARY_LABELS.history.surfaces;
 
 /** The file the export writes, as `GET /dictionary/export` names it. */
 export const DICTIONARY_EXPORT_FILE = 'biorouter-dictionary.json';

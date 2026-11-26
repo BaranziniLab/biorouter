@@ -17,7 +17,8 @@
  *
  * Only the sentences the renderer can show live here. The terminal's own
  * sentences are in `crates/biorouter-cli/src/dictation/messages.rs`, and the
- * Dictionary page's are in `components/dictionary/copy.ts`.
+ * Dictionary page's, its History tab and the dictation history settings
+ * included, are in `components/dictionary/copy.ts`.
  */
 export const DICTATION_MESSAGES = {
   'MSG-POLICY': "Dictation is turned off on this computer by your organization's managed policy.",
@@ -127,20 +128,38 @@ export const DICTATION_MESSAGES = {
   'MSG-NO-TRAY':
     "Biorouter's menu bar icon is off, so Dictate to clipboard is not in its menu. Choose a shortcut below, or turn on Show in menu bar in Settings > App.",
   'MSG-CLIPBOARD-EXPLAIN':
-    'Dictate to clipboard puts the text on your system clipboard. After that it is outside Biorouter: any program on this computer can read it, including an agent with shell access in any chat; clipboard managers may keep it; Universal Clipboard or Windows cloud clipboard may sync it to your other devices; and the app you paste into decides where it goes. Your private dictionary terms are used only for a recording you start with Include my private terms.',
+    'Dictate to clipboard puts the text on your system clipboard. After that it is outside Biorouter: any program on this computer can read it, including an agent with shell access in any chat; clipboard managers may keep it; Universal Clipboard or Windows cloud clipboard may sync it to your other devices; and the app you paste into decides where it goes. When Biorouter types into the app you are using, the text is on the clipboard for a moment before Biorouter puts back what was there. The text is also kept in your dictation history, which you can turn off. Your private dictionary terms are used only for a recording you start with Include my private terms.',
   'MSG-FN-HELP':
     'Hold fn to talk and let go to insert. Double-tap fn to dictate hands-free, and double-tap again to stop.',
   'MSG-FN-PERMISSION':
     'Allow Biorouter in Privacy & Security > Input Monitoring so fn can start dictation. Biorouter keeps only whether fn is held and drops every other key.',
+  // Also the composer's one-time note at the first fn press (DD-98, `biorouter:fn-conflict-shown`):
+  // macOS runs its own fn action on every tap, so a double-tap can run it twice.
   'MSG-FN-CONFLICT':
-    'macOS also uses fn to <action>. To keep fn for dictation, set Press 🌐 key to Do Nothing in Keyboard settings.',
+    'macOS also uses fn to <action>, so a hold or a double-tap can do that too. To keep fn for dictation, set Press 🌐 key to Do Nothing in Keyboard settings.',
   'MSG-FN-CONFLICT-UNKNOWN':
-    'macOS may also act when you press fn, for example by showing the emoji picker. To keep fn for dictation, set Press 🌐 key to Do Nothing in Keyboard settings.',
+    'macOS may also act when you press fn, for example by showing the emoji picker, and a double-tap can do it twice. To keep fn for dictation, set Press 🌐 key to Do Nothing in Keyboard settings.',
   'MSG-FN-FAILED':
     'The fn key listener stopped and could not start again. Turn the switch off and on to retry.',
   'MSG-FN-MISSING': 'This build of Biorouter has no fn key listener, so fn cannot start dictation.',
   'MSG-FN-OTHER-APPS':
-    'Hold or double-tap fn in any app while Biorouter is open. The text goes to the clipboard, as with Dictate to clipboard.',
+    'Hold or double-tap fn in any app while Biorouter is open. The text goes into that app, or to the clipboard when Biorouter cannot type there.',
+  // Typing the text where the person is (DD-97, macOS; "Inserting text" and S18 in the catalog's
+  // document). MSG-INSERT-LOST is the composer's notice when the field a transcript was for has
+  // gone; the next four are main's notifications after a refused insert, each beside the copy
+  // that replaced it; the last two are the Settings row **Type into the app you are using**.
+  'MSG-INSERT-LOST': 'Biorouter could not find the box this text was for.',
+  'MSG-INSERT-NO-PERMISSION':
+    'Copied, because Biorouter is not allowed to type into other apps. Allow it in Settings > Models > Speech models.',
+  'MSG-INSERT-SECURE':
+    'A password field had focus, so Biorouter did not type there. The text is on the clipboard.',
+  'MSG-INSERT-TARGET-CHANGED':
+    'You switched apps before the text was ready, so Biorouter copied it. Paste with <key>.',
+  'MSG-INSERT-FAILED': 'Biorouter could not type the text, so it copied it. Paste with <key>.',
+  'MSG-INSERT-HELP':
+    'Biorouter pastes the text into the app you are using, then puts back what was on your clipboard. Password fields are skipped.',
+  'MSG-INSERT-PERMISSION':
+    'Allow Biorouter in Privacy & Security > Accessibility so it can type into other apps.',
   'MSG-CHORD-HELP':
     'In a message box, tap <chord> to start or stop, or hold it to talk. Windows and Linux do not let apps see the fn key, so Biorouter uses this key combination here.',
   'MSG-SHORTCUT-HELP':
@@ -162,8 +181,9 @@ export const DICTATION_MESSAGES = {
   // Phase C ruling F-13): a mandated disclosure keeps its core visible.
   'MSG-DISCLOSE-HOST':
     'Your voice is sent to the Biorouter server on <host> and turned into text there.',
+  // DD-96: the voice is still never saved; the text now is, in the person's dictation history.
   'MSG-DISCLOSE-HOST-DETAIL':
-    'Biorouter does not save it or send it anywhere else. The text appears here for you to check before you send it.',
+    'Biorouter does not save your voice or send it anywhere else. The text is kept in your private dictation history on that server, which you can turn off.',
   'MSG-SETUP':
     "Dictation turns your speech into text <where>. It needs a <size> speech model, <name>, downloaded once from the Baranzini Lab's model repository on GitHub into <folder>.",
   'MSG-SETUP-SUGGEST':
@@ -235,6 +255,16 @@ export const DICTATION_ACTIONS = {
   useFnInOtherApps: 'Use fn in other apps',
   openInputMonitoring: 'Open Input Monitoring',
   openKeyboardSettings: 'Open Keyboard settings',
+  /**
+   * Under **Dictate into other apps** on macOS (DD-97): fn in other apps and the global shortcut
+   * type the text into the app that was in front when the dictation started.
+   */
+  typeIntoFrontApp: 'Type into the app you are using',
+  /** MSG-INSERT-PERMISSION's button: the one path that may ask macOS for Accessibility. */
+  openAccessibility: 'Open Accessibility',
+  /** MSG-INSERT-LOST's two buttons: put the kept text into this composer, or copy it. */
+  insertHere: 'Insert here',
+  copy: 'Copy',
   /** The Windows and Linux row that names the composer's key combination. */
   keyboardShortcut: 'Keyboard shortcut',
   setUp: 'Set up dictation',
@@ -306,6 +336,28 @@ export function formatDictationClock(seconds: number): string {
   const minutes = Math.floor(whole / 60);
   const rest = whole % 60;
   return `${minutes}:${rest.toString().padStart(2, '0')}`;
+}
+
+/**
+ * Why the insertion helper did not type the text (`crates/biorouter-textinsert`, its `refused`
+ * answer), as `TextInsertService.insert` reports it.
+ */
+export type InsertRefusalReason = 'no-permission' | 'secure-input' | 'target-changed' | 'failed';
+
+/**
+ * The notification main shows beside the fallback copy, per refusal (DD-97). MSG-INSERT-TARGET-CHANGED
+ * and MSG-INSERT-FAILED take `<key>`, the paste shortcut (⌘V), as MSG-CLIPBOARD-COPIED does.
+ */
+export const INSERT_REFUSAL_MESSAGES = {
+  'no-permission': 'MSG-INSERT-NO-PERMISSION',
+  'secure-input': 'MSG-INSERT-SECURE',
+  'target-changed': 'MSG-INSERT-TARGET-CHANGED',
+  failed: 'MSG-INSERT-FAILED',
+} as const satisfies Readonly<Record<InsertRefusalReason, DictationMessageId>>;
+
+/** The sentence for a refused insert, `<key>` filled with the paste shortcut. */
+export function insertRefusalMessage(reason: InsertRefusalReason, pasteKey: string): string {
+  return dictationMessage(INSERT_REFUSAL_MESSAGES[reason], { key: pasteKey });
 }
 
 /**

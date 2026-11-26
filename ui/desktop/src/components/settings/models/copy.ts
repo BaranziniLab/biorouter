@@ -281,6 +281,13 @@ export const localModelsCopy = {
  * dictation message catalog's, in `components/dictation/copy.ts`, which `copy.test.ts` holds to
  * `docs/dictation/surfaces.md`; what is here are names, button labels and short status words, none
  * of them a sentence.
+ *
+ * Three groups of the section's labels live with their siblings instead, so one control keeps one
+ * name everywhere: the fn, other-apps and insertion rows (**Dictate with the fn key**, **Use fn in
+ * other apps**, **Type into the app you are using**, **Open Accessibility**) are `DICTATION_ACTIONS`
+ * in `components/dictation/copy.ts`; the dictionary's rows are `DICTIONARY_LABELS.agentSettings`;
+ * and the **Dictation history** group's rows are `DICTIONARY_LABELS.historySettings`, both in
+ * `components/dictionary/copy.ts`.
  */
 export const speechModelsCopy = {
   section: 'Speech models',
