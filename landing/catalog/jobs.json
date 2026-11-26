@@ -269,7 +269,7 @@
       "job": "clinical.deidentification",
       "why": "strip PHI before data leaves a private chat",
       "owner": "phi-deidentification",
-      "planned": "WP-18c, after the owner names the security reviewer (decision 14)"
+      "planned": "WP-18c, released 2026-11-25 after the owner's security review sign-off (decision 14)"
     },
     {
       "job": "terminology.ontology-mapping",
