@@ -163,6 +163,7 @@ dictation:
   external_engine: false       # parsed, no effect until an engine address exists
   dictionary: false            # no dictionary edits, sidebar row, capability, extractor or bias
   dictionary_agent_writes: false   # the agent's dictionary tools are not offered
+  history: false               # no new dictation history entries; the agent cannot search it
 ```
 
 | Key | When `false` (for `allowed_models` and `models_dir`, when set) |
@@ -175,6 +176,7 @@ dictation:
 | `external_engine` | Parsed and accepted, with no effect in this release: there is no off machine engine yet. Accepting it keeps a later policy file from turning dictation off on this release |
 | `dictionary` | No dictionary edits, sidebar row, agent capability, chat extractor or recognition bias. Transcription still works, with no bias terms. Implies `dictionary_agent_writes: false` |
 | `dictionary_agent_writes` | The agent's `dictionary__*` tools are denied and the chat extractor is off. The person's own edits still work |
+| `history` | Nothing new is kept in the [dictation history](../dictation/history.md), the agent's `dictionary__search_dictations` is denied, and changing an entry's tier or turning a history setting on is refused. Listing, deleting and clearing what was already kept still work, so a person can remove it. Nothing else of dictation or the dictionary narrows |
 
 The refusals people see use these sentences:
 
@@ -184,7 +186,7 @@ The refusals people see use these sentences:
 | `capture: false` | Your organization's managed policy turns off live microphone dictation on this computer. Transcribing a recording still works. |
 | `model_downloads: false` | Your organization's managed policy turns off model downloads on this computer. Speech models come only from \<models_dir>; ask your administrator to place one there. |
 | `allowed_models` excludes a model | Your organization's managed policy allows only these speech models here: \<ids>. |
-| A `dictionary__*` tool under `enabled`, `dictionary` or `dictionary_agent_writes: false` | Blocked by your organization's managed policy. |
+| A `dictionary__*` tool under `enabled`, `dictionary` or `dictionary_agent_writes: false`, and `dictionary__search_dictations` under `history: false` | Blocked by your organization's managed policy. |
 
 ### How the block fails
 
@@ -200,7 +202,12 @@ alone:
 | A file that is untrusted, unreadable or not valid YAML, or whose existence cannot be checked | **Off**, with a warning | Ignored, as before |
 
 A key this release does not know therefore turns dictation off rather than being ignored, so a
-policy written for a newer release never grants more than its author meant. An empty
+policy written for a newer release never grants more than its author meant.
+
+> **Warning.** `history` is newer than the rest of the block. A Biorouter release from before the
+> dictation history reads it as an unknown key, so a policy file that sets `history` (to either
+> value) turns dictation off entirely on every computer still running such a release. Roll the new
+> release out first, or leave the key out until every computer has it. An empty
 `dictation:` (also `dictation: ~` or `dictation: null`) turns dictation off for the same reason.
 It is what a block whose keys lost their indentation looks like: YAML then reads those keys as
 top-level keys, which the file ignores, so `enabled: false` written without its indentation

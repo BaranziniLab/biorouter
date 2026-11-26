@@ -6,8 +6,8 @@
 > model the host chose, why the standalone `biorouter-headless` binary was
 > retired, how long the launch token stays good for, which chats the deprecated
 > `biorouter web` may still open, when a decision model may make a chat public there, what app
-> pages on the served origin may do with a microphone grant, and how the person on the page
-> updates it. Each record states the ruling, the alternatives it
+> pages on the served origin may do with a microphone grant, how the person on the page
+> updates it, and who in the page reads the dictation history. Each record states the ruling, the alternatives it
 > displaced, and the consequence a future change would have to accept.
 > **Status:** Current.
 > **Audience:** developers working on the daemon, the CLI, or release packaging; agents making
@@ -1569,7 +1569,9 @@ custom-provider routes, and `POST /privacy/disclosure/ack`. The page asks
 `GET /config/provider_setup` first, which answers the same predicate for its own request and,
 when the answer is no, gives one sentence saying why. Every other control that needs a person
 (approvals, declassify, reset, the privacy master switch, usage limits, steering) still asks the
-desktop's proof, so SD-8 and SD-11 stand as they were.
+desktop's proof, so SD-8 and SD-11 stand as they were. SD-19 (updating `serve`) and SD-20 (the
+dictation history) are the later records that admit the same person somewhere else; each names
+exactly what it admits.
 
 **What follows the person's choice.**
 
@@ -1764,10 +1766,80 @@ the update path they will actually take.
 
 ---
 
+## SD-20: The person in the served page has the dictation history, and an agent still does not
+
+**Proposed (2026-11-26), awaiting the owner's ratification**, with the dictation history it serves
+(DD-96 in the [dictation implementation plan](../history/local-dictation-2026-11/implementation-plan.md#decisions-of-the-2026-11-26-campaign)).
+The [dictation history](../dictation/history.md) keeps the text of every dictation a person
+started, private unless they choose otherwise, and its private entries are the person's alone
+(P-17). SD-18 says the served person is admitted on no other route without a new record, so this is
+that record for the history. On a daemon that holds no user action key and whose launcher never
+meant to hand it one, the person in the served page (`auth::served_person_present`, the same two
+signals SD-18 and SD-19 read: the served document's `HttpOnly` cookie, and Fetch Metadata saying
+that page's own script sent the request) is the person whose history it is, exactly as a request
+with the user action proof is on the desktop's daemon.
+
+**What it admits, and nothing more.**
+
+- *Recording.* A stream the served person sends is kept in the history
+  (`HttpCaller::records_dictation_history`). A stream from anyone else holding the secret gets its
+  transcript and leaves no entry.
+- *Listing.* The served person is listed private entries (`lists_dictation_history_entry`). Anyone
+  else holding the secret is listed public entries only, with no count of the rest, and the page
+  says MSG-HISTORY-PRIVATE-ELSEWHERE.
+- *Writes* (`authorizes_dictation_history_write`). The served person may change an entry's tier and
+  raise a setting. Anyone else may delete and clear the entries it can list and lower a setting,
+  and is refused a tier change with MSG-HISTORY-HOST-TIER and a raise with
+  MSG-HISTORY-HOST-SETTINGS, which name the `biorouter dictation history` command to run on the
+  server. Each refusal is decided from the request before an id is read.
+
+The served person is a field of `HttpCaller` that only these three methods read. `session_reach`,
+the transcript gate, never reads it (`the_transcript_gate_does_not_read_the_served_person` in
+`routes/session_reach.rs`), for the reason SD-10 gave the served operator's tier: admitting the
+served person there would hand a browser private chats it has always been refused. A stated private
+`X-Caller-Provider` and the served operator's tier never list a private dictation on any daemon while
+the privacy tiers are on:
+such a caller is a model or a host, and no model reads the history over HTTP. A model reads it only
+through the `dictionary__search_dictations` tool, in the person's own chat, under the privacy tiers.
+
+**Why.** Without this record a `serve` host's browser would see no private history at all, and
+since every new dictation is private by default, it would see no history: the page would record the
+person's text and never show it back to them.
+
+**Displaced alternatives.**
+
+- *Admit every holder of the secret on a keyless daemon.* Rejected: a chat's model holds
+  `developer__shell` and recovers the secret with `ps eww`, and the history is the record of the
+  person's speech from every surface, not one chat's data.
+- *Admit a stated private capability, as the dictionary's listing does.* Rejected for the history
+  alone: that caller is a model.
+- *Keep the history off on `serve`.* Rejected: the person on a server is the one most likely to lose
+  dictated text, because nothing on the server shows it again.
+
+**Consequences to accept.**
+
+- As for SD-18 and SD-19, the cookie and the Fetch Metadata are not a proof of a person against
+  something that reads the daemon's environment, where `serve` puts the token beside the secret. A
+  model with a shell that sets out to forge a browser request can read the private history. The
+  owner's ruling of 2026-09-29 (a local agent forging a person's action is not a threat this
+  product designs against) applies.
+- A `--no-token` daemon cannot tell its page from any other local caller, so nobody there is the
+  served person: nothing is recorded and no private entry is listed.
+- Every browser that opens the printed address is the person (SD-9 and SD-10): a colleague given the
+  address reads the host's private dictations.
+
+Implemented in `crates/biorouter-server/src/routes/session_reach.rs` (the `served_person` field and
+the three `HttpCaller` methods), `routes/dictation_history.rs` and `routes/dictation.rs` (the
+recording). Pinned by `crates/biorouter-server/tests/dictation_history_no_user_key.rs`, its own
+binary because the user action digest and the served operator are process-global `OnceLock`s.
+
+---
+
 ## Related documentation
 
 - [Architecture of the serving path](serve-architecture.md) — how the decisions above are built.
 - [Browser access](browser-access.md) — the user-facing guide to `biorouter serve`.
 - [Privacy tiers](../security/privacy-tiers.md) — the classification system SD-1 protects.
+- [Dictation history](../dictation/history.md): the store and the rules SD-20 serves.
 - [Environment variables](../configuration/environment-variables.md) — the settings the daemon
   and the command read.

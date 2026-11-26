@@ -491,7 +491,10 @@ this section is the ledger.
     `/agent/call_tool` refuses `dictionary__add_terms` and `dictionary__remove_added_terms`,
     because it dispatches as `public_enforced()` and a private chat's term would land public
     there; an `execute_code` script refuses the same two tools from any chat (DD-42,
-    `crates/biorouter/src/security/dictionary_store.rs`).
+    `crates/biorouter/src/security/dictionary_store.rs`). Since 2026-11-26 it has four tools:
+    `dictionary__search_dictations`, read only, searches the dictation history (the dictation
+    history bullet below), and `/agent/call_tool` leaves it open because that route's public
+    capability reaches public dictations only.
   - **The ACP residual of DD-57.** Over ACP stdio the capability, which is on in a fresh
     configuration, only ever suggests. The Jupyter AI persona delivers other people's messages to Biorouter as
     user messages, so an agent there can take a term from a colleague's words. That term lands
@@ -524,6 +527,26 @@ this section is the ledger.
   records nothing while the master switch is off; and a dictation into a chat whose agent is not
   loaded yet has an unstated target model, so it leaves out every row that names an institution
   (kept by the owner on 2026-11-10, O-43).
+- **The dictation history is private by default, and an agent only searches it (DD-96, DD-100,
+  2026-11-26, after this ledger was written; awaiting the owner's ratification).** Design:
+  [dictation history](../dictation/history.md). The text of every dictation a person started is
+  kept on the host that transcribed it, stamped private unless the person turned on **Save new
+  dictations as public** and nothing about the dictation says private (`history_stamp` in
+  `crates/biorouter/src/dictation/history.rs`, called from the stream route and the CLI recorder
+  only); a private entry carries institutions by P-16's rule. Over HTTP private entries are listed
+  to the user action proof and, on a keyless `serve` daemon, to the person in the served page
+  (SD-20), never to a stated private `X-Caller-Provider`: that caller is a model, so the history is
+  stricter than the dictionary on purpose. A model reads it only through
+  `dictionary__search_dictations` in the person's own chat, where `agent_reads_dictation` applies
+  Gate D's rule and then each institution's DR-26 check on the call's admitted `CallCapability`,
+  sampled once and never re-read, before the limit and with no count; a private entry handed to a
+  still-Public private reader ratchets it first (DR-33, a second production
+  `raise_reader_privacy(` call, which the read ratchet census counts). The history never reaches
+  recognition (P-18), the path inspector refuses its folder in both tiers, and a shell can still
+  read the file (DR-17). Census rows: the three `HttpCaller` methods,
+  `gate_dictation_history_entry`, `history_stamp` and `agent_reads_dictation` in
+  `privacy_guard_wiring.rs`, and `crates/biorouter/tests/dictation_history_readers.rs` for who
+  opens the store.
 - **A public chat's model is told which enabled private extensions it does not get (WP-22,
   2026-11-25, after this ledger was written).** Gate F2 leaves a withheld extension out of the
   system prompt's extension list and Gate E leaves out its tools, which is right, but nothing else

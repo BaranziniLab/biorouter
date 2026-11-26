@@ -30,7 +30,7 @@ Identifier schemes, all indexed in the plan:
 | M-1 onward | Measurements (M-9 and M-13 withdrawn), defined in [testing and release](testing-and-release.md#measurements) and dated in the [checklist's log](../releases/dictation-test-checklist.md#measurement-log) |
 | O-1 onward | The owner's decisions of 2026-11-05 and the plan's defaults |
 | MSG-… | Exact text a person sees ([surfaces](surfaces.md), "Message catalog") |
-| P-1 to P-16 | Privacy invariants, each held by a named test |
+| P-1 to P-18 | Privacy invariants, each held by a named test (P-17 and P-18, with the amended P-2, are the dictation history's) |
 | Build rules 1 to 11 | The build rules of DD-10 (never called R1 to R11, which are the owner's requirements) |
 
 This document elaborates DD-2 to DD-32, DD-87, DD-89 to DD-91 and DD-93. It restates an answer from the register only where an implementer needs it in place; the reasons and the rejected alternatives stay in the register. Where this document and the register disagree, the register wins. Code is cited as a file plus a symbol; a line number appears only where the plan verified it at `main`.
@@ -1197,9 +1197,10 @@ dictation:
   external_engine: false       # parsed in v1, no effect until an engine URL exists
   dictionary: false            # no dictionary edits, sidebar row, capability, extractor or bias
   dictionary_agent_writes: false   # agent tools not offered; extractor off; agent_writes pinned to suggest
+  history: false               # nothing new kept in the dictation history; the agent cannot search it
 ```
 
-Every key only narrows; `true` equals absent. With `dictionary: false`, transcription still works with an empty bias set.
+Every key only narrows; `true` equals absent. With `dictionary: false`, transcription still works with an empty bias set. `history` is the ninth key, added with the [dictation history](history.md) on 2026-11-26 (DD-96): a binary from before it reads the key as unknown and turns dictation off, and the desktop app's own reader keeps a second copy of the key list (`LAPTOP_DICTATION_POLICY_KEYS` in `ui/desktop/src/utils/managedDictationPolicy.ts`) that must change with `DICTATION_POLICY_KEYS`, which `managedDictationPolicy.test.ts` checks.
 
 ### Parsing
 
@@ -1225,6 +1226,7 @@ pub struct DictationPolicy {
     pub enabled: Rule, pub capture: Rule, pub model_downloads: Rule,
     pub allowed_models: Option<Vec<String>>, pub models_dir: Option<PathBuf>,
     pub external_engine: Rule, pub dictionary: Rule, pub dictionary_agent_writes: Rule,
+    pub history: Rule, // DD-96, 2026-11-26
 }
 
 impl ManagedPolicy {
@@ -1253,7 +1255,8 @@ A newer key on an older binary therefore turns dictation off rather than being i
 | `POST /dictation/models/delete`, dictionary export | never refused | never refused | never refused |
 | `/dictionary/*` writes and observations | 403 | allowed | `dictionary: false` refuses |
 | `add_extension_with_origin` | the `dictionary` capability does not load, so a resumed roster cannot load it | | `dictionary: false` likewise |
-| `permission_for` | denies `dictionary__*` | | `dictionary: false`, `dictionary_agent_writes: false` |
+| `permission_for` | denies `dictionary__*` | | `dictionary: false`, `dictionary_agent_writes: false`; `history: false` denies `dictionary__search_dictations` alone |
+| The stream route's history recorder and `/dictation/history/*` | nothing recorded | nothing recorded (no stream starts) | `history: false`: nothing recorded; tier changes and raised settings refused; listing, delete and clear allowed |
 | `call_tool_boundary_refusal` [C `routes/agent.rs:3320`] | a managed deny arm, which also closes the general gap that a managed deny does not hold at `POST /agent/call_tool` | | |
 | The chat extractor | off | | `dictionary: false`, `dictionary_agent_writes: false` |
 | `bias_set` [C `crates/biorouter/src/dictation/bias.rs`] | | | `dictionary: false` gives the empty set, so a dictation sends no prompt, builds no bonus table, corrects nothing and records no usage; `transcribe` then prepares no dictionary at all, as with `--no-dictionary` (PR-14b) |
@@ -1313,6 +1316,8 @@ The keys in this table stay out of both `CAPABILITY_CONFIG_KEYS` and `NOT_CAPABI
 
 No route takes a filesystem path. There is no `/dictation/models/import` and no one shot upload route.
 
+Since 2026-11-26 (DD-96) `POST /dictation/streams` also takes an optional `surface` (`composer`, `crew`, `clipboard`, `other_app`, `app_preview` or `terminal`), which says where the text goes and is recorded with the [dictation history](history.md) entry; a missing or unknown word is derived from `target_kind`, and the request is not `deny_unknown_fields`, so an older daemon ignores it. A finished stream a person started is recorded once, after the transcript is out. The history's own routes, `/dictation/history/*`, are in `routes/dictation_history.rs` and described in [dictation history](history.md#over-http); `GET /dictation/status`'s `policy` gains `history`.
+
 The transport is one chunked HTTP stream for every Biorouter page (DD-27). The desktop and `serve` build one renderer source with one Vite config, and `utils/surface.ts` tells them apart at run time [C `ui/desktop/package.json` `build:web`]. Uploads of 64 to 512 KiB took about 3 to 14 ms (2.7 to 14.1 ms in Chromium, 3 to 7 ms in Firefox and WebKit), and nginx's 1 MiB default answers a readable 413 [M]. A WebSocket would be a fourth entry in `auth.rs` `is_unauthenticated_path`, after `/status`, `/ui/workspace` and `/tool_bridge/{nonce}`, and the second exempt path after `/ui/workspace` to take the daemon secret as a query parameter, as `routes/workspace.rs` `check_workspace_ws_auth` and `hooks/useWorkspaceChannel.ts` do today [C]. It also failed through a stock nginx location [M]. The renderer's six connections per origin already hold up to five long requests by design (`MAX_LIVE_OBSERVER_STREAMS = 2` at `state.rs:879`, plus the long polls) [C], so dictation adds no long lived request.
 
 ### Request and response shapes
@@ -1349,6 +1354,7 @@ type DictationStatus = {
     managed: boolean;
     enabled: Allowance; capture: Allowance; install: Allowance; external_engine: Allowance;
     dictionary: Allowance; agent_writes: Allowance;
+    history: Allowance; // DD-96, 2026-11-26: the managed `history` key
     allowed_models: string[] | null;
   };
   limits: { max_seconds: number; max_chunk_bytes: number; max_streams: number }; // 600, 524288, 8
@@ -1519,9 +1525,13 @@ Transcription changes no tier and sends nothing off the host, and a secret holde
 
 `crates/biorouter/tests/privacy_guard_wiring.rs` gains `crates/biorouter-server/src/routes/dictation.rs` as a site on the existing rows `http_caller`, `session_reach` and `target_tier` (whose row moves from `Status::WiredThrough("session_reach")` to `Status::Wired`), a `Guard` row for `HttpCaller::dictation_standing` (`defined_in: SESSION_REACH`), and rows written by hand for `bias_set` and `chat_reach`, as [dictionary](dictionary.md) lists; the `every_gated_route_resolves_the_tier_before_it_touches_the_session` table in `session_reach.rs` gains the stream creation handler. PR-14 adds the `visible_to` site in `crates/biorouter/src/dictation/bias.rs`. PR-14 also adds a `Site` row to `crates/biorouter/tests/privacy_capability.rs` for the one `affiliation::gate_cross_affiliation` call in `bias.rs`, the institutions check of private rows, which sits inside the loop over a row's institutions (P-16, O-35). No pull request here adds a `floor`, `raise_privacy`, `.call_tool(` or `CallCapability::sample(` site.
 
+The dictation history (DD-96, 2026-11-26) adds `Guard` rows for `HttpCaller::lists_dictation_history_entry`, `authorizes_dictation_history_write`, `records_dictation_history` and `gate_dictation_history_entry` (`defined_in: SESSION_REACH`), hand-written rows for `history_stamp` (its two call files) and `agent_reads_dictation` (its one caller, the capability's search), one more counted `raise_reader_privacy(` in `dictionary_extension.rs` in the read ratchet census, and `crates/biorouter/tests/dictation_history_readers.rs` for who opens the store ([dictation history](history.md)).
+
 ### Logging
 
 Tracing in the dictation routes and the service records, as built at PR-16, a stream's log id, its `target_kind` and `bias_scope`, model ids, the sample rate, the segment count, durations (the audio's length, stop to text, `wait_ms`, `tail_ms`, the target decision, the dictionary's preparation, an install's time, and a warm up's `ready_ms` and `decode_ms`) and a warm up's reason and backend, nothing else; no line records a byte count or a queue position. That is DD-93's list, and every message is a fixed string: `crates/biorouter/tests/dictation_log_fields.rs` reads each `tracing` level macro in a source whose path names dictation, the dictionary or `transcribe`, and fails on a field outside the list, on a value formatted into a message, and on a `stream` field that is not the log id. The log id is the first 8 hex characters of the stream id's SHA-256, never the id itself: the id is the only thing besides the daemon secret that the stream's routes check (DD-29), so a log reader who holds the secret could otherwise read a private chat's transcript with it. It never records audio, `text`, `raw_text`, `partial`, `changes`, prompt strings, dictionary entries or `context`. `tests/dictation_routes.rs` captures tracing output and fails on any audio derived content (P-1, P-2).
+
+The [dictation history](history.md) (DD-96) adds one line to that list's sources and no field: a failed append logs the fixed message "dictation history entry dropped", with the stream's log id on the daemon and no field at all in the CLI's recorder, and nothing in the history's routes, store or tool logs a dictation's text or id. The tests that read every dictation source still apply to it.
 
 **Acceptance (PR-15).** The route binaries of [testing and release](testing-and-release.md) pass: `dictation_routes`, `dictation_routes_auth`, `dictation_keyed`, `dictation_no_user_key` (its own binary, because the user action digest is a process global `OnceLock`), `dictation_policy_routes`, and the oracle case in `dictation_routes` (a secret only caller, near silence and a private chat's id get public scope and a byte identical response). The OpenAPI schema check is clean and the TypeScript client compiles.
 
