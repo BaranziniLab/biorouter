@@ -21,7 +21,7 @@ import { DICTIONARY_LABELS, DICTIONARY_MESSAGES } from '../../dictionary/copy';
 import { answer, listing, scan, settings } from '../../dictionary/dictionaryTestKit';
 import { resetDictionaryStoreForTests } from '../../dictionary/useDictionary';
 import { resetSuggestionScanForTests } from '../../dictionary/useSuggestionScan';
-import { SETTINGS_SECTION_IDS } from '../settingsSections';
+import { SETTINGS_GROUP_IDS, SETTINGS_SECTION_IDS } from '../settingsSections';
 import { speechModelsCopy as copy } from './copy';
 
 const activation = vi.hoisted(() => ({
@@ -52,6 +52,9 @@ const dictionaryApi = vi.hoisted(() => ({
   listDictionaryEntries: vi.fn(),
   readConfig: vi.fn(),
   getDictionarySuggestionScan: vi.fn(),
+  // The dictation history group at the section's end (DD-96).
+  getDictationHistorySettings: vi.fn(),
+  changeDictationHistorySettings: vi.fn(),
 }));
 vi.mock('../../../api', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../../api')>()),
@@ -182,6 +185,22 @@ function status(overrides: Partial<DictationStatus> = {}): DictationStatus {
 
 const ok = <T,>(data: T, code = 200): DictationResult<T> => ({ ok: true, status: code, data });
 
+/** `GET /dictation/history/settings`: the history on, public by default off, every write allowed. */
+const historySettings = () => ({
+  keep_history: true,
+  public_by_default: false,
+  authority: {
+    list_private: allowed,
+    write: allowed,
+    tier_change: allowed,
+    raise_settings: allowed,
+  },
+});
+
+/** The status with `policy.history`, which the renderer's status type does not name yet. */
+const withHistoryPolicy = (history: { allowed: boolean; reason: string | null }) =>
+  ({ ...status().policy, managed: true, history }) as DictationStatus['policy'];
+
 let current: DictationStatus;
 let statusApi: DictationApi;
 let modelsApi: DictationModelsApi;
@@ -263,6 +282,12 @@ beforeEach(() => {
   dictionaryApi.listDictionaryEntries.mockReset().mockResolvedValue(listing([]));
   dictionaryApi.readConfig.mockReset().mockResolvedValue({ data: null });
   dictionaryApi.getDictionarySuggestionScan.mockReset().mockResolvedValue(answer(200, scan()));
+  dictionaryApi.getDictationHistorySettings
+    .mockReset()
+    .mockResolvedValue(answer(200, historySettings()));
+  dictionaryApi.changeDictationHistorySettings
+    .mockReset()
+    .mockResolvedValue(answer(200, historySettings()));
 });
 
 afterEach(() => {
@@ -1087,6 +1112,34 @@ describe('Suggest words from my messages', () => {
   });
 });
 
+/**
+ * The dictation history's rows (DD-96) end the section, after the dictionary's
+ * (`DictationHistorySettingsRows.test.tsx` has the group's own tests).
+ */
+describe('Dictation history', () => {
+  it('ends the section after the dictionary rows, where the deep link lands', async () => {
+    await renderSection();
+    const keep = await screen.findByRole('switch', {
+      name: DICTIONARY_LABELS.historySettings.keep,
+    });
+    expect(keep).toHaveAttribute('aria-checked', 'true');
+    const group = screen.getByTestId('settings-dictation-history');
+    expect(group).toHaveAttribute('id', SETTINGS_GROUP_IDS.dictationHistory);
+    expect(screen.getByTestId('settings-dictionary').nextElementSibling).toBe(group);
+    expect(
+      screen.getByRole('switch', { name: DICTIONARY_LABELS.historySettings.publicByDefault })
+    ).toHaveAttribute('aria-checked', 'false');
+  });
+
+  it('is absent, and reads nothing, where managed policy turns the history off', async () => {
+    serve(status({ policy: withHistoryPolicy({ allowed: false, reason: null }) }));
+    await renderSection();
+    await screen.findByTestId('settings-dictionary');
+    expect(screen.queryByTestId('settings-dictation-history')).toBeNull();
+    expect(dictionaryApi.getDictationHistorySettings).not.toHaveBeenCalled();
+  });
+});
+
 describe('S17 keyed external backend', () => {
   it('explains the missing User Action Key before offering Install', async () => {
     desktop({ local: false });
@@ -1266,5 +1319,66 @@ describe('Dictate into other apps', () => {
     expect(
       await screen.findByRole('switch', { name: DICTATION_ACTIONS.dictateIntoOtherApps })
     ).toBeDisabled();
+  });
+
+  /** DD-97: where the text goes, for fn in other apps and the shortcut alike. */
+  describe('Type into the app you are using', () => {
+    function insertBridge(view: { supported: boolean; enabled: boolean; allowed: boolean }) {
+      const get = vi.fn(async () => view);
+      const openSettings = vi.fn(async () => undefined);
+      Object.assign((window as unknown as { electron: object }).electron, {
+        dictationInsertGet: get,
+        dictationInsertSet: vi.fn(async (enabled: boolean) => ({ ...view, enabled })),
+        dictationInsertOpenSettings: openSettings,
+      });
+      return { get, openSettings };
+    }
+
+    it('shows under Dictate into other apps while it is on, after the shortcut', async () => {
+      bridge(anywhere({ enabled: true, disclosureShown: true }));
+      const { openSettings } = insertBridge({ supported: true, enabled: true, allowed: true });
+      await renderSection();
+      const control = await screen.findByRole('switch', {
+        name: DICTATION_ACTIONS.typeIntoFrontApp,
+      });
+      expect(control).toHaveAttribute('aria-checked', 'true');
+      const shortcut = screen.getByRole('textbox', { name: 'Dictation shortcut' });
+      expect(
+        Boolean(shortcut.compareDocumentPosition(control) & Node.DOCUMENT_POSITION_FOLLOWING)
+      ).toBe(true);
+      expect(screen.queryByTestId('dictation-insert-permission')).toBeNull();
+      expect(openSettings).not.toHaveBeenCalled();
+    });
+
+    it('asks for Accessibility with its one button while macOS does not allow it', async () => {
+      bridge(anywhere({ enabled: true, disclosureShown: true }));
+      const { openSettings } = insertBridge({ supported: true, enabled: true, allowed: false });
+      const user = userEvent.setup();
+      await renderSection();
+      const note = await screen.findByTestId('dictation-insert-permission');
+      expect(note).toHaveTextContent(DICTATION_MESSAGES['MSG-INSERT-PERMISSION']);
+      expect(openSettings).not.toHaveBeenCalled();
+      await user.click(
+        within(note).getByRole('button', { name: DICTATION_ACTIONS.openAccessibility })
+      );
+      expect(openSettings).toHaveBeenCalledTimes(1);
+    });
+
+    it('is absent while Dictate into other apps is off, and where main cannot type', async () => {
+      bridge(anywhere());
+      const { get } = insertBridge({ supported: true, enabled: true, allowed: true });
+      const first = await renderSection();
+      await screen.findByRole('switch', { name: DICTATION_ACTIONS.dictateIntoOtherApps });
+      expect(screen.queryByRole('switch', { name: DICTATION_ACTIONS.typeIntoFrontApp })).toBeNull();
+      expect(get).not.toHaveBeenCalled();
+      first.unmount();
+
+      bridge(anywhere({ enabled: true, disclosureShown: true }));
+      const unsupported = insertBridge({ supported: false, enabled: false, allowed: false });
+      await renderSection();
+      await screen.findByRole('textbox', { name: 'Dictation shortcut' });
+      await waitFor(() => expect(unsupported.get).toHaveBeenCalled());
+      expect(screen.queryByTestId('dictation-insert-row')).toBeNull();
+    });
   });
 });

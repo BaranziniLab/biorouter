@@ -8,11 +8,16 @@
  *   systems do not let an app see fn.
  * - {@link FnOtherAppsRow}, under **Dictate into other apps** on macOS: the same gestures in
  *   other apps, off by default.
+ * - {@link TypeIntoFrontAppRow}, under **Dictate into other apps** where main can type into
+ *   another app (macOS, DD-97): fn in other apps and the global shortcut type the text into the
+ *   app that was in front, on by default.
  *
- * The setting is main's (`<config>/dictation/fn-key.json`); this file reads and writes it only
- * through `fnKeyStore.ts`. Kept apart from `SpeechModelSection.tsx`, which other work edits.
+ * The fn setting is main's (`<config>/dictation/fn-key.json`); this file reads and writes it only
+ * through `fnKeyStore.ts`. The typing setting is main's too (`<config>/dictation/insert.json`),
+ * read and written only through the preload's `dictationInsert*` members. Kept apart from
+ * `SpeechModelSection.tsx`, which other work edits.
  */
-import { useSyncExternalStore } from 'react';
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import { fnShortcutWorks } from '../../../utils/dictationFnKey';
 import { getDictationShortcutText } from '../../../utils/keyboardShortcuts';
 import { isBrowserSurface } from '../../../utils/surface';
@@ -107,6 +112,109 @@ export function DictationShortcutRows() {
           {usage === null
             ? dictationMessage('MSG-FN-CONFLICT-UNKNOWN')
             : dictationMessage('MSG-FN-CONFLICT', { action: FN_USAGE_ACTIONS[usage] })}
+        </Note>
+      )}
+    </>
+  );
+}
+
+/** What main reports about typing into the app in front (`dictation:insert:get`). */
+type InsertView = Awaited<ReturnType<NonNullable<Window['electron']['dictationInsertGet']>>>;
+
+/** A view only when its three fields are the booleans main promises; anything else is none. */
+function insertViewOf(value: unknown): InsertView | null {
+  if (!value || typeof value !== 'object') return null;
+  const { supported, enabled, allowed } = value as Record<string, unknown>;
+  if (typeof supported !== 'boolean' || typeof enabled !== 'boolean') return null;
+  if (typeof allowed !== 'boolean') return null;
+  return { supported, enabled, allowed };
+}
+
+/**
+ * **Type into the app you are using** (DD-97), under **Dictate into other apps**: fn in other
+ * apps and the global shortcut paste the text into the app that was in front when the dictation
+ * started, then put back what was on the clipboard. Absent where main cannot type into another
+ * app (`supported` false: Windows, Linux, a browser surface, or no bridge).
+ *
+ * While it is on and macOS does not allow it, MSG-INSERT-PERMISSION and **Open Accessibility**
+ * show. That button is the only thing here that may make macOS ask: reading the setting, turning
+ * the switch and coming back to the window never do. The setting is read again whenever the
+ * window takes focus, so a grant made in System Settings clears the request on return.
+ */
+export function TypeIntoFrontAppRow() {
+  const [view, setView] = useState<InsertView | null>(null);
+  const mounted = useRef(true);
+  // Reads and writes answer out of order; only the newest one issued is shown.
+  const issued = useRef(0);
+
+  const adopt = useCallback((ticket: number, value: unknown) => {
+    const next = insertViewOf(value);
+    if (mounted.current && ticket === issued.current && next) setView(next);
+  }, []);
+
+  const read = useCallback(() => {
+    const get = window.electron?.dictationInsertGet;
+    if (typeof get !== 'function') return;
+    const ticket = ++issued.current;
+    void Promise.resolve()
+      .then(() => get())
+      .then((value) => adopt(ticket, value))
+      .catch(() => undefined);
+  }, [adopt]);
+
+  useEffect(() => {
+    mounted.current = true;
+    if (isBrowserSurface()) return;
+    read();
+    window.addEventListener('focus', read);
+    return () => {
+      mounted.current = false;
+      window.removeEventListener('focus', read);
+    };
+  }, [read]);
+
+  if (isBrowserSurface() || !view || !view.supported) return null;
+
+  const turn = (enabled: boolean) => {
+    const set = window.electron?.dictationInsertSet;
+    if (typeof set !== 'function') return;
+    const ticket = ++issued.current;
+    void Promise.resolve()
+      .then(() => set(enabled))
+      .then((value) => adopt(ticket, value))
+      .catch(() => read());
+  };
+
+  const openAccessibility = () => {
+    const open = window.electron?.dictationInsertOpenSettings;
+    if (typeof open !== 'function') return;
+    void Promise.resolve()
+      .then(() => open())
+      .catch(() => undefined)
+      .then(() => read());
+  };
+
+  return (
+    <>
+      <SettingRow
+        label={DICTATION_ACTIONS.typeIntoFrontApp}
+        help={dictationMessage('MSG-INSERT-HELP')}
+        data-testid="dictation-insert-row"
+      >
+        <Switch checked={view.enabled} onCheckedChange={turn} />
+      </SettingRow>
+      {view.enabled && !view.allowed && (
+        <Note
+          tone="warning"
+          role="status"
+          testId="dictation-insert-permission"
+          action={
+            <Button type="button" size="sm" variant="secondary" onClick={openAccessibility}>
+              {DICTATION_ACTIONS.openAccessibility}
+            </Button>
+          }
+        >
+          {dictationMessage('MSG-INSERT-PERMISSION')}
         </Note>
       )}
     </>
