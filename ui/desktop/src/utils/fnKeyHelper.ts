@@ -3,19 +3,28 @@
  * program is, what its lines mean, and the service that keeps it running while the fn shortcut
  * is on and turns what it reports into gesture intents (`fnGesture.ts`).
  *
- * The helper reports only fn down, fn up and "another key while fn was down, or the first one
- * just after it was released" (which ends the wait for a second tap). It is never started
+ * The helper reports only fn down, fn up, that a press is still down at the hold threshold
+ * (`held`, timed on its own clock so a busy main thread cannot reorder it with the release), and
+ * "another real key while fn was down, or the first one just after it was released" (which ends
+ * the wait for a second tap). No key code or character ever reaches this side. It is never started
  * while the shortcut is off, so a Mac with the shortcut off runs no keyboard listener at all.
  */
 import path from 'node:path';
 import fs from 'node:fs';
-import { FnGestureDriver, type FnIntent } from './fnGesture';
+import { FnGestureDriver, type FnGestureEvent, type FnIntent } from './fnGesture';
 
 export const FN_HELPER_NAME = 'biorouter-fnkey';
 
 /** What macOS does when fn is pressed: nothing, input source, emoji picker, system dictation. */
 export type FnUsage = 0 | 1 | 2 | 3;
 export type FnPermission = 'granted' | 'denied';
+
+/**
+ * The protocol this app speaks (`PROTOCOL_VERSION` in `crates/biorouter-fnkey/src/protocol.rs`).
+ * The helper ships inside the app, so a ready line with any other version is a helper from
+ * another build, and it is refused rather than half understood.
+ */
+export const FN_PROTOCOL_VERSION = 2;
 
 export type FnHelperMessage =
   | {
@@ -26,8 +35,12 @@ export type FnHelperMessage =
       /** The helper's clock now, so its event times can be placed before any key arrives. */
       t: number | null;
     }
+  /** A ready line from a helper that speaks another protocol version. */
+  | { type: 'incompatible'; v: number }
   /** `t`: when the key event happened, in ms on the helper's clock (Quartz's event timestamp). */
   | { type: 'fn'; down: boolean; t: number | null }
+  /** The press that went down at `t - 300` is still down, with nothing else pressed, at `t`. */
+  | { type: 'held'; t: number | null }
   | { type: 'other'; t: number | null }
   | { type: 'permission'; permission: FnPermission }
   | { type: 'listener-lost' };
@@ -43,7 +56,10 @@ function eventTime(value: unknown): number | null | undefined {
   return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : undefined;
 }
 
-/** One line from the helper, or null for anything that is not exactly a known message. */
+/**
+ * One line from the helper, or null for anything that is not exactly a known message. Fields a
+ * known line does not use are ignored, so a later optional field needs no new version.
+ */
 export function parseFnHelperLine(line: string): FnHelperMessage | null {
   if (line.length > MAX_LINE) return null;
   let value: unknown;
@@ -56,8 +72,10 @@ export function parseFnHelperLine(line: string): FnHelperMessage | null {
   const row = value as Record<string, unknown>;
   switch (row.type) {
     case 'ready': {
-      if (row.v !== 1 || !isPermission(row.permission) || typeof row.listening !== 'boolean')
-        return null;
+      if (typeof row.v !== 'number' || !Number.isSafeInteger(row.v)) return null;
+      // Another build's helper: whatever else its ready line says may mean something else.
+      if (row.v !== FN_PROTOCOL_VERSION) return { type: 'incompatible', v: row.v };
+      if (!isPermission(row.permission) || typeof row.listening !== 'boolean') return null;
       const usage = row.fnUsage;
       const fnUsage =
         usage === 0 || usage === 1 || usage === 2 || usage === 3 ? (usage as FnUsage) : null;
@@ -72,9 +90,10 @@ export function parseFnHelperLine(line: string): FnHelperMessage | null {
         ? { type: 'fn', down: row.down, t }
         : null;
     }
+    case 'held':
     case 'other': {
       const t = eventTime(row.t);
-      return t === undefined ? null : { type: 'other', t };
+      return t === undefined ? null : { type: row.type, t };
     }
     case 'permission':
       return isPermission(row.permission)
@@ -171,19 +190,57 @@ const RESTART_WINDOW_MS = 60_000;
 const RESTART_BASE_MS = 1_000;
 /** The fastest a refresh may restart a helper that is not listening. */
 const REFRESH_MIN_MS = 2_000;
+/**
+ * How far a helper time may sit from where it arrived before it is not believed: one that maps
+ * into the future, or more than this before its arrival, is timed by its arrival instead. The
+ * helper applies the same bound to Quartz's event times (`event_ms` in its protocol module).
+ */
+export const FN_TIME_PLAUSIBLE_MS = 10_000;
+
+/** A helper line, as {@link FnKeyServiceOptions.onTrace} names it. Never its content. */
+export type FnTraceLineType =
+  | 'ready'
+  | 'incompatible'
+  | 'fn-down'
+  | 'fn-up'
+  | 'held'
+  | 'other'
+  | 'permission'
+  | 'listener-lost'
+  | 'unreadable';
+
+/** What the service did with one helper line, for the fn trace (`formatFnTrace`). */
+export interface FnLineTrace {
+  line: FnTraceLineType;
+  /** The time the helper wrote, in ms on its clock; null when the line has none. */
+  helperT: number | null;
+  /** The time the gesture reducer was given, on this process's clock; null for other lines. */
+  mappedAt: number | null;
+  /** When this process read the line. */
+  arrivalAt: number;
+  /** Whether the event was placed by the helper's time or, not believing it, by its arrival. */
+  timedBy: 'helper' | 'arrival' | null;
+}
 
 export interface FnKeyServiceOptions {
   platform: string;
   helperPath: string | null;
   spawn: SpawnHelper;
-  onIntent: (intent: FnIntent) => void;
+  /**
+   * Each gesture intent, with the id of the gesture it belongs to (`fnGesture.ts`). A handler
+   * that takes only the intent is accepted too.
+   */
+  onIntent: (intent: FnIntent, gesture: number) => void;
   onStatus: (status: FnKeyStatus) => void;
+  /** Each helper line as it is read (only for the unpackaged app's fn trace). */
+  onTrace?: (trace: FnLineTrace) => void;
   now?: () => number;
 }
 
 /**
  * Keeps the helper running while the shortcut is on, restarts it when it dies (with a back off,
- * and not forever), and feeds what it reports into a {@link FnGestureDriver}.
+ * and not forever), and feeds what it reports into a {@link FnGestureDriver}. It arms no timer for
+ * a key press: a hold is confirmed by the helper's `held` line.
  */
 export class FnKeyService {
   private child: HelperProcess | null = null;
@@ -197,6 +254,8 @@ export class FnKeyService {
   private restarts: number[] = [];
   private restartTimer: ReturnType<typeof setTimeout> | null = null;
   private lastRefresh = -Infinity;
+  /** The helper answered with another protocol version: retried only when the switch is. */
+  private incompatible = false;
   /** The helper's clock against ours: the smallest delay seen, so a late line keeps its time. */
   private clockOffset: number | null = null;
   private lastEventAt = -Infinity;
@@ -205,7 +264,7 @@ export class FnKeyService {
 
   constructor(private readonly options: FnKeyServiceOptions) {
     this.now = options.now ?? (() => performance.now());
-    this.driver = new FnGestureDriver(options.onIntent, this.now);
+    this.driver = new FnGestureDriver(options.onIntent);
   }
 
   get supported(): boolean {
@@ -222,6 +281,7 @@ export class FnKeyService {
     this.wanted = active;
     if (active) {
       this.state.failed = false;
+      this.incompatible = false;
       this.restarts = [];
       this.spawn();
     } else {
@@ -235,10 +295,11 @@ export class FnKeyService {
   /**
    * Read Input Monitoring again, by starting a fresh helper when the current one does not listen:
    * a grant made in System Settings reaches a new process. Called when a Biorouter window gains
-   * focus and when Settings asks; at most once every two seconds.
+   * focus and when Settings asks; at most once every two seconds. A helper of another protocol
+   * version is not started again this way: it would only answer the same.
    */
   refresh(): void {
-    if (!this.wanted || !this.supported || this.state.listening) return;
+    if (!this.wanted || !this.supported || this.state.listening || this.incompatible) return;
     const now = this.now();
     if (now - this.lastRefresh < REFRESH_MIN_MS) return;
     this.lastRefresh = now;
@@ -339,26 +400,69 @@ export class FnKeyService {
   /**
    * When a key event happened, on this process's clock. A line that reaches a busy main thread
    * late keeps its place in time: the offset between the two clocks is the smallest delay seen,
-   * and times never run backwards.
+   * and times never run backwards. A time that is missing or 0 (an event created with no time),
+   * that maps into the future, or that maps more than {@link FN_TIME_PLAUSIBLE_MS} before its
+   * arrival (another clock) is not believed: the event is placed at its arrival. Only a line that
+   * arrived sooner than the reference, by less than that bound, moves the offset.
    */
-  private eventAt(helperTime: number | null): number {
-    const now = this.now();
+  private eventAt(
+    helperTime: number | null,
+    now: number
+  ): { at: number; timedBy: 'helper' | 'arrival' } {
     let at = now;
-    if (helperTime !== null) {
+    let timedBy: 'helper' | 'arrival' = 'arrival';
+    if (helperTime !== null && helperTime > 0) {
       const offset = now - helperTime;
-      this.clockOffset = this.clockOffset === null ? offset : Math.min(this.clockOffset, offset);
-      at = helperTime + this.clockOffset;
+      if (this.clockOffset === null) {
+        this.clockOffset = offset;
+        timedBy = 'helper';
+      } else {
+        const mapped = helperTime + this.clockOffset;
+        if (mapped <= now) {
+          if (now - mapped <= FN_TIME_PLAUSIBLE_MS) {
+            at = mapped;
+            timedBy = 'helper';
+          }
+        } else if (mapped - now <= FN_TIME_PLAUSIBLE_MS) {
+          // Sooner than any line yet: the reference itself was read late. Its own time is its
+          // arrival, and the lines after it are placed by the smaller offset.
+          this.clockOffset = offset;
+          timedBy = 'helper';
+        }
+      }
     }
     at = Math.min(now, Math.max(at, this.lastEventAt));
     this.lastEventAt = at;
-    return at;
+    return { at, timedBy };
   }
 
   private handle(message: FnHelperMessage | null): void {
-    if (!message) return;
+    const arrivalAt = this.now();
+    const trace = (
+      line: FnTraceLineType,
+      helperT: number | null = null,
+      mapped: { at: number; timedBy: 'helper' | 'arrival' } | null = null
+    ) =>
+      this.options.onTrace?.({
+        line,
+        helperT,
+        mappedAt: mapped?.at ?? null,
+        arrivalAt,
+        timedBy: mapped?.timedBy ?? null,
+      });
+    const feed = (type: Exclude<FnGestureEvent['type'], 'reset'>, helperT: number | null) => {
+      const mapped = this.eventAt(helperT, arrivalAt);
+      trace(type === 'other-key' ? 'other' : type, helperT, mapped);
+      this.driver.feed({ type, at: mapped.at });
+    };
+    if (!message) {
+      trace('unreadable');
+      return;
+    }
     switch (message.type) {
       case 'ready':
-        if (message.t !== null) this.eventAt(message.t);
+        if (message.t !== null) this.eventAt(message.t, arrivalAt);
+        trace('ready', message.t);
         this.state = {
           ...this.state,
           permission: message.permission,
@@ -369,7 +473,18 @@ export class FnKeyService {
         };
         this.publish();
         return;
+      case 'incompatible':
+        // A helper from another build: none of its lines is read, and it is not started again
+        // until the shortcut is turned off and on (MSG-FN-FAILED says so).
+        trace('incompatible');
+        this.incompatible = true;
+        this.clearRestart();
+        this.kill();
+        this.state = { ...this.state, listening: false, failed: true };
+        this.publish();
+        return;
       case 'permission': {
+        trace('permission');
         const changed = message.permission !== this.state.permission;
         this.state = { ...this.state, permission: message.permission };
         if (message.permission === 'granted' && !this.state.listening) {
@@ -381,16 +496,20 @@ export class FnKeyService {
         return;
       }
       case 'listener-lost':
+        trace('listener-lost');
         this.state = { ...this.state, listening: false };
         this.publish();
         this.kill();
         this.scheduleRestart();
         return;
       case 'fn':
-        this.driver.feed({ type: message.down ? 'fn-down' : 'fn-up', at: this.eventAt(message.t) });
+        feed(message.down ? 'fn-down' : 'fn-up', message.t);
+        return;
+      case 'held':
+        feed('held', message.t);
         return;
       case 'other':
-        this.driver.feed({ type: 'other-key', at: this.eventAt(message.t) });
+        feed('other-key', message.t);
         return;
     }
   }
