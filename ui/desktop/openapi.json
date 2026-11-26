@@ -6895,6 +6895,386 @@
         }
       }
     },
+    "/dictation/history": {
+      "get": {
+        "tags": [
+          "super::routes::dictation_history"
+        ],
+        "operationId": "list_dictation_history",
+        "parameters": [
+          {
+            "name": "q",
+            "in": "query",
+            "description": "A case folded substring of the text, at most 200 characters.",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "nullable": true
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "description": "The `next_cursor` of the previous page.",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "nullable": true
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "At most 200; 100 when absent.",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int32",
+              "nullable": true,
+              "minimum": 0
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The entries this caller may list, newest first, with an ETag over this page",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DictationHistoryList"
+                }
+              }
+            }
+          },
+          "304": {
+            "description": "Unchanged since the If-None-Match tag"
+          },
+          "422": {
+            "description": "bad_request: a query this daemon cannot read, a search over 200 characters, or a cursor it did not give",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DictationHistoryErrorBody"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "unreadable (MSG-HISTORY-FILE)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DictationHistoryErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/dictation/history/clear": {
+      "post": {
+        "tags": [
+          "super::routes::dictation_history"
+        ],
+        "operationId": "clear_dictation_history",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DictationHistoryClearRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "How many entries this caller may list, created at or before `through`, were deleted",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DictationHistoryDeleted"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "agent (MSG-HISTORY-AGENT)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DictationHistoryErrorBody"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "unreadable (MSG-HISTORY-FILE)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DictationHistoryErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/dictation/history/delete": {
+      "post": {
+        "tags": [
+          "super::routes::dictation_history"
+        ],
+        "operationId": "delete_dictation_history_entries",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DictationHistoryIdsRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "How many of the named entries this caller may list were deleted",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DictationHistoryDeleted"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "agent (MSG-HISTORY-AGENT)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DictationHistoryErrorBody"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "too_large: a body over 512 KiB or more than 5,000 ids",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DictationHistoryErrorBody"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "unreadable (MSG-HISTORY-FILE)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DictationHistoryErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/dictation/history/settings": {
+      "get": {
+        "tags": [
+          "super::routes::dictation_history"
+        ],
+        "operationId": "get_dictation_history_settings",
+        "responses": {
+          "200": {
+            "description": "The person's switches and what this caller may do",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DictationHistorySettings"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "super::routes::dictation_history"
+        ],
+        "operationId": "change_dictation_history_settings",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DictationHistorySettingsRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "The switches after the change",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DictationHistorySettings"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "agent, host_settings (MSG-HISTORY-HOST-SETTINGS, a raise on a daemon with no key from anyone but the served person) or policy",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DictationHistoryErrorBody"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "unreadable: the settings file could not be read, so nothing was changed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DictationHistoryErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/dictation/history/{id}": {
+      "delete": {
+        "tags": [
+          "super::routes::dictation_history"
+        ],
+        "operationId": "delete_dictation_history_entry",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "The entry's id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Deleted"
+          },
+          "403": {
+            "description": "agent (MSG-HISTORY-AGENT): a daemon that holds a key and no proof",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DictationHistoryErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "not_found (MSG-HISTORY-NOT-FOUND), for a missing id and one this caller may not list alike",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DictationHistoryErrorBody"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "unreadable (MSG-HISTORY-FILE)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DictationHistoryErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/dictation/history/{id}/tier": {
+      "post": {
+        "tags": [
+          "super::routes::dictation_history"
+        ],
+        "operationId": "change_dictation_history_tier",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "The entry's id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DictationHistoryTierRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "The entry with its new tier",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DictationHistoryEntryAnswer"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "agent, host_tier (MSG-HISTORY-HOST-TIER, decided before the id is read) or policy",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DictationHistoryErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "not_found (MSG-HISTORY-NOT-FOUND)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DictationHistoryErrorBody"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "unreadable (MSG-HISTORY-FILE)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DictationHistoryErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/dictation/models/cancel": {
       "post": {
         "tags": [
@@ -18549,6 +18929,254 @@
           }
         }
       },
+      "DictationHistoryAuthority": {
+        "type": "object",
+        "description": "What this caller may do, before any click, so no surface offers a doomed control.",
+        "required": [
+          "list_private",
+          "write",
+          "tier_change",
+          "raise_settings"
+        ],
+        "properties": {
+          "list_private": {
+            "$ref": "#/components/schemas/Allowance"
+          },
+          "raise_settings": {
+            "$ref": "#/components/schemas/Allowance"
+          },
+          "tier_change": {
+            "$ref": "#/components/schemas/Allowance"
+          },
+          "write": {
+            "$ref": "#/components/schemas/Allowance"
+          }
+        }
+      },
+      "DictationHistoryClearRequest": {
+        "type": "object",
+        "description": "`POST /dictation/history/clear`.",
+        "required": [
+          "through"
+        ],
+        "properties": {
+          "through": {
+            "type": "string",
+            "format": "date-time",
+            "description": "The newest entry's time the page showed: every listable entry created at or before\nit goes, so a dictation recorded while the confirmation was open survives."
+          }
+        }
+      },
+      "DictationHistoryDeleted": {
+        "type": "object",
+        "description": "200 from the bulk delete and the clear.",
+        "required": [
+          "deleted"
+        ],
+        "properties": {
+          "deleted": {
+            "type": "integer",
+            "format": "int64",
+            "description": "How many entries went. An id this caller may not list is skipped as missing.",
+            "minimum": 0
+          }
+        }
+      },
+      "DictationHistoryEntryAnswer": {
+        "type": "object",
+        "description": "200 from the tier route.",
+        "required": [
+          "entry"
+        ],
+        "properties": {
+          "entry": {
+            "$ref": "#/components/schemas/DictationHistoryEntryView"
+          }
+        }
+      },
+      "DictationHistoryEntryView": {
+        "type": "object",
+        "description": "One entry as a caller is shown it: the stored entry without its chat's incarnation and\nits institutions, with the model's display name.",
+        "required": [
+          "id",
+          "created_at",
+          "text",
+          "tier",
+          "surface",
+          "duration_ms",
+          "model"
+        ],
+        "properties": {
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When the transcript was ready, in whole seconds."
+          },
+          "duration_ms": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "id": {
+            "type": "string"
+          },
+          "model": {
+            "type": "string",
+            "description": "The speech model's catalog id."
+          },
+          "model_name": {
+            "type": "string",
+            "description": "The model's display name, when the catalog knows it.",
+            "nullable": true
+          },
+          "private_terms": {
+            "type": "boolean",
+            "description": "Whether private dictionary terms were eligible for this dictation: only for a\ncaller that may list private entries.",
+            "nullable": true
+          },
+          "session_id": {
+            "type": "string",
+            "description": "The chat the text was dictated into: only while the chat holding that id is the one\nthe entry recorded and this caller may list it.",
+            "nullable": true
+          },
+          "surface": {
+            "$ref": "#/components/schemas/DictationHistorySurface"
+          },
+          "text": {
+            "type": "string",
+            "description": "The corrected text, at most 32 KiB."
+          },
+          "tier": {
+            "$ref": "#/components/schemas/DictionaryTier"
+          },
+          "truncated": {
+            "type": "boolean",
+            "description": "Set when the text was cut to 32 KiB.",
+            "nullable": true
+          }
+        }
+      },
+      "DictationHistoryErrorBody": {
+        "type": "object",
+        "description": "Every refusal of a history route.",
+        "required": [
+          "code",
+          "message"
+        ],
+        "properties": {
+          "code": {
+            "type": "string",
+            "description": "`agent`, `host_tier`, `host_settings`, `not_found`, `policy`, `unreadable`, `busy`,\n`invalid`, `too_large`, `bad_request` or `write_failed`."
+          },
+          "message": {
+            "type": "string",
+            "description": "The sentence to show. It never names a dictation's text or id."
+          }
+        }
+      },
+      "DictationHistoryIdsRequest": {
+        "type": "object",
+        "description": "`POST /dictation/history/delete`.",
+        "required": [
+          "ids"
+        ],
+        "properties": {
+          "ids": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "At most 5,000."
+          }
+        }
+      },
+      "DictationHistoryList": {
+        "type": "object",
+        "description": "200 from `GET /dictation/history`: newest first.",
+        "required": [
+          "entries",
+          "total"
+        ],
+        "properties": {
+          "entries": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/DictationHistoryEntryView"
+            }
+          },
+          "next_cursor": {
+            "type": "string",
+            "description": "The next page's `cursor`; opaque.",
+            "nullable": true
+          },
+          "total": {
+            "type": "integer",
+            "format": "int64",
+            "description": "How many entries this caller may list match, over every page. Never a count of\nanything withheld.",
+            "minimum": 0
+          }
+        }
+      },
+      "DictationHistorySettings": {
+        "type": "object",
+        "description": "200 from `GET` and `POST /dictation/history/settings`.",
+        "required": [
+          "keep_history",
+          "public_by_default",
+          "authority"
+        ],
+        "properties": {
+          "authority": {
+            "$ref": "#/components/schemas/DictationHistoryAuthority"
+          },
+          "keep_history": {
+            "type": "boolean",
+            "description": "**Dictation history**: whether new dictations are kept. On by default; an\nunreadable settings file reads as off."
+          },
+          "public_by_default": {
+            "type": "boolean",
+            "description": "**Save new dictations as public**. Off by default."
+          }
+        }
+      },
+      "DictationHistorySettingsRequest": {
+        "type": "object",
+        "description": "`POST /dictation/history/settings`.",
+        "properties": {
+          "keep_history": {
+            "type": "boolean",
+            "nullable": true
+          },
+          "public_by_default": {
+            "type": "boolean",
+            "nullable": true
+          }
+        }
+      },
+      "DictationHistorySurface": {
+        "type": "string",
+        "description": "Where a dictation went: a label only, never read for privacy or bias.",
+        "enum": [
+          "composer",
+          "crew",
+          "clipboard",
+          "other_app",
+          "app_preview",
+          "terminal"
+        ]
+      },
+      "DictationHistoryTierRequest": {
+        "type": "object",
+        "description": "`POST /dictation/history/{id}/tier`.",
+        "required": [
+          "tier"
+        ],
+        "properties": {
+          "tier": {
+            "$ref": "#/components/schemas/DictionaryTier"
+          }
+        }
+      },
       "DictationInstallJob": {
         "type": "object",
         "required": [
@@ -18727,7 +19355,8 @@
           "install",
           "external_engine",
           "dictionary",
-          "agent_writes"
+          "agent_writes",
+          "history"
         ],
         "properties": {
           "agent_writes": {
@@ -18750,6 +19379,9 @@
             "$ref": "#/components/schemas/Allowance"
           },
           "external_engine": {
+            "$ref": "#/components/schemas/Allowance"
+          },
+          "history": {
             "$ref": "#/components/schemas/Allowance"
           },
           "install": {
@@ -18978,6 +19610,14 @@
           "session_id": {
             "type": "string",
             "description": "`chat` and `editor` only.",
+            "nullable": true
+          },
+          "surface": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/DictationHistorySurface"
+              }
+            ],
             "nullable": true
           },
           "target_kind": {

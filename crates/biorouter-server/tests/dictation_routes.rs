@@ -1151,14 +1151,29 @@ async fn a_load_that_does_not_fit_answers_server_memory() {
     delete(&app, &id).await;
 }
 
-/// P-1, P-2, DD-93: a stream leaves no file behind, and nothing it logs holds its
-/// `context`, a dictionary term or its transcript.
+/// P-1, P-2 as amended by DD-96, DD-93: a stream leaves no file behind, and nothing it
+/// logs holds its `context`, a dictionary term or its transcript. The one exception is the
+/// person's dictation history: a stream with no proof changes nothing on disk, nor does a
+/// proven one while **Dictation history** is off, and a proven one with it on changes
+/// exactly `history.jsonl`, which then holds the transcript's text.
+///
+/// The worker is this test binary's synthetic one, whose transcript is never empty, so the
+/// history would have something to keep and the log check has a text to look for.
 #[tokio::test(flavor = "multi_thread")]
 #[serial]
 async fn a_stream_leaves_nothing_on_disk_or_in_a_log_line() {
     if !engine_runs() {
         return;
     }
+    let worker = std::env::current_exe().expect("test worker path");
+    let _worker_env = env_lock::lock_env([
+        (
+            biorouter::dictation::service::WORKER_ENV,
+            Some(worker.to_str().expect("worker path UTF-8")),
+        ),
+        ("BIOROUTER_PR28_SYNTH_WORKER", Some("1")),
+    ]);
+    let _ = std::fs::remove_dir_all(biorouter::dictation::history::history_dir());
     let state = state().await;
     let app = app(&state);
     let term = "Zorblattine";
@@ -1178,25 +1193,85 @@ async fn a_stream_leaves_nothing_on_disk_or_in_a_log_line() {
     dictate(&app, Caller::SecretOnly, body.clone(), speech(9.0)).await;
 
     let root = PathBuf::from(std::env::var("BIOROUTER_PATH_ROOT").unwrap());
-    let before = files_under(&root);
     let logged_before = captured_logs().lock().unwrap().len();
-    let transcript = dictate(&app, Caller::SecretOnly, body, speech(9.0)).await;
-    // The usage the dictation recorded is written after the answer, off its task.
-    tokio::time::sleep(Duration::from_millis(300)).await;
+    let mut spoken = Vec::new();
+    // (1) No proof: nothing on disk changes. (2) The proof with the history off: nothing.
+    let history = biorouter::dictation::history::open_history();
+    for (caller, keep) in [(Caller::SecretOnly, true), (Caller::Proof, false)] {
+        history
+            .set_settings(biorouter::dictation::history::SettingsChange {
+                keep_history: Some(keep),
+                public_by_default: None,
+            })
+            .expect("the switch");
+        let before = files_under(&root);
+        let transcript = dictate(&app, caller, body.clone(), speech(9.0)).await;
+        spoken.extend(transcript["text"].as_str().map(str::to_string));
+        // The usage the dictation recorded, and a history entry, are written after the
+        // answer, off its task.
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        let after = files_under(&root);
+        let new: Vec<_> = after
+            .keys()
+            .filter(|path| !before.contains_key(*path))
+            .collect();
+        assert!(new.is_empty(), "{caller:?}: a stream wrote files: {new:?}");
+        // Nor did it write into a file that was there: the text holds no dictionary term,
+        // so no usage is recorded and the dictionary is read, never written.
+        let changed: Vec<_> = before
+            .iter()
+            .filter(|(path, seen)| after.get(*path) != Some(*seen))
+            .map(|(path, _)| path)
+            .collect();
+        assert!(
+            changed.is_empty(),
+            "{caller:?}: a stream wrote into files: {changed:?}"
+        );
+    }
+
+    // (3) The proof with the history on: exactly `history.jsonl`, holding the text.
+    history
+        .set_settings(biorouter::dictation::history::SettingsChange {
+            keep_history: Some(true),
+            public_by_default: None,
+        })
+        .expect("the switch");
+    let before = files_under(&root);
+    let transcript = dictate(&app, Caller::Proof, body, speech(9.0)).await;
+    let text = transcript["text"].as_str().unwrap_or_default().to_string();
+    assert!(!text.is_empty(), "the synthetic worker answers text");
+    let file = history.history_path();
+    let started = Instant::now();
+    while !file.exists() {
+        assert!(started.elapsed() < HANG_GUARD, "the entry was never kept");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    tokio::time::sleep(Duration::from_millis(500)).await;
     let after = files_under(&root);
     let new: Vec<_> = after
         .keys()
         .filter(|path| !before.contains_key(*path))
         .collect();
-    assert!(new.is_empty(), "a stream wrote files: {new:?}");
-    // Nor did it write into a file that was there: the fixture hears no speech, so no
-    // usage is recorded and the dictionary is read, never written.
+    assert_eq!(new, [&file], "a recorded stream wrote other files");
     let changed: Vec<_> = before
         .iter()
         .filter(|(path, seen)| after.get(*path) != Some(*seen))
         .map(|(path, _)| path)
         .collect();
-    assert!(changed.is_empty(), "a stream wrote into files: {changed:?}");
+    assert!(
+        changed.is_empty(),
+        "a recorded stream wrote into: {changed:?}"
+    );
+    let kept = std::fs::read_to_string(&file).unwrap();
+    assert!(
+        kept.contains(&text),
+        "the history holds the transcript's text"
+    );
+    assert!(
+        !kept.contains("CONTEXT-SENTINEL"),
+        "the context is not kept"
+    );
+    spoken.push(text);
 
     let logs =
         String::from_utf8_lossy(&captured_logs().lock().unwrap()[logged_before..]).into_owned();
@@ -1210,9 +1285,13 @@ async fn a_stream_leaves_nothing_on_disk_or_in_a_log_line() {
             "{secret} reached a log line: {logs}"
         );
     }
-    if let Some(text) = transcript["text"].as_str().filter(|t| !t.is_empty()) {
-        assert!(!logs.contains(text));
+    for text in spoken.iter().filter(|t| !t.is_empty()) {
+        assert!(
+            !logs.contains(text.as_str()),
+            "a transcript reached a log line"
+        );
     }
+    let _ = std::fs::remove_dir_all(biorouter::dictation::history::history_dir());
 }
 
 /// Every file under `root` with its length, modification time and SHA-256, so a write

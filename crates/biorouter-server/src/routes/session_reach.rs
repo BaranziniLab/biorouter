@@ -133,6 +133,13 @@
 //!   listing and knowledge-base surfaces, which were open to it before they
 //!   were gated, and on NOTHING this function decides ([`HttpCaller`],
 //!   `docs/deployment/serve-decisions.md` SD-10);
+//! * **the dictation history is the person's** (DD-96, SD-20): its private entries
+//!   are listed to the user-action proof and, on a daemon that holds no key, to the
+//!   person in the served page (the served document's cookie and the page script's
+//!   Fetch Metadata), never to a stated capability or the served operator's tier,
+//!   and every `/dictation/history/{id}` route sits behind
+//!   [`gate_dictation_history_entry`]. The served person is read by the history's
+//!   decisions alone, and never by this function;
 //! * **`workspace_read_conversation` was open too, and it is CLOSED — but by a
 //!   different instrument, and a reader must not credit this module for it.**
 //!   That MCP tool (`crates/biorouter/src/agents/workspace_extension.rs`) used
@@ -278,7 +285,9 @@ use biorouter_mcp::knowledge::service::KnowledgeService;
 // Issue #56 DR-16. `src/routes/` is compiled into the `biorouterd` binary as
 // well as the lib and cannot name `crate::auth`, so this is the shared
 // direction — the same import `routes::session` and `routes::knowledge` use.
-use biorouter_server::auth::{served_operator_capability, user_action_proof, UserActionProof};
+use biorouter_server::auth::{
+    served_operator_capability, served_person_present, user_action_proof, UserActionProof,
+};
 use std::path::Path;
 use std::sync::Arc;
 
@@ -952,6 +961,18 @@ pub struct HttpCaller {
     /// `Public` on every other daemon and for every other request.
     served_operator: ProviderTier,
     proof: UserActionProof,
+    /// SD-20: the person in the page a `biorouter serve` daemon served, acting through that
+    /// page's own script (`auth::served_person_present`: the served document's cookie and
+    /// the page script's Fetch Metadata), on a daemon whose launcher never meant to hand it
+    /// a user action key. `false` on every other daemon and for every other request.
+    ///
+    /// ⚠ **Read only by the dictation history's decisions**, which are the person's own
+    /// (DD-96, P-17), and **never by [`session_reach`]**, for the reason the served
+    /// operator's tier is not: admitting the served person there would hand a browser
+    /// private transcripts it has always been refused. SD-18 says the served person is
+    /// admitted on no other route without a new record, and SD-20 is that record for the
+    /// history alone. `the_transcript_gate_does_not_read_the_served_person` pins it.
+    served_person: bool,
 }
 
 /// Resolve the caller behind one request. See [`HttpCaller`].
@@ -961,6 +982,8 @@ pub async fn http_caller(headers: &HeaderMap) -> HttpCaller {
         stated: caller_capability(headers).await,
         served_operator: served_operator_capability(headers),
         proof: user_action_proof(headers),
+        served_person: served_person_present(headers)
+            && !biorouter_server::launch::expected_a_user_action_key(),
     }
 }
 
@@ -1230,6 +1253,82 @@ impl HttpCaller {
             UserActionProof::Proven | UserActionProof::Unproven => existing.unwrap_or(chosen),
         }
     }
+
+    /// Whether this request is the person whose dictation history it is (DD-96, P-17): the
+    /// user action proof on a daemon that holds a key, and on one that holds none the
+    /// person in the served page (SD-20). Never a stated capability or the served
+    /// operator's tier, which are a model's and a host's, not a person's.
+    fn is_the_person(&self) -> bool {
+        match self.proof {
+            UserActionProof::Proven => true,
+            UserActionProof::NoKeyInstalled => self.served_person,
+            UserActionProof::Unproven => false,
+        }
+    }
+
+    /// May this caller be shown a dictation history entry of this tier (DD-96, P-17)?
+    ///
+    /// Public entries to every holder of the secret; private entries to the person alone
+    /// ([`Self::is_the_person`]), and to every caller with tiers switched off (DR-15).
+    /// **Stricter than [`Self::lists_dictionary_entry`] on purpose**: a program that states
+    /// a private provider in [`CALLER_PROVIDER_HEADER`] is a model, and the history is a
+    /// record of the person's speech from every surface, not one chat's data, so no model
+    /// lists it over HTTP ("user warns, agent never"). A model reads the history only
+    /// through `dictionary__search_dictations`, in the person's own chat, under Gate D.
+    /// **Omission, not redaction, and never a count.**
+    pub fn lists_dictation_history_entry(&self, tier: EntryTier) -> bool {
+        !self.enforced || !tier.is_private() || self.is_the_person()
+    }
+
+    /// Whether a dictation stream this request creates is kept in the history (DD-96,
+    /// 6.1 of the history design): a stream the person started, which is the proof on a
+    /// daemon that holds a key and the person in the served page on one that holds none
+    /// (SD-20). A holder of the secret who uploads audio gets its transcript and leaves no
+    /// entry. Whether the person keeps a history at all (`keep_history`) and the managed
+    /// `history` key are read when the entry would be written, not here.
+    pub fn records_dictation_history(&self) -> bool {
+        self.is_the_person()
+    }
+
+    /// Whether this caller may make a dictation history write (DD-96, SD-20), judged from
+    /// the request alone, before any entry is read, so the answer cannot tell which entries
+    /// exist.
+    ///
+    /// * **A daemon that holds a key**: every write needs the user action proof, and a
+    ///   caller without it is refused with MSG-HISTORY-AGENT.
+    /// * **A daemon that holds none** (`biorouter serve`): a delete or a clear is admitted
+    ///   for an entry the caller can list (`entry`, when the write names one); a tier
+    ///   change and a raised setting are the served person's (SD-20) and otherwise refused
+    ///   with MSG-HISTORY-HOST-TIER and MSG-HISTORY-HOST-SETTINGS; a lowered setting is
+    ///   admitted.
+    ///
+    /// The managed `history` key is the route's to add: it refuses tier changes and
+    /// raises the same way on both.
+    pub fn authorizes_dictation_history_write(
+        &self,
+        write: &HistoryWrite,
+        entry: Option<EntryTier>,
+    ) -> Result<(), HistoryRefusal> {
+        match self.proof {
+            UserActionProof::Proven => Ok(()),
+            UserActionProof::Unproven => Err(HistoryRefusal::agent()),
+            UserActionProof::NoKeyInstalled => match write {
+                HistoryWrite::TierChange { to } if !self.served_person => {
+                    Err(HistoryRefusal::host_tier(*to))
+                }
+                HistoryWrite::Settings {
+                    raising: Some(option),
+                } if !self.served_person => Err(HistoryRefusal::host_settings(option)),
+                HistoryWrite::TierChange { .. } | HistoryWrite::Settings { .. } => Ok(()),
+                HistoryWrite::Entries => match entry {
+                    Some(tier) if !self.lists_dictation_history_entry(tier) => {
+                        Err(super::dictation_history::not_found())
+                    }
+                    _ => Ok(()),
+                },
+            },
+        }
+    }
 }
 
 /// A dictionary write, as [`HttpCaller::authorizes_dictionary_write`] judges it. Each
@@ -1299,6 +1398,68 @@ impl IntoResponse for DictionaryRefusal {
         (
             self.status,
             axum::Json(serde_json::json!({ "code": self.code, "message": self.message })),
+        )
+            .into_response()
+    }
+}
+
+/// A dictation history write, as [`HttpCaller::authorizes_dictation_history_write`] judges
+/// it. Each variant carries only what the request itself states.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum HistoryWrite {
+    /// A delete of one entry or of several, or a clear.
+    Entries,
+    /// `POST /dictation/history/{id}/tier`.
+    TierChange { to: EntryTier },
+    /// `POST /dictation/history/settings`. `raising` is the option a raise asks for, as the
+    /// terminal spells it (`--keep on`, `--public-by-default on`), or `None` when the
+    /// request only lowers.
+    Settings { raising: Option<String> },
+}
+
+/// A refused dictation history request: its status, its code and its one sentence, which
+/// names no text and no id (7.5 of the history design, rule 5).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HistoryRefusal {
+    pub status: StatusCode,
+    pub code: &'static str,
+    pub message: String,
+}
+
+impl HistoryRefusal {
+    fn agent() -> Self {
+        Self {
+            status: StatusCode::FORBIDDEN,
+            code: "agent",
+            message: super::dictation_history::MSG_HISTORY_AGENT.to_string(),
+        }
+    }
+
+    fn host_tier(to: EntryTier) -> Self {
+        Self {
+            status: StatusCode::FORBIDDEN,
+            code: "host_tier",
+            message: super::dictation_history::msg_history_host_tier(to),
+        }
+    }
+
+    fn host_settings(option: &str) -> Self {
+        Self {
+            status: StatusCode::FORBIDDEN,
+            code: "host_settings",
+            message: super::dictation_history::msg_history_host_settings(option),
+        }
+    }
+}
+
+impl IntoResponse for HistoryRefusal {
+    fn into_response(self) -> Response {
+        (
+            self.status,
+            axum::Json(super::dictation_history::DictationHistoryErrorBody {
+                code: self.code.to_string(),
+                message: self.message,
+            }),
         )
             .into_response()
     }
@@ -1553,6 +1714,86 @@ pub async fn gate_dictionary_entry(
     });
     if !listed {
         return super::dictionary::not_found().into_response();
+    }
+    next.run(request).await
+}
+
+/// The dictation history's counterpart of [`gate_dictionary_entry`] (DD-96; 7.5 of the
+/// history design, rules 1 and 7): 404 with MSG-HISTORY-NOT-FOUND for an id that is not
+/// well formed, one that names no entry and one that names an entry this caller may not
+/// list, before the handler runs. The three are one answer, byte for byte, so a probe
+/// cannot tell a private dictation's id from a made up one.
+///
+/// ⚠ **The tier route is decided before the id is read**, as the dictionary's is: the
+/// proof on a daemon that holds a key, the served person on one that holds none (SD-20,
+/// MSG-HISTORY-HOST-TIER otherwise), and the managed `history` key, all from the request
+/// alone, so they too are the same for every id. The body is read for its `tier` only, to
+/// name the verb the terminal command takes, and handed on unchanged.
+///
+/// A route layer on the router of exactly the routes that name an entry, applied at its
+/// single call site in `routes::dictation_history`.
+pub async fn gate_dictation_history_entry(
+    params: axum::extract::RawPathParams,
+    request: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> Response {
+    use super::dictation_history as history;
+    let id = params
+        .iter()
+        .find(|(key, _)| *key == "id")
+        .map(|(_, value)| value.to_owned());
+    let caller = http_caller(request.headers()).await;
+    let request = if request.uri().path().ends_with("/tier") {
+        let (parts, body) = request.into_parts();
+        let Ok(bytes) = axum::body::to_bytes(body, history::MAX_JSON_BYTES).await else {
+            return history::too_large().into_response();
+        };
+        let to = serde_json::from_slice::<serde_json::Value>(&bytes)
+            .ok()
+            .and_then(
+                |body| match body.get("tier").and_then(serde_json::Value::as_str) {
+                    Some("public") => Some(EntryTier::Public),
+                    Some("private") => Some(EntryTier::Private),
+                    _ => None,
+                },
+            );
+        if let Err(refusal) = caller.authorizes_dictation_history_write(
+            &HistoryWrite::TierChange {
+                to: to.unwrap_or(EntryTier::Public),
+            },
+            None,
+        ) {
+            // A body with no readable tier names no verb: the sentence keeps `<verb>`.
+            let refusal = match (to, refusal.code) {
+                (None, "host_tier") => HistoryRefusal {
+                    message: history::MSG_HISTORY_HOST_TIER.to_string(),
+                    ..refusal
+                },
+                _ => refusal,
+            };
+            return refusal.into_response();
+        }
+        if let Some(refusal) = history::policy_refusal() {
+            return refusal.into_response();
+        }
+        axum::extract::Request::from_parts(parts, axum::body::Body::from(bytes))
+    } else {
+        request
+    };
+    // Unreachable through `routes::dictation_history`, where every route this layer wraps
+    // captures `{id}`; refused as a missing entry so a route moved here without the
+    // capture fails closed.
+    let Some(id) = id.filter(|id| history::is_entry_id(id)) else {
+        return history::not_found().into_response();
+    };
+    let store = history::shared_history();
+    let found = match tokio::task::spawn_blocking(move || store.get(&id)).await {
+        Ok(Ok(found)) => found,
+        Ok(Err(error)) => return history::store_refusal(error).into_response(),
+        Err(_) => return history::write_failed().into_response(),
+    };
+    if !found.is_some_and(|entry| caller.lists_dictation_history_entry(entry.tier)) {
+        return history::not_found().into_response();
     }
     next.run(request).await
 }
@@ -2125,6 +2366,26 @@ mod tests {
                 "peek_agent(",
                 "the live agent's bound model, which says whether the chat is private",
             ),
+            // ── DD-96: the history entry a stream into a chat is stamped with ──
+            //
+            // A recorded stream also reads the institutions the chat touched, for a
+            // private entry's stamp (P-16), and the chat's incarnation, so a reissued id
+            // never links the entry to another chat. Either read before the gate would let
+            // the entry's tier or link say whether a chat exists and what it touched.
+            (
+                dictation_rs,
+                "async fn stream_target(",
+                "session_reach(",
+                "session_affiliations(",
+                "the institutions whose connectors the chat touched",
+            ),
+            (
+                dictation_rs,
+                "async fn stream_target(",
+                "session_reach(",
+                "session_incarnation(",
+                "the incarnation of the chat now holding the id, which says whether it exists",
+            ),
             (
                 reply_rs,
                 "pub async fn reply",
@@ -2516,6 +2777,7 @@ mod tests {
             stated,
             served_operator,
             proof,
+            served_person: false,
         }
     }
 
@@ -2656,6 +2918,7 @@ mod tests {
                             stated,
                             served_operator,
                             proof,
+                            served_person: false,
                         };
                         if !who.admits(TargetTier::Unreadable) {
                             continue;
@@ -2705,6 +2968,7 @@ mod tests {
                             stated,
                             served_operator,
                             proof,
+                            served_person: false,
                         };
                         for (owner, tier) in owners {
                             assert_eq!(
@@ -2815,6 +3079,220 @@ mod tests {
              browser to private transcripts it was always refused"
         );
         assert!(session_reach_body.contains("caller_capability(headers)"));
+    }
+
+    /// SD-20 gives the served person the dictation history and nothing else: the
+    /// transcript gate must never read it, or a `serve` page would reach private chats it
+    /// has always been refused. `http_caller` samples it, and `session_reach` does not call
+    /// `http_caller` (pinned above).
+    #[test]
+    fn the_transcript_gate_does_not_read_the_served_person() {
+        let source = include_str!("session_reach.rs");
+        let session_reach_body = crate::routes::body_of(source, "pub async fn session_reach(");
+        assert!(
+            !session_reach_body.contains("served_person")
+                && !session_reach_body.contains("is_the_person")
+                && !session_reach_body.contains("http_caller("),
+            "the transcript gate now reads the served person, which SD-20 keeps to the \
+             dictation history"
+        );
+        // The served person reaches the history's decisions through `is_the_person`
+        // alone, and no other method of this type reads it. Each method's code lines
+        // (comments left out) are read from its signature to the next one.
+        let imp = crate::routes::body_of(source, "\nimpl HttpCaller {");
+        let mut methods: Vec<(String, String)> = Vec::new();
+        for line in imp.lines() {
+            let signature = ["    pub async fn ", "    pub fn ", "    fn "]
+                .iter()
+                .find_map(|prefix| line.strip_prefix(prefix));
+            if let Some(rest) = signature {
+                let name = rest.split(['(', '<']).next().unwrap_or_default();
+                methods.push((name.to_string(), String::new()));
+            } else if !line.trim_start().starts_with("//") {
+                if let Some((_, code)) = methods.last_mut() {
+                    code.push_str(line);
+                    code.push('\n');
+                }
+            }
+        }
+        assert!(
+            methods.len() >= 12,
+            "the method scan read only {} methods of `impl HttpCaller`",
+            methods.len()
+        );
+        let mut readers: Vec<&str> = methods
+            .iter()
+            .filter(|(_, code)| code.contains("served_person") || code.contains("is_the_person()"))
+            .map(|(name, _)| name.as_str())
+            .collect();
+        readers.sort_unstable();
+        assert_eq!(
+            readers,
+            [
+                "authorizes_dictation_history_write",
+                "is_the_person",
+                "lists_dictation_history_entry",
+                "records_dictation_history",
+            ],
+            "a decision outside the dictation history reads the served person"
+        );
+    }
+
+    fn history_caller(
+        enforced: bool,
+        stated: ProviderTier,
+        served_operator: ProviderTier,
+        proof: UserActionProof,
+        served_person: bool,
+    ) -> HttpCaller {
+        HttpCaller {
+            enforced,
+            stated,
+            served_operator,
+            proof,
+            served_person,
+        }
+    }
+
+    /// 7.1 of the history design: public entries to every caller; private entries to the
+    /// person (the proof, or the served person on a daemon with no key) and, with tiers
+    /// switched off, to everyone. A stated private capability and the served operator's
+    /// private tier are a model's and a host's, and list no private entry.
+    #[test]
+    fn the_dictation_history_is_listed_to_the_person_alone() {
+        use ProviderTier::{Private, Public};
+        use UserActionProof::{NoKeyInstalled, Proven, Unproven};
+        for enforced in [true, false] {
+            for stated in CAPABILITIES {
+                for served_operator in CAPABILITIES {
+                    for proof in PROOFS {
+                        for served_person in [false, true] {
+                            let who = history_caller(
+                                enforced,
+                                stated,
+                                served_operator,
+                                proof,
+                                served_person,
+                            );
+                            let person = match proof {
+                                Proven => true,
+                                NoKeyInstalled => served_person,
+                                Unproven => false,
+                            };
+                            let case = format!(
+                                "{enforced} {stated:?} {served_operator:?} {proof:?} {served_person}"
+                            );
+                            assert!(
+                                who.lists_dictation_history_entry(EntryTier::Public),
+                                "{case}"
+                            );
+                            assert_eq!(
+                                who.lists_dictation_history_entry(EntryTier::Private),
+                                !enforced || person,
+                                "{case}"
+                            );
+                            assert_eq!(who.records_dictation_history(), person, "{case}");
+                        }
+                    }
+                }
+            }
+        }
+        // The two inputs the dictionary's listing honours, named outright.
+        let stated_private = history_caller(true, Private, Public, Unproven, false);
+        assert!(stated_private.lists_dictionary_entry(EntryTier::Private));
+        assert!(!stated_private.lists_dictation_history_entry(EntryTier::Private));
+        let private_host_page = history_caller(true, Public, Private, NoKeyInstalled, false);
+        assert!(private_host_page.lists_dictionary_entry(EntryTier::Private));
+        assert!(!private_host_page.lists_dictation_history_entry(EntryTier::Private));
+    }
+
+    /// The keyed and keyless write rules, from the request alone.
+    #[test]
+    fn the_dictation_history_write_rules() {
+        use ProviderTier::{Private, Public};
+        use UserActionProof::{NoKeyInstalled, Proven, Unproven};
+        let raise = || HistoryWrite::Settings {
+            raising: Some("--keep on".to_string()),
+        };
+        let lower = HistoryWrite::Settings { raising: None };
+        let tier = HistoryWrite::TierChange {
+            to: EntryTier::Public,
+        };
+        let writes = [HistoryWrite::Entries, tier.clone(), raise(), lower.clone()];
+
+        // A daemon that holds a key: the proof for everything, the agent sentence else,
+        // whatever capability the request states.
+        for stated in CAPABILITIES {
+            let person = history_caller(true, stated, Public, Proven, false);
+            let agent = history_caller(true, stated, Public, Unproven, true);
+            for write in &writes {
+                for entry in [None, Some(EntryTier::Public), Some(EntryTier::Private)] {
+                    assert!(person
+                        .authorizes_dictation_history_write(write, entry)
+                        .is_ok());
+                    let refused = agent
+                        .authorizes_dictation_history_write(write, entry)
+                        .unwrap_err();
+                    assert_eq!(
+                        (refused.status, refused.code),
+                        (StatusCode::FORBIDDEN, "agent")
+                    );
+                    assert_eq!(
+                        refused.message,
+                        super::super::dictation_history::MSG_HISTORY_AGENT
+                    );
+                }
+            }
+        }
+
+        // A daemon that holds none: the served person may do everything.
+        let served = history_caller(true, Public, Public, NoKeyInstalled, true);
+        for write in &writes {
+            for entry in [None, Some(EntryTier::Public), Some(EntryTier::Private)] {
+                assert!(served
+                    .authorizes_dictation_history_write(write, entry)
+                    .is_ok());
+            }
+        }
+        // Anyone else holding the secret, even on a private host: deletes of what it may
+        // list and lowered settings; tier changes and raises with the host sentences.
+        for served_operator in CAPABILITIES {
+            let secret = history_caller(true, Private, served_operator, NoKeyInstalled, false);
+            assert!(secret
+                .authorizes_dictation_history_write(&HistoryWrite::Entries, None)
+                .is_ok());
+            assert!(secret
+                .authorizes_dictation_history_write(&HistoryWrite::Entries, Some(EntryTier::Public))
+                .is_ok());
+            let hidden = secret
+                .authorizes_dictation_history_write(
+                    &HistoryWrite::Entries,
+                    Some(EntryTier::Private),
+                )
+                .unwrap_err();
+            assert_eq!(hidden, super::super::dictation_history::not_found());
+            assert!(secret
+                .authorizes_dictation_history_write(&lower, None)
+                .is_ok());
+            let tier_refusal = secret
+                .authorizes_dictation_history_write(&tier, None)
+                .unwrap_err();
+            assert_eq!(tier_refusal.code, "host_tier");
+            assert_eq!(
+                tier_refusal.message,
+                "Do this on the server: `biorouter dictation history publicize <id>` (as the \
+                 service user)."
+            );
+            let settings_refusal = secret
+                .authorizes_dictation_history_write(&raise(), None)
+                .unwrap_err();
+            assert_eq!(settings_refusal.code, "host_settings");
+            assert_eq!(
+                settings_refusal.message,
+                "Do this on the server: `biorouter dictation history settings --keep on` (as \
+                 the service user)."
+            );
+        }
     }
 
     /// A knowledge base's target, at each of its corners: a private base; a
