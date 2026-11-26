@@ -2018,3 +2018,71 @@ export async function insertIntoManagedAppFocusedField(
   entry.view.webContents.insertText(text);
   return true;
 }
+
+/**
+ * The view of `window` whose page has keyboard focus (`focused`, from
+ * `webContents.getFocusedWebContents()`): a managed app preview or an in-app browser tab that is
+ * shown. fn dictates into it on its own route (DESIGN 4.1), so the text lands in the field the
+ * person is typing in, not in a composer behind it. Null when no shown view of that window has
+ * focus.
+ */
+export function focusedEmbeddedViewId(
+  window: BrowserWindow,
+  focused: WebContents | null | undefined
+): string | null {
+  if (!focused || focused.isDestroyed()) return null;
+  for (const entry of views.values()) {
+    if (entry.window !== window || !entry.visible) continue;
+    if (entry.view.webContents.isDestroyed() || entry.view.webContents !== focused) continue;
+    return entry.viewId;
+  }
+  return null;
+}
+
+/**
+ * A view fn may dictate into: an active managed app preview, or an in-app browser tab, and not
+ * while an agent operation is typing into it (its keys are the agent's then).
+ */
+function dictationEntry(window: BrowserWindow, viewId: string): Entry | null {
+  const entry = entryFor(window, viewId);
+  if (!entry || entry.view.webContents.isDestroyed()) return null;
+  if (entry.managed && !entry.managed.isActive()) return null;
+  if (entry.agentInputDepth > 0) return null;
+  return entry;
+}
+
+/**
+ * {@link managedAppHasFocusedField} for fn's route, which also admits an in-app browser tab: the
+ * same check, in the same isolated world the page cannot reach.
+ */
+export async function embeddedViewHasFocusedField(
+  window: BrowserWindow,
+  viewId: string
+): Promise<boolean> {
+  const entry = dictationEntry(window, viewId);
+  if (!entry) return false;
+  try {
+    return (
+      (await entry.view.webContents.executeJavaScriptInIsolatedWorld(DICTATION_FOCUS_WORLD_ID, [
+        { code: FOCUSED_EDITABLE_EXPRESSION },
+      ])) === true
+    );
+  } catch {
+    return false;
+  }
+}
+
+/** {@link insertIntoManagedAppFocusedField} for fn's route, an in-app browser tab included. */
+export async function insertIntoEmbeddedFocusedField(
+  window: BrowserWindow,
+  viewId: string,
+  text: string
+): Promise<boolean> {
+  if (!text || text.length > 32_000 || !(await embeddedViewHasFocusedField(window, viewId)))
+    return false;
+  const entry = dictationEntry(window, viewId);
+  if (!entry) return false;
+  entry.view.webContents.focus();
+  entry.view.webContents.insertText(text);
+  return true;
+}

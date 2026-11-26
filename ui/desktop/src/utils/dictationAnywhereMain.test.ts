@@ -179,3 +179,188 @@ describe('main holds a failed clipboard recording for Retry', () => {
     );
   });
 });
+
+/**
+ * DD-97: the global shortcut and fn in another app type their text into the app that was in front
+ * when the dictation started. `dictationAnywhere.test.ts` covers what is typed, copied and shown
+ * (`deliverAnywhereTranscript`); these pin how main wires it.
+ */
+describe('main types a dictation into the app that was in front', () => {
+  const start = slice('async function startAnywhere(', 'function cancelAnywhere()');
+
+  it('takes the target at the start, before anything is awaited, and only for the shortcut', () => {
+    const generation = start.indexOf('const generation = ++anywhereGeneration');
+    const asked = start.indexOf('textInsertService.front()');
+    expect(asked).toBeGreaterThan(generation);
+    // Nothing between the start and the question waits on anything.
+    expect(start.slice(generation, asked)).not.toContain('await ');
+    expect(asked).toBeLessThan(start.indexOf('await confirmAnywhereRemote(backend, current)'));
+    expect(start).toContain(
+      'capturesInsertTarget(source, insertSettings.enabled) && textInsertService ? textInsertService.front() : null'
+    );
+    expect(start).toContain(
+      'anywhereInsertTarget = insertTargetFrom(front, process.pid, generation);'
+    );
+    // The page learns where the text goes before it gets its start.
+    expect(start).toContain(
+      'anywherePendingStart.surface = anywhereSurface(source, anywhereInsertTarget !== null);'
+    );
+    expect(start.indexOf('anywhereInsertTarget = insertTargetFrom(')).toBeLessThan(
+      start.indexOf('sendAnywhereStartIfReady();')
+    );
+    expect(
+      slice('function sendAnywhereStartIfReady()', "ipcMain.on('dictation:anywhere:capture-ready'")
+    ).toContain('pressedAtEpochMs, surface, });');
+  });
+
+  it('types at the finish through one delivery, and never writes the clipboard itself there', () => {
+    const reply = slice(
+      "ipcMain.on('dictation:anywhere:capture-reply'",
+      "ipcMain.handle('dictation:anywhere:get'"
+    );
+    const finished = reply.slice(
+      reply.indexOf("result.type === 'finished'"),
+      reply.indexOf("result.type === 'failed'")
+    );
+    expect(finished).toContain(
+      'const insertTarget = anywhereInsertTarget?.generation === result.generation ? anywhereInsertTarget : null; anywhereInsertTarget = null;'
+    );
+    expect(finished).toContain(
+      'void deliverAnywhereTranscript(typed, insertTarget, anywhereDelivery());'
+    );
+    for (const direct of ['clipboard.writeText', 'clipboardOutcome(', 'showAnywhereReview(']) {
+      expect(finished, direct).not.toContain(direct);
+    }
+    // A failure card takes focus, and a cancel ends the dictation: neither keeps a target.
+    expect(reply.slice(reply.indexOf("result.type === 'failed'"))).toContain(
+      'anywhereInsertTarget = null;'
+    );
+    expect(reply.slice(reply.indexOf("result.type === 'cancelled'"))).toContain(
+      'anywhereInsertTarget = null;'
+    );
+    expect(slice('function cancelAnywhere()', 'function isDictationCaptureSender(')).toContain(
+      'anywhereInsertTarget = null;'
+    );
+    const delivery = slice(
+      'function anywhereDelivery()',
+      'async function insertIntoAnywherePreview('
+    );
+    expect(delivery).toContain('textInsertService.insert(pid, text)');
+    expect(delivery).toContain("Promise.resolve<InsertResult>({ ok: false, reason: 'failed' })");
+    expect(delivery).toContain('write: board.write, read: board.read,');
+  });
+
+  it('runs the helper with no environment, only while something can type into an app, and stops it at quit', () => {
+    const once = slice('function textInsertServiceOnce()', 'function syncDictationHelpers()');
+    expect(once).toContain(
+      "spawn(file, [...helperArgs], { stdio: ['pipe', 'pipe', 'ignore'], env: {}, windowsHide: true, })"
+    );
+    expect(once).toContain('helperPath: args === null ? null : textInsertHelperPath(app),');
+    expect(once).toContain('const args = textInsertHelperArgs(app);');
+    const sync = slice('function syncDictationHelpers()', 'async function insertView()');
+    expect(sync).toContain('shortcutRegistered: anywhereShortcut !== null,');
+    expect(sync).toContain('if (wanted) service.start(); else service.stop();');
+    for (const [handler, end] of [
+      [
+        "ipcMain.handle('dictation:anywhere:set'",
+        '// ── The fn key shortcut and the dictation indicator',
+      ],
+      ["ipcMain.handle('dictation:fn:set'", "ipcMain.handle('dictation:fn:open-settings'"],
+      ["ipcMain.handle('dictation:insert:set'", "ipcMain.handle('dictation:insert:open-settings'"],
+    ]) {
+      expect(slice(handler, end), handler).toContain('syncDictationHelpers();');
+    }
+    expect(source).toContain('await readInsertSettings(); syncDictationHelpers();');
+    const quit = slice("app.on('will-quit', async () => {", 'clearAnywhereReview();');
+    expect(quit).toContain('textInsertService?.stop();');
+  });
+
+  it('asks macOS for Accessibility only from the Settings button, and then opens its pane', () => {
+    expect(source.split('requestAccess(').length - 1).toBe(1);
+    const open = slice(
+      "ipcMain.handle('dictation:insert:open-settings'",
+      '// ── The theme as words'
+    );
+    expect(open).toContain(
+      "ipcMain.handle('dictation:insert:open-settings', async (event) => { if (!isDictationSender(event)) return;"
+    );
+    expect(open).toContain('await textInsertServiceOnce()?.requestAccess();');
+    expect(open).toContain('Privacy_Accessibility');
+    // Settings reads the grant without asking.
+    expect(slice('async function insertView()', "ipcMain.handle('dictation:insert:get'")).toContain(
+      'await service.access()'
+    );
+  });
+
+  it('answers the insertion setting only to a Biorouter window, and keeps it in insert.json', () => {
+    for (const channel of ['get', 'set', 'open-settings']) {
+      const at = source.indexOf(`ipcMain.handle('dictation:insert:${channel}'`);
+      expect(at, channel).toBeGreaterThan(0);
+      expect(source.slice(at, at + 160), channel).toMatch(
+        /=> \{ if \(!isDictationSender\(event\)\) return(?: null)?;/
+      );
+    }
+    const set = slice(
+      "ipcMain.handle('dictation:insert:set'",
+      "ipcMain.handle('dictation:insert:open-settings'"
+    );
+    expect(set).toContain("if (typeof enabled !== 'boolean') return await insertView();");
+    const write = slice('async function writeInsertSettings(', 'function textInsertServiceOnce()');
+    expect(write).toContain('fs.mkdir(path.dirname(filename), { recursive: true, mode: 0o700 })');
+    expect(write).toContain('fs.writeFile(temporary, JSON.stringify(settings), { mode: 0o600 })');
+    expect(write).toContain('fs.rename(temporary, filename)');
+    expect(source).toContain("path.join(biorouterConfigDir(), 'dictation', 'insert.json')");
+  });
+});
+
+describe('the capture window while fn may dictate into other apps', () => {
+  it('stays open between dictations, and closes after its wait once the row is off', () => {
+    const idle = slice('function closeCaptureAfterIdle()', 'function holdAnywhereRecording(');
+    expect(idle).toContain('anywhereHeld === null && !captureStaysWarm() &&');
+    expect(idle).toContain(
+      'captureWindowStaysWarm({ platform: process.platform, fnEnabled: fnKeySettings.enabled, fnOtherApps: fnKeySettings.otherApps, anywhereOn: anywhereSettings.enabled && !anywhereOffRequested, })'
+    );
+    expect(slice('function syncDictationHelpers()', 'async function insertView()')).toContain(
+      '!captureStaysWarm() && anywhereCaptureWindow && !anywhereCaptureWindow.isDestroyed() && anywhereAtRest(anywhereState.phase)) closeCaptureAfterIdle();'
+    );
+  });
+});
+
+describe('the dictation test seams reach only an unpackaged app (DESIGN 3.12)', () => {
+  it('main reads them once through dictationTestSeams, and spells none of them itself', () => {
+    expect(source).toContain('const dictationSeams = dictationTestSeams(app, process.env);');
+    for (const variable of [
+      'BIOROUTER_FN_TRACE',
+      'BIOROUTER_TEST_CLIPBOARD_FILE',
+      'BIOROUTER_TEST_INSERT_LOG',
+      'BIOROUTER_TEXTINSERT_HELPER',
+      'BIOROUTER_TEXTINSERT_TEST_PASTEBOARD',
+      'BIOROUTER_FNKEY_HELPER',
+    ]) {
+      expect(source, variable).not.toContain(variable);
+    }
+    // The helpers' own overrides are read by their path functions, which take the app.
+    expect(source).toContain('helperPath: fnKeyHelperPath(app),');
+    expect(source).toContain('textInsertHelperPath(app)');
+    expect(source).toContain('textInsertHelperArgs(app)');
+  });
+
+  it('the clipboard and the insert log use their files only when a seam names one', () => {
+    const board = slice('function anywhereClipboard()', 'function appendInsertLog(');
+    expect(board).toContain(
+      'if (file === null) return { write: (text) => clipboard.writeText(text), read: () => clipboard.readText() };'
+    );
+    expect(board).toContain('fsSync.writeFileSync(file, text, { mode: 0o600 })');
+    const insertLog = slice('function appendInsertLog(', 'function registerAnywhereShortcut()');
+    expect(insertLog).toContain('if (file === null) return;');
+    expect(insertLog).toContain('insertLogLine(entry)');
+    expect(
+      slice(
+        "ipcMain.handle('dictation:anywhere:review-copy'",
+        "ipcMain.handle('dictation:mic-status'"
+      )
+    ).toContain(
+      'const board = anywhereClipboard(); board.write(text); return board.read() === text;'
+    );
+  });
+});

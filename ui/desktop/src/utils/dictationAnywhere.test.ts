@@ -1,7 +1,25 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { Transcript } from '../components/dictation/dictationApi';
+import { dictationMessage, insertRefusalMessage } from '../components/dictation/copy';
+import type { InsertRefusal, InsertResult } from './textInsertHelper';
 import {
   anywhereAtRest,
+  anywhereSurface,
+  capturesInsertTarget,
+  captureWindowStaysWarm,
+  defaultInsertSettings,
+  deliverAnywhereTranscript,
+  DICTATION_TEST_SEAM_ENV,
+  dictationTestSeams,
+  insertableText,
+  insertLogLine,
+  insertTargetFrom,
+  parseAnywhereSurface,
+  parseInsertSettings,
+  textInsertWanted,
+  type AnywhereDelivery,
+  type InsertLogEntry,
+  type InsertTarget,
   canStartAnywhere,
   clipboardOutcome,
   DEFAULT_ANYWHERE_SHORTCUT,
@@ -493,5 +511,291 @@ describe('a recording held for Retry', () => {
     expect(nextAnywhereState(INITIAL_ANYWHERE_STATE, { type: 'retry', source: 'shortcut' })).toBe(
       INITIAL_ANYWHERE_STATE
     );
+  });
+});
+
+describe('where the text goes, for the dictation history', () => {
+  it('records the app in front only for the shortcut, the preview always as a preview', () => {
+    expect(externalStreamRequest(16000, 'shortcut', false, 'other_app').surface).toBe('other_app');
+    expect(externalStreamRequest(16000, 'shortcut', false, 'clipboard').surface).toBe('clipboard');
+    expect(externalStreamRequest(16000, 'shortcut', false).surface).toBe('clipboard');
+    // The tray never types into another app, whatever it is told.
+    expect(externalStreamRequest(16000, 'tray', false, 'other_app').surface).toBe('clipboard');
+    expect(externalStreamRequest(16000, 'preview', false, 'other_app').surface).toBe('app_preview');
+    expect(externalStreamRequest(16000, 'preview', false).surface).toBe('app_preview');
+    expect(anywhereSurface('shortcut', true)).toBe('other_app');
+    expect(anywhereSurface('tray', false)).toBe('clipboard');
+    expect(anywhereSurface('preview', true)).toBe('app_preview');
+  });
+
+  it('reads a surface word from main and nothing else', () => {
+    for (const word of ['other_app', 'clipboard', 'app_preview'] as const) {
+      expect(parseAnywhereSurface(word)).toBe(word);
+    }
+    for (const other of ['composer', 'terminal', 'OTHER_APP', '', null, undefined, 3, {}]) {
+      expect(parseAnywhereSurface(other)).toBeNull();
+    }
+  });
+});
+
+describe('typing the text into the app in front (DD-97)', () => {
+  const target: InsertTarget = { generation: 4, pid: 812, bundle: 'com.apple.TextEdit' };
+
+  function delivery(insert: (pid: number, text: string) => Promise<InsertResult>, read?: string) {
+    let board = '';
+    const deps = {
+      insert: vi.fn(insert),
+      write: vi.fn((text: string) => {
+        board = text;
+      }),
+      read: vi.fn(() => read ?? board),
+      notify: vi.fn(),
+      review: vi.fn(),
+      pasteKey: '⌘V',
+      oldBackendMessage: 'old daemon',
+      log: vi.fn((entry: InsertLogEntry) => entry),
+    } satisfies AnywhereDelivery;
+    return deps;
+  }
+
+  it('is on by default on macOS only, and written only as a boolean', () => {
+    expect(defaultInsertSettings('darwin')).toEqual({ enabled: true });
+    expect(defaultInsertSettings('linux')).toEqual({ enabled: false });
+    expect(parseInsertSettings(null, 'darwin')).toEqual({ enabled: true });
+    expect(parseInsertSettings({ enabled: false }, 'darwin')).toEqual({ enabled: false });
+    expect(parseInsertSettings({ enabled: 'yes' }, 'darwin')).toEqual({ enabled: true });
+    expect(parseInsertSettings({ enabled: true }, 'win32')).toEqual({ enabled: false });
+    expect(parseInsertSettings([true], 'darwin')).toEqual({ enabled: true });
+  });
+
+  it('takes a target only for the global shortcut and fn in another app, never the tray or a preview', () => {
+    expect(capturesInsertTarget('shortcut', true)).toBe(true);
+    expect(capturesInsertTarget('tray', true)).toBe(false);
+    expect(capturesInsertTarget('preview', true)).toBe(false);
+    expect(capturesInsertTarget('shortcut', false)).toBe(false);
+  });
+
+  it('keeps the app in front as the target, unless it is Biorouter itself or unknown', () => {
+    expect(insertTargetFrom({ pid: 812, bundle: 'com.apple.TextEdit' }, 100, 4)).toEqual(target);
+    expect(insertTargetFrom({ pid: 100, bundle: 'com.ucsf.biorouter' }, 100, 4)).toBeNull();
+    expect(insertTargetFrom(null, 100, 4)).toBeNull();
+    expect(insertTargetFrom({ pid: 0, bundle: null }, 100, 4)).toBeNull();
+    expect(insertTargetFrom({ pid: 1.5, bundle: null }, 100, 4)).toBeNull();
+    expect(insertTargetFrom({ pid: 9, bundle: null }, 100, 4)).toEqual({
+      generation: 4,
+      pid: 9,
+      bundle: null,
+    });
+  });
+
+  it('runs the helper only while something can start a dictation that types into an app', () => {
+    const on = {
+      platform: 'darwin',
+      insertEnabled: true,
+      anywhereOn: true,
+      fnOtherApps: true,
+      shortcutRegistered: false,
+    };
+    expect(textInsertWanted(on)).toBe(true);
+    expect(textInsertWanted({ ...on, fnOtherApps: false, shortcutRegistered: true })).toBe(true);
+    expect(textInsertWanted({ ...on, fnOtherApps: false })).toBe(false);
+    expect(textInsertWanted({ ...on, insertEnabled: false })).toBe(false);
+    expect(textInsertWanted({ ...on, anywhereOn: false })).toBe(false);
+    expect(textInsertWanted({ ...on, platform: 'linux' })).toBe(false);
+  });
+
+  it('types real speech only, and leaves an echo, nothing heard and an older daemon alone', () => {
+    expect(insertableText(transcript())).toBe('hello world');
+    expect(insertableText(transcript({ no_speech: true }))).toBeNull();
+    expect(insertableText(transcript({ text: '  ' }))).toBeNull();
+    expect(insertableText(transcript({ dictionary_only: true }))).toBeNull();
+    expect(insertableText(transcript({ dictionary_only: undefined }))).toBeNull();
+  });
+
+  it('with a target, types the text and never writes the clipboard or shows anything', async () => {
+    const deps = delivery(async () => ({ ok: true }));
+    expect(await deliverAnywhereTranscript(transcript(), target, deps)).toEqual({
+      kind: 'inserted',
+    });
+    expect(deps.insert).toHaveBeenCalledWith(812, 'hello world');
+    expect(deps.write).not.toHaveBeenCalled();
+    expect(deps.read).not.toHaveBeenCalled();
+    expect(deps.notify).not.toHaveBeenCalled();
+    expect(deps.review).not.toHaveBeenCalled();
+  });
+
+  it.each<InsertRefusal>(['no-permission', 'secure-input', 'target-changed', 'failed'])(
+    'copies when the helper refuses with %s, and the notification says why',
+    async (reason) => {
+      const deps = delivery(async () => ({ ok: false, reason }));
+      expect(await deliverAnywhereTranscript(transcript(), target, deps)).toEqual({
+        kind: 'copied',
+        reason,
+      });
+      expect(deps.write).toHaveBeenCalledExactlyOnceWith('hello world');
+      expect(deps.notify).toHaveBeenCalledExactlyOnceWith(insertRefusalMessage(reason, '⌘V'));
+      // The card never takes focus from the app while the copy is good.
+      expect(deps.review).not.toHaveBeenCalled();
+    }
+  );
+
+  it('treats a helper that throws as a failed insert, and copies', async () => {
+    const deps = delivery(async () => {
+      throw new Error('gone');
+    });
+    expect(await deliverAnywhereTranscript(transcript(), target, deps)).toEqual({
+      kind: 'copied',
+      reason: 'failed',
+    });
+    expect(deps.notify).toHaveBeenCalledWith(insertRefusalMessage('failed', '⌘V'));
+  });
+
+  it('opens the review card only when the fallback copy did not stick', async () => {
+    const deps = delivery(async () => ({ ok: false, reason: 'secure-input' }), 'something else');
+    expect(await deliverAnywhereTranscript(transcript(), target, deps)).toEqual({
+      kind: 'review',
+      reason: 'secure-input',
+    });
+    expect(deps.review).toHaveBeenCalledExactlyOnceWith(
+      'The clipboard did not keep the text. Copy it from this card.',
+      'hello world'
+    );
+    expect(deps.notify).not.toHaveBeenCalled();
+  });
+
+  it('without a target, copies as before', async () => {
+    const deps = delivery(async () => ({ ok: true }));
+    expect(await deliverAnywhereTranscript(transcript(), null, deps)).toEqual({ kind: 'copied' });
+    expect(deps.insert).not.toHaveBeenCalled();
+    expect(deps.notify).toHaveBeenCalledExactlyOnceWith(
+      dictationMessage('MSG-CLIPBOARD-COPIED', { n: '2', key: '⌘V' })
+    );
+  });
+
+  it('keeps the echo, nothing-heard and older-daemon messages, and touches neither the clipboard nor the app', async () => {
+    for (const [parts, kind] of [
+      [{ dictionary_only: true }, 'echo'],
+      [{ no_speech: true }, 'nothing'],
+      [{ dictionary_only: undefined }, 'old-backend'],
+    ] as const) {
+      const deps = delivery(async () => ({ ok: true }));
+      expect(await deliverAnywhereTranscript(transcript(parts), target, deps)).toEqual({ kind });
+      expect(deps.insert).not.toHaveBeenCalled();
+      expect(deps.write).not.toHaveBeenCalled();
+      if (kind === 'old-backend') expect(deps.review).toHaveBeenCalledWith('old daemon', null);
+      else expect(deps.review).not.toHaveBeenCalled();
+    }
+    const echo = delivery(async () => ({ ok: true }));
+    await deliverAnywhereTranscript(transcript({ dictionary_only: true }), target, echo);
+    expect(echo.notify).toHaveBeenCalledWith(dictationMessage('MSG-CLIPBOARD-ECHO'));
+  });
+
+  it('logs each attempt with its route, method, app and length, and never the text', async () => {
+    const deps = delivery(async () => ({ ok: false, reason: 'target-changed' }));
+    await deliverAnywhereTranscript(
+      transcript({ text: 'EPAS1 variant', raw_text: 'EPAS1 variant' }),
+      target,
+      deps
+    );
+    const entries = deps.log.mock.calls.map(([entry]) => entry);
+    expect(entries).toEqual([
+      {
+        route: 'other_app',
+        method: 'paste',
+        bundle: 'com.apple.TextEdit',
+        result: 'target-changed',
+        chars: 13,
+      },
+      {
+        route: 'other_app',
+        method: 'copy',
+        bundle: 'com.apple.TextEdit',
+        result: 'copied',
+        reason: 'target-changed',
+        chars: 13,
+      },
+    ]);
+    for (const entry of entries) {
+      const line = insertLogLine(entry, new Date(0));
+      expect(line).not.toContain('EPAS1');
+      expect(JSON.parse(line)).toMatchObject({ at: '1970-01-01T00:00:00.000Z', chars: 13 });
+    }
+    expect(
+      JSON.parse(
+        insertLogLine({
+          route: 'other_app',
+          method: 'paste',
+          bundle: 'not a "bundle"',
+          result: 'inserted',
+          chars: -1,
+        })
+      )
+    ).toMatchObject({ bundle: null, chars: 0 });
+  });
+});
+
+describe('the capture window between dictations', () => {
+  it('stays warm only while fn may dictate into other apps', () => {
+    const warm = { platform: 'darwin', fnEnabled: true, fnOtherApps: true, anywhereOn: true };
+    expect(captureWindowStaysWarm(warm)).toBe(true);
+    expect(captureWindowStaysWarm({ ...warm, fnOtherApps: false })).toBe(false);
+    expect(captureWindowStaysWarm({ ...warm, fnEnabled: false })).toBe(false);
+    expect(captureWindowStaysWarm({ ...warm, anywhereOn: false })).toBe(false);
+    expect(captureWindowStaysWarm({ ...warm, platform: 'win32' })).toBe(false);
+  });
+
+  it('a release while arming is a stop: the state goes to transcribing, never back to rest', () => {
+    const arming = nextAnywhereState(
+      nextAnywhereState(INITIAL_ANYWHERE_STATE, { type: 'enable' }),
+      {
+        type: 'start',
+        source: 'shortcut',
+        privateConfirmed: false,
+      }
+    );
+    expect(arming.phase).toBe('arming');
+    const stopped = nextAnywhereState(arming, { type: 'stop' });
+    expect(stopped.phase).toBe('transcribing');
+    // The microphone opening afterwards does not turn it back into a recording.
+    expect(nextAnywhereState(stopped, { type: 'capture-ready' })).toBe(stopped);
+  });
+});
+
+describe('the dictation test seams (DESIGN 3.12)', () => {
+  const env = {
+    [DICTATION_TEST_SEAM_ENV.fnTrace]: '1',
+    [DICTATION_TEST_SEAM_ENV.clipboardFile]: '/tmp/run/clipboard.txt',
+    [DICTATION_TEST_SEAM_ENV.insertLog]: '/tmp/run/insert.log',
+  };
+
+  it('a packaged app reads none of them, whatever its environment holds', () => {
+    expect(dictationTestSeams({ isPackaged: true }, env)).toEqual({
+      fnTrace: false,
+      clipboardFile: null,
+      insertLog: null,
+    });
+  });
+
+  it('an unpackaged app reads each, and believes only an absolute path and a trace of 1', () => {
+    expect(dictationTestSeams({ isPackaged: false }, env)).toEqual({
+      fnTrace: true,
+      clipboardFile: '/tmp/run/clipboard.txt',
+      insertLog: '/tmp/run/insert.log',
+    });
+    expect(
+      dictationTestSeams(
+        { isPackaged: false },
+        {
+          [DICTATION_TEST_SEAM_ENV.fnTrace]: 'true',
+          [DICTATION_TEST_SEAM_ENV.clipboardFile]: 'clipboard.txt',
+          [DICTATION_TEST_SEAM_ENV.insertLog]: '/tmp/a\0b',
+        }
+      )
+    ).toEqual({ fnTrace: false, clipboardFile: null, insertLog: null });
+    expect(dictationTestSeams({ isPackaged: false }, {})).toEqual({
+      fnTrace: false,
+      clipboardFile: null,
+      insertLog: null,
+    });
   });
 });
