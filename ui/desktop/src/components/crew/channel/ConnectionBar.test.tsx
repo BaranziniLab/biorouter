@@ -67,8 +67,19 @@ function bar() {
   return screen.getByTestId('crew-connection-bar');
 }
 
+/**
+ * The opening view has settled: the connection verified and, when the render selected a channel,
+ * that channel's own view is in too. The first render observes the workspace and then its first
+ * channel, so `status` reads connected while the channel's observation is still on its way. A
+ * verified view takes a failed Connect's note away by design (NEW-1, `forgetConnectFailure`), so a
+ * failure a test made in that window was cleared when the channel's view landed after it: on a
+ * loaded machine the bar was left empty and "Try again" never came (a full local run, 2026-11-26).
+ */
 async function verified() {
-  await waitFor(() => expect(currentCrew().status).toBe('connected'));
+  await waitFor(() => {
+    expect(currentCrew().status).toBe('connected');
+    if (currentCrew().channelId) expect(currentCrew().messagesLoaded).toBe(true);
+  });
 }
 
 /** The daemon's message for every SSH failure: its transport record, never for a person. */
