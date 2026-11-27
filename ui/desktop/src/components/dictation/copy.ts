@@ -147,7 +147,7 @@ export const DICTATION_MESSAGES = {
   'MSG-FN-OTHER-APPS':
     'Hold or double-tap <key> in any app while Biorouter is open. The text goes into that app, or to the clipboard when Biorouter cannot type there.',
   // The alternative key (DD-101, 2026-11-27): a modifier plus fn does what fn does, for when
-  // another app also uses fn. `<alt>` is the chosen combination (Control+fn by default) and
+  // another app also uses fn. `<alt>` is the chosen combination (Option+fn by default) and
   // `<app>` the name from Biorouter's own list of apps known to use fn (`fnCollision.ts`), never
   // text another app reports. The first five are Settings' **Dictation key** and **Key held with
   // fn** rows; the last two are the composer's one-time key notice, with **More in Settings**.
@@ -442,7 +442,10 @@ export const FN_KEY_LABELS = {
   shift: 'Shift+fn',
 } as const;
 
-/** The options of **Key held with fn** (DD-101), Control first, the default. */
+/**
+ * The options of **Key held with fn** (DD-101), in macOS's modifier order. Option is the default
+ * (`DEFAULT_FN_MODIFIER`, the owner's ruling O-49 of 2026-11-27, which replaced O-46's Control).
+ */
 export const FN_MODIFIER_LABELS = {
   control: 'Control',
   option: 'Option',

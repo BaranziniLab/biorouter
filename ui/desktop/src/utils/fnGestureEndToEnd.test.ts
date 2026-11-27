@@ -10,8 +10,9 @@
  *  - a double-tap gives one hands-free recording, and the first tap's capture is discarded;
  *  - a second double-tap stops it, and the text goes into the composer;
  *  - a single tap leaves nothing running;
- *  - with an app that also uses fn running (DD-101), a Control+fn double-tap still gives one
- *    hands-free recording, Control let go between the taps, and a bare fn hold starts nothing.
+ *  - with an app that also uses fn running (DD-101), an Option+fn double-tap (the default
+ *    modifier) still gives one hands-free recording, Option let go between the taps, and a bare
+ *    fn hold starts nothing.
  */
 import { EventEmitter } from 'node:events';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -252,16 +253,19 @@ describe('fn from the helper to the composer', () => {
     expect(field.value).toBe('hypoxia');
   });
 
-  it('with Wispr Flow running, a Control+fn double-tap gives one hands-free recording; a second one stops it', async () => {
+  // The service's keys are never set here, so it uses the default modifier: Option since the
+  // owner's ruling O-49 (2026-11-27). This test pressed Control+fn while O-46 made Control the
+  // default, and was rewritten to Option.
+  it('with Wispr Flow running, an Option+fn double-tap gives one hands-free recording; a second one stops it', async () => {
     await line(500, WISPR_RUNS);
     expect(service.status().collidingApp?.name).toBe('Wispr Flow');
-    // Control held from before the first press, let go after it, and pressed again just after
+    // Option held from before the first press, let go after it, and pressed again just after
     // fn went down for the second (a chord within the grace). The helper writes nothing for
-    // Control between the taps.
-    await line(1000, '{"type":"fn","down":true,"mod":"control","t":1000}');
+    // Option between the taps.
+    await line(1000, '{"type":"fn","down":true,"mod":"option","t":1000}');
     await line(1090, '{"type":"fn","down":false,"t":1090}');
     await line(1220, '{"type":"fn","down":true,"mod":null,"t":1220}');
-    await line(1250, '{"type":"chord","mod":"control","t":1250}');
+    await line(1250, '{"type":"chord","mod":"option","t":1250}');
     await line(1310, '{"type":"fn","down":false,"t":1310}');
     expect(intents.map((step) => step.intent)).toEqual(['prime', 'cancel-hold', 'prime', 'toggle']);
     expect(new Set(intents.map((step) => step.gesture)).size).toBe(1);
@@ -273,11 +277,11 @@ describe('fn from the helper to the composer', () => {
     expect(getDictationSnapshot()).toMatchObject({ key: KEY, activity: 'recording' });
     captures[1].speak(2);
 
-    // The stop, with Control held for both taps.
+    // The stop, with Option held for both taps.
     for (const [at, json] of [
-      [6000, '{"type":"fn","down":true,"mod":"control","t":6000}'],
+      [6000, '{"type":"fn","down":true,"mod":"option","t":6000}'],
       [6090, '{"type":"fn","down":false,"t":6090}'],
-      [6220, '{"type":"fn","down":true,"mod":"control","t":6220}'],
+      [6220, '{"type":"fn","down":true,"mod":"option","t":6220}'],
       [6310, '{"type":"fn","down":false,"t":6310}'],
     ] as const)
       await line(at, json);

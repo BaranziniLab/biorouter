@@ -402,7 +402,7 @@ export class FnKeyService {
    * The dictation key from the setting (`fn-key.json`). Main calls it before
    * {@link FnKeyService.setActive}, so no helper starts with old keys, and on every change, which
    * applies to the next press without restarting the helper. A missing or unknown value reads as
-   * the default: Automatic, and Control with fn.
+   * the default: Automatic, and Option with fn ({@link DEFAULT_FN_MODIFIER}).
    */
   setKeys(keys: FnKeys): void {
     this.keys = {

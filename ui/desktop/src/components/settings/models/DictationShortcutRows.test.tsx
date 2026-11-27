@@ -37,7 +37,9 @@ const status = (over: Partial<FnKeyStatus> = {}): FnKeyStatus => ({
 });
 
 // Main always fills `combination` and `modifier` (`parseFnKeySettings`), and computes `active`
-// with `fnActive` from the setting and the app it found (DD-101).
+// with `fnActive` from the setting and the app it found (DD-101). The fixture holds main's
+// defaults: Automatic with Option since the owner's ruling O-49 (2026-11-27); it held Control
+// while O-46 made Control the default, and the tests that read the default were rewritten.
 const view = (
   over: {
     settings?: Partial<FnKeySettings>;
@@ -49,7 +51,7 @@ const view = (
     enabled: true,
     otherApps: false,
     combination: 'automatic',
-    modifier: 'control',
+    modifier: 'option',
     ...over.settings,
   };
   const fnStatus = status(over.status);
@@ -104,7 +106,7 @@ describe('Dictate with the fn key (macOS)', () => {
       enabled: false,
       otherApps: false,
       combination: 'automatic',
-      modifier: 'control',
+      modifier: 'option',
     });
     await waitFor(() => expect(control).toHaveAttribute('aria-checked', 'false'));
   });
@@ -234,20 +236,20 @@ describe('Dictation key and Key held with fn (macOS)', () => {
     expect(radios.map((radio) => radio.textContent)).toEqual([
       FN_KEY_LABELS.automatic,
       FN_KEY_LABELS.fn,
-      FN_KEY_LABELS.control,
+      FN_KEY_LABELS.option,
     ]);
     expect(within(group).getByRole('radio', { name: FN_KEY_LABELS.automatic })).toHaveAttribute(
       'aria-checked',
       'true'
     );
     expect(statusLine()).toHaveTextContent(
-      dictationMessage('MSG-FN-KEY-AUTO', { alt: FN_KEY_LABELS.control })
+      dictationMessage('MSG-FN-KEY-AUTO', { alt: FN_KEY_LABELS.option })
     );
-    expect(statusLine()).toHaveTextContent('Using fn. Control+fn works too.');
+    expect(statusLine()).toHaveTextContent('Using fn. Option+fn works too.');
     expect(
       screen.getByRole('button', { name: `About ${DICTATION_ACTIONS.dictationKey}` })
     ).toHaveAccessibleDescription(
-      dictationMessage('MSG-FN-KEY-HELP', { alt: FN_KEY_LABELS.control })
+      dictationMessage('MSG-FN-KEY-HELP', { alt: FN_KEY_LABELS.option })
     );
   });
 
@@ -255,9 +257,9 @@ describe('Dictation key and Key held with fn (macOS)', () => {
     bridge(view({ status: { collidingApp: WISPR } }));
     render(<DictationShortcutRows />);
     await keyGroup();
-    expect(statusLine()).toHaveTextContent('Using Control+fn, because Wispr Flow also uses fn.');
+    expect(statusLine()).toHaveTextContent('Using Option+fn, because Wispr Flow also uses fn.');
     expect(statusLine()).toHaveTextContent(
-      dictationMessage('MSG-FN-KEY-SWITCHED', { alt: FN_KEY_LABELS.control, app: WISPR.name })
+      dictationMessage('MSG-FN-KEY-SWITCHED', { alt: FN_KEY_LABELS.option, app: WISPR.name })
     );
   });
 
@@ -308,8 +310,9 @@ describe('Dictation key and Key held with fn (macOS)', () => {
     }
   });
 
+  // Control stays a choice after O-49 made Option the default, so this chooses it.
   it('offers Control, Option and Shift, never Command, and explains why in its InfoTip', async () => {
-    bridge(view({ settings: { modifier: 'option' } }));
+    bridge(view({ settings: { modifier: 'control' } }));
     render(<DictationShortcutRows />);
     await keyGroup();
     const group = modifierGroup()!;
@@ -319,7 +322,7 @@ describe('Dictation key and Key held with fn (macOS)', () => {
       FN_MODIFIER_LABELS.option,
       FN_MODIFIER_LABELS.shift,
     ]);
-    expect(within(group).getByRole('radio', { name: FN_MODIFIER_LABELS.option })).toHaveAttribute(
+    expect(within(group).getByRole('radio', { name: FN_MODIFIER_LABELS.control })).toHaveAttribute(
       'aria-checked',
       'true'
     );
@@ -328,8 +331,8 @@ describe('Dictation key and Key held with fn (macOS)', () => {
       screen.getByRole('button', { name: `About ${DICTATION_ACTIONS.keyHeldWithFn}` })
     ).toHaveAccessibleDescription(DICTATION_MESSAGES['MSG-FN-MODIFIER-HELP']);
     // The Dictation key option names the chosen modifier.
-    expect(screen.getByRole('radio', { name: FN_KEY_LABELS.option })).toBeInTheDocument();
-    expect(screen.queryByRole('radio', { name: FN_KEY_LABELS.control })).toBeNull();
+    expect(screen.getByRole('radio', { name: FN_KEY_LABELS.control })).toBeInTheDocument();
+    expect(screen.queryByRole('radio', { name: FN_KEY_LABELS.option })).toBeNull();
   });
 
   it('writes the whole setting through main for each choice', async () => {
@@ -337,15 +340,15 @@ describe('Dictation key and Key held with fn (macOS)', () => {
     const user = userEvent.setup();
     render(<DictationShortcutRows />);
     await keyGroup();
-    await user.click(screen.getByRole('radio', { name: FN_KEY_LABELS.control }));
+    await user.click(screen.getByRole('radio', { name: FN_KEY_LABELS.option }));
     expect(set).toHaveBeenLastCalledWith({
       enabled: true,
       otherApps: false,
       combination: 'modifier',
-      modifier: 'control',
+      modifier: 'option',
     });
     await waitFor(() =>
-      expect(screen.getByRole('radio', { name: FN_KEY_LABELS.control })).toHaveAttribute(
+      expect(screen.getByRole('radio', { name: FN_KEY_LABELS.option })).toHaveAttribute(
         'aria-checked',
         'true'
       )
@@ -398,9 +401,9 @@ describe('Dictation key and Key held with fn (macOS)', () => {
   it('names the key that works now in the fn help and the other apps help', async () => {
     const cases: Array<[Partial<FnKeySettings>, KnownFnApp | null, string]> = [
       [{}, null, 'fn'],
-      [{}, WISPR, 'Control+fn'],
+      [{}, WISPR, 'Option+fn'],
       [{ combination: 'fn' }, WISPR, 'fn'],
-      [{ combination: 'modifier', modifier: 'option' }, null, 'Option+fn'],
+      [{ combination: 'modifier', modifier: 'control' }, null, 'Control+fn'],
     ];
     for (const [settings, collidingApp, key] of cases) {
       resetFnKeyStoreForTests();
@@ -484,7 +487,7 @@ describe('Use fn in other apps', () => {
       enabled: true,
       otherApps: true,
       combination: 'automatic',
-      modifier: 'control',
+      modifier: 'option',
     });
     act(() => broadcast!(view({ settings: { enabled: false } })));
     await waitFor(() => expect(screen.queryByRole('switch')).toBeNull());

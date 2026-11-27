@@ -2457,7 +2457,8 @@ binary, from `BaranziniLab/biorouter-models`.
   and writes none of them, and the app refuses a v1 or v2 helper (DD-98, DD-101). A modifier plus
   fn does what fn does (owner ruling O-46): **Dictation key** is Automatic (fn, plus the modifier
   plus fn at any time, and fn alone left to a listed app while it runs), fn, or the modifier plus
-  fn; **Key held with fn** is Control (`DEFAULT_FN_MODIFIER`), Option or Shift, never Command. A
+  fn; **Key held with fn** is Option (`DEFAULT_FN_MODIFIER`, O-49: Wispr Flow binds Control+fn
+  to its own lens action, so Control is no longer the default), Control or Shift, never Command. A
   collision is an app on Biorouter's reviewed list (`utils/fnCollision.ts`, Wispr Flow only) among
   the bundle ids the helper's `listeners` line reports from `CGGetEventTapList`, which asks for no
   permission and creates nothing; only that table's names reach the interface, because Siri and
@@ -2475,7 +2476,8 @@ binary, from `BaranziniLab/biorouter-models`.
   and checked the same way (`scripts/check-text-insert-helper-bundled.sh`, which also requires the
   daemon's Team ID), with its setting in `<config>/dictation/insert.json`; its `inserted` answer
   says how it left the clipboard (`restored`), and a copied password is cleared rather than put
-  back (DD-102). ⚠ Same rule for its Accessibility grant: only the Settings button's
+  back (DD-102, kept by O-50, as is the tray's **Copy last dictation** for 5 minutes). ⚠ Same
+  rule for its Accessibility grant: only the Settings button's
   `dictation:insert:open-settings` may call `requestAccess` (the one path to
   `CGRequestPostEventAccess`), and its tests use a named pasteboard, never the general one. The
   on-screen capsule (`utils/dictationIndicator.ts`) is a non-focusable, click-through panel fed

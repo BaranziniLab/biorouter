@@ -43,9 +43,11 @@ pub const COMMAND_FLAG: u64 = 0x0010_0000;
 pub const OTHER_MODIFIERS: u64 = SHIFT_FLAG | CONTROL_FLAG | OPTION_FLAG | COMMAND_FLAG;
 const _: () = assert!(OTHER_MODIFIERS == 0x0002_0000 | 0x0004_0000 | 0x0008_0000 | 0x0010_0000);
 
-/// The one modifier a person may hold with fn to dictate with a modifier added (Control
-/// plus fn by default, `DEFAULT_FN_MODIFIER` in `ui/desktop/src/utils/fnGesture.ts`).
-/// Command is never one: macOS and every app use it for shortcuts.
+/// The one modifier a person may hold with fn to dictate with a modifier added (Option
+/// plus fn by default since the owner's ruling O-49 of 2026-11-27, `DEFAULT_FN_MODIFIER` in
+/// `ui/desktop/src/utils/fnGesture.ts`; Control and Shift may be chosen). The helper treats
+/// the three alike and reads no setting. Command is never one: macOS and every app use it
+/// for shortcuts.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Mod {
     Shift,

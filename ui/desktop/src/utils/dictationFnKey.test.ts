@@ -28,12 +28,16 @@ const world = (over: Partial<FnWorld> = {}): FnWorld => ({
   ...over,
 });
 
-/** The dictation key fields every parsed setting carries since DD-101: Automatic with Control. */
-const KEYS = { combination: 'automatic', modifier: 'control' } as const;
+/**
+ * The dictation key fields every parsed setting carries since DD-101: Automatic with Option.
+ * Option since the owner's ruling O-49 (2026-11-27); it was Control under O-46.
+ */
+const KEYS = { combination: 'automatic', modifier: 'option' } as const;
 
 describe('the fn key setting', () => {
   // Rewritten for DD-101: the setting gained the dictation key and the modifier held with fn,
-  // which parse always fills (Automatic and Control unless the file says otherwise).
+  // which parse always fills (Automatic and Option unless the file says otherwise; Control until
+  // the owner's ruling O-49 of 2026-11-27 made Option the default).
   it('is on by default on macOS and off, with no way on, elsewhere', () => {
     expect(defaultFnKeySettings('darwin')).toEqual({ enabled: true, otherApps: false, ...KEYS });
     expect(defaultFnKeySettings('win32')).toEqual({ enabled: false, otherApps: false, ...KEYS });
@@ -65,13 +69,20 @@ describe('the fn key setting', () => {
     });
   });
 
-  it('a file written before the dictation key reads as Automatic with Control', () => {
+  // Rewritten for O-49 (2026-11-27): the default modifier is Option, no longer Control (O-46).
+  it('a file written before the dictation key reads as Automatic with Option', () => {
     expect(parseFnKeySettings({ enabled: true, otherApps: false }, 'darwin')).toEqual({
       enabled: true,
       otherApps: false,
       combination: 'automatic',
-      modifier: 'control',
+      modifier: 'option',
     });
+  });
+
+  it('a file that chose Control keeps Control', () => {
+    expect(
+      parseFnKeySettings({ enabled: true, otherApps: false, modifier: 'control' }, 'darwin')
+    ).toEqual({ enabled: true, otherApps: false, combination: 'automatic', modifier: 'control' });
   });
 
   it('reads each dictation key and modifier it knows, and anything else as the defaults', () => {
@@ -82,9 +93,10 @@ describe('the fn key setting', () => {
         ).toEqual({ enabled: true, otherApps: false, combination, modifier });
       }
     }
-    // Command is never a choice: macOS and every app use it for shortcuts.
+    // Command is never a choice: macOS and every app use it for shortcuts. Anything else reads
+    // as the default, Option since O-49 (Control under O-46).
     for (const modifier of ['command', 'cmd', 'Command', 'fn', 'alt', '', 3, null, ['control']]) {
-      expect(parseFnKeySettings({ modifier }, 'darwin').modifier, String(modifier)).toBe('control');
+      expect(parseFnKeySettings({ modifier }, 'darwin').modifier, String(modifier)).toBe('option');
     }
     for (const combination of ['Automatic', 'control+fn', 'bare', '', 1, null, {}]) {
       expect(parseFnKeySettings({ combination }, 'darwin').combination, String(combination)).toBe(
@@ -492,6 +504,8 @@ describe('the fn trace', () => {
 });
 
 describe('which key works now', () => {
+  // Control chosen, so a row that names the modifier shows a choice; the default is Option since
+  // the owner's ruling O-49 (2026-11-27), pinned by the setting with no dictation key fields below.
   const settings = (over: Partial<FnKeySettings> = {}): FnKeySettings => ({
     enabled: true,
     otherApps: false,
@@ -546,11 +560,14 @@ describe('which key works now', () => {
     }
   });
 
-  it('a setting with no dictation key fields reads as Automatic with Control', () => {
-    expect(fnActive({ enabled: true, otherApps: false }, null)).toEqual(fnActive(settings(), null));
+  // Rewritten for O-49 (2026-11-27): the default modifier is Option, no longer Control (O-46).
+  it('a setting with no dictation key fields reads as Automatic with Option', () => {
+    const option = settings({ modifier: 'option' });
+    expect(fnActive({ enabled: true, otherApps: false }, null)).toEqual(fnActive(option, null));
+    expect(fnActive({ enabled: true, otherApps: false }, null).modifier).toBe('option');
     expect(
       fnActive({ enabled: true, otherApps: false, modifier: 'command' as never }, wispr)
-    ).toEqual(fnActive(settings(), wispr));
+    ).toEqual(fnActive(option, wispr));
   });
 
   it('names each key as the interface shows it', () => {

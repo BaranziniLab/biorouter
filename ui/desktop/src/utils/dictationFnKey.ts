@@ -9,8 +9,9 @@
  *
  * It also holds the dictation key (DD-101): Automatic (fn, and a modifier with fn, giving bare fn
  * up only while an app that also acts on fn runs), fn alone, or the modifier with fn, and which
- * modifier that is (Control unless the person chose Option or Shift). A file written before the
- * key existed reads as Automatic with Control.
+ * modifier that is (Option unless the person chose Control or Shift; Option since the owner's
+ * ruling O-49 of 2026-11-27, Control before it). A file written before the key existed reads as
+ * Automatic with Option.
  */
 import type { AnywherePhase } from './dictationAnywhere';
 import {
@@ -404,7 +405,7 @@ function traceKnown(bundle: string | null): string {
 
 /**
  * Which presses dictate, for the trace: `fn` for bare fn and the modifier's name for the
- * modifier with fn, joined by `+` (Automatic with no collision is `fn+control`), or `none`.
+ * modifier with fn, joined by `+` (Automatic with no collision is `fn+option`), or `none`.
  */
 function traceAccept(accept: FnAccept): string {
   const parts: string[] = [];

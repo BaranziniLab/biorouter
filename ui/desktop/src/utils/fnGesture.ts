@@ -15,7 +15,7 @@
  *
  * **The same gestures with a modifier** (DD-101). When another app also acts on fn (Wispr Flow
  * on the owner's Mac), Biorouter takes the same gestures with one of Shift, Control or Option held
- * with fn ({@link DEFAULT_FN_MODIFIER}, Control, unless the person chose another). Which presses
+ * with fn ({@link DEFAULT_FN_MODIFIER}, Option, unless the person chose another). Which presses
  * dictate is an {@link FnAccept} (from {@link fnAccept}): bare fn, the modifier with fn, or both.
  * The modifier may be pressed before fn (the helper's fn down names it) or within
  * {@link FN_CHORD_GRACE_MS} after it (its `chord` line), and may be let go at any time after that:
@@ -59,8 +59,12 @@ export type FnModifier = 'shift' | 'control' | 'option';
 /** The person's choice of dictation key: Automatic, fn alone, or the modifier with fn. */
 export type FnCombination = 'automatic' | 'fn' | 'modifier';
 
-/** The modifier with fn that Automatic and the modifier choice use unless another is chosen. */
-export const DEFAULT_FN_MODIFIER: FnModifier = 'control';
+/**
+ * The modifier with fn that Automatic and the modifier choice use unless another is chosen.
+ * Option, by the owner's ruling O-49 (2026-11-27), which replaced O-46's Control: Wispr Flow binds
+ * Control+fn to an action of its own. Control and Shift stay choices; Command never is one.
+ */
+export const DEFAULT_FN_MODIFIER: FnModifier = 'option';
 
 /** Which presses dictate now: fn alone (`bare`), and the modifier whose chord with fn does. */
 export interface FnAccept {
@@ -91,7 +95,7 @@ export function fnAccept(
   }
 }
 
-/** Automatic with Control and no collision: every bare press behaves as in protocol version 2. */
+/** Automatic with Option and no collision: every bare press behaves as in protocol version 2. */
 export const DEFAULT_FN_ACCEPT: FnAccept = Object.freeze(
   fnAccept('automatic', DEFAULT_FN_MODIFIER, false)
 );
@@ -105,7 +109,7 @@ export function parseFnCombination(value: unknown): FnCombination {
   return value === 'fn' || value === 'modifier' ? value : 'automatic';
 }
 
-/** A stored modifier: Shift, Control or Option, and anything else (Command included) Control. */
+/** A stored modifier: Shift, Control or Option, and anything else (Command included) Option. */
 export function parseFnModifier(value: unknown): FnModifier {
   return isFnModifier(value) ? value : DEFAULT_FN_MODIFIER;
 }

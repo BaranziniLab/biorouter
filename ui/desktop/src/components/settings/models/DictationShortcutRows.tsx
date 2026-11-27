@@ -4,9 +4,9 @@
  * - macOS: **Dictate with the fn key** (on by default): hold fn to talk, double-tap fn for
  *   hands-free. Under it while it is on, **Dictation key** (Automatic, fn, or a modifier plus fn,
  *   DD-101) with a one-line status saying which key works now and why, and **Key held with fn**
- *   (Control, Option or Shift; never Command). Below them, only what needs the person: Input
- *   Monitoring when macOS has not granted it, macOS's own use of fn when it may clash (only while
- *   fn alone dictates), and a listener that will not start.
+ *   (Option by default, or Control or Shift; never Command). Below them, only what needs the
+ *   person: Input Monitoring when macOS has not granted it, macOS's own use of fn when it may
+ *   clash (only while fn alone dictates), and a listener that will not start.
  * - Windows and Linux: **Keyboard shortcut**, a read-only row naming Ctrl+Shift+D, because those
  *   systems do not let an app see fn.
  * - {@link FnOtherAppsRow}, under **Dictate into other apps** on macOS: the same gestures in
@@ -76,7 +76,7 @@ function activeKeyLabel(view: FnKeyView): string {
 
 /**
  * The setting with both DD-101 fields read as main reads them (a missing or unknown word is
- * Automatic and Control), so a write always sends the whole object.
+ * Automatic and Option), so a write always sends the whole object.
  */
 function fullSettings(settings: FnKeySettings): Required<FnKeySettings> {
   return {

@@ -530,7 +530,11 @@ describe('an fn start while this window still transcribes', () => {
 
 const WISPR = { bundle: 'com.electron.wispr-flow', name: 'Wispr Flow' };
 
-/** The fn status with the dictation key main computed (DD-101). */
+/**
+ * The fn status with the dictation key main computed (DD-101). Automatic uses the default
+ * modifier, Option since the owner's ruling O-49 (2026-11-27); the Automatic views below used
+ * Control while O-46 made it the default, and were rewritten. The modifier choice names its own.
+ */
 function keyView(
   combination: 'automatic' | 'fn' | 'modifier',
   active: NonNullable<FnKeyView['active']>,
@@ -539,7 +543,7 @@ function keyView(
   const base = fnView(fnUsage);
   return {
     ...base,
-    settings: { ...base.settings, combination, modifier: active.modifier ?? 'control' },
+    settings: { ...base.settings, combination, modifier: active.modifier ?? 'option' },
     status: { ...base.status, collidingApp: active.collidingApp },
     active,
   };
@@ -562,7 +566,7 @@ describe('the fn note under the dictation key', () => {
     // The person goes back to Automatic with nothing else using fn: the note shows then.
     fnKey.view = keyView('automatic', {
       bare: true,
-      modifier: 'control',
+      modifier: 'option',
       reason: 'automatic',
       collidingApp: null,
     });
@@ -578,12 +582,13 @@ describe('the one-time key notice', () => {
   const collision = () =>
     keyView('automatic', {
       bare: false,
-      modifier: 'control',
+      modifier: 'option',
       reason: 'collision',
       collidingApp: WISPR,
     });
+  // Control stays a choice after O-49, so the chosen key here is Control.
   const chosen = () =>
-    keyView('modifier', { bare: false, modifier: 'option', reason: 'chosen', collidingApp: null });
+    keyView('modifier', { bare: false, modifier: 'control', reason: 'chosen', collidingApp: null });
 
   it('names the app and the key that dictates, once per app, in the composer the press was for', () => {
     composer('tab:a', { showsNotes: true });
@@ -593,7 +598,7 @@ describe('the one-time key notice', () => {
     act(() => handleFnNotice('use-alternative'));
     expect(getFnConflictNote()).toEqual({
       key: 'editor:m1',
-      text: dictationMessage('MSG-FN-USE-ALT-COLLISION', { app: 'Wispr Flow', alt: 'Control+fn' }),
+      text: dictationMessage('MSG-FN-USE-ALT-COLLISION', { app: 'Wispr Flow', alt: 'Option+fn' }),
     });
     expect(JSON.parse(window.localStorage.getItem(FN_ALT_NOTICE_SHOWN_KEY)!)).toEqual([
       'collision:com.electron.wispr-flow',
@@ -614,7 +619,7 @@ describe('the one-time key notice', () => {
     fnKey.view = chosen();
     act(() => handleFnNotice('use-alternative'));
     expect(getFnConflictNote()?.text).toBe(
-      dictationMessage('MSG-FN-USE-ALT-CHOSEN', { alt: 'Option+fn' })
+      dictationMessage('MSG-FN-USE-ALT-CHOSEN', { alt: 'Control+fn' })
     );
     act(() => dismissFnConflictNote());
     act(() => handleFnNotice('use-alternative'));
@@ -622,7 +627,7 @@ describe('the one-time key notice', () => {
     fnKey.view = collision();
     act(() => handleFnNotice('use-alternative'));
     expect(getFnConflictNote()?.text).toBe(
-      dictationMessage('MSG-FN-USE-ALT-COLLISION', { app: 'Wispr Flow', alt: 'Control+fn' })
+      dictationMessage('MSG-FN-USE-ALT-COLLISION', { app: 'Wispr Flow', alt: 'Option+fn' })
     );
     expect(JSON.parse(window.localStorage.getItem(FN_ALT_NOTICE_SHOWN_KEY)!)).toEqual([
       'chosen',
@@ -641,7 +646,7 @@ describe('the one-time key notice', () => {
     act(() => handleFnNotice('use-alternative'));
     fnKey.view = keyView('automatic', {
       bare: true,
-      modifier: 'control',
+      modifier: 'option',
       reason: 'automatic',
       collidingApp: null,
     });

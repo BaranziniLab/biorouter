@@ -172,10 +172,12 @@ describe('dictation copy', () => {
       expect(DICTATION_MESSAGES, id).toHaveProperty(id);
       expect(rows.has(id), `${id} is not in the catalog`).toBe(true);
     }
-    const fill = { alt: 'Control+fn', app: 'Wispr Flow' };
-    expect(dictationMessage('MSG-FN-KEY-AUTO', fill)).toBe('Using fn. Control+fn works too.');
+    // Filled with the default key, Option+fn since the owner's ruling O-49 (2026-11-27); these
+    // read Control+fn while O-46 made Control the default. Control+fn is still filled below.
+    const fill = { alt: 'Option+fn', app: 'Wispr Flow' };
+    expect(dictationMessage('MSG-FN-KEY-AUTO', fill)).toBe('Using fn. Option+fn works too.');
     expect(dictationMessage('MSG-FN-KEY-SWITCHED', fill)).toBe(
-      'Using Control+fn, because Wispr Flow also uses fn.'
+      'Using Option+fn, because Wispr Flow also uses fn.'
     );
     expect(dictationMessage('MSG-FN-KEY-SHARED', fill)).toBe(
       'Wispr Flow also uses fn, so one press may start both.'
@@ -183,11 +185,14 @@ describe('dictation copy', () => {
     expect(dictationMessage('MSG-FN-KEY-HELP', { alt: 'Option+fn' })).toBe(
       'Automatic uses fn, or Option+fn while another app that uses fn is open, and Option+fn always works too. Choose fn or Option+fn to use one key only.'
     );
+    expect(dictationMessage('MSG-FN-KEY-AUTO', { alt: 'Control+fn' })).toBe(
+      'Using fn. Control+fn works too.'
+    );
     expect(DICTATION_MESSAGES['MSG-FN-MODIFIER-HELP']).toBe(
       'Command is left out because macOS uses it for shortcuts.'
     );
     expect(dictationMessage('MSG-FN-USE-ALT-COLLISION', fill)).toBe(
-      'Wispr Flow also uses fn. Hold Control+fn to dictate in Biorouter, or double-tap it for hands-free.'
+      'Wispr Flow also uses fn. Hold Option+fn to dictate in Biorouter, or double-tap it for hands-free.'
     );
     expect(dictationMessage('MSG-FN-USE-ALT-CHOSEN', { alt: 'Shift+fn' })).toBe(
       'Biorouter dictates with Shift+fn. Hold it to talk, or double-tap it for hands-free.'

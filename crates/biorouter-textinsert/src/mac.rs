@@ -358,8 +358,9 @@ fn paste(desk: &impl Desk, pid: i32, text: &Text, times: Times) -> Result<Restor
     });
     let (kept, written) = prepared?;
     let outcome = if written.ok {
-        // Wait, briefly, for the person to let go of the modifiers: a Control still down after
-        // Control plus fn would otherwise reach the app as Control-Command-V.
+        // Wait, briefly, for the person to let go of the modifiers: an Option still down after
+        // Option plus fn (the default) would otherwise reach the app as Option-Command-V, and a
+        // Control after Control plus fn as Control-Command-V.
         let waiting = now();
         wait_for_release(
             || desk.modifier_flags(),

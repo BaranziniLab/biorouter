@@ -337,7 +337,11 @@ describe('the gesture driver', () => {
 
 // ── Protocol version 3: a modifier with fn (DD-101) ──────────────────────────────
 
-/** Which presses dictate, as `fnAccept` answers for each choice. */
+/**
+ * Which presses dictate, as `fnAccept` answers for each choice, with Control chosen as the
+ * modifier. Control is a choice, not the default: the default is Option since the owner's ruling
+ * O-49 (2026-11-27), pinned by the defaults test below; the reducer treats every modifier alike.
+ */
 const AUTO: FnAccept = { bare: true, modifier: 'control' };
 const AUTO_COLLISION: FnAccept = { bare: false, modifier: 'control' };
 const FN_ONLY: FnAccept = { bare: true, modifier: null };
@@ -395,11 +399,13 @@ describe('which presses dictate', () => {
     }
   });
 
-  it('defaults to Automatic with Control and no collision, which is version 2 for every bare press', () => {
-    expect(DEFAULT_FN_MODIFIER).toBe('control');
+  // The owner's ruling O-49 (2026-11-27) changed the default modifier from Control (O-46) to
+  // Option, because Wispr Flow binds Control+fn to an action of its own. Control stays a choice.
+  it('defaults to Automatic with Option and no collision, which is version 2 for every bare press', () => {
+    expect(DEFAULT_FN_MODIFIER).toBe('option');
     expect(FN_CHORD_GRACE_MS).toBe(100);
     expect(DEFAULT_FN_ACCEPT).toEqual(fnAccept('automatic', DEFAULT_FN_MODIFIER, false));
-    expect(DEFAULT_FN_ACCEPT).toEqual(AUTO);
+    expect(DEFAULT_FN_ACCEPT).toEqual({ bare: true, modifier: 'option' });
   });
 
   it('reads a stored choice and modifier, Command and anything unknown as the defaults', () => {
@@ -412,8 +418,9 @@ describe('which presses dictate', () => {
     expect(parseFnModifier('control')).toBe('control');
     expect(parseFnModifier('option')).toBe('option');
     expect(parseFnModifier('shift')).toBe('shift');
+    // Anything else reads as the default, Option since O-49 (Control under O-46).
     for (const word of [undefined, null, '', 'command', 'cmd', 'Control', 'alt', 'fn', 0, []]) {
-      expect(parseFnModifier(word), String(word)).toBe('control');
+      expect(parseFnModifier(word), String(word)).toBe('option');
     }
   });
 });

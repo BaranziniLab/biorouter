@@ -754,6 +754,9 @@ describe('the fn key service', () => {
   });
 
   // ── Protocol version 3: the keys, the colliding app and the restart (DD-101) ──
+  // A service whose keys were never set uses the default modifier, Option since the owner's
+  // ruling O-49 (2026-11-27); the tests below that press it without setting keys pressed Control
+  // under O-46 and were rewritten to Option. A test that sets Control itself keeps it.
 
   const WISPR = '{"type":"listeners","apps":["com.example.hotkeys","com.electron.wispr-flow"]}';
   const NO_LISTED = '{"type":"listeners","apps":["com.example.hotkeys"]}';
@@ -819,7 +822,7 @@ describe('the fn key service', () => {
     const fnKey = service();
     fnKey.setActive(true);
     helpers[0].say(READY);
-    expect(fnKey.accept).toEqual({ bare: true, modifier: 'control' });
+    expect(fnKey.accept).toEqual({ bare: true, modifier: 'option' });
     fnKey.setKeys({ combination: 'fn', modifier: 'control' });
     expect(fnKey.accept).toEqual({ bare: true, modifier: null });
     helpers[0].say(modDown('control'));
@@ -827,11 +830,11 @@ describe('the fn key service', () => {
     helpers[0].say(fnLine(false));
     expect(intents()).toEqual([]);
     expect(helpers).toHaveLength(1);
-    // Anything but the three words reads as the defaults: Automatic with Control.
+    // Anything but the three words reads as the defaults: Automatic with Option (O-49).
     fnKey.setKeys({ combination: 'chord' as never, modifier: 'command' as never });
-    expect(fnKey.accept).toEqual({ bare: true, modifier: 'control' });
+    expect(fnKey.accept).toEqual({ bare: true, modifier: 'option' });
     fnKey.setKeys({});
-    expect(fnKey.accept).toEqual({ bare: true, modifier: 'control' });
+    expect(fnKey.accept).toEqual({ bare: true, modifier: 'option' });
   });
 
   it('the colliding app follows the listeners lines, and each change is published', () => {
@@ -851,14 +854,14 @@ describe('the fn key service', () => {
     // The same set again publishes nothing.
     helpers[0].say(WISPR);
     expect(statuses).toHaveLength(before + 1);
-    // Automatic gives up bare fn while it runs, and keeps Control+fn.
-    expect(fnKey.accept).toEqual({ bare: false, modifier: 'control' });
+    // Automatic gives up bare fn while it runs, and keeps Option+fn.
+    expect(fnKey.accept).toEqual({ bare: false, modifier: 'option' });
     helpers[0].say(modDown(null));
     helpers[0].say(HELD);
     helpers[0].say(fnLine(false));
     expect(intents()).toEqual([]);
     expect(notes.map((n) => n.note)).toEqual(['ignored-bare-hold']);
-    helpers[0].say(modDown('control'));
+    helpers[0].say(modDown('option'));
     helpers[0].say(HELD);
     helpers[0].say(fnLine(false));
     expect(intents()).toEqual(['prime', 'start-hold', 'end-hold']);
@@ -866,7 +869,7 @@ describe('the fn key service', () => {
     helpers[0].say(NO_LISTED);
     expect(fnKey.status().collidingApp).toBeNull();
     expect(last(statuses)?.collidingApp).toBeNull();
-    expect(fnKey.accept).toEqual({ bare: true, modifier: 'control' });
+    expect(fnKey.accept).toEqual({ bare: true, modifier: 'option' });
   });
 
   it('a dropped listeners line leaves the colliding app as it was', () => {
@@ -953,7 +956,7 @@ describe('the fn key service', () => {
     helpers[1].say(WISPR);
     expect(helpers).toHaveLength(2);
     // It still listens for both, and none of it counted as a crash.
-    helpers[1].say(modDown('control'));
+    helpers[1].say(modDown('option'));
     expect(intents()).toEqual(['prime']);
   });
 
@@ -979,7 +982,7 @@ describe('the fn key service', () => {
     helpers[0].say(READY);
     helpers[0].say(NONE);
     now = 40_000;
-    helpers[0].say(modDown('control', 40_000));
+    helpers[0].say(modDown('option', 40_000));
     helpers[0].say(WISPR);
     expect(helpers).toHaveLength(1);
     now = 40_300;
@@ -998,14 +1001,14 @@ describe('the fn key service', () => {
     helpers[0].say(READY);
     helpers[0].say(NONE);
     now = 40_000;
-    helpers[0].say(modDown('control', 40_000));
+    helpers[0].say(modDown('option', 40_000));
     now = 40_090;
     helpers[0].say(fnLine(false, 40_090));
     helpers[0].say(WISPR);
     expect(helpers).toHaveLength(1);
     // The second tap arrives within the gap: the double-tap toggles, then the helper restarts.
     now = 40_220;
-    helpers[0].say(modDown('control', 40_220));
+    helpers[0].say(modDown('option', 40_220));
     now = 40_310;
     helpers[0].say(fnLine(false, 40_310));
     expect(intents()).toEqual(['prime', 'cancel-hold', 'prime', 'toggle']);
