@@ -1578,9 +1578,26 @@ export function dismissLostDictation(): void {
  * A transcript was published, so the daemon may have added it to the dictation history: about
  * {@link DICTATION_TRANSCRIBED_DELAY_MS} later, every {@link subscribeDictationTranscribed}
  * listener runs and the window fires {@link DICTATION_TRANSCRIBED_EVENT}. Several in a row
- * coalesce into one. It carries nothing, no text and no id.
+ * coalesce into one. It also tells main at once (`dictationTranscribed`, F18), which tells every
+ * Biorouter window, so a History tab open elsewhere reads again too. It carries nothing, no text
+ * and no id.
  */
 export function notifyDictationTranscribed(): void {
+  try {
+    window.electron?.dictationTranscribed?.();
+  } catch {
+    // No bridge, or one that predates it: this window's own listeners still run.
+  }
+  noteDictationHistoryChanged();
+}
+
+/**
+ * Main said the history changed elsewhere (`onDictationHistoryChanged`: another window, another
+ * app, the hidden capture page), or this window published a transcript: the listeners run
+ * {@link DICTATION_TRANSCRIBED_DELAY_MS} later, and main is not told again, so its echo of this
+ * window's own transcript coalesces with it into one read.
+ */
+export function noteDictationHistoryChanged(): void {
   if (transcribedTimer !== null) clearTimeout(transcribedTimer);
   transcribedTimer = setTimeout(() => {
     transcribedTimer = null;

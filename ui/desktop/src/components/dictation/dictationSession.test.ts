@@ -32,6 +32,8 @@ import {
   subscribeDictation,
   subscribeDictationRunning,
   subscribeDictationTranscribed,
+  noteDictationHistoryChanged,
+  notifyDictationTranscribed,
   type DictationComposer,
 } from './dictationSession';
 import { dictationMessage } from './copy';
@@ -1556,6 +1558,43 @@ describe('after a transcript is published', () => {
     } finally {
       window.removeEventListener(DICTATION_TRANSCRIBED_EVENT, fired);
     }
+  });
+
+  // F18 (DD-102): a History tab in another window reads again too, through main.
+  it('tells main at once, with nothing but the word, so every other window reads again', () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    const told = vi.fn((...args: unknown[]) => args);
+    Object.assign(window.electron, { dictationTranscribed: told });
+    const heard = vi.fn();
+    subscribeDictationTranscribed(heard);
+    notifyDictationTranscribed();
+    expect(told).toHaveBeenCalledTimes(1);
+    expect(told.mock.calls[0]).toEqual([]);
+    expect(heard).not.toHaveBeenCalled();
+    vi.advanceTimersByTime(DICTATION_TRANSCRIBED_DELAY_MS);
+    expect(heard).toHaveBeenCalledTimes(1);
+    // A bridge that predates it is no failure.
+    Object.assign(window.electron, { dictationTranscribed: undefined });
+    expect(() => notifyDictationTranscribed()).not.toThrow();
+  });
+
+  it('a change main reports from elsewhere tells the listeners half a second later, and not main', () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    const told = vi.fn();
+    Object.assign(window.electron, { dictationTranscribed: told });
+    const heard = vi.fn();
+    subscribeDictationTranscribed(heard);
+    noteDictationHistoryChanged();
+    vi.advanceTimersByTime(DICTATION_TRANSCRIBED_DELAY_MS - 1);
+    expect(heard).not.toHaveBeenCalled();
+    vi.advanceTimersByTime(1);
+    expect(heard).toHaveBeenCalledTimes(1);
+    expect(told).not.toHaveBeenCalled();
+    // This window's own transcript and main's echo of it coalesce into one read.
+    notifyDictationTranscribed();
+    noteDictationHistoryChanged();
+    vi.advanceTimersByTime(DICTATION_TRANSCRIBED_DELAY_MS);
+    expect(heard).toHaveBeenCalledTimes(2);
   });
 });
 

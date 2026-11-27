@@ -214,6 +214,9 @@ const DICTATION_CHANNELS: Record<string, Array<keyof typeof SENDER_CHECKS>> = {
   'dictation:mic-status': ['app', 'capture'],
   'dictation:open-mic-settings': ['app'],
   'dictation:show-models-folder': ['app'],
+  // A composer published a transcript, so every window's History tab reads again (F18). The
+  // hidden capture page needs none: main sends the same word after its finished reply.
+  'dictation:transcribed': ['app'],
 };
 
 /** The exact first statement a handler for `channel` must open with. */

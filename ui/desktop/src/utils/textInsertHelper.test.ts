@@ -6,6 +6,7 @@ import {
   ACCESS_TIMEOUT_MS,
   AnswerSplitter,
   FRONT_TIMEOUT_MS,
+  INSERT_RESTORED,
   INSERT_TIMEOUT_MS,
   MAX_REQUEST_LINE_BYTES,
   STOP_GRACE_MS,
@@ -95,6 +96,23 @@ describe('the helper protocol', () => {
       `{"id":1,"type":"inserted","pad":"${'x'.repeat(5000)}"}`,
     ]) {
       expect(parseTextInsertLine(line), line.slice(0, 80)).toBeNull();
+    }
+  });
+
+  it('reads how the clipboard was left after a paste, and ignores a word it does not know (DD-102)', () => {
+    for (const restored of INSERT_RESTORED) {
+      expect(parseTextInsertLine(`{"id":15,"type":"inserted","restored":"${restored}"}`)).toEqual({
+        type: 'inserted',
+        id: 15,
+        restored,
+      });
+    }
+    // The paste happened either way: an answer from a newer helper is still a paste.
+    for (const odd of ['"later"', '1', 'null', '["all"]']) {
+      expect(parseTextInsertLine(`{"id":16,"type":"inserted","restored":${odd}}`)).toEqual({
+        type: 'inserted',
+        id: 16,
+      });
     }
   });
 
@@ -313,6 +331,43 @@ describe('the text insertion service', () => {
       await expect(result).resolves.toEqual({ ok: false, reason });
     }
     expect(insert.status().postAllowed).toBe(false);
+  });
+
+  it('a paste answers how the helper left the clipboard, when it says', async () => {
+    const insert = service();
+    insert.start();
+    for (const restored of INSERT_RESTORED) {
+      const result = insert.insert(501, 'words');
+      helpers[0].say(`{"id":${helpers[0].lastId()},"type":"inserted","restored":"${restored}"}`);
+      await expect(result).resolves.toEqual({ ok: true, restored });
+    }
+    const older = insert.insert(501, 'words');
+    helpers[0].say(`{"id":${helpers[0].lastId()},"type":"inserted"}`);
+    await expect(older).resolves.toEqual({ ok: true });
+  });
+
+  it('waits for the helper longer than its post deadline plus its longest restore delay', () => {
+    // A client that gave up first would copy the text while the helper still pastes it, so the
+    // text would land in the app and on the clipboard (F9). Read from the helper's own source.
+    const rust = fs.readFileSync(
+      path.join(__dirname, '../../../../crates/biorouter-textinsert/src/protocol.rs'),
+      'utf8'
+    );
+    const millis = (name: string): number => {
+      const match = rust.match(
+        new RegExp(`pub const ${name}: Duration = Duration::from_millis\\(([0-9_]+)\\);`)
+      );
+      expect(match, name).not.toBeNull();
+      return Number(match![1].replace(/_/g, ''));
+    };
+    expect(INSERT_TIMEOUT_MS).toBe(5_000);
+    expect(INSERT_TIMEOUT_MS).toBeGreaterThan(
+      millis('POST_DEADLINE') + millis('MAX_RESTORE_DELAY') + 500
+    );
+    // F13: an insert queued behind a slow one gets its own post deadline from when it begins,
+    // and the helper still never posts so late that its answer would come after this client gave
+    // up. It counts that from the request's arrival against its copy of this timeout.
+    expect(millis('APP_INSERT_TIMEOUT')).toBe(INSERT_TIMEOUT_MS);
   });
 
   it('a front with no app in front, or an answer of the wrong kind, is no target', async () => {

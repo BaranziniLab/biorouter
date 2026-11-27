@@ -31,7 +31,14 @@ const MAX_ANSWER_LINE = 4096;
 
 /** How long each request may take before it counts as failed. */
 export const FRONT_TIMEOUT_MS = 300;
-export const INSERT_TIMEOUT_MS = 3_000;
+/**
+ * Longer than the helper's `POST_DEADLINE` plus its longest restore delay (`MAX_RESTORE_DELAY`)
+ * plus 500 ms (`textInsertHelper.test.ts` reads both from the helper's source): a client that gave
+ * up first would copy the text while the helper still pastes it, so it would land twice (F9).
+ * The helper keeps a copy, `APP_INSERT_TIMEOUT`, which the same test pins equal: an insert that
+ * waited in its queue is posted only while its answer can still arrive inside this (F13).
+ */
+export const INSERT_TIMEOUT_MS = 5_000;
 export const ACCESS_TIMEOUT_MS = 1_000;
 /** Long enough for macOS to show its prompt; the answer does not wait for the person. */
 export const REQUEST_ACCESS_TIMEOUT_MS = 10_000;
@@ -53,7 +60,25 @@ export const TEXT_INSERT_HELPER_ENV = 'BIOROUTER_TEXTINSERT_HELPER';
 export const TEXT_INSERT_TEST_PASTEBOARD_ENV = 'BIOROUTER_TEXTINSERT_TEST_PASTEBOARD';
 
 export type InsertRefusal = 'no-permission' | 'secure-input' | 'target-changed' | 'failed';
-export type InsertResult = { ok: true } | { ok: false; reason: InsertRefusal };
+/**
+ * How the helper left the clipboard after a paste that worked (DD-102, `restored` in its
+ * `inserted` answer): `all` put everything back, `moved` left alone a copy made during the paste,
+ * `partial` put back all but what it could not read or what passed its size cap, `kept-text` could
+ * not put back what was there (the text stays), `cleared` cleared a copied password instead.
+ * `InsertRestoreOutcome` in `components/dictation/copy.ts` names the same words for the sentences.
+ */
+export type InsertRestored = 'all' | 'moved' | 'partial' | 'kept-text' | 'cleared';
+export const INSERT_RESTORED: readonly InsertRestored[] = [
+  'all',
+  'moved',
+  'partial',
+  'kept-text',
+  'cleared',
+];
+/** `restored` is absent when an older helper did not say. */
+export type InsertResult =
+  | { ok: true; restored?: InsertRestored }
+  | { ok: false; reason: InsertRefusal };
 
 /** The app in front, as the helper read it. */
 export interface FrontApp {
@@ -75,7 +100,7 @@ export type TextInsertAnswer =
       secureInput: boolean;
       postAllowed: boolean;
     }
-  | { type: 'inserted'; id: number }
+  | { type: 'inserted'; id: number; restored?: InsertRestored }
   | { type: 'refused'; id: number; reason: InsertRefusal }
   | { type: 'access'; id: number; postAllowed: boolean };
 
@@ -88,6 +113,9 @@ const REFUSALS: readonly InsertRefusal[] = [
 
 const isRefusal = (value: unknown): value is InsertRefusal =>
   typeof value === 'string' && (REFUSALS as readonly string[]).includes(value);
+
+const isRestored = (value: unknown): value is InsertRestored =>
+  typeof value === 'string' && (INSERT_RESTORED as readonly string[]).includes(value);
 
 const isId = (value: unknown): value is number =>
   typeof value === 'number' && Number.isSafeInteger(value) && value > 0;
@@ -126,7 +154,11 @@ export function parseTextInsertLine(line: string): TextInsertAnswer | null {
       };
     }
     case 'inserted':
-      return isId(row.id) ? { type: 'inserted', id: row.id } : null;
+      // A `restored` word this build does not know is left out: the paste happened all the same.
+      if (!isId(row.id)) return null;
+      return isRestored(row.restored)
+        ? { type: 'inserted', id: row.id, restored: row.restored }
+        : { type: 'inserted', id: row.id };
     case 'refused':
       return isId(row.id) && isRefusal(row.reason)
         ? { type: 'refused', id: row.id, reason: row.reason }
@@ -334,7 +366,8 @@ export class TextInsertService {
   async insert(pid: number, text: string): Promise<InsertResult> {
     if (!isPid(pid) || typeof text !== 'string' || text.length === 0) return FAILED;
     const answer = await this.request('insert', { op: 'insert', pid, text }, INSERT_TIMEOUT_MS);
-    if (answer?.type === 'inserted') return { ok: true };
+    if (answer?.type === 'inserted')
+      return answer.restored ? { ok: true, restored: answer.restored } : { ok: true };
     if (answer?.type === 'refused') return { ok: false, reason: answer.reason };
     return FAILED;
   }

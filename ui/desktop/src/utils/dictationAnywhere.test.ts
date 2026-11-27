@@ -1,8 +1,23 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { Transcript } from '../components/dictation/dictationApi';
-import { dictationMessage, insertRefusalMessage } from '../components/dictation/copy';
-import type { InsertRefusal, InsertResult } from './textInsertHelper';
 import {
+  dictationMessage,
+  insertRefusalMessage,
+  insertRestoreMessage,
+} from '../components/dictation/copy';
+import {
+  INSERT_RESTORED,
+  MAX_REQUEST_LINE_BYTES,
+  TextInsertService,
+  type InsertRefusal,
+  type InsertResult,
+} from './textInsertHelper';
+import {
+  historyBroadcastDelay,
+  heldLastDictation,
+  holdsLastDictation,
+  lastDictationBeforeExpiry,
+  reviewHandOff,
   anywhereAtRest,
   anywhereSurface,
   capturesInsertTarget,
@@ -731,6 +746,231 @@ describe('typing the text into the app in front (DD-97)', () => {
         })
       )
     ).toMatchObject({ bundle: null, chars: 0 });
+  });
+});
+
+// F13 (DD-102): a start from fn or the global shortcut while the last dictation still transcribes
+// waits, one deep, and begins the moment that transcript arrives.
+describe('a start while the last dictation transcribes', () => {
+  const transcribing = () =>
+    nextAnywhereState(
+      nextAnywhereState(nextAnywhereState(INITIAL_ANYWHERE_STATE, { type: 'enable' }), {
+        type: 'start',
+        source: 'shortcut',
+        privateConfirmed: false,
+      }),
+      { type: 'stop' }
+    );
+
+  it('is queued, and begins once the transcript arrives', () => {
+    const before = transcribing();
+    expect(before).toMatchObject({ phase: 'transcribing', queued: null });
+    const waiting = nextAnywhereState(before, {
+      type: 'start',
+      source: 'shortcut',
+      privateConfirmed: false,
+    });
+    // The dictation that transcribes is left as it was; only the next one waits.
+    expect(waiting).toEqual({ ...before, queued: { source: 'shortcut' } });
+    // Main reads the queued start, finishes the last dictation, then starts the queued one.
+    const queued = waiting.queued;
+    const rest = nextAnywhereState(waiting, { type: 'finish' });
+    expect(rest).toMatchObject({ phase: 'idle', queued: null });
+    expect(queued).not.toBeNull();
+    expect(
+      nextAnywhereState(rest, { type: 'start', source: queued!.source, privateConfirmed: false })
+    ).toMatchObject({ phase: 'arming', source: 'shortcut', includePrivateTerms: false });
+  });
+
+  it('keeps one: a second start during the wait is ignored', () => {
+    const waiting = nextAnywhereState(transcribing(), {
+      type: 'start',
+      source: 'shortcut',
+      privateConfirmed: false,
+    });
+    expect(
+      nextAnywhereState(waiting, { type: 'start', source: 'shortcut', privateConfirmed: false })
+    ).toBe(waiting);
+  });
+
+  it('is dropped by a stop or cancel for its gesture, and the last dictation goes on', () => {
+    const before = transcribing();
+    const waiting = nextAnywhereState(before, {
+      type: 'start',
+      source: 'shortcut',
+      privateConfirmed: false,
+    });
+    expect(nextAnywhereState(waiting, { type: 'unqueue' })).toEqual(before);
+    expect(nextAnywhereState(before, { type: 'unqueue' })).toBe(before);
+    // Off, a cancel and a refusal end everything, the wait with it.
+    expect(nextAnywhereState(waiting, { type: 'disable' })).toEqual(INITIAL_ANYWHERE_STATE);
+    expect(nextAnywhereState(waiting, { type: 'cancel' }).queued).toBeNull();
+    expect(
+      nextAnywhereState(waiting, { type: 'refuse', reason: 'capture-failed' }).queued
+    ).toBeNull();
+  });
+
+  it('never queues a tray or preview start, nor one while the switch is off', () => {
+    const before = transcribing();
+    for (const source of ['tray', 'preview'] as const) {
+      expect(nextAnywhereState(before, { type: 'start', source, privateConfirmed: false })).toBe(
+        before
+      );
+    }
+    const off = { ...before, switchOn: false };
+    expect(
+      nextAnywhereState(off, { type: 'start', source: 'shortcut', privateConfirmed: false })
+    ).toBe(off);
+    // Nothing waits behind a dictation that is still arming or recording: a press there stops it.
+    for (const phase of ['arming', 'recording'] as const) {
+      const busy = { ...before, phase };
+      expect(
+        nextAnywhereState(busy, { type: 'start', source: 'shortcut', privateConfirmed: false })
+          .queued
+      ).toBeNull();
+    }
+  });
+});
+
+// F10 and F15 (DD-102): **Copy last dictation** holds the last text for its remaining time, in
+// main's memory only, after Biorouter typed it into another app or a new start closed its card.
+describe('the last dictation main holds', () => {
+  it('holds typed text for REVIEW_TEXT_MS, and gives it back only before then', () => {
+    const held = heldLastDictation('typed words', 1_000);
+    expect(held).toEqual({ text: 'typed words', expiresAt: 1_000 + REVIEW_TEXT_MS });
+    expect(lastDictationBeforeExpiry(held, 1_000 + REVIEW_TEXT_MS - 1)).toBe('typed words');
+    expect(lastDictationBeforeExpiry(held, 1_000 + REVIEW_TEXT_MS)).toBeNull();
+    expect(lastDictationBeforeExpiry(null, 0)).toBeNull();
+  });
+
+  it('is kept after a paste, never after a copy (the clipboard has it) or a card', () => {
+    expect(holdsLastDictation({ kind: 'inserted' })).toBe(true);
+    expect(holdsLastDictation({ kind: 'inserted', restored: 'cleared' })).toBe(true);
+    for (const delivered of [
+      { kind: 'copied' },
+      { kind: 'copied', reason: 'secure-input' },
+      { kind: 'review' },
+      { kind: 'nothing' },
+      { kind: 'echo' },
+      { kind: 'old-backend' },
+    ] as const) {
+      expect(holdsLastDictation(delivered), delivered.kind).toBe(false);
+    }
+  });
+
+  it('takes a closed review card’s text with the time it had left', () => {
+    expect(reviewHandOff('card text', 9_000, 4_000)).toEqual({
+      text: 'card text',
+      expiresAt: 9_000,
+    });
+    expect(reviewHandOff('card text', 9_000, 9_000)).toBeNull();
+    expect(reviewHandOff(null, 9_000, 4_000)).toBeNull();
+    expect(reviewHandOff('card text', null, 4_000)).toBeNull();
+  });
+});
+
+// F4, F5 and F8 (DD-102): what the paste did to the clipboard, said only when it was not all put back.
+describe('how a paste left the clipboard', () => {
+  const target: InsertTarget = { generation: 4, pid: 812, bundle: 'com.apple.TextEdit' };
+  const delivery = (insert: AnywhereDelivery['insert']) => {
+    let board = '';
+    return {
+      insert: vi.fn(insert),
+      write: vi.fn((text: string) => {
+        board = text;
+      }),
+      read: vi.fn(() => board),
+      notify: vi.fn(),
+      review: vi.fn(),
+      pasteKey: '⌘V',
+      oldBackendMessage: 'old daemon',
+      log: vi.fn(),
+    } satisfies AnywhereDelivery;
+  };
+
+  it('notifies for partial, kept-text and cleared, and nothing for all, moved or an older helper', async () => {
+    for (const restored of [...INSERT_RESTORED, undefined]) {
+      const deps = delivery(async () => (restored ? { ok: true, restored } : { ok: true }));
+      const delivered = await deliverAnywhereTranscript(transcript(), target, deps);
+      expect(delivered.kind, String(restored)).toBe('inserted');
+      expect(deps.write).not.toHaveBeenCalled();
+      expect(deps.review).not.toHaveBeenCalled();
+      const message = insertRestoreMessage(restored);
+      if (restored === 'partial' || restored === 'kept-text' || restored === 'cleared') {
+        expect(message).not.toBeNull();
+        expect(deps.notify, restored).toHaveBeenCalledExactlyOnceWith(message);
+      } else {
+        expect(deps.notify, String(restored)).not.toHaveBeenCalled();
+      }
+    }
+    expect(insertRestoreMessage('partial')).toBe(dictationMessage('MSG-INSERT-CLIPBOARD-PARTIAL'));
+    expect(insertRestoreMessage('kept-text')).toBe(dictationMessage('MSG-INSERT-CLIPBOARD-KEPT'));
+    expect(insertRestoreMessage('cleared')).toBe(dictationMessage('MSG-INSERT-PASSWORD-CLEARED'));
+  });
+
+  it('records the outcome in the insert log, and never the text', async () => {
+    const deps = delivery(async () => ({ ok: true, restored: 'partial' }));
+    await deliverAnywhereTranscript(transcript(), target, deps);
+    expect(deps.log).toHaveBeenCalledExactlyOnceWith({
+      route: 'other_app',
+      method: 'paste',
+      bundle: 'com.apple.TextEdit',
+      result: 'inserted',
+      restored: 'partial',
+      chars: 11,
+    });
+    const line = JSON.parse(insertLogLine(deps.log.mock.calls[0][0], new Date(0)));
+    expect(line.restored).toBe('partial');
+    expect(
+      JSON.parse(
+        insertLogLine({
+          route: 'other_app',
+          method: 'paste',
+          bundle: null,
+          result: 'inserted',
+          restored: 'odd' as never,
+          chars: 1,
+        })
+      )
+    ).not.toHaveProperty('restored');
+  });
+
+  it('copies a transcript too long to send, without a line reaching the helper', async () => {
+    const written: string[] = [];
+    const service = new TextInsertService({
+      platform: 'darwin',
+      helperPath: '/h',
+      spawn: () => ({
+        stdout: { on: () => undefined },
+        stdin: { write: (text: string) => written.push(text), end: () => undefined },
+        on: () => undefined,
+        kill: () => undefined,
+      }),
+    });
+    service.start();
+    const long = 'é'.repeat(MAX_REQUEST_LINE_BYTES / 2);
+    const deps = delivery((pid, text) => service.insert(pid, text));
+    expect(
+      await deliverAnywhereTranscript(transcript({ text: long, raw_text: long }), target, deps)
+    ).toEqual({ kind: 'copied', reason: 'failed' });
+    expect(written).toEqual([]);
+    expect(deps.write).toHaveBeenCalledExactlyOnceWith(long);
+    expect(deps.notify).toHaveBeenCalledExactlyOnceWith(insertRefusalMessage('failed', '⌘V'));
+    expect(insertRefusalMessage('failed', '⌘V')).toBe(
+      dictationMessage('MSG-INSERT-FAILED', { key: '⌘V' })
+    );
+    service.stop();
+  });
+});
+
+describe('telling every window the history changed (F18)', () => {
+  it('sends at once, then no sooner than 250 ms after the last one', () => {
+    expect(historyBroadcastDelay(-Infinity, 10, 250)).toBe(0);
+    expect(historyBroadcastDelay(1_000, 1_100, 250)).toBe(150);
+    expect(historyBroadcastDelay(1_000, 1_250, 250)).toBe(0);
+    expect(historyBroadcastDelay(1_000, 9_000, 250)).toBe(0);
+    // A clock that went backwards waits at most the interval.
+    expect(historyBroadcastDelay(5_000, 1_000, 250)).toBe(250);
   });
 });
 

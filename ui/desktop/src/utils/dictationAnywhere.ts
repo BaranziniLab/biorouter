@@ -1,6 +1,10 @@
 import type { StreamRequest, Transcript } from '../components/dictation/dictationApi';
-import { dictationMessage, insertRefusalMessage } from '../components/dictation/copy';
-import type { InsertRefusal, InsertResult } from './textInsertHelper';
+import {
+  dictationMessage,
+  insertRefusalMessage,
+  insertRestoreMessage,
+} from '../components/dictation/copy';
+import type { InsertRefusal, InsertRestored, InsertResult } from './textInsertHelper';
 
 export const DEFAULT_ANYWHERE_SHORTCUT = 'CommandOrControl+Alt+Shift+D';
 export const REVIEW_TEXT_MS = 5 * 60 * 1000;
@@ -40,6 +44,15 @@ export const DEFAULT_ANYWHERE_SETTINGS: AnywhereSettings = {
   disclosureShown: false,
 };
 
+/**
+ * A start from the global shortcut, or from fn in another app, that came while the last dictation
+ * still transcribed (F13, DD-102). It waits, one deep, and main starts it the moment that
+ * transcript arrives; a release or another key for its gesture drops it first.
+ */
+export interface AnywhereQueuedStart {
+  source: 'shortcut';
+}
+
 export interface AnywhereState {
   phase: AnywherePhase;
   /**
@@ -53,6 +66,8 @@ export interface AnywhereState {
   reason: AnywhereReason | null;
   reviewText: string | null;
   reviewExpiresAt: number | null;
+  /** The start waiting for this dictation's transcript, or null. */
+  queued: AnywhereQueuedStart | null;
 }
 
 export const INITIAL_ANYWHERE_STATE: AnywhereState = {
@@ -63,6 +78,7 @@ export const INITIAL_ANYWHERE_STATE: AnywhereState = {
   reason: null,
   reviewText: null,
   reviewExpiresAt: null,
+  queued: null,
 };
 
 /**
@@ -94,6 +110,21 @@ export function canStartAnywhere(
 }
 
 /**
+ * Whether a start that cannot begin now waits for the transcript instead (F13): only the global
+ * shortcut and fn in another app (`shortcut`), with the switch on, while the last dictation
+ * transcribes, and only one. A tray start is never queued (the tray shows what runs), nor a
+ * preview one (its field may change before the wait ends).
+ */
+export function queuesAnywhereStart(
+  phase: AnywherePhase,
+  source: AnywhereSource,
+  switchOn: boolean,
+  queued: AnywhereQueuedStart | null
+): boolean {
+  return phase === 'transcribing' && source === 'shortcut' && switchOn && queued === null;
+}
+
+/**
  * Whether a failed dictation keeps its recording for **Retry** (owner decision, 2026-11-13): a
  * tray or shortcut dictation, whose text goes to the clipboard, after a failure the stream can
  * send again (`DictationStreamError.retryable`, as the composer keeps one). A preview dictation
@@ -121,6 +152,8 @@ export type AnywhereEvent =
   | { type: 'stop' }
   /** **Retry** on the review card: the held recording is transcribed again. */
   | { type: 'retry'; source: AnywhereSource }
+  /** A release or another key for the queued start's gesture: it goes, the transcription goes on. */
+  | { type: 'unqueue' }
   | { type: 'cancel' }
   | { type: 'refuse'; reason: AnywhereReason }
   | { type: 'review'; text: string; now: number }
@@ -136,11 +169,17 @@ export function nextAnywhereState(state: AnywhereState, event: AnywhereEvent): A
     case 'disable':
       // Off ends a tray or shortcut dictation at once. A preview dictation goes on and
       // comes to rest as `off`.
+      // A queued start is a shortcut one, which the switch governs, so it goes either way.
       return !anywhereAtRest(state.phase) && !switchGovernsSource(state.source)
-        ? { ...state, switchOn: false }
+        ? { ...state, switchOn: false, queued: null }
         : INITIAL_ANYWHERE_STATE;
     case 'start':
-      if (!canStartAnywhere(state.phase, event.source, state.switchOn)) return state;
+      if (!canStartAnywhere(state.phase, event.source, state.switchOn)) {
+        // The global shortcut and fn are public terms only, so the queued start carries none.
+        return queuesAnywhereStart(state.phase, event.source, state.switchOn, state.queued)
+          ? { ...state, queued: { source: 'shortcut' } }
+          : state;
+      }
       return {
         ...INITIAL_ANYWHERE_STATE,
         phase: 'arming',
@@ -164,6 +203,8 @@ export function nextAnywhereState(state: AnywhereState, event: AnywhereEvent): A
         switchOn: state.switchOn,
         source: event.source,
       };
+    case 'unqueue':
+      return state.queued ? { ...state, queued: null } : state;
     case 'cancel':
       return atRest(state);
     case 'refuse':
@@ -263,6 +304,50 @@ export function reviewTextBeforeExpiry(
   now: number
 ): string | null {
   return text !== null && expiresAt !== null && now < expiresAt ? text : null;
+}
+
+// ── Copy last dictation (F10, F15, DD-102) ───────────────────────────────────
+// A paste into another app cannot be checked: the app may ignore Command-V, or focus may be on a
+// button. So main holds the last text Biorouter typed into another app, and the text of a review
+// card a new start closed, for what is left of {@link REVIEW_TEXT_MS}, in its own memory only. The
+// tray offers **Copy last dictation** while it lasts, and only that click writes it to the
+// clipboard. It goes at its expiry, at quit and when **Dictate into other apps** turns off.
+
+/** The text **Copy last dictation** would copy, and when it goes. */
+export interface LastDictation {
+  text: string;
+  expiresAt: number;
+}
+
+/** The text a paste just typed, held for {@link REVIEW_TEXT_MS} from `now`. */
+export function heldLastDictation(text: string, now: number): LastDictation {
+  return { text, expiresAt: now + REVIEW_TEXT_MS };
+}
+
+/** The held text while it lasts, else null. */
+export function lastDictationBeforeExpiry(held: LastDictation | null, now: number): string | null {
+  return held ? reviewTextBeforeExpiry(held.text, held.expiresAt, now) : null;
+}
+
+/**
+ * Whether a delivery leaves its text for **Copy last dictation**: a paste into another app, which
+ * nothing can confirm. A copy is on the clipboard already, and a review card holds its own text.
+ */
+export function holdsLastDictation(delivered: AnywhereDelivered): boolean {
+  return delivered.kind === 'inserted';
+}
+
+/**
+ * A review card a new start closes hands its text over with the time it had left (F15), so the
+ * card never blocks the next dictation and its text is not lost.
+ */
+export function reviewHandOff(
+  text: string | null,
+  expiresAt: number | null,
+  now: number
+): LastDictation | null {
+  const live = reviewTextBeforeExpiry(text, expiresAt, now);
+  return live !== null && expiresAt !== null ? { text: live, expiresAt } : null;
 }
 
 /**
@@ -444,8 +529,18 @@ export interface InsertLogEntry {
   result: 'inserted' | 'copied' | 'review' | 'refused' | InsertRefusal;
   /** Why a paste was refused, beside the copy that replaced it. */
   reason?: InsertRefusal;
+  /** How a paste that worked left the clipboard, when the helper said. */
+  restored?: InsertRestored;
   chars: number;
 }
+
+const RESTORED_WORDS: readonly InsertRestored[] = [
+  'all',
+  'moved',
+  'partial',
+  'kept-text',
+  'cleared',
+];
 
 const BUNDLE_ID = /^[A-Za-z0-9.-]{1,255}$/;
 
@@ -460,6 +555,7 @@ export function insertLogLine(entry: InsertLogEntry, at: Date = new Date()): str
     chars: Number.isSafeInteger(entry.chars) && entry.chars >= 0 ? entry.chars : 0,
   };
   if (entry.reason) line.reason = entry.reason;
+  if (entry.restored && RESTORED_WORDS.includes(entry.restored)) line.restored = entry.restored;
   return JSON.stringify(line);
 }
 
@@ -483,18 +579,20 @@ export interface AnywhereDelivery {
 
 /** What {@link deliverAnywhereTranscript} did, for its tests. */
 export type AnywhereDelivered =
-  | { kind: 'inserted' }
+  | { kind: 'inserted'; restored?: InsertRestored }
   | { kind: 'copied'; reason?: InsertRefusal }
   | { kind: 'review'; reason?: InsertRefusal }
   | { kind: 'nothing' | 'echo' | 'old-backend' };
 
-const REVIEW_COPY_FAILED = 'The clipboard did not keep the text. Copy it from this card.';
+/** The review card's sentence when the clipboard did not keep a copy (also main's Copy last dictation). */
+export const REVIEW_COPY_FAILED = 'The clipboard did not keep the text. Copy it from this card.';
 
 /**
  * A finished Dictate to clipboard dictation's text, delivered:
  *
  * - with a target and real speech, typed into the target app and nothing else: the clipboard is
- *   never written and no card or notification is shown (the indicator fades);
+ *   never written and no card is shown (the indicator fades); a notification says so only when
+ *   the helper could not put back everything the clipboard held (`restored`, DD-102);
  * - when the helper refuses (no permission, a password field, another app in front, a failure),
  *   copied, with a notification that names the reason;
  * - without a target, copied as before, with "Copied N words";
@@ -519,14 +617,19 @@ export async function deliverAnywhereTranscript(
       result = { ok: false, reason: 'failed' };
     }
     if (result.ok) {
+      const { restored } = result;
       delivery.log?.({
         route: 'other_app',
         method: 'paste',
         bundle: target.bundle,
         result: 'inserted',
+        ...(restored ? { restored } : {}),
         chars: text.length,
       });
-      return { kind: 'inserted' };
+      // Nothing to say when everything came back, or the person copied something meanwhile.
+      const message = insertRestoreMessage(restored);
+      if (message) delivery.notify(message);
+      return restored ? { kind: 'inserted', restored } : { kind: 'inserted' };
     }
     refused = result.reason;
     delivery.log?.({
@@ -576,6 +679,18 @@ export async function deliverAnywhereTranscript(
       // `clipboardOutcome` never answers `failed`; the type allows it.
       return { kind: 'nothing' };
   }
+}
+
+/**
+ * How long main waits before telling every window the dictation history changed (F18): at once,
+ * unless it told them less than `minMs` ago, then the rest of that interval. A clock that went
+ * backwards waits at most the interval.
+ */
+export function historyBroadcastDelay(lastAt: number, now: number, minMs: number): number {
+  if (!Number.isFinite(lastAt)) return 0;
+  const since = now - lastAt;
+  if (since < 0) return minMs;
+  return Math.max(0, minMs - since);
 }
 
 /**

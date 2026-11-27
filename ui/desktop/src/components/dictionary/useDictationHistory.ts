@@ -23,7 +23,8 @@
  * - **Live.** While the tab is open, the listing is read again on window focus, when the window
  *   becomes visible, every 60 s while it is visible, and after `dictationSession` says a
  *   transcript was published (`notifyDictationTranscribed`, about 500 ms after the text is out,
- *   because the daemon appends after it answers).
+ *   because the daemon appends after it answers), in this window or, through main's
+ *   `dictation:history:changed`, anywhere else (another window, another app, the capture page).
  * - **Confirmed state, never intent.** A write whose answer carries the entry (a tier change)
  *   or names it gone (a delete) puts that in place at once, then reads the listing again behind
  *   it; a clear and a settings write answer after the listing was read.
@@ -47,7 +48,10 @@ import type {
   DictionaryTier,
 } from '../../api';
 import { userActionHeaders } from '../../utils/userAction';
-import { subscribeDictationTranscribed } from '../dictation/dictationSession';
+import {
+  noteDictationHistoryChanged,
+  subscribeDictationTranscribed,
+} from '../dictation/dictationSession';
 import {
   derivedEtag,
   failureOf,
@@ -463,9 +467,15 @@ export function useDictationHistory({
     else void refreshHistory();
     const stopLive = installLiveRefresh(() => void refreshHistory());
     const stopTranscribed = subscribeDictationTranscribed(() => void refreshHistory());
+    // A dictation finished somewhere else (another window, another app, the capture page): main
+    // says so with no payload, and the read waits as long as this window's own would (F18).
+    const stopElsewhere =
+      window.electron?.onDictationHistoryChanged?.(() => noteDictationHistoryChanged()) ??
+      (() => undefined);
     return () => {
       stopLive();
       stopTranscribed();
+      stopElsewhere();
     };
   }, [enabled]);
 

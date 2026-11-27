@@ -225,9 +225,12 @@ describe('main types a dictation into the app that was in front', () => {
     expect(finished).toContain(
       'const insertTarget = anywhereInsertTarget?.generation === result.generation ? anywhereInsertTarget : null; anywhereInsertTarget = null;'
     );
+    // Rule changed (F10, DD-102): the delivery's answer now says whether a paste left its text
+    // for Copy last dictation, so the one delivery is followed by `.then`.
     expect(finished).toContain(
-      'void deliverAnywhereTranscript(typed, insertTarget, anywhereDelivery());'
+      'void deliverAnywhereTranscript(typed, insertTarget, anywhereDelivery()).then((delivered) => {'
     );
+    expect(finished.split('deliverAnywhereTranscript(').length - 1).toBe(1);
     for (const direct of ['clipboard.writeText', 'clipboardOutcome(', 'showAnywhereReview(']) {
       expect(finished, direct).not.toContain(direct);
     }
@@ -362,5 +365,168 @@ describe('the dictation test seams reach only an unpackaged app (DESIGN 3.12)', 
     ).toContain(
       'const board = anywhereClipboard(); board.write(text); return board.read() === text;'
     );
+  });
+});
+
+/**
+ * F18 (DD-102): an open History tab hears of every finished dictation, whichever window or app it
+ * was made in. Main says so with one word and no payload, to Biorouter windows only, at most every
+ * 250 ms; `historyBroadcastDelay` in `dictationAnywhere.ts` is the throttle, tested there.
+ */
+describe('main tells every window the dictation history changed', () => {
+  it('sends no payload, to windowMap windows only, through the throttle', () => {
+    const broadcast = slice(
+      'function broadcastDictationHistoryChanged()',
+      "ipcMain.on('dictation:transcribed'"
+    );
+    expect(broadcast).toContain(
+      'historyBroadcastDelay(historyChangedAt, performance.now(), HISTORY_CHANGED_MIN_MS)'
+    );
+    expect(broadcast).toContain('for (const win of windowMap.values())');
+    expect(broadcast).toContain("win.webContents.send('dictation:history:changed');");
+    // The one place it is sent, and never with anything after the channel.
+    expect(source.split("'dictation:history:changed'").length - 1).toBe(1);
+    expect(source).not.toMatch(/'dictation:history:changed',/);
+    expect(source).toContain('const HISTORY_CHANGED_MIN_MS = 250;');
+  });
+
+  it('after the capture page’s finished transcript, and after any window’s', () => {
+    const reply = slice(
+      "ipcMain.on('dictation:anywhere:capture-reply'",
+      "ipcMain.handle('dictation:anywhere:get'"
+    );
+    const finished = reply.slice(
+      reply.indexOf("result.type === 'finished'"),
+      reply.indexOf("result.type === 'failed'")
+    );
+    expect(finished).toContain('broadcastDictationHistoryChanged();');
+    const transcribed = slice("ipcMain.on('dictation:transcribed'", 'function ');
+    expect(transcribed).toContain('if (!isDictationSender(event)) return;');
+    expect(transcribed).toContain('broadcastDictationHistoryChanged();');
+    expect(slice("app.on('will-quit', async () => {", 'for (const [windowId')).toContain(
+      'if (historyChangedTimer) clearTimeout(historyChangedTimer);'
+    );
+  });
+});
+
+/**
+ * F13 (DD-102): a start from fn or the global shortcut while the last dictation still transcribes
+ * waits, one deep, and begins the moment that transcript arrives; a release or another key for its
+ * gesture drops it first. `dictationAnywhere.test.ts` covers the state it moves through.
+ */
+describe('main starts a queued dictation when the last transcript arrives', () => {
+  it('queues only after Stop and Cancel, and only where the state machine says', () => {
+    const start = slice('async function startAnywhere(', 'function cancelAnywhere()');
+    const queue = start.indexOf(
+      'if (queuesAnywhereStart(anywhereState.phase, source, switchOn, anywhereState.queued))'
+    );
+    expect(queue).toBeGreaterThan(start.indexOf("if (anywhereState.phase === 'recording')"));
+    expect(queue).toBeLessThan(
+      start.indexOf('if (!canStartAnywhere(anywhereState.phase, source, switchOn)')
+    );
+  });
+
+  it('reads the queued start before the finish, and begins it after delivering', () => {
+    const reply = slice(
+      "ipcMain.on('dictation:anywhere:capture-reply'",
+      "ipcMain.handle('dictation:anywhere:get'"
+    );
+    const finished = reply.slice(
+      reply.indexOf("result.type === 'finished'"),
+      reply.indexOf("result.type === 'failed'")
+    );
+    const read = finished.indexOf('const queued = anywhereState.queued;');
+    const finish = finished.indexOf(
+      "anywhereState = nextAnywhereState(anywhereState, { type: 'finish' });"
+    );
+    const begin = finished.indexOf('if (queued) beginQueuedAnywhere();');
+    expect(read).toBeGreaterThan(0);
+    expect(finish).toBeGreaterThan(read);
+    expect(begin).toBeGreaterThan(finish);
+  });
+
+  it('a release or another key for the queued gesture drops it, and leaves the transcription alone', () => {
+    const run = slice('function runFnAction(', 'function stopAnywhere(');
+    const stop = run.slice(run.indexOf("case 'stop':"), run.indexOf("case 'cancel':"));
+    expect(stop).toContain('if (fnOwnsQueue()) {');
+    expect(stop).toContain('unqueueAnywhere();');
+    const cancel = run.slice(run.indexOf("case 'cancel':"));
+    expect(cancel).toContain('if (fnOwnsQueue()) unqueueAnywhere();');
+    const unqueue = slice('function unqueueAnywhere()', 'function ');
+    expect(unqueue).toContain(
+      "anywhereState = nextAnywhereState(anywhereState, { type: 'unqueue' });"
+    );
+    expect(unqueue).not.toContain('cancelAnywhere');
+  });
+});
+
+/**
+ * F10 and F15 (DD-102): **Copy last dictation** in the tray, for what is left of five minutes after
+ * Biorouter typed into another app, or after a new start closed a review card. The text is in
+ * main's memory only, and only the person's click writes it to the clipboard.
+ */
+describe('Copy last dictation', () => {
+  it('writes the clipboard only from its click, through the clipboard seam', () => {
+    const copy = slice('function copyLastDictation()', 'function ');
+    expect(copy).toContain('const text = lastDictationBeforeExpiry(lastDictation, Date.now());');
+    expect(copy).toContain('const board = anywhereClipboard();');
+    expect(copy).toContain('board.write(text);');
+    // The held text is read in two places: that click, and whether the tray offers it.
+    expect(source.split('lastDictationBeforeExpiry(lastDictation').length - 1).toBe(2);
+    expect(source).toContain(
+      'lastDictation: lastDictationBeforeExpiry(lastDictation, Date.now()) !== null,'
+    );
+    expect(source).toContain('copyLast: copyLastDictation,');
+    // No new clipboard writer: the seam's own, the two link copies and the tray's link copy.
+    expect(source.split('clipboard.writeText(').length - 1).toBe(4);
+  });
+
+  it('holds a paste’s text, and a closed review card’s, and goes when it expires', () => {
+    const reply = slice(
+      "ipcMain.on('dictation:anywhere:capture-reply'",
+      "ipcMain.handle('dictation:anywhere:get'"
+    );
+    expect(reply).toContain(
+      'if (holdsLastDictation(delivered)) holdLastDictation(heldLastDictation(typed.text, Date.now()));'
+    );
+    const hold = slice('function holdLastDictation(', 'function ');
+    expect(hold).toContain('lastDictationTimer = setTimeout(clearLastDictation, wait);');
+    const close = slice('function closeAnywhereReviewForStart()', 'function ');
+    expect(close).toContain(
+      'const handed = reviewHandOff(anywhereReviewText, anywhereReviewExpiresAt, Date.now());'
+    );
+    expect(close).toContain('if (handed) holdLastDictation(handed);');
+    // A new shortcut or fn start closes the card, right after it ends the last one's Retry hold.
+    const start = slice('async function startAnywhere(', 'function cancelAnywhere()');
+    expect(
+      start.indexOf("if (source === 'shortcut') closeAnywhereReviewForStart();")
+    ).toBeGreaterThan(start.indexOf('endAnywhereHold();'));
+  });
+
+  it('is let go at quit and when Dictate into other apps turns off', () => {
+    expect(slice("app.on('will-quit', async () => {", 'for (const [windowId')).toContain(
+      'clearLastDictation();'
+    );
+    const set = slice(
+      "ipcMain.handle('dictation:anywhere:set'",
+      "ipcMain.handle('dictation:anywhere:preview-focused'"
+    );
+    const off = set.slice(
+      set.indexOf('if (!next.enabled) {'),
+      set.indexOf('registerAnywhereShortcut();')
+    );
+    expect(off).toContain('clearLastDictation();');
+  });
+
+  it('rebuilds the tray menu when it starts and stops holding a text, so the item comes and goes', () => {
+    // The tray reads `lastDictation` only when its menu is built (`autoUpdater.copyLast.test.ts`).
+    const rebuild = 'updateTrayMenu(getUpdateAvailable());';
+    const hold = slice('function holdLastDictation(', 'function ');
+    expect(hold.indexOf(rebuild)).toBeGreaterThan(hold.indexOf('lastDictation = held;'));
+    const clear = slice('function clearLastDictation()', 'function ');
+    expect(clear.indexOf(rebuild)).toBeGreaterThan(clear.indexOf('lastDictation = null;'));
+    // An expired text found at the click is let go the same way.
+    const copy = slice('function copyLastDictation()', 'function ');
+    expect(copy).toContain('clearLastDictation();');
   });
 });

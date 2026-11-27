@@ -93,7 +93,12 @@ describe('where fn dictates', () => {
     const run = slice('function runFnAction(', 'function stopAnywhere(');
     expect(run).toContain("const source: AnywhereSource = preview ? 'preview' : 'shortcut';");
     expect(run).not.toContain("'tray'");
-    expect(count(source, 'startFnAnywhere(')).toBe(3);
+    // Rule changed (F13, DD-102): a start that waited for the last transcript begins through
+    // the same call, at fn's terms (`beginQueuedAnywhere`), so there are four call sites.
+    expect(count(source, 'startFnAnywhere(')).toBe(4);
+    expect(slice('function beginQueuedAnywhere()', 'function runFnAction(')).toContain(
+      "startFnAnywhere('shortcut', undefined, fn.quiet);"
+    );
     expect(source).not.toMatch(/startAnywhere\('shortcut', true/);
     // Preview on fn's route carries public terms whatever is asked.
     expect(slice('async function startAnywhere(', 'function cancelAnywhere()')).toContain(
@@ -146,8 +151,10 @@ describe('capture from fn down', () => {
     expect(may).toContain('anywhereBackendIdentity()?.managed === true');
     expect(may).toContain("systemPreferences.getMediaAccessStatus('microphone') === 'granted'");
     const run = slice('function runFnAction(', 'function stopAnywhere(');
+    // Rule changed (F13, DD-102): a press while another gesture's start waits for the last
+    // transcript starts nothing; otherwise prime is as before.
     expect(run).toContain(
-      "case 'prime': forget(); if (fnMayPrimeAnywhere()) startFnAnywhere(source, preview, true); return;"
+      'if (fnQueueOfAnotherGesture() || fnOwnsQueue()) return; forget(); if (fnMayPrimeAnywhere()) startFnAnywhere(source, preview, true); return;'
     );
     // The hold, or the double-tap's second press, makes a refusal visible again.
     expect(run).toContain(
@@ -371,5 +378,61 @@ describe('fn’s preview route in the embedded browser', () => {
     ).toContain(
       'if (!entry?.managed?.isActive() || entry.view.webContents.isDestroyed()) return false;'
     );
+  });
+});
+
+/**
+ * DD-101: the dictation key (Automatic, fn, or a modifier with fn). Main hands the setting's keys
+ * to the helper service before it starts the listener, and on every change; it computes which key
+ * dictates now for the renderer; and it tells the focused Biorouter window, with one word, when a
+ * bare fn hold was left to another app. `fnKeyHelper.test.ts` and `dictationFnKey.test.ts` cover
+ * the service and `fnActive`.
+ */
+describe('the dictation key', () => {
+  it('sets the keys before every setActive, at start and on every change', () => {
+    const start = slice('function startFnKeyShortcut(', 'function fnWorld(');
+    expect(start.indexOf('fnKeyService.setKeys(fnKeysOf(fnKeySettings));')).toBeGreaterThan(0);
+    expect(start.indexOf('fnKeyService.setKeys(fnKeysOf(fnKeySettings));')).toBeLessThan(
+      start.indexOf('fnKeyService.setActive(fnKeySettings.enabled);')
+    );
+    const set = slice(
+      "ipcMain.handle('dictation:fn:set'",
+      "ipcMain.handle('dictation:fn:open-settings'"
+    );
+    expect(set).toContain(
+      'fnKeyService?.setKeys(fnKeysOf(next)); fnKeyService?.setActive(next.enabled);'
+    );
+    expect(set).toContain(
+      'fnKeyService?.setKeys(fnKeysOf(previous)); fnKeyService?.setActive(previous.enabled);'
+    );
+    // Every setActive in main comes right after the keys of the same settings.
+    const paired = source.match(
+      /fnKeyService\??\.setKeys\(fnKeysOf\((\w+)\)\); fnKeyService\??\.setActive\(\1\.enabled\);/g
+    );
+    expect(paired?.length).toBe(count(source, '.setActive('));
+    const keys = slice('function fnKeysOf(', 'function ');
+    expect(keys).toContain(
+      'return { combination: settings.combination, modifier: settings.modifier };'
+    );
+  });
+
+  it('tells the renderer which key dictates now, from Biorouter’s own list', () => {
+    const view = slice('function fnKeyView(): FnKeyView', 'function broadcastFnKey()');
+    expect(view).toContain('const status = fnKeyService?.status() ?? FN_KEY_STATUS_OFF;');
+    expect(view).toContain('active: fnActive(fnKeySettings, status.collidingApp),');
+  });
+
+  it('sends its one word to the focused Biorouter window only, when a bare hold was left alone', () => {
+    expect(slice('function startFnKeyShortcut(', 'function fnWorld(')).toContain(
+      'onNote: handleFnNote,'
+    );
+    const note = slice('function handleFnNote(', 'function ');
+    expect(note).toContain("if (note !== 'ignored-bare-hold') return;");
+    expect(note).toContain('const focused = BrowserWindow.getFocusedWindow();');
+    expect(note).toContain(
+      'if (!focused || focused.isDestroyed() || windowMap.get(focused.id) !== focused) return;'
+    );
+    expect(note).toContain("focused.webContents.send('dictation:fn:notice', 'use-alternative');");
+    expect(count(source, "'dictation:fn:notice'")).toBe(1);
   });
 });

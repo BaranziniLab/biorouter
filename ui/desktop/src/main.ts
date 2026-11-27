@@ -277,6 +277,14 @@ import {
   defaultInsertSettings,
   deliverAnywhereTranscript,
   dictationTestSeams,
+  heldLastDictation,
+  historyBroadcastDelay,
+  holdsLastDictation,
+  lastDictationBeforeExpiry,
+  queuesAnywhereStart,
+  reviewHandOff,
+  wordCount,
+  REVIEW_COPY_FAILED,
   insertLogLine,
   insertTargetFrom,
   keepsFailedRecording,
@@ -300,9 +308,10 @@ import {
   type InsertLogEntry,
   type InsertSettings,
   type InsertTarget,
+  type LastDictation,
 } from './utils/dictationAnywhere';
 import type { Transcript } from './components/dictation/dictationApi';
-import { FnKeyService, fnKeyHelperPath, type FnKeyStatus } from './utils/fnKeyHelper';
+import { FnKeyService, fnKeyHelperPath, type FnKeys, type FnKeyStatus } from './utils/fnKeyHelper';
 import {
   TextInsertService,
   textInsertHelperArgs,
@@ -311,6 +320,7 @@ import {
 } from './utils/textInsertHelper';
 import {
   defaultFnKeySettings,
+  fnActive,
   fnDictationRunning,
   formatFnTrace,
   parseFnKeySettings,
@@ -321,7 +331,7 @@ import {
   type FnLatch,
   type FnWorld,
 } from './utils/dictationFnKey';
-import type { FnIntent } from './utils/fnGesture';
+import type { FnIntent, FnNote } from './utils/fnGesture';
 import {
   DictationIndicator,
   INDICATOR_SIZE,
@@ -3727,6 +3737,11 @@ let anywhereHeld: {
 } | null = null;
 // Whether the card's current sentence is the failure the held recording belongs to.
 let anywhereReviewRetry = false;
+// **Copy last dictation** (F10, F15, DD-102): the last text Biorouter typed into another app, or a
+// review card's that a new start closed, for what is left of five minutes. In main's memory only;
+// only the tray item's click writes it to the clipboard (`copyLastDictation`).
+let lastDictation: LastDictation | null = null;
+let lastDictationTimer: ReturnType<typeof setTimeout> | null = null;
 
 function anywhereStorePath(): string {
   return path.join(biorouterConfigDir(), 'dictation', 'anywhere.json');
@@ -3857,6 +3872,66 @@ function endAnywhereHold() {
   anywhereReviewRevision += 1;
   if (anywhereReviewWindow && !anywhereReviewWindow.isDestroyed())
     anywhereReviewWindow.webContents.send('dictation:anywhere:review', anywhereReviewPayload());
+}
+
+/** Hold `held` for **Copy last dictation** until it expires; it replaces any held before. */
+function holdLastDictation(held: LastDictation) {
+  clearLastDictation();
+  const wait = held.expiresAt - Date.now();
+  if (wait <= 0) return;
+  lastDictation = held;
+  lastDictationTimer = setTimeout(clearLastDictation, wait);
+  updateTrayMenu(getUpdateAvailable());
+}
+
+/** Let the held text go: at its expiry, at quit, and when Dictate into other apps turns off. */
+function clearLastDictation() {
+  if (lastDictationTimer) clearTimeout(lastDictationTimer);
+  lastDictationTimer = null;
+  if (!lastDictation) return;
+  lastDictation = null;
+  updateTrayMenu(getUpdateAvailable());
+}
+
+/**
+ * The tray's **Copy last dictation**: the person's click, the one place the held text is written
+ * to the clipboard (or its test file). A copy the clipboard did not keep shows on the review card.
+ */
+function copyLastDictation() {
+  const text = lastDictationBeforeExpiry(lastDictation, Date.now());
+  if (text === null) {
+    clearLastDictation();
+    return;
+  }
+  const board = anywhereClipboard();
+  board.write(text);
+  if (board.read() === text)
+    notifyAnywhere(
+      dictationMessage('MSG-CLIPBOARD-COPIED', {
+        n: String(wordCount(text)),
+        key: anywherePasteKey(),
+      })
+    );
+  else void showAnywhereReview(REVIEW_COPY_FAILED, text);
+}
+
+/**
+ * A new start from fn or the global shortcut closes the review card (F15), so a card left up never
+ * stands between the person and the next dictation: its text, if any, moves to **Copy last
+ * dictation** with the time it had left, and a private-terms question it asked is answered "no".
+ */
+function closeAnywhereReviewForStart() {
+  const card = anywhereReviewWindow;
+  if (!card || card.isDestroyed() || !card.isVisible()) return;
+  const handed = reviewHandOff(anywhereReviewText, anywhereReviewExpiresAt, Date.now());
+  if (handed) holdLastDictation(handed);
+  const choice = anywhereReviewPrivateChoice;
+  anywhereReviewPrivateChoice = null;
+  choice?.(null);
+  anywhereReviewRetry = false;
+  anywhereReviewMessage = '';
+  clearAnywhereReview();
+  card.hide();
 }
 
 function stopAnywherePowerBlocker() {
@@ -4374,6 +4449,15 @@ async function startAnywhere(
     updateTrayMenu(getUpdateAvailable());
     return true;
   }
+  // The last dictation still transcribes: this one waits, one deep, and `beginQueuedAnywhere`
+  // starts it the moment that transcript arrives (F13). Its paste then waits in the helper's own
+  // queue behind the last one's, which puts the clipboard back first.
+  if (queuesAnywhereStart(anywhereState.phase, source, switchOn, anywhereState.queued)) {
+    if (!laptopDictationCaptureAllowed()) return false;
+    anywhereState = nextAnywhereState(anywhereState, { type: 'start', source, privateConfirmed });
+    updateTrayMenu(getUpdateAvailable());
+    return true;
+  }
   if (!canStartAnywhere(anywhereState.phase, source, switchOn) || !laptopDictationCaptureAllowed())
     return false;
   const generation = ++anywhereGeneration;
@@ -4381,6 +4465,7 @@ async function startAnywhere(
   anywhereState = nextAnywhereState(anywhereState, { type: 'start', source, privateConfirmed });
   // A new dictation ends the last one's hold; the page gets `drop` before this one's `start`.
   endAnywhereHold();
+  if (source === 'shortcut') closeAnywhereReviewForStart();
   anywherePendingStart = {
     source,
     privateConfirmed,
@@ -4622,11 +4707,20 @@ ipcMain.on('dictation:anywhere:capture-reply', (event, reply: unknown) => {
       void insertIntoAnywherePreview(target, typed.text);
     } else {
       // Typed into the app that was in front, or copied when there is none or it cannot take it;
-      // the review card only when the clipboard did not keep the copy.
-      void deliverAnywhereTranscript(typed, insertTarget, anywhereDelivery());
+      // the review card only when the clipboard did not keep the copy. A paste nothing can
+      // confirm leaves its text for **Copy last dictation** (F10).
+      void deliverAnywhereTranscript(typed, insertTarget, anywhereDelivery()).then((delivered) => {
+        if (holdsLastDictation(delivered))
+          holdLastDictation(heldLastDictation(typed.text, Date.now()));
+      });
     }
+    // The daemon keeps this dictation in the history: an open History tab anywhere reads again.
+    broadcastDictationHistoryChanged();
+    // A start that waited for this transcript begins now (F13).
+    const queued = anywhereState.queued;
     anywhereState = nextAnywhereState(anywhereState, { type: 'finish' });
     closeCaptureAfterIdle();
+    if (queued) beginQueuedAnywhere();
   } else if (result.type === 'failed') {
     stopAnywherePowerBlocker();
     anywherePendingStart = null;
@@ -4656,6 +4750,34 @@ ipcMain.on('dictation:anywhere:capture-reply', (event, reply: unknown) => {
   updateTrayMenu(getUpdateAvailable());
 });
 
+// ── The dictation history, current in every window (F18, DD-102) ─────────────
+// After each finished dictation (the hidden capture page's, and any window's, which says so with
+// `dictation:transcribed`), main tells every Biorouter window, with no payload, at most every
+// 250 ms; each History tab reads the listing again half a second later (`dictationSession.ts`).
+const HISTORY_CHANGED_MIN_MS = 250;
+let historyChangedAt = -Infinity;
+let historyChangedTimer: ReturnType<typeof setTimeout> | null = null;
+
+function broadcastDictationHistoryChanged(): void {
+  // One send is already due: it covers this change too.
+  if (historyChangedTimer) return;
+  const send = () => {
+    historyChangedTimer = null;
+    historyChangedAt = performance.now();
+    for (const win of windowMap.values()) {
+      if (!win.isDestroyed()) win.webContents.send('dictation:history:changed');
+    }
+  };
+  const wait = historyBroadcastDelay(historyChangedAt, performance.now(), HISTORY_CHANGED_MIN_MS);
+  if (wait === 0) send();
+  else historyChangedTimer = setTimeout(send, wait);
+}
+
+ipcMain.on('dictation:transcribed', (event) => {
+  if (!isDictationSender(event)) return;
+  broadcastDictationHistoryChanged();
+});
+
 ipcMain.handle('dictation:anywhere:get', async (event) => {
   if (!isDictationSender(event)) return null;
   return anywhereSnapshot();
@@ -4671,6 +4793,7 @@ ipcMain.handle('dictation:anywhere:set', async (event, raw: unknown) => {
     // held for **Retry** is always a tray or shortcut one, so it goes too.
     if (switchGovernsSource(anywhereState.source)) cancelAnywhere();
     endAnywhereHold();
+    clearLastDictation();
     registerAnywhereShortcut();
     updateTrayMenu(getUpdateAvailable());
   }
@@ -4776,6 +4899,14 @@ let fnAnywhereGeneration: number | null = null;
  * double-tap keeps it, a refusal is shown as a shortcut's would be.
  */
 let fnQuietGeneration: number | null = null;
+/**
+ * The fn gesture whose Dictate to clipboard start waits for the last transcript (F13): its id, and
+ * whether its press is still unconfirmed (a refusal then says nothing, as for a primed start). Its
+ * release, or another key, drops the wait; a double-tap of another gesture stops it.
+ */
+let fnQueue: { gesture: number; quiet: boolean } | null = null;
+/** The gesture whose intent main is carrying out now (`handleFnIntent`). */
+let fnGestureNow = 0;
 /** Each reporting page's dictation activity (`dictation:indicator`), by its webContents id. */
 const dictationReports = new Map<number, { windowId: number; report: DictationActivityReport }>();
 const watchedDictationReporters = new Set<number>();
@@ -4813,11 +4944,20 @@ async function writeFnKeySettings(settings: FnKeySettings): Promise<void> {
   await fs.rename(temporary, filename);
 }
 
+/** The keys the helper service listens for, from the setting (DD-101). */
+function fnKeysOf(settings: FnKeySettings): FnKeys {
+  return { combination: settings.combination, modifier: settings.modifier };
+}
+
 function fnKeyView(): FnKeyView {
+  const status = fnKeyService?.status() ?? FN_KEY_STATUS_OFF;
   return {
     settings: fnKeySettings,
-    status: fnKeyService?.status() ?? FN_KEY_STATUS_OFF,
+    status,
     anywhereOn: anywhereSettings.enabled && !anywhereOffRequested,
+    // Which key dictates now, and the listed app that also uses fn: Biorouter's own table entry,
+    // never text another app wrote (`fnCollision.ts`).
+    active: fnActive(fnKeySettings, status.collidingApp),
   };
 }
 
@@ -4839,14 +4979,29 @@ function startFnKeyShortcut(): void {
     spawn: (file) =>
       spawn(file, [], { stdio: ['pipe', 'pipe', 'ignore'], env: {}, windowsHide: true }),
     onIntent: handleFnIntent,
+    onNote: handleFnNote,
     onStatus: () => broadcastFnKey(),
     // The unpackaged trace: line types and times only (`formatFnTrace`); there is no key code.
     onTrace: dictationSeams.fnTrace
       ? (line) => log.info(formatFnTrace({ kind: 'line', ...line }))
       : undefined,
   });
+  // The keys first, so the helper never starts listening for old ones.
+  fnKeyService.setKeys(fnKeysOf(fnKeySettings));
   fnKeyService.setActive(fnKeySettings.enabled);
   broadcastFnKey();
+}
+
+/**
+ * A bare fn hold was left to another app that also uses fn (`ignored-bare-hold`, DD-101): the
+ * Biorouter window in front, and only it, hears one word, so its composer can say once which key
+ * dictates in Biorouter. No other window, and nothing else, is told; the press started nothing.
+ */
+function handleFnNote(note: FnNote): void {
+  if (note !== 'ignored-bare-hold') return;
+  const focused = BrowserWindow.getFocusedWindow();
+  if (!focused || focused.isDestroyed() || windowMap.get(focused.id) !== focused) return;
+  focused.webContents.send('dictation:fn:notice', 'use-alternative');
 }
 
 function fnWorld(): FnWorld {
@@ -4915,6 +5070,7 @@ function handleFnIntent(intent: FnIntent, gesture: number): void {
   const world = fnWorld();
   const plan = planFnIntent({ intent, gesture }, fnLatch, world);
   fnLatch = plan.latch;
+  fnGestureNow = gesture;
   if (dictationSeams.fnTrace)
     log.info(
       formatFnTrace({
@@ -4940,10 +5096,54 @@ function startFnAnywhere(
   preview: AnywherePreviewTarget | undefined,
   quiet: boolean
 ) {
+  const waitedBefore = anywhereState.queued !== null;
   void startAnywhere(source, false, preview, (generation) => fnQuietGeneration === generation);
   if (anywhereState.phase === 'arming' && anywhereState.source === source) {
     fnAnywhereGeneration = anywhereGeneration;
     if (quiet) fnQuietGeneration = anywhereGeneration;
+  } else if (!waitedBefore && anywhereState.queued !== null) {
+    // The last dictation still transcribes, so this gesture's start waits for it (F13).
+    fnQueue = { gesture: fnGestureNow, quiet };
+  }
+}
+
+/** A start waits for the last transcript, and it is this fn gesture's. */
+function fnOwnsQueue(): boolean {
+  if (fnQueue && anywhereState.queued === null) fnQueue = null;
+  return fnQueue !== null && fnQueue.gesture === fnGestureNow;
+}
+
+/** A start waits for the last transcript, and some other fn gesture made it. */
+function fnQueueOfAnotherGesture(): boolean {
+  if (fnQueue && anywhereState.queued === null) fnQueue = null;
+  return fnQueue !== null && fnQueue.gesture !== fnGestureNow;
+}
+
+/** Drop the start that waits; the dictation that transcribes goes on. */
+function unqueueAnywhere() {
+  anywhereState = nextAnywhereState(anywhereState, { type: 'unqueue' });
+  fnQueue = null;
+  updateTrayMenu(getUpdateAvailable());
+}
+
+/**
+ * The start that waited for the last transcript begins (F13): fn's at fn's terms, keeping its
+ * quiet while its press is unconfirmed, so its release or a double-tap reaches it as it would a
+ * start that never waited; the global shortcut's as a new press of it.
+ */
+function beginQueuedAnywhere() {
+  const fn = fnQueue;
+  fnQueue = null;
+  if (!fn) {
+    void startAnywhere('shortcut', false);
+    return;
+  }
+  const gesture = fnGestureNow;
+  fnGestureNow = fn.gesture;
+  try {
+    startFnAnywhere('shortcut', undefined, fn.quiet);
+  } finally {
+    fnGestureNow = gesture;
   }
 }
 
@@ -4965,6 +5165,9 @@ function runFnAction(action: FnAction, intent: FnIntent, world: FnWorld): void {
   };
   switch (action.op) {
     case 'prime':
+      // Another gesture's start already waits for the last transcript: this press may be a tap,
+      // and one start waits at most (F13).
+      if (fnQueueOfAnotherGesture() || fnOwnsQueue()) return;
       forget();
       if (fnMayPrimeAnywhere()) startFnAnywhere(source, preview, true);
       return;
@@ -4975,10 +5178,26 @@ function runFnAction(action: FnAction, intent: FnIntent, world: FnWorld): void {
         fnQuietGeneration = null;
         return;
       }
+      if (fnOwnsQueue()) {
+        // Its start waits for the last transcript and begins confirmed.
+        fnQueue!.quiet = false;
+        return;
+      }
+      if (fnQueueOfAnotherGesture()) {
+        // A double-tap stops what waits, as it stops what runs; a second hold is ignored.
+        if (intent === 'toggle') unqueueAnywhere();
+        return;
+      }
       forget();
       if (!fnDictationRunning(world)) startFnAnywhere(source, preview, false);
       return;
     case 'stop':
+      // A release before the queued start began: nothing was recorded, so it goes (F13).
+      if (fnOwnsQueue()) {
+        if (intent !== 'toggle') unqueueAnywhere();
+        forget();
+        return;
+      }
       // A release stops what its own press started; a double-tap stops whatever runs there.
       if (intent !== 'toggle' && !fnAnywhereLive()) {
         forget();
@@ -4988,7 +5207,9 @@ function runFnAction(action: FnAction, intent: FnIntent, world: FnWorld): void {
       stopAnywhere();
       return;
     case 'cancel':
-      // fn with another key, or a tap: only what this press captured is discarded.
+      // fn with another key, or a tap: only what this press captured is discarded, and a start
+      // this press left waiting goes with it.
+      if (fnOwnsQueue()) unqueueAnywhere();
       if (fnAnywhereLive()) cancelAnywhere();
       forget();
       return;
@@ -5126,12 +5347,15 @@ ipcMain.handle('dictation:fn:set', async (event, raw: unknown) => {
   const apply = async () => {
     const previous = fnKeySettings;
     fnKeySettings = next;
+    // The keys apply to the next press, before the listener is turned on or off.
+    fnKeyService?.setKeys(fnKeysOf(next));
     fnKeyService?.setActive(next.enabled);
     try {
       await writeFnKeySettings(next);
     } catch {
       // Unsaved, the next launch reads the old file; keep that one in effect now too.
       fnKeySettings = previous;
+      fnKeyService?.setKeys(fnKeysOf(previous));
       fnKeyService?.setActive(previous.enabled);
     }
     broadcastFnKey();
@@ -9059,11 +9283,14 @@ async function appMain() {
     console.error('Error registering focus window hotkey:', e);
   }
 
-  setDictationAnywhereTrayActions({
+  // `lastDictation` and `copyLast` are **Copy last dictation** (F10, DD-102): offered while main
+  // holds a text, and only its click writes that text to the clipboard.
+  const anywhereTrayActions = {
     state: () => ({
       enabled: anywhereSettings.enabled && laptopDictationCaptureAllowed(),
       phase: anywhereState.phase,
       privateAvailable: Boolean(getUserActionKey(loadSettings())),
+      lastDictation: lastDictationBeforeExpiry(lastDictation, Date.now()) !== null,
     }),
     start: () => void startAnywhere('tray', false),
     openSettings: () => void openAnywhereSettings(),
@@ -9073,7 +9300,9 @@ async function appMain() {
       }),
     stop: () => void startAnywhere('tray', false),
     cancel: cancelAnywhere,
-  });
+    copyLast: copyLastDictation,
+  };
+  setDictationAnywhereTrayActions(anywhereTrayActions);
   await readAnywhereSettings();
   anywhereState = nextAnywhereState(anywhereState, {
     type: anywhereSettings.enabled ? 'enable' : 'disable',
@@ -9851,9 +10080,11 @@ async function getAllowList(): Promise<string[]> {
 }
 
 app.on('will-quit', async () => {
+  if (historyChangedTimer) clearTimeout(historyChangedTimer);
   fnKeyService?.dispose();
   textInsertService?.stop();
   dictationIndicator?.dispose();
+  clearLastDictation();
   clearAnywhereReview();
   stopAnywherePowerBlocker();
   if (anywhereShortcut) globalShortcut.unregister(anywhereShortcut);

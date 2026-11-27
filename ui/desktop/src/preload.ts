@@ -462,7 +462,21 @@ type ElectronAPI = {
   dictationFnOpenSettings?: (pane: 'input-monitoring' | 'keyboard') => Promise<boolean>;
   onDictationFnState?: (callback: (view: FnKeyView) => void) => () => void;
   onDictationFnIntent?: (callback: (intent: FnIntent) => void) => () => void;
+  /**
+   * A one-word notice about the fn key for this window, the focused one (DD-101): `use-alternative`
+   * when a bare fn hold was left to another app that also uses fn, so the composer can say once
+   * which key dictates in Biorouter. It carries nothing else.
+   */
+  onDictationFnNotice?: (callback: (notice: 'use-alternative') => void) => () => void;
   dictationIndicator?: (report: DictationActivityReport) => void;
+  /**
+   * The dictation history, kept current in every window (F18): `dictationTranscribed` tells main
+   * this window published a transcript; `onDictationHistoryChanged` hears main say a dictation
+   * finished somewhere (any window, another app, the hidden capture page). Neither carries a
+   * payload: each History tab reads the listing again itself.
+   */
+  dictationTranscribed?: () => void;
+  onDictationHistoryChanged?: (callback: () => void) => () => void;
   /**
    * Typing a dictation into the app in front (DD-97, macOS), a setting written only by main.
    * - `dictationInsertGet` and `dictationInsertSet`: the setting, with whether this system
@@ -1068,8 +1082,22 @@ const electronAPI: ElectronAPI = {
     ipcRenderer.on('dictation:fn:intent', listener);
     return () => ipcRenderer.removeListener('dictation:fn:intent', listener);
   },
+  onDictationFnNotice: (callback: (notice: 'use-alternative') => void) => {
+    const listener = (_event: Electron.IpcRendererEvent, notice: unknown) => {
+      if (notice === 'use-alternative') callback(notice);
+    };
+    ipcRenderer.on('dictation:fn:notice', listener);
+    return () => ipcRenderer.removeListener('dictation:fn:notice', listener);
+  },
   dictationIndicator: (report: DictationActivityReport) =>
     ipcRenderer.send('dictation:indicator', report),
+  dictationTranscribed: () => ipcRenderer.send('dictation:transcribed'),
+  onDictationHistoryChanged: (callback: () => void) => {
+    // Main sends no payload; anything that comes with the event is not read.
+    const listener = () => callback();
+    ipcRenderer.on('dictation:history:changed', listener);
+    return () => ipcRenderer.removeListener('dictation:history:changed', listener);
+  },
   dictationInsertGet: () => ipcRenderer.invoke('dictation:insert:get'),
   dictationInsertSet: (enabled: boolean) =>
     ipcRenderer.invoke('dictation:insert:set', enabled === true),

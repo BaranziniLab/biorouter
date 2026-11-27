@@ -267,6 +267,71 @@ describe('phases and names', () => {
     }
   });
 
+  // DD-101: the key that dictates now, as main computes it (`FnKeyView.active`).
+  it('names Control+fn, in the tooltip and the shortcut, under the modifier choice', async () => {
+    resetFnKeyStoreForTests();
+    const modifier = {
+      settings: { enabled: true, otherApps: false, combination: 'modifier', modifier: 'control' },
+      status: {
+        supported: true,
+        active: true,
+        permission: 'granted',
+        listening: true,
+        fnUsage: 0,
+        failed: false,
+        collidingApp: null,
+      },
+      anywhereOn: false,
+      active: { bare: false, modifier: 'control', reason: 'chosen', collidingApp: null },
+    };
+    Object.assign(window.electron, { dictationFnGet: vi.fn(async () => modifier) });
+    try {
+      render(<Host />);
+      fireEvent.focus(screen.getByTestId('field'));
+      await settle();
+      expect(mic()).toHaveAttribute('aria-keyshortcuts', 'Control+Fn Meta+Shift+D');
+      fireEvent.keyDown(document.body, { key: 'Tab' });
+      act(() => mic().focus());
+      expect(await screen.findByRole('tooltip')).toHaveTextContent(
+        'Dictate · hold or double-tap Control+fn'
+      );
+    } finally {
+      resetFnKeyStoreForTests();
+    }
+  });
+
+  it('names fn first and the modifier beside it while Automatic takes both', async () => {
+    resetFnKeyStoreForTests();
+    const automatic = {
+      settings: { enabled: true, otherApps: false, combination: 'automatic', modifier: 'option' },
+      status: {
+        supported: true,
+        active: true,
+        permission: 'granted',
+        listening: true,
+        fnUsage: 0,
+        failed: false,
+        collidingApp: null,
+      },
+      anywhereOn: false,
+      active: { bare: true, modifier: 'option', reason: 'automatic', collidingApp: null },
+    };
+    Object.assign(window.electron, { dictationFnGet: vi.fn(async () => automatic) });
+    try {
+      render(<Host />);
+      fireEvent.focus(screen.getByTestId('field'));
+      await settle();
+      expect(mic()).toHaveAttribute('aria-keyshortcuts', 'Fn Alt+Fn Meta+Shift+D');
+      fireEvent.keyDown(document.body, { key: 'Tab' });
+      act(() => mic().focus());
+      expect(await screen.findByRole('tooltip')).toHaveTextContent(
+        'Dictate · hold or double-tap fn'
+      );
+    } finally {
+      resetFnKeyStoreForTests();
+    }
+  });
+
   it('keeps the chord alone while the fn listener does not run (no Input Monitoring yet)', async () => {
     resetFnKeyStoreForTests();
     const waiting = {

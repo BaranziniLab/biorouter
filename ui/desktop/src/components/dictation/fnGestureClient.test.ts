@@ -14,6 +14,7 @@ const session = vi.hoisted(() => ({
   attach: vi.fn(),
   start: vi.fn(),
   holding: new Set<string>(),
+  listeners: new Set<() => void>(),
 }));
 
 vi.mock('./dictationSession', () => ({
@@ -44,7 +45,10 @@ vi.mock('./dictationSession', () => ({
   },
   requestDictationSetup: vi.fn(),
   noteDictationUnavailable: vi.fn(),
-  subscribeDictation: () => () => undefined,
+  subscribeDictation: (listener: () => void) => {
+    session.listeners.add(listener);
+    return () => session.listeners.delete(listener);
+  },
   dictationActivityFor: (key: string) =>
     session.snapshot.key === key ? session.snapshot.activity : 'idle',
 }));
@@ -59,11 +63,13 @@ vi.mock('./fnKeyStore', () => ({
 
 import { FN_USAGE_ACTIONS, dictationMessage } from './copy';
 import {
+  FN_ALT_NOTICE_SHOWN_KEY,
   FN_CONFLICT_SHOWN_KEY,
   dismissFnConflictNote,
   fnTargetKey,
   getFnConflictNote,
   handleFnIntent,
+  handleFnNotice,
   registerFnGestureTarget,
   resetFnGestureClientForTests,
 } from './fnGestureClient';
@@ -113,6 +119,7 @@ beforeEach(() => {
   session.quiet = true;
   session.closingCancels = 0;
   session.holding.clear();
+  session.listeners.clear();
   session.stop.mockClear();
   session.cancel.mockClear();
   session.attach.mockClear();
@@ -430,6 +437,251 @@ describe('the fn intents in a window', () => {
     handleFnIntent('end-hold');
     expect(session.stop).not.toHaveBeenCalled();
     expect(session.cancel).not.toHaveBeenCalled();
+  });
+});
+
+/** The session publishes a new activity, as `dictationSession.ts` does after the text went in. */
+function sessionIs(key: string | null, activity: string) {
+  session.snapshot = { key, activity };
+  if (activity === 'idle' || activity === 'error') session.token = null;
+  for (const listener of [...session.listeners]) listener();
+}
+
+// F14 (DD-102): fn pressed again while this window's last dictation still transcribes.
+describe('an fn start while this window still transcribes', () => {
+  function transcribing() {
+    const chat = composer('tab:a');
+    chat.field.focus();
+    session.snapshot = { key: 'tab:a', activity: 'transcribing' };
+    session.token = { key: 'tab:a', earlier: true };
+    // The session is busy, so nothing starts quietly at fn down.
+    session.quiet = false;
+    return chat;
+  }
+
+  it('starts once the text is in if fn is still held, and its release stops it', async () => {
+    const chat = transcribing();
+    handleFnIntent('prime');
+    handleFnIntent('start-hold');
+    // Pressing now would only stop the transcription it waits for.
+    expect(chat.press).not.toHaveBeenCalled();
+    await act(async () => sessionIs('tab:a', 'idle'));
+    expect(chat.press).toHaveBeenCalledTimes(1);
+    handleFnIntent('end-hold');
+    expect(session.stop).toHaveBeenCalledExactlyOnceWith('tab:a');
+  });
+
+  it('never starts once fn was released before the text went in, and stops nothing', async () => {
+    const chat = transcribing();
+    handleFnIntent('prime');
+    handleFnIntent('start-hold');
+    handleFnIntent('end-hold');
+    await act(async () => sessionIs('tab:a', 'idle'));
+    expect(chat.press).not.toHaveBeenCalled();
+    expect(session.stop).not.toHaveBeenCalled();
+    expect(session.cancel).not.toHaveBeenCalled();
+  });
+
+  it('a double-tap starts hands-free after it, and a second double-tap before then drops it', async () => {
+    const chat = transcribing();
+    handleFnIntent('prime');
+    handleFnIntent('cancel-hold');
+    handleFnIntent('prime');
+    handleFnIntent('toggle');
+    expect(chat.press).not.toHaveBeenCalled();
+    await act(async () => sessionIs('tab:a', 'idle'));
+    expect(chat.press).toHaveBeenCalledTimes(1);
+    // Hands-free: the release of the second press stops nothing.
+    handleFnIntent('end-hold');
+    expect(session.stop).not.toHaveBeenCalled();
+
+    resetFnGestureClientForTests();
+    const again = transcribing();
+    handleFnIntent('toggle');
+    handleFnIntent('prime');
+    handleFnIntent('cancel-hold');
+    handleFnIntent('prime');
+    handleFnIntent('toggle');
+    await act(async () => sessionIs('tab:a', 'idle'));
+    expect(again.press).not.toHaveBeenCalled();
+  });
+
+  it('keeps one, and starts nothing over a failure the person may retry', async () => {
+    const chat = transcribing();
+    handleFnIntent('toggle');
+    // A hold during the wait is ignored: one start waits at most.
+    handleFnIntent('prime');
+    handleFnIntent('start-hold');
+    handleFnIntent('end-hold');
+    await act(async () => sessionIs('tab:a', 'idle'));
+    expect(chat.press).toHaveBeenCalledTimes(1);
+
+    resetFnGestureClientForTests();
+    const failed = transcribing();
+    handleFnIntent('prime');
+    handleFnIntent('start-hold');
+    await act(async () => sessionIs('tab:a', 'error'));
+    expect(failed.press).not.toHaveBeenCalled();
+    // The wait is over: a later idle starts nothing either.
+    await act(async () => sessionIs('tab:a', 'idle'));
+    expect(failed.press).not.toHaveBeenCalled();
+  });
+});
+
+const WISPR = { bundle: 'com.electron.wispr-flow', name: 'Wispr Flow' };
+
+/** The fn status with the dictation key main computed (DD-101). */
+function keyView(
+  combination: 'automatic' | 'fn' | 'modifier',
+  active: NonNullable<FnKeyView['active']>,
+  fnUsage: 0 | 1 | 2 | 3 | null = 2
+): FnKeyView {
+  const base = fnView(fnUsage);
+  return {
+    ...base,
+    settings: { ...base.settings, combination, modifier: active.modifier ?? 'control' },
+    status: { ...base.status, collidingApp: active.collidingApp },
+    active,
+  };
+}
+
+// DD-101: macOS's own fn action is a bare fn's business, so its note waits for a bare fn press.
+describe('the fn note under the dictation key', () => {
+  it('is not shown while only the modifier with fn dictates, and waits for a bare fn', () => {
+    composer('tab:a', { showsNotes: true });
+    fnKey.view = keyView('modifier', {
+      bare: false,
+      modifier: 'control',
+      reason: 'chosen',
+      collidingApp: null,
+    });
+    handleFnIntent('prime');
+    expect(getFnConflictNote()).toBeNull();
+    expect(window.localStorage.getItem(FN_CONFLICT_SHOWN_KEY)).toBeNull();
+    handleFnIntent('cancel-hold');
+    // The person goes back to Automatic with nothing else using fn: the note shows then.
+    fnKey.view = keyView('automatic', {
+      bare: true,
+      modifier: 'control',
+      reason: 'automatic',
+      collidingApp: null,
+    });
+    handleFnIntent('prime');
+    expect(getFnConflictNote()?.text).toBe(
+      dictationMessage('MSG-FN-CONFLICT', { action: FN_USAGE_ACTIONS[2] })
+    );
+  });
+});
+
+// DD-101: a bare fn hold left to another app that uses fn (main's `use-alternative` notice).
+describe('the one-time key notice', () => {
+  const collision = () =>
+    keyView('automatic', {
+      bare: false,
+      modifier: 'control',
+      reason: 'collision',
+      collidingApp: WISPR,
+    });
+  const chosen = () =>
+    keyView('modifier', { bare: false, modifier: 'option', reason: 'chosen', collidingApp: null });
+
+  it('names the app and the key that dictates, once per app, in the composer the press was for', () => {
+    composer('tab:a', { showsNotes: true });
+    const editor = composer('editor:m1', { showsNotes: true });
+    editor.field.focus();
+    fnKey.view = collision();
+    act(() => handleFnNotice('use-alternative'));
+    expect(getFnConflictNote()).toEqual({
+      key: 'editor:m1',
+      text: dictationMessage('MSG-FN-USE-ALT-COLLISION', { app: 'Wispr Flow', alt: 'Control+fn' }),
+    });
+    expect(JSON.parse(window.localStorage.getItem(FN_ALT_NOTICE_SHOWN_KEY)!)).toEqual([
+      'collision:com.electron.wispr-flow',
+    ]);
+    act(() => dismissFnConflictNote());
+    act(() => handleFnNotice('use-alternative'));
+    expect(getFnConflictNote()).toBeNull();
+    // Another window of the same profile shows nothing either.
+    resetFnGestureClientForTests();
+    composer('tab:a', { showsNotes: true });
+    fnKey.view = collision();
+    act(() => handleFnNotice('use-alternative'));
+    expect(getFnConflictNote()).toBeNull();
+  });
+
+  it('says the chosen key once, apart from the collision one', () => {
+    composer('tab:a', { showsNotes: true });
+    fnKey.view = chosen();
+    act(() => handleFnNotice('use-alternative'));
+    expect(getFnConflictNote()?.text).toBe(
+      dictationMessage('MSG-FN-USE-ALT-CHOSEN', { alt: 'Option+fn' })
+    );
+    act(() => dismissFnConflictNote());
+    act(() => handleFnNotice('use-alternative'));
+    expect(getFnConflictNote()).toBeNull();
+    fnKey.view = collision();
+    act(() => handleFnNotice('use-alternative'));
+    expect(getFnConflictNote()?.text).toBe(
+      dictationMessage('MSG-FN-USE-ALT-COLLISION', { app: 'Wispr Flow', alt: 'Control+fn' })
+    );
+    expect(JSON.parse(window.localStorage.getItem(FN_ALT_NOTICE_SHOWN_KEY)!)).toEqual([
+      'chosen',
+      'collision:com.electron.wispr-flow',
+    ]);
+  });
+
+  it('never for the fn choice, while bare fn dictates, or before main says which key', () => {
+    composer('tab:a', { showsNotes: true });
+    fnKey.view = keyView('fn', {
+      bare: true,
+      modifier: null,
+      reason: 'chosen',
+      collidingApp: WISPR,
+    });
+    act(() => handleFnNotice('use-alternative'));
+    fnKey.view = keyView('automatic', {
+      bare: true,
+      modifier: 'control',
+      reason: 'automatic',
+      collidingApp: null,
+    });
+    act(() => handleFnNotice('use-alternative'));
+    fnKey.view = fnView(2);
+    act(() => handleFnNotice('use-alternative'));
+    fnKey.view = null;
+    act(() => handleFnNotice('use-alternative'));
+    expect(getFnConflictNote()).toBeNull();
+    expect(window.localStorage.getItem(FN_ALT_NOTICE_SHOWN_KEY)).toBeNull();
+  });
+
+  it('a profile whose storage cannot be read still shows each at most once in this window', () => {
+    composer('tab:a', { showsNotes: true });
+    fnKey.view = collision();
+    const getItem = vi.spyOn(Storage.prototype, 'getItem').mockImplementation(() => {
+      throw new Error('blocked');
+    });
+    const setItem = vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => {
+      throw new Error('blocked');
+    });
+    try {
+      act(() => handleFnNotice('use-alternative'));
+      expect(getFnConflictNote()?.key).toBe('tab:a');
+      act(() => dismissFnConflictNote());
+      act(() => handleFnNotice('use-alternative'));
+      expect(getFnConflictNote()).toBeNull();
+    } finally {
+      getItem.mockRestore();
+      setItem.mockRestore();
+    }
+  });
+
+  it('reads a stored list it did not write as empty, and keeps what it had', () => {
+    window.localStorage.setItem(FN_ALT_NOTICE_SHOWN_KEY, '{"not":"a list"}');
+    composer('tab:a', { showsNotes: true });
+    fnKey.view = chosen();
+    act(() => handleFnNotice('use-alternative'));
+    expect(getFnConflictNote()).not.toBeNull();
+    expect(JSON.parse(window.localStorage.getItem(FN_ALT_NOTICE_SHOWN_KEY)!)).toEqual(['chosen']);
   });
 });
 

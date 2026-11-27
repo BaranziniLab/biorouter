@@ -210,6 +210,58 @@ describe('live updates', () => {
     expect(reads()).toBe(before + 4);
   });
 
+  // F18 (DD-102): a dictation made in another window, another app or the hidden capture page.
+  it('reads again half a second after main says the history changed elsewhere, and after its own transcript, once each', async () => {
+    vi.useFakeTimers();
+    let changed: (() => void) | null = null;
+    const off = vi.fn();
+    Object.assign(window, {
+      electron: {
+        ...(window as { electron?: object }).electron,
+        onDictationHistoryChanged: (callback: () => void) => {
+          changed = callback;
+          return off;
+        },
+      },
+    });
+    try {
+      const { unmount } = renderHook(() => useDictationHistory({ enabled: true, query: '' }));
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(0);
+      });
+      expect(changed).not.toBeNull();
+      const reads = () => api.listDictationHistory.mock.calls.length;
+      const before = reads();
+      await act(async () => {
+        changed!();
+        await vi.advanceTimersByTimeAsync(499);
+      });
+      expect(reads()).toBe(before);
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1);
+      });
+      expect(reads()).toBe(before + 1);
+      await act(async () => {
+        notifyDictationTranscribed();
+        await vi.advanceTimersByTimeAsync(500);
+      });
+      expect(reads()).toBe(before + 2);
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(5_000);
+      });
+      expect(reads()).toBe(before + 2);
+      unmount();
+      expect(off).toHaveBeenCalledTimes(1);
+    } finally {
+      Object.assign(window, {
+        electron: {
+          ...(window as { electron?: object }).electron,
+          onDictationHistoryChanged: undefined,
+        },
+      });
+    }
+  });
+
   it('reads nothing while the tab is closed', async () => {
     renderHook(() => useDictationHistory({ enabled: false, query: 'EPAS1' }));
     await act(async () => {

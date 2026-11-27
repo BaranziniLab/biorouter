@@ -18,9 +18,16 @@
  *
  * At the first fn press in a window, once per profile, the composer shows MSG-FN-CONFLICT (or
  * MSG-FN-CONFLICT-UNKNOWN) when macOS also acts on fn, because a double-tap runs that action
- * twice ({@link getFnConflictNote}).
+ * twice ({@link getFnConflictNote}), but only while fn alone dictates: macOS's own action is a
+ * bare fn's business (DD-101).
+ *
+ * When a bare fn hold was left to another app that also uses fn (main's `use-alternative`
+ * notice, DD-101), the same slot shows once per profile which key dictates in Biorouter:
+ * MSG-FN-USE-ALT-COLLISION for each app Biorouter's own list names, MSG-FN-USE-ALT-CHOSEN when the
+ * person chose the modifier ({@link handleFnNotice}).
  */
 import { setFieldTextByState, type DictationField } from '../../utils/dictatedText';
+import { fnKeyLabel } from '../../utils/dictationFnKey';
 import type { FnIntent } from '../../utils/fnGesture';
 import { dictationMessage, FN_USAGE_ACTIONS } from './copy';
 import {
@@ -57,6 +64,12 @@ export interface FnGestureTarget {
 /** The localStorage key that says the fn note was shown on this profile (DD-98). */
 export const FN_CONFLICT_SHOWN_KEY = 'biorouter:fn-conflict-shown';
 
+/**
+ * The localStorage key that lists the key notices shown on this profile (DD-101): `chosen`, and
+ * `collision:<bundle id>` for each app of Biorouter's own list.
+ */
+export const FN_ALT_NOTICE_SHOWN_KEY = 'biorouter:fn-alt-notice-shown';
+
 /** The one-time fn note: the composer that shows it, and its sentence. */
 export interface FnConflictNote {
   key: string;
@@ -76,6 +89,15 @@ let holdToken: object | null = null;
  * dictation the person meant to finish.
  */
 let discardedToken: object | null = null;
+/**
+ * A start that came while this window's last dictation still transcribed (F14, DD-102): a
+ * confirmed hold, or a double-tap's hands-free start. One waits at most, and it starts the moment
+ * that dictation's text is in, if the gesture still wants it: a release or another key drops a
+ * held one, a second double-tap drops a hands-free one, and a failure (whose notice offers Retry)
+ * drops either.
+ */
+let waitingStart: 'hold' | 'hands-free' | null = null;
+let waitingWatch: (() => void) | null = null;
 let focusListening = false;
 
 /** Fields no composer owns, each with the session composer fn dictates into it through. */
@@ -86,6 +108,8 @@ let looseWatch: (() => void) | null = null;
 let conflictNote: FnConflictNote | null = null;
 /** This window decided about the fn note: it showed it, or there was nothing to show. */
 let conflictDecided = false;
+/** The key notices this window showed, for a profile whose storage cannot be read. */
+const altNoticesShown = new Set<string>();
 const noteListeners = new Set<() => void>();
 
 function candidates(): FieldCandidate[] {
@@ -218,6 +242,34 @@ function startInTarget(): boolean {
 const holdIsLive = (token: object | null): boolean =>
   token !== null && activeDictationToken() === token && recordingNow();
 
+const transcribingNow = (): boolean => getDictationSnapshot().activity === 'transcribing';
+
+function waitForTranscript(kind: 'hold' | 'hands-free'): void {
+  waitingStart = kind;
+  waitingWatch ??= subscribeDictation(onSessionChange);
+}
+
+function dropWaitingStart(): void {
+  waitingStart = null;
+  waitingWatch?.();
+  waitingWatch = null;
+}
+
+/** The session moved on: the start that waited begins once the text is in, and only then. */
+function onSessionChange(): void {
+  if (waitingStart === null) return;
+  const { activity } = getDictationSnapshot();
+  if (activity === 'transcribing') return;
+  const kind = waitingStart;
+  dropWaitingStart();
+  if (activity !== 'idle') return;
+  // After the publish that brought the session to rest, not inside it.
+  queueMicrotask(() => {
+    if (recordingNow() || transcribingNow()) return;
+    if (startInTarget() && kind === 'hold') holdToken = activeDictationToken();
+  });
+}
+
 export function handleFnIntent(intent: FnIntent): void {
   switch (intent) {
     case 'prime': {
@@ -236,11 +288,19 @@ export function handleFnIntent(intent: FnIntent): void {
       if (holdIsLive(holdToken)) return;
       holdToken = null;
       if (recordingNow()) return;
+      // This window's last dictation still transcribes: a press now would only stop it again, so
+      // the start waits for its text (F14). A start already waiting keeps its place.
+      if (transcribingNow()) {
+        if (waitingStart === null) waitForTranscript('hold');
+        return;
+      }
       if (startInTarget()) holdToken = activeDictationToken();
       return;
     }
     case 'end-hold':
     case 'cancel-hold': {
+      // A release or another key before the waiting hold began: nothing was recorded, so it goes.
+      if (waitingStart === 'hold') dropWaitingStart();
       const token = holdToken;
       holdToken = null;
       if (intent === 'end-hold') discardedToken = null;
@@ -276,7 +336,12 @@ export function handleFnIntent(intent: FnIntent): void {
         stopDictation(key);
         return;
       }
-      if (activity === 'transcribing') return;
+      if (activity === 'transcribing') {
+        // The start waits for this window's text (F14); a second double-tap stops what waits.
+        if (waitingStart === 'hands-free') dropWaitingStart();
+        else waitForTranscript('hands-free');
+        return;
+      }
       startInTarget();
       return;
     }
@@ -318,6 +383,9 @@ function noteFnConflictOnce(targetKey: string | null): void {
   if (conflictDecided) return;
   const view = getFnKeySnapshot();
   if (!view) return;
+  // Only the modifier with fn dictates: macOS's fn action is not this press's, so the note waits
+  // for a press of fn alone. A view from before main said which key counts as fn alone.
+  if (view.active && !view.active.bare) return;
   const usage = view.status.fnUsage;
   if (usage === 0 || readConflictShown()) {
     conflictDecided = true;
@@ -334,6 +402,66 @@ function noteFnConflictOnce(targetKey: string | null): void {
         ? dictationMessage('MSG-FN-CONFLICT-UNKNOWN')
         : dictationMessage('MSG-FN-CONFLICT', { action: FN_USAGE_ACTIONS[usage] }),
   };
+  for (const listener of [...noteListeners]) listener();
+}
+
+// ── the one-time key notice (MSG-FN-USE-ALT-COLLISION, MSG-FN-USE-ALT-CHOSEN) ─────
+
+function readAltNoticesShown(): string[] {
+  try {
+    const raw = window.localStorage.getItem(FN_ALT_NOTICE_SHOWN_KEY);
+    if (raw === null) return [];
+    const parsed: unknown = JSON.parse(raw);
+    return Array.isArray(parsed)
+      ? parsed.filter((entry): entry is string => typeof entry === 'string').slice(0, 64)
+      : [];
+  } catch {
+    return [];
+  }
+}
+
+function writeAltNoticeShown(id: string): void {
+  const shown = readAltNoticesShown();
+  if (!shown.includes(id)) shown.push(id);
+  const value = JSON.stringify(shown);
+  try {
+    window.localStorage.setItem(FN_ALT_NOTICE_SHOWN_KEY, value);
+  } catch {
+    // No storage: this window still remembers it showed the notice.
+  }
+}
+
+/**
+ * Main's `use-alternative`: a bare fn hold in this window was left to another app that also uses
+ * fn, and the press started nothing. Once per profile per reason and app, the composer the press
+ * was for says which key dictates in Biorouter. Nothing shows for the fn choice, while fn alone
+ * dictates, or before main has said which key dictates.
+ */
+export function handleFnNotice(notice: 'use-alternative'): void {
+  if (notice !== 'use-alternative') return;
+  const view = getFnKeySnapshot();
+  const active = view?.active;
+  if (!view || !active || active.bare || active.modifier === null) return;
+  if (view.settings.combination === 'fn') return;
+  const alt = fnKeyLabel(active.modifier);
+  let id: string;
+  let text: string;
+  if (active.reason === 'collision' && active.collidingApp) {
+    id = `collision:${active.collidingApp.bundle}`;
+    text = dictationMessage('MSG-FN-USE-ALT-COLLISION', { app: active.collidingApp.name, alt });
+  } else if (active.reason === 'chosen') {
+    id = 'chosen';
+    text = dictationMessage('MSG-FN-USE-ALT-CHOSEN', { alt });
+  } else {
+    return;
+  }
+  if (altNoticesShown.has(id) || readAltNoticesShown().includes(id)) return;
+  // The composer the press would have gone to, without making a loose field its own composer.
+  const home = noteHome(chooseFnComposer({ candidates: candidates(), lastFocused }));
+  if (!home) return;
+  altNoticesShown.add(id);
+  writeAltNoticeShown(id);
+  conflictNote = { key: home, text };
   for (const listener of [...noteListeners]) listener();
 }
 
@@ -360,10 +488,12 @@ let installed: (() => void) | null = null;
 export function installFnGestureClient(): () => void {
   if (installed) return installed;
   const off = window.electron?.onDictationFnIntent?.(handleFnIntent) ?? (() => undefined);
+  const offNotice = window.electron?.onDictationFnNotice?.(handleFnNotice) ?? (() => undefined);
   // The fn status (`fnUsage`) the first press's note reads, loaded before that press.
   const offStatus = subscribeFnKey(() => undefined);
   installed = () => {
     off();
+    offNotice();
     offStatus();
     installed = null;
   };
@@ -380,7 +510,9 @@ export function resetFnGestureClientForTests(): void {
   lastFocused = null;
   holdToken = null;
   discardedToken = null;
+  dropWaitingStart();
   conflictNote = null;
   conflictDecided = false;
+  altNoticesShown.clear();
   noteListeners.clear();
 }

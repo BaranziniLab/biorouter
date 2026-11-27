@@ -40,6 +40,7 @@ import {
 } from './updaterState';
 import { restartAllowedWhileDictating } from './dictationBusy';
 import { menuBarWindows, revealFromMenuBar } from './menuBarReveal';
+import { DICTATION_ACTIONS } from '../components/dictation/copy';
 
 /** MSG-RESTART-BUSY before any restart that installs an update (`utils/dictationBusy.ts`). */
 const confirmRestartWhileDictating = (): Promise<boolean> =>
@@ -1000,12 +1001,24 @@ export function openUpdateSettings() {
 
 // Export function to update tray menu
 type AnywhereTrayActions = {
-  state: () => { enabled: boolean; phase: string; privateAvailable: boolean };
+  /**
+   * `lastDictation`: main holds a text for **Copy last dictation** (F10, F15, DD-102), the last
+   * one Biorouter typed into another app or a review card's that a new start closed, until it
+   * expires. Main rebuilds this menu when it starts and stops holding one.
+   */
+  state: () => {
+    enabled: boolean;
+    phase: string;
+    privateAvailable: boolean;
+    lastDictation: boolean;
+  };
   start: () => void;
   privateStart: () => void;
   openSettings: () => void;
   stop: () => void;
   cancel: () => void;
+  /** The one way the held text reaches the clipboard: this item's click. */
+  copyLast: () => void;
 };
 let anywhereTrayActions: AnywhereTrayActions | null = null;
 
@@ -1041,8 +1054,7 @@ export function updateTrayMenu(hasUpdate: boolean) {
     if (state.phase === 'recording' || state.phase === 'arming') {
       menuItems.push(
         { label: 'Stop and copy', click: anywhereTrayActions.stop },
-        { label: 'Cancel', click: anywhereTrayActions.cancel },
-        { type: 'separator' }
+        { label: 'Cancel', click: anywhereTrayActions.cancel }
       );
     } else {
       menuItems.push(
@@ -1054,10 +1066,18 @@ export function updateTrayMenu(hasUpdate: boolean) {
           label: 'Include my private terms',
           enabled: state.enabled && state.privateAvailable,
           click: anywhereTrayActions.privateStart,
-        },
-        { type: 'separator' }
+        }
       );
     }
+    // Offered in either phase: a new start that closed a review card moved its text here, so the
+    // person may want it while the next dictation records.
+    if (state.lastDictation) {
+      menuItems.push({
+        label: DICTATION_ACTIONS.copyLastDictation,
+        click: anywhereTrayActions.copyLast,
+      });
+    }
+    menuItems.push({ type: 'separator' });
   }
 
   menuItems.push(
