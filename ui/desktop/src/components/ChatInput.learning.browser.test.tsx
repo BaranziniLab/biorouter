@@ -3,7 +3,7 @@ import { dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { build } from 'esbuild';
 import { chromium, type Browser } from 'playwright';
-import { expect, it } from 'vitest';
+import { afterAll, beforeAll, expect, it } from 'vitest';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const stubs: Record<string, string> = {
@@ -42,7 +42,19 @@ const launchChromium = async (): Promise<Browser | null> => {
   return null;
 };
 
-it('a programmatic replacement in the real composer posts no stale correction in Chromium', async () => {
+/**
+ * The composer bundle and the browser, made once in hooks rather than in the test. Both take as
+ * long as the machine is busy: esbuild bundles the whole composer tree, and launching or closing a
+ * multi-process browser is a handshake. In the test body they counted against the 30 s test budget:
+ * alone the test takes about 4 s, and a full local run at a load average above 100 overran the
+ * budget with no assertion failing (a bare "Test timed out in 30000ms", 2026-11-26). Every other
+ * browser test launches in `beforeAll` and closes in `afterAll`, under the hook budget that
+ * `src/test/timeouts.ts` sets for exactly this.
+ */
+let composerScript = '';
+let browser: Browser | null = null;
+
+beforeAll(async () => {
   const bundled = await build({
     stdin: {
       resolveDir: here,
@@ -94,67 +106,69 @@ it('a programmatic replacement in the real composer posts no stale correction in
       },
     ],
   });
-  const browser = await launchChromium();
+  composerScript = bundled.outputFiles[0].text;
+  browser = await launchChromium();
+});
+
+afterAll(async () => {
+  await browser?.close();
+});
+
+it('a programmatic replacement in the real composer posts no stale correction in Chromium', async () => {
   if (!browser) throw new Error('No Chromium or Chrome browser could launch');
-  try {
-    for (const programmatic of [false, true]) {
-      const page = await browser.newPage();
-      const errors: string[] = [];
-      page.on('pageerror', (error) => errors.push(error.stack ?? error.message));
-      page.on('console', (message) => {
-        if (message.type() === 'error') errors.push(message.text());
-      });
-      await page.route('**/*', (route) => route.abort());
-      await page.route('https://learning.test/**', (route) =>
-        route.fulfill({ contentType: 'text/html', body: '<div id="root"></div>' })
-      );
-      await page.goto('https://learning.test/');
-      await page.addScriptTag({ content: bundled.outputFiles[0].text });
-      const field = page.getByTestId('chat-input');
-      try {
-        await expect
-          .poll(() => field.inputValue({ timeout: 4_000 }), { timeout: 5_000 })
-          .toBe('Check the a pass one gene in the lung');
-      } catch {
-        const stage = await Promise.race([
-          page.evaluate(() => ({
-            rootPresent: document.getElementById('root') !== null,
-            rootChildren: document.getElementById('root')?.childElementCount ?? 0,
-            textareas: document.querySelectorAll('textarea').length,
-            renderComposerPresent:
-              typeof (window as unknown as { renderComposer?: unknown }).renderComposer ===
-              'function',
-          })),
-          new Promise<{ timedOut: true }>((resolve) =>
-            setTimeout(() => resolve({ timedOut: true }), 1_000)
-          ),
-        ]);
-        throw new Error(
-          `Composer did not render: ${JSON.stringify(stage)}; errors: ${errors.join(' | ')}`
-        );
-      }
-      await field.fill('Check the EPAS1 gene in the lung');
-      if (programmatic) {
-        await page.evaluate(() =>
-          (window as unknown as { renderComposer(text: string): void }).renderComposer(
-            'Check the HIF2-alpha gene in the lung'
-          )
-        );
-        await expect.poll(() => field.inputValue()).toBe('Check the HIF2-alpha gene in the lung');
-      }
-      await field.press('Enter');
-      await expect.poll(() => field.inputValue()).toBe('');
+  for (const programmatic of [false, true]) {
+    const page = await browser.newPage();
+    const errors: string[] = [];
+    page.on('pageerror', (error) => errors.push(error.stack ?? error.message));
+    page.on('console', (message) => {
+      if (message.type() === 'error') errors.push(message.text());
+    });
+    await page.route('**/*', (route) => route.abort());
+    await page.route('https://learning.test/**', (route) =>
+      route.fulfill({ contentType: 'text/html', body: '<div id="root"></div>' })
+    );
+    await page.goto('https://learning.test/');
+    await page.addScriptTag({ content: composerScript });
+    const field = page.getByTestId('chat-input');
+    try {
       await expect
-        .poll(() =>
-          page.evaluate(
-            () => (window as unknown as { observations: unknown[] }).observations.length
-          )
-        )
-        .toBe(programmatic ? 0 : 1);
-      expect(errors).toEqual([]);
-      await page.close();
+        .poll(() => field.inputValue({ timeout: 4_000 }), { timeout: 5_000 })
+        .toBe('Check the a pass one gene in the lung');
+    } catch {
+      const stage = await Promise.race([
+        page.evaluate(() => ({
+          rootPresent: document.getElementById('root') !== null,
+          rootChildren: document.getElementById('root')?.childElementCount ?? 0,
+          textareas: document.querySelectorAll('textarea').length,
+          renderComposerPresent:
+            typeof (window as unknown as { renderComposer?: unknown }).renderComposer ===
+            'function',
+        })),
+        new Promise<{ timedOut: true }>((resolve) =>
+          setTimeout(() => resolve({ timedOut: true }), 1_000)
+        ),
+      ]);
+      throw new Error(
+        `Composer did not render: ${JSON.stringify(stage)}; errors: ${errors.join(' | ')}`
+      );
     }
-  } finally {
-    await browser.close();
+    await field.fill('Check the EPAS1 gene in the lung');
+    if (programmatic) {
+      await page.evaluate(() =>
+        (window as unknown as { renderComposer(text: string): void }).renderComposer(
+          'Check the HIF2-alpha gene in the lung'
+        )
+      );
+      await expect.poll(() => field.inputValue()).toBe('Check the HIF2-alpha gene in the lung');
+    }
+    await field.press('Enter');
+    await expect.poll(() => field.inputValue()).toBe('');
+    await expect
+      .poll(() =>
+        page.evaluate(() => (window as unknown as { observations: unknown[] }).observations.length)
+      )
+      .toBe(programmatic ? 0 : 1);
+    expect(errors).toEqual([]);
+    await page.close();
   }
 });
