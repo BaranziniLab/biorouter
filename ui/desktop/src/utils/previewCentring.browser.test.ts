@@ -109,10 +109,27 @@ describe('an HTML preview narrower than its frame', () => {
     await browser?.close();
   }, 120_000);
 
+  /**
+   * The page that holds the frame, served from an origin of its own, as the
+   * panel's renderer page is. Writing it into the new tab's initial about:blank
+   * with `setContent` kept a document with no site, and from Chrome 158 a
+   * sandboxed `srcdoc` frame created inside such a document ends the whole
+   * browser process (`Check failed: has_site_` in site_instance_impl.cc, then
+   * SIGTRAP), so every case failed with "Target page, context or browser has
+   * been closed" (PR #560's vitest 3/3, runner image 20261122.9).
+   */
+  const HOST_URL = 'http://preview-host.test/';
+
   /** Frame `html` the way the panel does, `width` px wide, and wait for the runtime to settle. */
   const framed = async (html: string, width: number): Promise<{ page: Page; frame: Frame }> => {
     const host = await browser!.newPage({ viewport: { width: 1200, height: 900 } });
-    await host.setContent('<!doctype html><html><body style="margin:0"></body></html>');
+    await host.route(HOST_URL, (route) =>
+      route.fulfill({
+        contentType: 'text/html',
+        body: '<!doctype html><html><body style="margin:0"></body></html>',
+      })
+    );
+    await host.goto(HOST_URL);
     await host.evaluate(
       ({ srcdoc, width }) =>
         new Promise<void>((resolve) => {
