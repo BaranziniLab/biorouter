@@ -238,6 +238,12 @@ describe('AgentTaskPane', () => {
     const user = userEvent.setup();
     renderCrew(Layout);
     await waitFor(() => expect(currentCrew().status).toBe('connected'));
+    // Type only once the channel is selected, as the first test does and for the same reason: the
+    // view renders connected one render before it selects #general, and selecting it puts back
+    // the channel's kept draft. Text typed in that render was replaced by an empty draft, Task
+    // seeded empty, and its `required` field kept Start from submitting at all ("expected [] to
+    // have a length of 1", a loaded local shard, 2026-11-26).
+    await waitFor(() => expect(currentCrew().channel?.id).toBe(general.id));
     fireEvent.change(screen.getByLabelText('Message #general'), { target: { value: 'run it' } });
     await openAgent(user);
     await chooseModel(user, 'fixture-model');
@@ -267,6 +273,8 @@ describe('AgentTaskPane', () => {
     const user = userEvent.setup();
     renderCrew(Layout);
     await waitFor(() => expect(currentCrew().status).toBe('connected'));
+    // The seed is typed once the channel is selected, for the reason the test above gives.
+    await waitFor(() => expect(currentCrew().channel?.id).toBe(general.id));
     fireEvent.change(screen.getByLabelText('Message #general'), { target: { value: 'seed' } });
     await openAgent(user);
     fireEvent.change(screen.getByLabelText('Message #general'), { target: { value: 'newer' } });

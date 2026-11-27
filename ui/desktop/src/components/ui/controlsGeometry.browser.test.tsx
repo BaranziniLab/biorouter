@@ -16,6 +16,7 @@ import { fileURLToPath } from 'node:url';
 import { build } from 'esbuild';
 import { chromium, type Browser, type Page } from 'playwright';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { INFO_TIP_OPEN_DELAY_MS } from './info-tip';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const MAIN_CSS = readFileSync(resolve(here, '../../styles/main.css'), 'utf8');
@@ -891,12 +892,42 @@ describe('the shared controls in a real layout engine (spec 5.7)', () => {
       expect(wiring.name).toBe('About Prevent sleep');
       expect(wiring.text).toBe('The screen can still lock.');
 
-      // Hover: shut at 100ms, open by 350ms.
+      // Hover: it opens INFO_TIP_OPEN_DELAY_MS after the pointer arrives, never before. Both
+      // moments are read by the page's own clock. This test used to wait 100ms on the test
+      // runner's clock and then ask the page, so the runner's wait, the hover's reply and the
+      // query's round trip all counted against the 200ms: at a load average of 248 the tip had
+      // already opened, on time, when the question reached the page ("not before 200ms:
+      // expected 1 to be +0", 2026-11-27). `info-tip.test.tsx` pins the delay on fake timers.
+      await tab.evaluate(() => {
+        const timing: { entered?: number; opened?: number } = {};
+        (window as unknown as { tipTiming: typeof timing }).tipTiming = timing;
+        const trigger = document.querySelector('[data-testid="tip"]')!;
+        // On the window, in the capture phase: before React's listener on the root sees the
+        // pointer and starts the open timer, so `entered` is never later than that timer.
+        window.addEventListener(
+          'pointerover',
+          (event) => {
+            if (timing.entered === undefined && trigger.contains(event.target as Node))
+              timing.entered = performance.now();
+          },
+          { capture: true }
+        );
+        new MutationObserver((_records, observer) => {
+          if (!document.querySelector('[data-slot="info-tip-content"]')) return;
+          timing.opened = performance.now();
+          observer.disconnect();
+        }).observe(document.body, { childList: true, subtree: true });
+      });
       await glyph().hover();
-      await tab.waitForTimeout(100);
-      expect(await content().count(), 'not before 200ms').toBe(0);
-      await tab.waitForTimeout(250);
-      expect(await content().count(), 'after 200ms').toBe(1);
+      await expect.poll(() => content().count(), { timeout: 5_000 }).toBe(1);
+      const timing = await tab.evaluate(
+        () => (window as unknown as { tipTiming: { entered?: number; opened?: number } }).tipTiming
+      );
+      expect(timing.entered, 'the pointer reached the trigger').toBeTypeOf('number');
+      expect(timing.opened, 'the tip opened').toBeTypeOf('number');
+      expect(timing.opened! - timing.entered!, 'not before 200ms').toBeGreaterThanOrEqual(
+        INFO_TIP_OPEN_DELAY_MS - 1
+      );
 
       // Above its trigger with an 8px gap, aligned to the trigger's start.
       const place = await tab.evaluate(() => {
@@ -914,9 +945,9 @@ describe('the shared controls in a real layout engine (spec 5.7)', () => {
       await tab.mouse.move(box!.x + 4, box!.y + 4);
       await tab.waitForTimeout(250);
       expect(await content().count(), 'the pointer is on the tip').toBe(1);
+      // Leaving closes it after a grace the page times, so it is waited for, not timed here.
       await tab.mouse.move(700, 800);
-      await tab.waitForTimeout(250);
-      expect(await content().count(), 'the pointer left').toBe(0);
+      await expect.poll(() => content().count(), { timeout: 5_000 }).toBe(0);
 
       // Tab opens it at once; Escape closes it.
       for (let i = 0; i < 40; i++) {

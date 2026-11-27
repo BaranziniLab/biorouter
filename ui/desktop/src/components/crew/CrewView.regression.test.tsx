@@ -6,6 +6,7 @@ import { CrewHttpError } from './crewApi';
 import { layoutCopy } from './layout/copy';
 import { emptyCopy } from './onboarding/copy';
 import { crewObservationCopy } from './state/copy';
+import { timelineCopy } from './timeline/copy';
 import {
   chooseModel,
   channelAction,
@@ -679,15 +680,29 @@ describe('CrewView action and uncertain-start regressions', () => {
     });
     installObservation(snapshot, olderMessages);
     renderCrew();
-    const composer = await screen.findByLabelText('Message #general');
+    // A full page is about 4,000 nodes and 418 buttons, and two document-wide queries over it
+    // cost seconds each in jsdom: `getByLabelText` asks every element for its labels (1.1 s a
+    // call, measured alone), and `getByRole('button', { name })` computes 418 accessible names
+    // (0.85 s). The final wait ran its query once per check. This was the slowest test in the
+    // whole suite (15.0 s of its 30 s budget on CI's runner, 2026-11-26) and overran the budget
+    // in a loaded local run. The same controls are found by role and name over the few
+    // textboxes, and by the button's own text. The draft is typed once that full page is in
+    // view: the label query took a second, so the page had always landed before the draft was
+    // typed, and a fast query must not type it any earlier.
+    const older = await screen.findByText(timelineCopy.older, { selector: 'button' });
+    expect(older).toHaveAccessibleName(timelineCopy.older);
+    expect(older).toBeEnabled();
+    const composer = screen.getByRole('textbox', { name: 'Message #general' });
     fireEvent.change(composer, { target: { value: 'keep this unsent draft' } });
-    fireEvent.click(await screen.findByRole('button', { name: 'Older messages' }));
+    fireEvent.click(older);
     await waitFor(() => expect(historyRequests.some((params) => 'before' in params)).toBe(true));
     await waitFor(() => expect(screen.queryByText('Viewing earlier messages')).toBeNull());
     expect(screen.getByText(/unsent draft is retained/)).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Retry Crew updates' }));
     await waitFor(() =>
-      expect(screen.getByLabelText('Message #general')).toHaveValue('keep this unsent draft')
+      expect(screen.getByRole('textbox', { name: 'Message #general' })).toHaveValue(
+        'keep this unsent draft'
+      )
     );
   });
 
