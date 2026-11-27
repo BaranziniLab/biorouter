@@ -9,7 +9,7 @@
 //! |---|---|
 //! | (start) | `{"type":"ready","v":1,"postAllowed":bool}` |
 //! | `{"id":n,"op":"front"}` | `{"id":n,"type":"front","pid":int\|null,"bundle":string\|null,"secureInput":bool,"postAllowed":bool}` |
-//! | `{"id":n,"op":"insert","pid":int,"text":string}` | `{"id":n,"type":"inserted","restored":...}` or `{"id":n,"type":"refused","reason":...}` |
+//! | `{"id":n,"op":"insert","pid":int,"text":string}` | `{"id":n,"type":"inserted","restored":...}` or `{"id":n,"type":"refused","reason":...}`; with `--test-pasteboard` only, `{"id":n,"type":"inserted","restored":...,"posted":false}` |
 //! | `{"id":n,"op":"access"}` | `{"id":n,"type":"access","postAllowed":bool}` |
 //! | `{"id":n,"op":"request-access"}` | the same, after asking macOS for Accessibility |
 //!
@@ -447,9 +447,21 @@ pub fn v_key_code(mut translate: impl FnMut(u16, bool) -> Option<String>) -> u16
 /// How the helper was started.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Options {
-    /// `--test-pasteboard <name>`: use that named pasteboard instead of the general one. The app
-    /// passes it only in an unpackaged build (`BIOROUTER_TEXTINSERT_TEST_PASTEBOARD`).
+    /// `--test-pasteboard <name>`: snapshot, write and restore that named pasteboard instead of
+    /// the general one, and post no paste ([`Options::posts_paste`]). The app passes it only in an
+    /// unpackaged build (`BIOROUTER_TEXTINSERT_TEST_PASTEBOARD`).
     pub test_pasteboard: Option<String>,
+}
+
+impl Options {
+    /// Whether an insert posts its Command-V. Not with a test pasteboard: a Command-V makes the
+    /// app paste the general pasteboard, whichever board holds the text, so it would type the
+    /// person's own clipboard into the app. A test run checks every other step of an insert (the
+    /// checks, the snapshot, the write, the modifier wait, the restore) and answers
+    /// `posted: false` ([`inserted_unposted_line`]).
+    pub fn posts_paste(&self) -> bool {
+        self.test_pasteboard.is_none()
+    }
 }
 
 /// A pasteboard name `--test-pasteboard` accepts: letters, digits, `.`, `_` and `-`. The system's
@@ -499,6 +511,19 @@ pub fn front_line(id: u64, facts: &FrontFacts) -> String {
 /// field leniently, so an older app ignores it and the protocol stays version 1.
 pub fn inserted_line(id: u64, restored: Restored) -> String {
     line(serde_json::json!({ "id": id, "type": "inserted", "restored": restored.as_str() }))
+}
+
+/// A test pasteboard's insert ([`Options::posts_paste`]): every step ran but the paste, so nothing
+/// reached the app, and `restored` says how the named board was left. Only a helper started with
+/// `--test-pasteboard` writes it; the app reads the field leniently, so the protocol stays
+/// version 1.
+pub fn inserted_unposted_line(id: u64, restored: Restored) -> String {
+    line(serde_json::json!({
+        "id": id,
+        "type": "inserted",
+        "restored": restored.as_str(),
+        "posted": false,
+    }))
 }
 
 pub fn refused_line(id: u64, reason: Refusal) -> String {
@@ -1256,6 +1281,30 @@ mod tests {
         ] {
             assert_eq!(parse_args(&bad), None, "{bad:?}");
         }
+    }
+
+    /// A test pasteboard posts no paste: a Command-V would make the app paste the general one.
+    /// Only then does the answer say `posted: false`; the production answer is unchanged.
+    #[test]
+    fn only_a_helper_without_a_test_pasteboard_posts_the_paste() {
+        assert!(Options::default().posts_paste());
+        assert!(parse_args(&[]).is_some_and(|options| options.posts_paste()));
+        let seam =
+            parse_args(&["--test-pasteboard".into(), "br-live2-pb".into()]).expect("a plain name");
+        assert!(!seam.posts_paste());
+
+        let parsed = |line: String| serde_json::from_str::<serde_json::Value>(&line).unwrap();
+        assert_eq!(
+            parsed(inserted_unposted_line(17, Restored::All)),
+            serde_json::json!({"id":17,"type":"inserted","restored":"all","posted":false})
+        );
+        assert_eq!(
+            parsed(inserted_unposted_line(18, Restored::Cleared)),
+            serde_json::json!({"id":18,"type":"inserted","restored":"cleared","posted":false})
+        );
+        assert!(!inserted_unposted_line(1, Restored::Partial).contains('\n'));
+        // The production answer carries no `posted` at all.
+        assert!(!inserted_line(19, Restored::All).contains("posted"));
     }
 
     #[test]

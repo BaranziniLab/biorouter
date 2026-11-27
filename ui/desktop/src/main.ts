@@ -271,6 +271,7 @@ import {
   HELD_FOR_RETRY_MS,
   INITIAL_ANYWHERE_STATE,
   REVIEW_TEXT_MS,
+  anywhereClipboardTarget,
   anywhereSurface,
   capturesInsertTarget,
   captureWindowStaysWarm,
@@ -314,6 +315,7 @@ import type { Transcript } from './components/dictation/dictationApi';
 import { FnKeyService, fnKeyHelperPath, type FnKeys, type FnKeyStatus } from './utils/fnKeyHelper';
 import {
   TextInsertService,
+  namesTextInsertTestPasteboard,
   textInsertHelperArgs,
   textInsertHelperPath,
   type InsertResult,
@@ -3676,6 +3678,10 @@ function isDictationSender(event: Electron.IpcMainInvokeEvent | Electron.IpcMain
 // a file in place of the clipboard, and the insert log. `dictationTestSeams` answers "none" for a
 // packaged app whatever its environment holds, and main spells none of the variables itself.
 const dictationSeams = dictationTestSeams(app, process.env);
+// A run that names a test pasteboard for the insertion helper (unpackaged only) is a live test:
+// the helper posts no paste then, and the copy paths write no clipboard unless the clipboard
+// seam names a file (`anywhereClipboard`).
+const insertTestPasteboard = namesTextInsertTestPasteboard(app);
 
 /**
  * A preview a dictation inserts into. `anyView` is fn's route (DESIGN 4.1): the focused managed
@@ -3950,12 +3956,15 @@ function anywherePasteKey(): string {
 
 /**
  * The clipboard the copy paths write and read back: the system's, or in an unpackaged app the
- * file the clipboard test seam names, so a live test never touches the person's.
+ * file the clipboard test seam names, or, in a run that names only a test pasteboard, none at all
+ * (the review card then holds the text), so a live test never touches the person's.
  */
 function anywhereClipboard(): { write: (text: string) => void; read: () => string } {
-  const file = dictationSeams.clipboardFile;
-  if (file === null)
+  const target = anywhereClipboardTarget(dictationSeams, insertTestPasteboard);
+  if (target.kind === 'system')
     return { write: (text) => clipboard.writeText(text), read: () => clipboard.readText() };
+  if (target.kind === 'none') return { write: () => undefined, read: () => '' };
+  const { file } = target;
   return {
     write: (text) => fsSync.writeFileSync(file, text, { mode: 0o600 }),
     read: () => {
@@ -5431,8 +5440,10 @@ function textInsertServiceOnce(): TextInsertService | null {
     const args = textInsertHelperArgs(app);
     textInsertService = new TextInsertService({
       platform: process.platform,
-      // A test pasteboard name the helper would refuse starts no helper at all, rather than
-      // one that would use the person's clipboard.
+      // A test pasteboard name the helper would refuse starts no helper at all, rather than one
+      // that would snapshot and write the general pasteboard. A helper on a test pasteboard posts
+      // no paste (a Command-V would paste the general one), so a live test never reaches the
+      // person's clipboard through it.
       helperPath: args === null ? null : textInsertHelperPath(app),
       args: args ?? [],
       // No environment, as for the fn helper. windowsHide is stated for the console-window

@@ -350,8 +350,17 @@ describe('the dictation test seams reach only an unpackaged app (DESIGN 3.12)', 
 
   it('the clipboard and the insert log use their files only when a seam names one', () => {
     const board = slice('function anywhereClipboard()', 'function appendInsertLog(');
+    // `anywhereClipboardTarget` decides (tested in `dictationAnywhere.test.ts`): a run that names a
+    // test pasteboard and no clipboard file writes no clipboard at all.
+    expect(source).toContain('const insertTestPasteboard = namesTextInsertTestPasteboard(app);');
     expect(board).toContain(
-      'if (file === null) return { write: (text) => clipboard.writeText(text), read: () => clipboard.readText() };'
+      'const target = anywhereClipboardTarget(dictationSeams, insertTestPasteboard);'
+    );
+    expect(board).toContain(
+      "if (target.kind === 'system') return { write: (text) => clipboard.writeText(text), read: () => clipboard.readText() };"
+    );
+    expect(board).toContain(
+      "if (target.kind === 'none') return { write: () => undefined, read: () => '' };"
     );
     expect(board).toContain('fsSync.writeFileSync(file, text, { mode: 0o600 })');
     const insertLog = slice('function appendInsertLog(', 'function registerAnywhereShortcut()');

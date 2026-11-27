@@ -75,9 +75,12 @@ export const INSERT_RESTORED: readonly InsertRestored[] = [
   'kept-text',
   'cleared',
 ];
-/** `restored` is absent when an older helper did not say. */
+/**
+ * `restored` is absent when an older helper did not say. `posted: false` only from a helper started
+ * with a test pasteboard: every step ran but the Command-V, so nothing reached the app.
+ */
 export type InsertResult =
-  | { ok: true; restored?: InsertRestored }
+  | { ok: true; restored?: InsertRestored; posted?: false }
   | { ok: false; reason: InsertRefusal };
 
 /** The app in front, as the helper read it. */
@@ -100,7 +103,7 @@ export type TextInsertAnswer =
       secureInput: boolean;
       postAllowed: boolean;
     }
-  | { type: 'inserted'; id: number; restored?: InsertRestored }
+  | { type: 'inserted'; id: number; restored?: InsertRestored; posted?: false }
   | { type: 'refused'; id: number; reason: InsertRefusal }
   | { type: 'access'; id: number; postAllowed: boolean };
 
@@ -153,12 +156,17 @@ export function parseTextInsertLine(line: string): TextInsertAnswer | null {
         postAllowed: row.postAllowed,
       };
     }
-    case 'inserted':
+    case 'inserted': {
       // A `restored` word this build does not know is left out: the paste happened all the same.
+      // `posted` is kept only as `false`, which a helper on a test pasteboard writes.
       if (!isId(row.id)) return null;
-      return isRestored(row.restored)
-        ? { type: 'inserted', id: row.id, restored: row.restored }
-        : { type: 'inserted', id: row.id };
+      return {
+        type: 'inserted',
+        id: row.id,
+        ...(isRestored(row.restored) ? { restored: row.restored } : {}),
+        ...(row.posted === false ? { posted: false as const } : {}),
+      };
+    }
     case 'refused':
       return isId(row.id) && isRefusal(row.reason)
         ? { type: 'refused', id: row.id, reason: row.reason }
@@ -231,9 +239,12 @@ const TEST_PASTEBOARD_NAME = /^[A-Za-z0-9._-]{1,128}$/;
 
 /**
  * The helper's arguments. In an unpackaged app only, `BIOROUTER_TEXTINSERT_TEST_PASTEBOARD` makes
- * the helper use that named pasteboard instead of the general one, so a live test runs the whole
- * real path without touching the person's clipboard. `null` when the variable is set to a name the
- * helper would refuse: start no helper rather than one that would use the general pasteboard.
+ * the helper snapshot, write and restore that named pasteboard instead of the general one, and
+ * post no Command-V (which would make the app paste the general pasteboard, the person's own
+ * clipboard): a live test checks every step of an insert but what lands in the app, and its
+ * answer says `posted: false`. Main's copy paths stay off the clipboard in such a run as well
+ * ({@link namesTextInsertTestPasteboard}). `null` when the variable is set to a name the helper
+ * would refuse: start no helper rather than one that would use the general pasteboard.
  */
 export function textInsertHelperArgs(
   app: { isPackaged: boolean },
@@ -244,6 +255,19 @@ export function textInsertHelperArgs(
   if (raw === undefined || raw.trim() === '') return [];
   const name = raw.trim();
   return TEST_PASTEBOARD_NAME.test(name) ? ['--test-pasteboard', name] : null;
+}
+
+/**
+ * Whether this run names a test pasteboard (unpackaged only), a name the helper refuses included:
+ * a live test, whose copy paths must not write the person's clipboard either
+ * (`anywhereClipboardTarget` in `dictationAnywhere.ts`).
+ */
+export function namesTextInsertTestPasteboard(
+  app: { isPackaged: boolean },
+  env: Record<string, string | undefined> = process.env
+): boolean {
+  const args = textInsertHelperArgs(app, env);
+  return args === null || args.length > 0;
 }
 
 /** The parts of a `ChildProcess` the service uses, so a test can hand it a fake. */
@@ -367,7 +391,11 @@ export class TextInsertService {
     if (!isPid(pid) || typeof text !== 'string' || text.length === 0) return FAILED;
     const answer = await this.request('insert', { op: 'insert', pid, text }, INSERT_TIMEOUT_MS);
     if (answer?.type === 'inserted')
-      return answer.restored ? { ok: true, restored: answer.restored } : { ok: true };
+      return {
+        ok: true,
+        ...(answer.restored ? { restored: answer.restored } : {}),
+        ...(answer.posted === false ? { posted: false as const } : {}),
+      };
     if (answer?.type === 'refused') return { ok: false, reason: answer.reason };
     return FAILED;
   }

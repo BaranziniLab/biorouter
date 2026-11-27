@@ -19,6 +19,7 @@ import {
   lastDictationBeforeExpiry,
   reviewHandOff,
   anywhereAtRest,
+  anywhereClipboardTarget,
   anywhereSurface,
   capturesInsertTarget,
   captureWindowStaysWarm,
@@ -935,6 +936,42 @@ describe('how a paste left the clipboard', () => {
     ).not.toHaveProperty('restored');
   });
 
+  it('logs a test pasteboard’s insert as not posted, and never writes the clipboard for it', async () => {
+    const deps = delivery(async () => ({ ok: true, restored: 'all', posted: false }));
+    expect(await deliverAnywhereTranscript(transcript(), target, deps)).toEqual({
+      kind: 'inserted',
+      restored: 'all',
+    });
+    // Still an insert: no copy stands in for it, and nothing is said.
+    expect(deps.write).not.toHaveBeenCalled();
+    expect(deps.read).not.toHaveBeenCalled();
+    expect(deps.notify).not.toHaveBeenCalled();
+    expect(deps.review).not.toHaveBeenCalled();
+    expect(deps.log).toHaveBeenCalledExactlyOnceWith({
+      route: 'other_app',
+      method: 'paste',
+      bundle: 'com.apple.TextEdit',
+      result: 'inserted',
+      restored: 'all',
+      posted: false,
+      chars: 11,
+    });
+    expect(JSON.parse(insertLogLine(deps.log.mock.calls[0][0], new Date(0))).posted).toBe(false);
+    // A paste that was posted writes no such field.
+    expect(
+      JSON.parse(
+        insertLogLine({
+          route: 'other_app',
+          method: 'paste',
+          bundle: null,
+          result: 'inserted',
+          restored: 'all',
+          chars: 1,
+        })
+      )
+    ).not.toHaveProperty('posted');
+  });
+
   it('copies a transcript too long to send, without a line reaching the helper', async () => {
     const written: string[] = [];
     const service = new TextInsertService({
@@ -1037,5 +1074,19 @@ describe('the dictation test seams (DESIGN 3.12)', () => {
       clipboardFile: null,
       insertLog: null,
     });
+  });
+
+  it('keeps the copy paths off the clipboard in a run that names a test pasteboard', () => {
+    // The person's clipboard, unless this is a test run.
+    expect(anywhereClipboardTarget({ clipboardFile: null }, false)).toEqual({ kind: 'system' });
+    // The clipboard seam's file, whenever one is named.
+    for (const testPasteboard of [false, true]) {
+      expect(
+        anywhereClipboardTarget({ clipboardFile: '/tmp/run/clipboard.txt' }, testPasteboard)
+      ).toEqual({ kind: 'file', file: '/tmp/run/clipboard.txt' });
+    }
+    // A run that names a test pasteboard and no clipboard file: no clipboard at all, so a refusal
+    // or a dictation with no target shows the review card instead of writing the person's.
+    expect(anywhereClipboardTarget({ clipboardFile: null }, true)).toEqual({ kind: 'none' });
   });
 });

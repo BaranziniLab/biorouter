@@ -531,6 +531,11 @@ export interface InsertLogEntry {
   reason?: InsertRefusal;
   /** How a paste that worked left the clipboard, when the helper said. */
   restored?: InsertRestored;
+  /**
+   * `false` for an insert on a test pasteboard: every step ran but the Command-V, so nothing
+   * reached the app. Absent for a paste that was posted.
+   */
+  posted?: false;
   chars: number;
 }
 
@@ -556,6 +561,7 @@ export function insertLogLine(entry: InsertLogEntry, at: Date = new Date()): str
   };
   if (entry.reason) line.reason = entry.reason;
   if (entry.restored && RESTORED_WORDS.includes(entry.restored)) line.restored = entry.restored;
+  if (entry.posted === false) line.posted = false;
   return JSON.stringify(line);
 }
 
@@ -617,13 +623,16 @@ export async function deliverAnywhereTranscript(
       result = { ok: false, reason: 'failed' };
     }
     if (result.ok) {
-      const { restored } = result;
+      const { restored, posted } = result;
       delivery.log?.({
         route: 'other_app',
         method: 'paste',
         bundle: target.bundle,
         result: 'inserted',
         ...(restored ? { restored } : {}),
+        // A test pasteboard's insert: it counts as inserted (no copy stands in for it), and the
+        // log says that no paste reached the app.
+        ...(posted === false ? { posted } : {}),
         chars: text.length,
       });
       // Nothing to say when everything came back, or the person copied something meanwhile.
@@ -733,6 +742,28 @@ function seamPath(raw: string | undefined): string | null {
   const value = raw?.trim();
   if (!value || value.includes('\0') || value.length > 4096) return null;
   return /^(?:\/|[A-Za-z]:[\\/])/.test(value) ? value : null;
+}
+
+/** Where main's copy paths write and read back the text: see {@link anywhereClipboardTarget}. */
+export type AnywhereClipboardTarget =
+  | { kind: 'system' }
+  | { kind: 'file'; file: string }
+  | { kind: 'none' };
+
+/**
+ * Where main's copy paths (a refused insert, a dictation with no target, **Copy last dictation**,
+ * the review card's **Copy**) write the text: the clipboard seam's file when one is named; else,
+ * in a run that names a test pasteboard for the insertion helper
+ * (`namesTextInsertTestPasteboard`), nowhere, so the read back finds nothing and the review card
+ * holds the text; else the person's clipboard. A live test thus never writes the clipboard, even
+ * when it names only the test pasteboard.
+ */
+export function anywhereClipboardTarget(
+  seams: Pick<DictationTestSeams, 'clipboardFile'>,
+  testPasteboardNamed: boolean
+): AnywhereClipboardTarget {
+  if (seams.clipboardFile !== null) return { kind: 'file', file: seams.clipboardFile };
+  return testPasteboardNamed ? { kind: 'none' } : { kind: 'system' };
 }
 
 /**

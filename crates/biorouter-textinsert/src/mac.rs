@@ -13,6 +13,12 @@
 //!
 //! What an insert needs from the system goes through [`Desk`], so the worker's own loop runs in
 //! a test on a private pasteboard with a post that only records what it would have pasted.
+//!
+//! A helper started with `--test-pasteboard` (a live test, unpackaged only) runs every step of an
+//! insert on that named board except the paste, and answers `posted: false`: a Command-V makes
+//! the app paste the general pasteboard whichever board holds the text, so it would type the
+//! person's own clipboard. A test run therefore checks the refusals, the snapshot, the write and
+//! the restore, never what lands in the app.
 
 use std::ffi::c_void;
 use std::io::Write;
@@ -32,10 +38,10 @@ use objc2_foundation::NSString;
 
 use crate::pasteboard;
 use crate::protocol::{
-    access_line, front_line, insert_refusal, inserted_line, may_post, parse_args, parse_request,
-    paste_flags, ready_line, recover_id, refused_line, reported_bundle, reported_pid,
-    restore_delay, v_key_code, wait_for_release, FrontFacts, InsertFacts, LineReader, Next, Op,
-    Options, Parsed, Refusal, Request, Restored, Text, ANSI_V_KEY_CODE, MAX_REQUEST_LINE,
+    access_line, front_line, insert_refusal, inserted_line, inserted_unposted_line, may_post,
+    parse_args, parse_request, paste_flags, ready_line, recover_id, refused_line, reported_bundle,
+    reported_pid, restore_delay, v_key_code, wait_for_release, FrontFacts, InsertFacts, LineReader,
+    Next, Op, Options, Parsed, Refusal, Request, Restored, Text, ANSI_V_KEY_CODE, MAX_REQUEST_LINE,
 };
 
 type CFTypeRef = *const c_void;
@@ -202,7 +208,9 @@ fn layout_v_key_code() -> u16 {
 }
 
 /// The pasteboard an insert goes through: a named one for a live test, the general one
-/// otherwise. The only place the general pasteboard is named.
+/// otherwise. The only place the general pasteboard is named. A named board keeps the person's
+/// clipboard out of the snapshot, the write and the restore only; what stops a test run pasting
+/// it is that no Command-V is posted then ([`Desk::posts_paste`]).
 fn target_pasteboard() -> Retained<NSPasteboard> {
     match OPTIONS
         .get()
@@ -297,6 +305,9 @@ trait Desk {
     fn with_pasteboard<T: Send>(&self, work: impl FnOnce(&NSPasteboard) -> T + Send) -> T;
     /// The modifiers the HID system says are down now.
     fn modifier_flags(&self) -> u64;
+    /// Whether an insert posts its Command-V: not with a test pasteboard
+    /// ([`Options::posts_paste`]).
+    fn posts_paste(&self) -> bool;
     /// Post Command-V to `pid`.
     fn post(&self, pid: i32, key_code: u16) -> bool;
     /// Wait this long.
@@ -325,8 +336,13 @@ impl Desk for MacDesk {
         CGEventSource::flags_state(CGEventSourceStateID::HIDSystemState).0
     }
 
+    fn posts_paste(&self) -> bool {
+        OPTIONS.get().is_none_or(Options::posts_paste)
+    }
+
     fn post(&self, pid: i32, key_code: u16) -> bool {
-        post_command_v(pid, key_code)
+        // Asked again here: with a test pasteboard a Command-V would paste the general one.
+        self.posts_paste() && post_command_v(pid, key_code)
     }
 
     fn pause(&self, wait: Duration) {
@@ -338,13 +354,21 @@ impl Desk for MacDesk {
     }
 }
 
+/// What an insert that was not refused did: how it left the pasteboard, and whether its Command-V
+/// was posted (never with a test pasteboard, [`Desk::posts_paste`]).
+struct Pasted {
+    restored: Restored,
+    posted: bool,
+}
+
 /// One insert: judge, keep the pasteboard, write the text, look again, paste, wait, put the
 /// pasteboard back. Whatever happens after the text is written, the pasteboard is put back, and
-/// an insert that pasted answers how that left it.
+/// an insert that pasted answers how that left it. With a test pasteboard every step runs but the
+/// paste: a Command-V would make the app paste the general pasteboard, not the named one.
 ///
 /// The pasteboard is read and written on the main thread: reading a type the pasteboard derives
 /// (or another app promised) fulfils it synchronously, which AppKit expects there.
-fn paste(desk: &impl Desk, pid: i32, text: &Text, times: Times) -> Result<Restored, Refusal> {
+fn paste(desk: &impl Desk, pid: i32, text: &Text, times: Times) -> Result<Pasted, Refusal> {
     desk.check(pid)?;
     let key_code = desk.v_key_code();
     let now = desk.clock();
@@ -372,16 +396,23 @@ fn paste(desk: &impl Desk, pid: i32, text: &Text, times: Times) -> Result<Restor
         desk.check(pid)
             .and_then(|()| in_time(now(), times, chars))
             .and_then(|()| {
-                if desk.post(pid, key_code) {
-                    Ok(())
+                if desk.posts_paste() {
+                    if desk.post(pid, key_code) {
+                        Ok(true)
+                    } else {
+                        Err(Refusal::Failed)
+                    }
                 } else {
-                    Err(Refusal::Failed)
+                    // A test pasteboard: the app would paste the general pasteboard, the person's
+                    // own clipboard, so nothing is posted and nothing reaches the app.
+                    Ok(false)
                 }
             })
     } else {
         Err(Refusal::Failed)
     };
-    if outcome.is_ok() {
+    // Only a paste that was posted can still be reading the text.
+    if outcome == Ok(true) {
         desk.pause(restore_delay(chars));
     }
     let restored = desk.with_pasteboard(move |pasteboard| {
@@ -389,7 +420,7 @@ fn paste(desk: &impl Desk, pid: i32, text: &Text, times: Times) -> Result<Restor
         let kept = kept;
         pasteboard::put_back(pasteboard, kept.0, written)
     });
-    outcome.map(|()| restored)
+    outcome.map(|posted| Pasted { restored, posted })
 }
 
 struct Job {
@@ -419,7 +450,14 @@ fn insert(desk: &impl Desk, job: Job) -> String {
     // Zeroed here, before the answer is written.
     drop(text);
     match outcome {
-        Ok(restored) => inserted_line(id, restored),
+        Ok(Pasted {
+            restored,
+            posted: true,
+        }) => inserted_line(id, restored),
+        Ok(Pasted {
+            restored,
+            posted: false,
+        }) => inserted_unposted_line(id, restored),
         Err(refusal) => refused_line(id, refusal),
     }
 }
@@ -539,11 +577,15 @@ mod tests {
         /// The text on the pasteboard at each post, and how many flag reads came before it.
         posts: RefCell<Vec<(Option<String>, usize)>>,
         pauses: RefCell<Vec<Duration>>,
+        /// The text on the pasteboard at each pause.
+        paused_on: RefCell<Vec<Option<String>>>,
         checks: Cell<usize>,
         /// The check (counted from 1) that finds another app in front.
         refuse_check: Option<usize>,
         /// Whether a post fails, as `CGEventPostToPid` can when no event could be made.
         fail_post: bool,
+        /// False for a helper started with a test pasteboard.
+        posts_paste: bool,
         /// How long each pasteboard visit takes on the clock, in order; nothing once they run out.
         pasteboard_costs: RefCell<VecDeque<Duration>>,
         /// The clock: nanoseconds past `now`'s start.
@@ -562,9 +604,11 @@ mod tests {
                 reads: Cell::new(0),
                 posts: RefCell::new(Vec::new()),
                 pauses: RefCell::new(Vec::new()),
+                paused_on: RefCell::new(Vec::new()),
                 checks: Cell::new(0),
                 refuse_check: None,
                 fail_post: false,
+                posts_paste: true,
                 pasteboard_costs: RefCell::new(VecDeque::new()),
                 ticks,
                 now: Box::new(move || start + Duration::from_nanos(read.load(Ordering::SeqCst))),
@@ -670,6 +714,10 @@ mod tests {
             self.flags.borrow_mut().pop_front().unwrap_or(0)
         }
 
+        fn posts_paste(&self) -> bool {
+            self.posts_paste
+        }
+
         fn post(&self, _pid: i32, _key_code: u16) -> bool {
             self.posts
                 .borrow_mut()
@@ -679,6 +727,7 @@ mod tests {
 
         fn pause(&self, wait: Duration) {
             self.pauses.borrow_mut().push(wait);
+            self.paused_on.borrow_mut().push(self.text());
             self.advance(wait);
         }
 
@@ -948,6 +997,84 @@ mod tests {
                 vec![Some(long.clone()), Some("short words".to_string())]
             );
             assert_eq!(desk.contents(), before, "the clipboard ends as it began");
+        });
+    }
+
+    /// F1 of the live check of 2026-11-26: with a test pasteboard the helper wrote the text on
+    /// the named board and then posted Command-V, which every app answers by pasting the GENERAL
+    /// pasteboard, so the person's own clipboard was typed into the app while the answer said
+    /// `inserted`. Under the seam every step runs but the paste: the checks, the snapshot, the
+    /// write (the text is on the board during the modifier wait), the restore. No Command-V is
+    /// posted, no restore delay is waited (nothing reads the board), the answer says
+    /// `posted: false`, and the board ends as it began.
+    #[test]
+    fn a_test_pasteboard_never_pastes_and_says_so() {
+        autoreleasepool(|_| {
+            let mut desk = TestDesk::new();
+            desk.posts_paste = false;
+            // SAFETY: AppKit constants.
+            let (string, rtf) = unsafe { (NSPasteboardTypeString, NSPasteboardTypeRTF) };
+            desk.put(&[
+                (string, b"what the person copied".as_slice()),
+                (rtf, br"{\rtf1\ansi what the {\b person} copied}".as_slice()),
+            ]);
+            let before = desk.contents();
+            let count = desk.pasteboard.changeCount();
+            desk.flags.borrow_mut().extend([CONTROL]);
+
+            let answers = worker_answers(&desk, vec![job(&desk, 1, "first dictation")]);
+
+            assert_eq!(
+                answers,
+                vec![serde_json::json!({
+                    "id": 1,
+                    "type": "inserted",
+                    "restored": "all",
+                    "posted": false,
+                })]
+            );
+            assert!(desk.posts.borrow().is_empty(), "no Command-V was posted");
+            assert_eq!(
+                *desk.pauses.borrow(),
+                vec![crate::protocol::MODIFIER_POLL],
+                "the modifier wait runs; no restore delay follows a paste never posted"
+            );
+            assert_eq!(
+                *desk.paused_on.borrow(),
+                vec![Some("first dictation".to_string())],
+                "the text was written to the named board"
+            );
+            assert!(desk.pasteboard.changeCount() > count);
+            assert_eq!(desk.contents(), before, "the board ends as it began");
+        });
+    }
+
+    /// A refusal under the test pasteboard still puts the board back, and the next insert runs
+    /// every step but the paste.
+    #[test]
+    fn a_refusal_on_a_test_pasteboard_still_puts_it_back() {
+        autoreleasepool(|_| {
+            let mut desk = TestDesk::new();
+            desk.posts_paste = false;
+            // The first insert's second check: another app came to the front.
+            desk.refuse_check = Some(2);
+            // SAFETY: an AppKit constant.
+            let string = unsafe { NSPasteboardTypeString };
+            desk.put(&[(string, b"what the person copied".as_slice())]);
+            let before = desk.contents();
+
+            let answers =
+                worker_answers(&desk, vec![job(&desk, 7, "first"), job(&desk, 8, "second")]);
+
+            assert_eq!(
+                answers,
+                vec![
+                    serde_json::json!({"id":7,"type":"refused","reason":"target-changed"}),
+                    serde_json::json!({"id":8,"type":"inserted","restored":"all","posted":false}),
+                ]
+            );
+            assert!(desk.posts.borrow().is_empty());
+            assert_eq!(desk.contents(), before);
         });
     }
 

@@ -11,6 +11,7 @@ import {
   MAX_REQUEST_LINE_BYTES,
   STOP_GRACE_MS,
   TextInsertService,
+  namesTextInsertTestPasteboard,
   parseTextInsertLine,
   textInsertHelperArgs,
   textInsertHelperPath,
@@ -116,6 +117,24 @@ describe('the helper protocol', () => {
     }
   });
 
+  it('reads a test pasteboard’s insert, which posted no paste, and keeps posted only as false', () => {
+    // `--test-pasteboard` runs every step but the Command-V, which would paste the general
+    // pasteboard (the live check of 2026-11-26 typed the person's own clipboard that way).
+    expect(
+      parseTextInsertLine('{"id":3,"type":"inserted","restored":"all","posted":false}')
+    ).toStrictEqual({ type: 'inserted', id: 3, restored: 'all', posted: false });
+    expect(parseTextInsertLine('{"id":3,"type":"inserted","posted":false}')).toStrictEqual({
+      type: 'inserted',
+      id: 3,
+      posted: false,
+    });
+    for (const odd of ['true', '"no"', '0', 'null']) {
+      expect(
+        parseTextInsertLine(`{"id":4,"type":"inserted","restored":"all","posted":${odd}}`)
+      ).toStrictEqual({ type: 'inserted', id: 4, restored: 'all' });
+    }
+  });
+
   it('splits the output into lines and drops one too long to be an answer', () => {
     const lines: string[] = [];
     const splitter = new AnswerSplitter((line) => lines.push(line));
@@ -197,6 +216,26 @@ describe('where the helper is, and how it is started', () => {
         textInsertHelperArgs({ isPackaged: false }, { BIOROUTER_TEXTINSERT_TEST_PASTEBOARD: bad })
       ).toBeNull();
     }
+  });
+
+  it('calls a run that names a test pasteboard a test run, a name the helper refuses included', () => {
+    const named = { BIOROUTER_TEXTINSERT_TEST_PASTEBOARD: 'biorouter.insert-probe_1' };
+    expect(namesTextInsertTestPasteboard({ isPackaged: false }, named)).toBe(true);
+    expect(
+      namesTextInsertTestPasteboard(
+        { isPackaged: false },
+        { BIOROUTER_TEXTINSERT_TEST_PASTEBOARD: 'a/b' }
+      )
+    ).toBe(true);
+    expect(namesTextInsertTestPasteboard({ isPackaged: false }, {})).toBe(false);
+    expect(
+      namesTextInsertTestPasteboard(
+        { isPackaged: false },
+        { BIOROUTER_TEXTINSERT_TEST_PASTEBOARD: ' ' }
+      )
+    ).toBe(false);
+    // A packaged app has no seams, whatever its environment holds.
+    expect(namesTextInsertTestPasteboard({ isPackaged: true }, named)).toBe(false);
   });
 });
 
@@ -344,6 +383,20 @@ describe('the text insertion service', () => {
     const older = insert.insert(501, 'words');
     helpers[0].say(`{"id":${helpers[0].lastId()},"type":"inserted"}`);
     await expect(older).resolves.toEqual({ ok: true });
+  });
+
+  it('a test pasteboard’s insert says that no paste was posted', async () => {
+    const insert = service('darwin', '/h', ['--test-pasteboard', 'probe']);
+    insert.start();
+    const result = insert.insert(501, 'words');
+    helpers[0].say(
+      `{"id":${helpers[0].lastId()},"type":"inserted","restored":"all","posted":false}`
+    );
+    await expect(result).resolves.toStrictEqual({ ok: true, restored: 'all', posted: false });
+    // A production paste's result carries no such field.
+    const real = insert.insert(501, 'words');
+    helpers[0].say(`{"id":${helpers[0].lastId()},"type":"inserted","restored":"all"}`);
+    await expect(real).resolves.toStrictEqual({ ok: true, restored: 'all' });
   });
 
   it('waits for the helper longer than its post deadline plus its longest restore delay', () => {

@@ -14,6 +14,11 @@
 //! stays there longer before the restore (`restore_delay`), so a slow app pastes it and not the
 //! old contents. One insert finishes, its restore included, before the next begins.
 //!
+//! `--test-pasteboard <name>` (passed only by an unpackaged app) puts the snapshot, the write and
+//! the restore on that named pasteboard and posts no Command-V, because the app would answer one
+//! by pasting the general pasteboard, the person's own clipboard. Such an insert answers
+//! `posted: false`; nothing reaches the app.
+//!
 //! Posting events needs macOS **Accessibility**. The helper reads it with
 //! `CGPreflightPostEventAccess`, which never prompts; the prompt comes only from
 //! `request-access`, which the app sends from a person's click in Settings. Started by the app,
@@ -92,6 +97,37 @@ mod source_guards {
         // The one place is the pasteboard the helper writes when no test pasteboard is named.
         let tests = MAC.find("#[cfg(test)]").unwrap_or(MAC.len());
         assert!(MAC.find(general).is_some_and(|at| at < tests));
+    }
+
+    /// A Command-V makes the app paste the general pasteboard, whichever board holds the text.
+    /// With a test pasteboard the text is on a named board, so a paste would type the person's
+    /// own clipboard into the app (the live check of 2026-11-26 did exactly that). The one post
+    /// sits behind the seam's gate, and the real Command-V has one caller, which asks it too.
+    #[test]
+    fn a_test_pasteboard_never_posts_a_paste() {
+        let tests = MAC.find("#[cfg(test)]").unwrap_or(MAC.len());
+        let mac = code(MAC.get(..tests).expect("a char boundary"));
+        let before = |at: usize| mac.get(..at).expect("a char boundary");
+
+        let post = "desk.post(";
+        assert_eq!(mac.matches(post).count(), 1, "one post, in paste()");
+        let call = mac.find(post).expect("the post");
+        let gate = before(call)
+            .rfind("if desk.posts_paste()")
+            .expect("the post sits behind the test pasteboard's gate");
+        assert!(call - gate < 200, "the post belongs to the gate's branch");
+
+        let command_v = "post_command_v(";
+        assert_eq!(
+            mac.matches(command_v).count(),
+            2,
+            "its definition and the one call in MacDesk::post"
+        );
+        let real = mac.rfind(command_v).expect("the call");
+        let asked = before(real)
+            .rfind("self.posts_paste()")
+            .expect("MacDesk::post asks the gate itself");
+        assert!(real - asked < 100, "and asks it right before the Command-V");
     }
 
     #[test]
