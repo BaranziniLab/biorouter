@@ -84,6 +84,7 @@ The two steps that the batch's pull request run skipped by design (`cross-build-
 
 - [ ] Note the build: version, platform, architecture, and whether it is signed and notarized.
 - [ ] Use an installed, signed build, never a dev build, except where a row says "dev app".
+- [ ] For a dev app run (an agent's live check), set an isolated `HOME` and `BIOROUTER_PATH_ROOT` before any `electron-forge start` or Electron launch: forge starts the whole app even with `ELECTRON_RUN_AS_NODE=1`, and under the real `HOME` it reads `~/.claude/skills` and the project list and can raise a Desktop folder privacy prompt ([Launching the dev GUI](../desktop-ui/launching-the-dev-gui.md)). Name a clipboard seam file (`BIOROUTER_TEST_CLIPBOARD_FILE`) with any test pasteboard, and never expect a test pasteboard to show what lands in an app.
 - [ ] Use a fresh operating system account, or run `tccutil reset Microphone com.electron.biorouter` on macOS.
 - [ ] Configure two providers: one private (Llama Server, or a private Versa model) and one public.
 - [ ] Keep privacy tiers on (**Settings > App > Privacy**).
