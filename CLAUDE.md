@@ -2569,12 +2569,25 @@ Key environment variables:
 
 The list being closed is the point: adding a root Markdown file means amending this list, not appending quietly.
 
+Agent skills under `.claude/skills/` are tool configuration, like `.claude/workflows/` and `.claude/commands/`, not a documentation folder: their Markdown sits where Claude Code loads it, and anything a person should read still goes under `docs/`.
+
 Two docs govern the tree and both are binding:
 
 - [`docs/organization.md`](docs/organization.md) — **where** a document goes. Living documentation is filed by subsystem at the top level; records of finished work go to `docs/history/<campaign>/`. A new subsystem folder needs a `README.md` index, a row in `docs/README.md`'s by-topic table, and a row in `docs/organization.md` §2.
 - [`docs/contributing/documentation-style.md`](docs/contributing/documentation-style.md) — **what it looks like inside**. Every file opens with the context header (`> **What this is.** / **Status:** / **Audience:**`), uses sentence-case headings, kebab-case filenames, and closes with `## Related documentation`.
 
 A proposal or design is not an exception: write it in the subsystem folder it belongs to with `Status: Proposed`/`Current`, and move it to `docs/history/` when the work concludes.
+
+## Repository skills for agents
+
+Four skills in `.claude/skills/` hold the owner's rules for long agent campaigns. Claude Code loads each `SKILL.md` description on its own; read the whole skill when its case comes up.
+
+- `resource-watchdogs`: before a campaign that builds or tests in parallel, before deleting anything to free disk, and when builds, tests or agents fail or stall in a way that could be the machine.
+- `pr-ci-merge`: before you commit or push, when you open or watch a pull request, decide whether one may merge, sync a branch with `main`, or depend on what lands for a release.
+- `campaign-orchestration`: when the main session runs workflows and subagents (fan-out lanes, fix-and-review loops, a usage-cap pause, a handoff to the next agent).
+- `external-skill-triage`: when outside skills, plugins, MCP servers or agent harnesses are triaged into the BAAM marketplace, from scouting through release and listing.
+
+The folder is ignored with the rest of `.claude`, so a new file in it needs `git add -f`.
 
 ## Code Review Standards
 
