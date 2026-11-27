@@ -9,7 +9,7 @@
 //! |---|---|
 //! | (start) | `{"type":"ready","v":1,"postAllowed":bool}` |
 //! | `{"id":n,"op":"front"}` | `{"id":n,"type":"front","pid":int\|null,"bundle":string\|null,"secureInput":bool,"postAllowed":bool}` |
-//! | `{"id":n,"op":"insert","pid":int,"text":string}` | `{"id":n,"type":"inserted"}` or `{"id":n,"type":"refused","reason":...}` |
+//! | `{"id":n,"op":"insert","pid":int,"text":string}` | `{"id":n,"type":"inserted","restored":...}` or `{"id":n,"type":"refused","reason":...}` |
 //! | `{"id":n,"op":"access"}` | `{"id":n,"type":"access","postAllowed":bool}` |
 //! | `{"id":n,"op":"request-access"}` | the same, after asking macOS for Accessibility |
 //!
@@ -52,14 +52,31 @@ pub const HELD_MODIFIERS: u64 = 0x0002_0000 | 0x0004_0000 | 0x0008_0000 | 0x0010
 pub const MODIFIER_WAIT: Duration = Duration::from_millis(500);
 pub const MODIFIER_POLL: Duration = Duration::from_millis(10);
 
-/// How long the pasted text stays on the pasteboard before what was there is put back. Too
-/// short and a slow app pastes the old contents; the owner's pass measures it per app.
-pub const RESTORE_DELAY: Duration = Duration::from_millis(400);
+/// How long the pasted text stays on the pasteboard, at least, before what was there is put
+/// back. Too short and a slow app pastes the old contents; the owner's pass measures it per app.
+pub const MIN_RESTORE_DELAY: Duration = Duration::from_millis(400);
 
-/// After this long from a request's arrival the helper no longer pastes: the app gives up on an
-/// insert after three seconds and copies the text instead, and a paste after that would be a
-/// second copy of it.
+/// The longest the pasted text stays there ([`restore_delay`]), however long it is.
+pub const MAX_RESTORE_DELAY: Duration = Duration::from_millis(1_500);
+
+/// After this long from when an insert begins the helper no longer pastes: the app gives up on an
+/// insert after `INSERT_TIMEOUT_MS` (`ui/desktop/src/utils/textInsertHelper.ts`) and copies the
+/// text instead, and a paste after that would be a second copy of it. An insert begins when its
+/// request arrives, or, queued behind another, when that one has finished ([`may_post`]).
 pub const POST_DEADLINE: Duration = Duration::from_millis(2_000);
+
+/// The app's `INSERT_TIMEOUT_MS` (`ui/desktop/src/utils/textInsertHelper.ts`, whose test pins the
+/// two equal): how long after sending an insert it waits for the answer before it copies the text
+/// instead. Counted from the request's arrival, so it binds an insert that waited in the queue.
+pub const APP_INSERT_TIMEOUT: Duration = Duration::from_millis(5_000);
+
+/// The most an answer needs after its restore delay: putting the pasteboard back, writing the
+/// line and the app reading it.
+pub const ANSWER_MARGIN: Duration = Duration::from_millis(1_000);
+
+/// The most a snapshot of the pasteboard keeps, in bytes. Types past it are left out and the
+/// restore reports `partial`.
+pub const MAX_SNAPSHOT_BYTES: usize = 64 * 1024 * 1024;
 
 /// The markers clipboard managers read as "do not keep this" (nspasteboard.org).
 pub const TRANSIENT_TYPE: &str = "org.nspasteboard.TransientType";
@@ -291,6 +308,92 @@ pub fn modifiers_held(flags: u64) -> bool {
     flags & HELD_MODIFIERS != 0
 }
 
+/// How long the pasted text of `chars` characters stays on the pasteboard before what was there
+/// is put back: [`MIN_RESTORE_DELAY`] and 100 ms more for every 10,000 characters, at most
+/// [`MAX_RESTORE_DELAY`], so a slow app given a long text still pastes it and not the old
+/// contents.
+pub fn restore_delay(chars: usize) -> Duration {
+    let extra = u64::try_from(chars / 100).unwrap_or(u64::MAX);
+    MIN_RESTORE_DELAY
+        .saturating_add(Duration::from_millis(extra))
+        .min(MAX_RESTORE_DELAY)
+}
+
+/// Wait, briefly, for the person to let go of the modifiers: read `held_flags` (the HID
+/// system's flags) every [`MODIFIER_POLL`] until none of [`HELD_MODIFIERS`] is down, or until
+/// `elapsed` says [`MODIFIER_WAIT`] has passed. `true` when they were let go in time.
+pub fn wait_for_release(
+    mut held_flags: impl FnMut() -> u64,
+    mut elapsed: impl FnMut() -> Duration,
+    mut pause: impl FnMut(Duration),
+) -> bool {
+    loop {
+        if !modifiers_held(held_flags()) {
+            return true;
+        }
+        if elapsed() >= MODIFIER_WAIT {
+            return false;
+        }
+        pause(MODIFIER_POLL);
+    }
+}
+
+/// What putting the pasteboard back did (`pasteboard.rs`, `restore`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RestoreOutcome {
+    /// The pasteboard holds what it held before the text was written.
+    Restored,
+    /// Something was copied after the text; it is left alone.
+    Moved,
+    /// The pasteboard would not take the kept items back.
+    Failed,
+    /// What was there could not be read, so the text is left where a copy would leave it.
+    NotRead,
+    /// What was there was a password (concealed), so the pasteboard was cleared instead.
+    Cleared,
+}
+
+/// How the person's clipboard was left after an insert, as the `inserted` answer says it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Restored {
+    /// Everything that was there is back.
+    All,
+    /// Something was copied while the text was pasted, and it is left alone.
+    Moved,
+    /// Some of what was there could not be put back.
+    Partial,
+    /// What was there could not be read, so the text is still there.
+    KeptText,
+    /// What was there was a password, so the pasteboard was cleared rather than refilled.
+    Cleared,
+}
+
+impl Restored {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::All => "all",
+            Self::Moved => "moved",
+            Self::Partial => "partial",
+            Self::KeptText => "kept-text",
+            Self::Cleared => "cleared",
+        }
+    }
+}
+
+/// How the clipboard was left, from what the restore did and whether the snapshot left any type
+/// out (`incomplete`). A pasteboard that would not take the kept items back was cleared first,
+/// so neither the text nor all of the original is there: `partial`, not `kept-text`.
+pub fn restored(outcome: RestoreOutcome, incomplete: bool) -> Restored {
+    match outcome {
+        RestoreOutcome::Restored if incomplete => Restored::Partial,
+        RestoreOutcome::Restored => Restored::All,
+        RestoreOutcome::Moved => Restored::Moved,
+        RestoreOutcome::Failed => Restored::Partial,
+        RestoreOutcome::NotRead => Restored::KeptText,
+        RestoreOutcome::Cleared => Restored::Cleared,
+    }
+}
+
 /// Whether what was on the pasteboard may be put back: only while the pasteboard still holds
 /// what the helper wrote. A person's (or another app's) copy in the meantime is left alone.
 pub fn should_restore(count_written: isize, count_now: isize) -> bool {
@@ -310,6 +413,20 @@ pub fn snapshot_restorable(read_denied: bool, items_reported: usize, items_kept:
 /// Whether a paste would now come too late (see [`POST_DEADLINE`]).
 pub fn past_deadline(since_request: Duration) -> bool {
     since_request > POST_DEADLINE
+}
+
+/// Whether the paste of a text of `chars` characters may still be posted, `since_request` after
+/// its request arrived and `since_start` after its insert began (F9, F13): within
+/// [`POST_DEADLINE`] of the start, so an insert queued behind a slow one still gets its own two
+/// seconds, and early enough that the answer, after this text's [`restore_delay`] and
+/// [`ANSWER_MARGIN`], reaches the app inside [`APP_INSERT_TIMEOUT`] from the request, before the
+/// app copies the text itself. For an insert that did not wait the first rule alone decides.
+pub fn may_post(since_request: Duration, since_start: Duration, chars: usize) -> bool {
+    !past_deadline(since_start)
+        && since_request
+            .saturating_add(restore_delay(chars))
+            .saturating_add(ANSWER_MARGIN)
+            <= APP_INSERT_TIMEOUT
 }
 
 /// The key code that types `v` in the current layout. `translate(code, command)` is what the
@@ -378,8 +495,10 @@ pub fn front_line(id: u64, facts: &FrontFacts) -> String {
     }))
 }
 
-pub fn inserted_line(id: u64) -> String {
-    line(serde_json::json!({ "id": id, "type": "inserted" }))
+/// The text was pasted; `restored` says how the person's clipboard was left. The app reads the
+/// field leniently, so an older app ignores it and the protocol stays version 1.
+pub fn inserted_line(id: u64, restored: Restored) -> String {
+    line(serde_json::json!({ "id": id, "type": "inserted", "restored": restored.as_str() }))
 }
 
 pub fn refused_line(id: u64, reason: Refusal) -> String {
@@ -641,10 +760,18 @@ mod tests {
             )),
             serde_json::json!({"id":10,"type":"front","pid":null,"bundle":null,"secureInput":true,"postAllowed":false})
         );
-        assert_eq!(
-            parsed(inserted_line(11)),
-            serde_json::json!({"id":11,"type":"inserted"})
-        );
+        for (restored, word) in [
+            (Restored::All, "all"),
+            (Restored::Moved, "moved"),
+            (Restored::Partial, "partial"),
+            (Restored::KeptText, "kept-text"),
+            (Restored::Cleared, "cleared"),
+        ] {
+            assert_eq!(
+                parsed(inserted_line(11, restored)),
+                serde_json::json!({"id":11,"type":"inserted","restored":word})
+            );
+        }
         for (reason, word) in [
             (Refusal::NoPermission, "no-permission"),
             (Refusal::SecureInput, "secure-input"),
@@ -661,7 +788,11 @@ mod tests {
             serde_json::json!({"id":13,"type":"access","postAllowed":false})
         );
         // One line each: an answer never spans two.
-        for answer in [ready_line(false), inserted_line(1), access_line(1, true)] {
+        for answer in [
+            ready_line(false),
+            inserted_line(1, Restored::Partial),
+            access_line(1, true),
+        ] {
             assert!(!answer.contains('\n'));
         }
     }
@@ -697,7 +828,7 @@ mod tests {
                         ),
                         Op::Insert { pid, text } => {
                             assert_eq!((pid, text.as_str()), (77, "two words"));
-                            inserted_line(request.id)
+                            inserted_line(request.id, Restored::All)
                         }
                         Op::Access | Op::RequestAccess => access_line(request.id, true),
                     });
@@ -712,7 +843,7 @@ mod tests {
             answers,
             vec![
                 serde_json::json!({"id":21,"type":"front","pid":77,"bundle":null,"secureInput":false,"postAllowed":true}),
-                serde_json::json!({"id":22,"type":"inserted"}),
+                serde_json::json!({"id":22,"type":"inserted","restored":"all"}),
                 serde_json::json!({"id":23,"type":"access","postAllowed":true}),
             ]
         );
@@ -924,6 +1055,10 @@ mod tests {
         assert_eq!(v_key_code(|_, _| None), ANSI_V_KEY_CODE);
     }
 
+    /// Rule change (DD-102, F8 and F9): the restore waits longer for a long text, up to
+    /// [`MAX_RESTORE_DELAY`], so the app's timeout rose from three seconds to five
+    /// (`INSERT_TIMEOUT_MS` in `ui/desktop/src/utils/textInsertHelper.ts`). This test pinned
+    /// three seconds against a fixed 400 ms restore; it now pins the longest insert inside five.
     #[test]
     fn the_restore_waits_for_its_own_write_and_the_paste_for_its_deadline() {
         assert!(should_restore(41, 41));
@@ -931,10 +1066,155 @@ mod tests {
         assert!(!past_deadline(Duration::from_millis(1_999)));
         assert!(!past_deadline(POST_DEADLINE));
         assert!(past_deadline(Duration::from_millis(2_001)));
-        // The whole insert answers inside the app's three seconds.
+        // The whole insert answers inside the app's five seconds, the longest restore included.
         assert!(
-            POST_DEADLINE + RESTORE_DELAY + Duration::from_millis(500) < Duration::from_secs(3)
+            POST_DEADLINE + MAX_RESTORE_DELAY + Duration::from_millis(500) < Duration::from_secs(5)
         );
+        assert_eq!(POST_DEADLINE, Duration::from_millis(2_000));
+        assert_eq!(MAX_RESTORE_DELAY, Duration::from_millis(1_500));
+    }
+
+    /// F13 and F9: an insert queued behind a slow one has [`POST_DEADLINE`] from when it begins,
+    /// not from when its request arrived, so a quick second dictation is still pasted; and it is
+    /// never posted so late that its answer, after its own restore delay, would reach the app
+    /// after [`APP_INSERT_TIMEOUT`], when the app has copied the text already.
+    #[test]
+    fn a_queued_paste_has_its_own_deadline_and_still_answers_before_the_app_gives_up() {
+        let ms = Duration::from_millis;
+        // An insert that did not wait: the post deadline alone decides, for any length of text,
+        // because its answer always comes inside the app's timeout.
+        assert!(POST_DEADLINE + MAX_RESTORE_DELAY + ANSWER_MARGIN <= APP_INSERT_TIMEOUT);
+        for chars in [0, 13, 110_000, usize::MAX] {
+            for since in [0, 1_999, 2_000, 2_001, 4_000] {
+                assert_eq!(
+                    may_post(ms(since), ms(since), chars),
+                    !past_deadline(ms(since)),
+                    "{chars} characters, {since} ms"
+                );
+            }
+        }
+        // Queued behind an insert that took 2.15 s: begun just now, so it is pasted.
+        assert!(may_post(ms(2_150), ms(0), 13));
+        assert!(may_post(ms(2_150), ms(2_000), 13));
+        assert!(!may_post(ms(2_150), ms(2_001), 13));
+        // The app's five seconds, counted from the request: 400 ms of restore and the margin.
+        assert!(may_post(ms(3_600), ms(0), 13));
+        assert!(!may_post(ms(3_601), ms(0), 13));
+        // A long text waits 1,500 ms before the restore, so it must be posted sooner.
+        assert!(may_post(ms(2_500), ms(0), 110_000));
+        assert!(!may_post(ms(2_501), ms(0), 110_000));
+        assert!(!may_post(Duration::MAX, ms(0), 0));
+    }
+
+    /// F8: 400 ms, and 100 ms more for every 10,000 characters, at most 1,500 ms, so a slow app
+    /// pastes the new text and not the old.
+    #[test]
+    fn the_restore_delay_grows_with_the_text_and_stops_at_its_cap() {
+        let ms = |chars: usize| restore_delay(chars).as_millis();
+        assert_eq!(ms(0), 400);
+        assert_eq!(ms(1), 400);
+        assert_eq!(ms(99), 400);
+        assert_eq!(ms(100), 401);
+        assert_eq!(ms(10_000), 500);
+        assert_eq!(ms(25_000), 650);
+        assert_eq!(ms(60_000), 1_000);
+        assert_eq!(ms(110_000), 1_500);
+        assert_eq!(ms(110_001), 1_500);
+        assert_eq!(ms(MAX_REQUEST_LINE), 1_500);
+        assert_eq!(ms(usize::MAX), 1_500);
+        // It never shrinks as the text grows.
+        let mut last = Duration::ZERO;
+        for chars in (0..200_000).step_by(997) {
+            let delay = restore_delay(chars);
+            assert!(delay >= last && delay >= MIN_RESTORE_DELAY && delay <= MAX_RESTORE_DELAY);
+            last = delay;
+        }
+    }
+
+    /// How the clipboard was left, from what the restore did and whether the snapshot kept
+    /// everything: only a restore that put everything back is `all`.
+    #[test]
+    fn the_inserted_answer_reports_how_the_clipboard_was_left() {
+        assert_eq!(restored(RestoreOutcome::Restored, false), Restored::All);
+        assert_eq!(restored(RestoreOutcome::Restored, true), Restored::Partial);
+        assert_eq!(restored(RestoreOutcome::Moved, false), Restored::Moved);
+        assert_eq!(restored(RestoreOutcome::Moved, true), Restored::Moved);
+        assert_eq!(restored(RestoreOutcome::NotRead, false), Restored::KeptText);
+        assert_eq!(restored(RestoreOutcome::NotRead, true), Restored::KeptText);
+        assert_eq!(restored(RestoreOutcome::Cleared, false), Restored::Cleared);
+        assert_eq!(restored(RestoreOutcome::Cleared, true), Restored::Cleared);
+        // The pasteboard was cleared before it refused the kept items, so the text is gone
+        // too: not everything came back.
+        assert_eq!(restored(RestoreOutcome::Failed, false), Restored::Partial);
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&inserted_line(
+                3,
+                restored(RestoreOutcome::Cleared, false)
+            ))
+            .unwrap(),
+            serde_json::json!({"id":3,"type":"inserted","restored":"cleared"})
+        );
+    }
+
+    /// F19 (W-A5): Control, Option, Shift and fn each still held when the text is ready are
+    /// waited for, poll by poll, and the wait ends the moment they are let go; one held past
+    /// the wait is given up on at [`MODIFIER_WAIT`]. Caps Lock is never waited for.
+    #[test]
+    fn control_option_shift_and_fn_held_are_each_waited_for() {
+        for (name, held) in [
+            ("Control", 0x0004_0000u64),
+            ("Option", 0x0008_0000),
+            ("Shift", 0x0002_0000),
+            ("fn", 0x0080_0000),
+            ("Command", 0x0010_0000),
+        ] {
+            // Held for three reads, then let go (Caps Lock stays on throughout).
+            let reads = std::cell::Cell::new(0);
+            let pauses = std::cell::RefCell::new(Vec::new());
+            let released = wait_for_release(
+                || {
+                    reads.set(reads.get() + 1);
+                    if reads.get() <= 3 {
+                        held | 0x0001_0000
+                    } else {
+                        0x0001_0000
+                    }
+                },
+                || MODIFIER_POLL * pauses.borrow().len() as u32,
+                |wait| pauses.borrow_mut().push(wait),
+            );
+            assert!(released, "{name}");
+            assert_eq!(reads.get(), 4, "{name}");
+            assert_eq!(*pauses.borrow(), vec![MODIFIER_POLL; 3], "{name}");
+
+            // Held throughout: given up on at the limit, never later.
+            let clock = std::cell::Cell::new(Duration::ZERO);
+            let paused = std::cell::Cell::new(0);
+            let released = wait_for_release(
+                || held,
+                || clock.get(),
+                |wait| {
+                    clock.set(clock.get() + wait);
+                    paused.set(paused.get() + 1);
+                },
+            );
+            assert!(!released, "{name}");
+            assert_eq!(clock.get(), MODIFIER_WAIT, "{name}");
+            assert_eq!(
+                paused.get(),
+                (MODIFIER_WAIT.as_millis() / MODIFIER_POLL.as_millis()) as usize
+            );
+        }
+        // Nothing held, or Caps Lock alone: no wait at all.
+        for flags in [0u64, 0x0001_0000] {
+            let paused = std::cell::Cell::new(false);
+            assert!(wait_for_release(
+                || flags,
+                || Duration::ZERO,
+                |_| paused.set(true)
+            ));
+            assert!(!paused.get());
+        }
     }
 
     #[test]

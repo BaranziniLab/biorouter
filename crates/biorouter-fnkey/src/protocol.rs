@@ -1,36 +1,106 @@
 //! What the helper tells the desktop app, and how it reads the keyboard into it.
 //!
-//! The helper sees every key press on the Mac while it listens, so this module is
-//! where its privacy is decided: only four facts ever leave the process. The fn
-//! key went down, it came up, it is still down [`FN_HOLD_MS`] after it went down
-//! with nothing else pressed (`held`), and some other key or modifier was pressed
-//! while it was down or within [`TAP_FOLLOW_MS`] of its release. While fn is held,
-//! every other key press is reported as `other` with its time; after a release only
-//! the first real key counts (one from the keyboard itself, not fn or the globe
-//! key, not a repeat), so a tap followed by typing is not read as half of a
-//! double-tap, and a key that macOS or another app makes up never ends one. To tell
-//! a real key from the rest, the tap reads a key's code, its repeat flag and its
-//! source ([`KeyFacts`]); the tracker judges them on the spot and keeps none. No
-//! key code, repeat flag, source or character is ever written, so a key's identity
-//! never leaves the process, and outside an fn hold no key's timing leaves beyond
-//! that first one. `held` says only how long fn itself was down.
+//! The helper sees every key press on the Mac while it listens, so this module is where its
+//! privacy is decided. Only these facts about the keyboard ever leave the process: fn went
+//! down, and which one of Shift, Control or Option was held with it, or none ([`Mod`]); fn
+//! came up; fn is still down [`FN_HOLD_MS`] after it went down with nothing else pressed
+//! (`held`); one of those three modifiers joined fn in its first [`FN_CHORD_GRACE_MS`]
+//! (`chord`); and some other key or modifier was pressed while fn was down or within
+//! [`TAP_FOLLOW_MS`] of its release (`other`). While fn is held, every other key press is
+//! reported as `other` with its time; after a release only the first real key counts (one
+//! from the keyboard itself, not fn or the globe key, not a repeat, and among the modifiers
+//! only Command), so a tap followed by typing is not read as half of a double-tap, a key
+//! that macOS or another app makes up never ends one, and a modifier pressed again between
+//! the two taps of a modifier double-tap does not either. To tell a real key from the rest,
+//! the tap reads a key's code, its repeat flag and its source ([`KeyFacts`]); the tracker
+//! judges them on the spot and keeps none. No key code, repeat flag, source or character is
+//! ever written, so a key's identity never leaves the process (a modifier is named only as
+//! the one held with fn), and outside an fn press no key's timing leaves beyond that first
+//! one. `held` says only how long fn itself was down.
+//!
+//! Separately, and with no keyboard event in it, the helper reports which other apps hold an
+//! enabled event tap on modifier keys (`listeners`): the bundle identifiers of apps that are
+//! not Apple's, read from macOS's list of taps ([`listener_bundles`]). That list asks for no
+//! permission and says nothing about what any app reads; no other app's input ever leaves
+//! this process, because this process never sees it.
+//!
 //! The app reads one JSON object per line (`ui/desktop/src/utils/fnKeyHelper.ts`,
 //! `parseFnHelperLine`), and writes one command per line back.
 
 /// `kCGEventFlagMaskSecondaryFn`: set while fn (the globe key) is held.
 pub const SECONDARY_FN: u64 = 0x0080_0000;
 
+/// `kCGEventFlagMaskShift`, `kCGEventFlagMaskControl`, `kCGEventFlagMaskAlternate` (Option)
+/// and `kCGEventFlagMaskCommand`: the device-independent masks, set while either key of the
+/// pair is down.
+pub const SHIFT_FLAG: u64 = 0x0002_0000;
+pub const CONTROL_FLAG: u64 = 0x0004_0000;
+pub const OPTION_FLAG: u64 = 0x0008_0000;
+pub const COMMAND_FLAG: u64 = 0x0010_0000;
+
 /// Shift, Control, Option and Command (`kCGEventFlagMask*`). Caps Lock and the
 /// numeric pad flag are left out: neither is a modifier a person holds with fn.
-pub const OTHER_MODIFIERS: u64 = 0x0002_0000 | 0x0004_0000 | 0x0008_0000 | 0x0010_0000;
+pub const OTHER_MODIFIERS: u64 = SHIFT_FLAG | CONTROL_FLAG | OPTION_FLAG | COMMAND_FLAG;
+const _: () = assert!(OTHER_MODIFIERS == 0x0002_0000 | 0x0004_0000 | 0x0008_0000 | 0x0010_0000);
+
+/// The one modifier a person may hold with fn to dictate with a modifier added (Control
+/// plus fn by default, `DEFAULT_FN_MODIFIER` in `ui/desktop/src/utils/fnGesture.ts`).
+/// Command is never one: macOS and every app use it for shortcuts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Mod {
+    Shift,
+    Control,
+    Option,
+}
+
+impl Mod {
+    pub const fn flag(self) -> u64 {
+        match self {
+            Self::Shift => SHIFT_FLAG,
+            Self::Control => CONTROL_FLAG,
+            Self::Option => OPTION_FLAG,
+        }
+    }
+
+    /// The word a line carries for it.
+    pub const fn word(self) -> &'static str {
+        match self {
+            Self::Shift => "shift",
+            Self::Control => "control",
+            Self::Option => "option",
+        }
+    }
+
+    /// The modifier a set of held modifiers ([`OTHER_MODIFIERS`] bits) is, when it is
+    /// exactly one of Shift, Control or Option. None for no modifier, for Command, and for
+    /// two or more.
+    pub fn of_set(modifiers: u64) -> Option<Self> {
+        match modifiers & OTHER_MODIFIERS {
+            SHIFT_FLAG => Some(Self::Shift),
+            CONTROL_FLAG => Some(Self::Control),
+            OPTION_FLAG => Some(Self::Option),
+            _ => None,
+        }
+    }
+}
+
+/// How long after a bare fn goes down one of Shift, Control or Option may still join it and
+/// make it a modifier press (`chord`), as a person who presses the two together but not quite
+/// at once does. Later, a modifier is another key. `FN_CHORD_GRACE_MS` in
+/// `ui/desktop/src/utils/fnGesture.ts` is the same number; the helper times it, on the
+/// events' own clock.
+pub const FN_CHORD_GRACE_MS: u64 = 100;
 
 /// `kVK_Function`, and the code some recent Apple keyboards report for the
 /// globe key.
 pub const FN_KEY_CODES: [i64; 2] = [63, 179];
 
-/// Version 2 adds the `held` line and the narrower `other` after a release. The app
-/// refuses a ready line of any other version, so a helper and an app always agree.
-pub const PROTOCOL_VERSION: u32 = 2;
+/// Version 2 added the `held` line and the narrower `other` after a release. Version 3 adds
+/// the modifier held with fn (`mod` on fn down, the `chord` line, `held` for a modifier
+/// press, and Shift, Control and Option no longer `other` after a release) and the
+/// `listeners` line. The app refuses a ready line of any other version, so a helper and an
+/// app always agree on what `other` and `held` mean.
+pub const PROTOCOL_VERSION: u32 = 3;
 
 /// `kCGEventKeyDown`.
 pub const EVENT_KEY_DOWN: u32 = 10;
@@ -148,10 +218,15 @@ impl KeyFacts {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Signal {
-    FnDown,
+    /// fn went down, with the one of Shift, Control or Option held with it ([`Mod`]), or none.
+    FnDown(Option<Mod>),
     FnUp,
-    /// fn has stayed down [`FN_HOLD_MS`] with nothing else pressed. Written with the
-    /// time the threshold was reached (the press's down time plus [`FN_HOLD_MS`]).
+    /// One of Shift, Control or Option joined a press that went down bare, within
+    /// [`FN_CHORD_GRACE_MS`]: the press is now that modifier's.
+    Chord(Mod),
+    /// fn has stayed down [`FN_HOLD_MS`] with nothing else pressed but the press's own
+    /// modifier, if it has one. Written with the time the threshold was reached (the press's
+    /// down time plus [`FN_HOLD_MS`]).
     Held,
     /// A key or another modifier while fn is down: fn is being used as a
     /// modifier (fn with an arrow, Delete, an F key or a letter), so the app
@@ -173,6 +248,8 @@ pub enum Command {
     /// Ask macOS for Input Monitoring (the system prompt, the first time only),
     /// then answer as `Check` does. Sent only from a person's click in Settings.
     Request,
+    /// Read the event taps on modifier keys again and answer with a `listeners` line.
+    Listeners,
     Quit,
 }
 
@@ -181,13 +258,20 @@ pub fn parse_command(line: &str) -> Option<Command> {
         "check" => Some(Command::Check),
         "request" => Some(Command::Request),
         "quit" => Some(Command::Quit),
+        "listeners" => Some(Command::Listeners),
         _ => None,
     }
 }
 
-/// Follows fn through the event stream. It holds only whether fn is down, which
-/// other modifiers are, when fn was last released until the next key comes, and when
-/// the press still waiting for `held` went down, never a key code or character.
+/// Follows fn through the event stream. It holds only whether fn is down, which other
+/// modifiers are, which one of Shift, Control or Option the press now down belongs to, when
+/// fn was last released until the next key comes, and when the press still waiting for
+/// `held` went down, never a key code or character.
+///
+/// The rules, R1 to R8 of DD-101 (`docs/history/local-dictation-2026-11/implementation-plan.md`),
+/// are each in one place: `press` (R1 to R3), `modifier_added_while_down` (R4), the release of
+/// a modifier while fn is down (R5, nothing), `other` (R6, and R7 for a key),
+/// `modifier_added_after_release` (R7 for a modifier) and [`Self::held_due`] (R8).
 #[derive(Debug, Default)]
 pub struct FnTracker {
     fn_down: bool,
@@ -197,6 +281,11 @@ pub struct FnTracker {
     /// When the press now down went down, while it may still become a hold: nothing
     /// else was pressed with it and `held` has not been given for it yet.
     hold_from: Option<u64>,
+    /// The modifier the press now down was pressed with, or that joined it in its grace.
+    press_mod: Option<Mod>,
+    /// While a press that went down bare may still become a modifier press: until its down
+    /// time plus [`FN_CHORD_GRACE_MS`], unspoiled and before `held`.
+    chord_until: Option<u64>,
 }
 
 impl FnTracker {
@@ -206,6 +295,8 @@ impl FnTracker {
             modifiers: 0,
             released_at: None,
             hold_from: None,
+            press_mod: None,
+            chord_until: None,
         }
     }
 
@@ -221,7 +312,7 @@ impl FnTracker {
     ) -> Vec<Signal> {
         let fn_now = flags & SECONDARY_FN != 0;
         let modifiers = flags & OTHER_MODIFIERS;
-        let added = modifiers & !self.modifiers != 0;
+        let added = modifiers & !self.modifiers;
         self.modifiers = modifiers;
         if FN_KEY_CODES.contains(&key_code) {
             if fn_now == self.fn_down {
@@ -233,15 +324,7 @@ impl FnTracker {
                 return vec![Signal::FnUp];
             }
             self.released_at = None;
-            // fn pressed while another modifier is already held is a shortcut
-            // of its own, never a dictation gesture.
-            return if modifiers != 0 {
-                self.hold_from = None;
-                vec![Signal::FnDown, Signal::Other]
-            } else {
-                self.hold_from = Some(at_ms);
-                vec![Signal::FnDown]
-            };
+            return self.press(modifiers, at_ms);
         }
         if self.fn_down && !fn_now {
             // The fn release was not seen (secure input took it, for one), but
@@ -250,18 +333,90 @@ impl FnTracker {
             self.release(at_ms);
             return vec![Signal::FnUp];
         }
-        if added {
-            self.other(at_ms, source == Source::Hardware)
-                .into_iter()
-                .collect()
+        if added == 0 {
+            // R5: a modifier let go, the press's own included, ends nothing.
+            return Vec::new();
+        }
+        let signal = if self.fn_down {
+            self.modifier_added_while_down(added, modifiers, at_ms)
         } else {
-            Vec::new()
+            self.modifier_added_after_release(added, source, at_ms)
+        };
+        signal.into_iter().collect()
+    }
+
+    /// fn went down at `at_ms` with `modifiers` already held.
+    fn press(&mut self, modifiers: u64, at_ms: u64) -> Vec<Signal> {
+        if modifiers == 0 {
+            // R1: a bare press, which one of the three may still join.
+            self.hold_from = Some(at_ms);
+            self.press_mod = None;
+            self.chord_until = Some(at_ms.saturating_add(FN_CHORD_GRACE_MS));
+            vec![Signal::FnDown(None)]
+        } else if let Some(modifier) = Mod::of_set(modifiers) {
+            // R2: exactly one of Shift, Control or Option, pressed before fn however long
+            // before, makes the press that modifier's.
+            self.hold_from = Some(at_ms);
+            self.press_mod = Some(modifier);
+            self.chord_until = None;
+            vec![Signal::FnDown(Some(modifier))]
+        } else {
+            // R3: fn with Command, or with two or more modifiers, is a shortcut of its own,
+            // never a dictation gesture.
+            self.hold_from = None;
+            self.press_mod = None;
+            self.chord_until = None;
+            vec![Signal::FnDown(None), Signal::Other]
         }
     }
 
+    /// R4: `added` joined the modifiers while fn is down, which are now `modifiers`.
+    fn modifier_added_while_down(
+        &mut self,
+        added: u64,
+        modifiers: u64,
+        at_ms: u64,
+    ) -> Option<Signal> {
+        let in_grace = self.press_mod.is_none()
+            && self.hold_from.is_some()
+            && self.chord_until.is_some_and(|until| at_ms <= until);
+        if in_grace {
+            if let Some(modifier) = Mod::of_set(modifiers) {
+                // R4a: the bare press becomes this modifier's; its hold is still timed
+                // from fn's own down.
+                self.press_mod = Some(modifier);
+                self.chord_until = None;
+                return Some(Signal::Chord(modifier));
+            }
+        }
+        if self.press_mod.is_some_and(|own| added == own.flag()) {
+            // R4b: the press's own modifier pressed again after it was let go.
+            return None;
+        }
+        // R4c: a modifier after the grace, a second one, a different one, or Command.
+        self.spoil();
+        Some(Signal::Other)
+    }
+
+    /// R7 for a modifier: within [`TAP_FOLLOW_MS`] of a release only Command from the
+    /// keyboard ends the wait for a second tap. Shift, Control and Option type nothing, so
+    /// leaving the wait open for them hides no typing, and lets a modifier double-tap have
+    /// its modifier pressed again between the taps.
+    fn modifier_added_after_release(
+        &mut self,
+        added: u64,
+        source: Source,
+        at_ms: u64,
+    ) -> Option<Signal> {
+        if added & COMMAND_FLAG == 0 {
+            return None;
+        }
+        self.other(at_ms, source == Source::Hardware)
+    }
+
     /// A `kCGEventKeyDown` event at `at_ms`. While fn is down, any key but fn or the
-    /// globe key itself is another key, from any source and repeats included; after a
-    /// release only a real one is ([`KeyFacts`]). The facts are judged here and kept
+    /// globe key itself is another key, from any source and repeats included (R6); after a
+    /// release only a real one is ([`KeyFacts`], R7). The facts are judged here and kept
     /// nowhere.
     pub fn key_down(&mut self, at_ms: u64, facts: KeyFacts) -> Option<Signal> {
         if facts.is_fn_key() {
@@ -278,14 +433,16 @@ impl FnTracker {
 
     /// Asked when the timer fires, at `now_ms` on the events' clock: the time to write
     /// in a `held` line, once per press, when the press is still down and unspoiled and
-    /// its threshold has passed. `None` before the threshold, for a press already
-    /// released or spoiled, and after it was given once.
+    /// its threshold has passed (R8), for a bare press and a modifier press alike. `None`
+    /// before the threshold, for a press already released or spoiled, and after it was
+    /// given once.
     pub fn held_due(&mut self, now_ms: u64) -> Option<u64> {
         let deadline = self.hold_deadline()?;
         if now_ms < deadline {
             return None;
         }
         self.hold_from = None;
+        self.chord_until = None;
         Some(deadline)
     }
 
@@ -297,16 +454,21 @@ impl FnTracker {
     /// never gets it.
     pub fn reset_after_blind_gap(&mut self) -> Option<Signal> {
         let was_down = self.fn_down;
-        self.fn_down = false;
-        self.modifiers = 0;
-        self.released_at = None;
-        self.hold_from = None;
+        *self = Self::new();
         was_down.then_some(Signal::FnUp)
     }
 
     fn release(&mut self, at_ms: u64) {
         self.released_at = Some(at_ms);
         self.hold_from = None;
+        self.press_mod = None;
+        self.chord_until = None;
+    }
+
+    /// The press now down is fn used as a modifier: no hold, no chord.
+    fn spoil(&mut self) {
+        self.hold_from = None;
+        self.chord_until = None;
     }
 
     /// Another key or modifier: reported while fn is down, which spoils the press, and
@@ -315,7 +477,7 @@ impl FnTracker {
     /// release; a key that does not count leaves the window open for one that does.
     fn other(&mut self, at_ms: u64, counts_after_release: bool) -> Option<Signal> {
         if self.fn_down {
-            self.hold_from = None;
+            self.spoil();
             return Some(Signal::Other);
         }
         if !counts_after_release {
@@ -331,8 +493,20 @@ impl FnTracker {
 /// a busy app late keeps its spacing: a hold read late is still a hold.
 pub fn signal_line(signal: Signal, at_ms: u64) -> String {
     match signal {
-        Signal::FnDown => format!(r#"{{"type":"fn","down":true,"t":{at_ms}}}"#),
+        Signal::FnDown(modifier) => format!(
+            r#"{{"type":"fn","down":true,"mod":{},"t":{at_ms}}}"#,
+            match modifier {
+                Some(modifier) => format!(r#""{}""#, modifier.word()),
+                None => "null".to_string(),
+            }
+        ),
         Signal::FnUp => format!(r#"{{"type":"fn","down":false,"t":{at_ms}}}"#),
+        Signal::Chord(modifier) => {
+            format!(
+                r#"{{"type":"chord","mod":"{}","t":{at_ms}}}"#,
+                modifier.word()
+            )
+        }
         Signal::Held => format!(r#"{{"type":"held","t":{at_ms}}}"#),
         Signal::Other => format!(r#"{{"type":"other","t":{at_ms}}}"#),
     }
@@ -384,14 +558,173 @@ pub fn permission_line(permission: Permission) -> String {
 /// macOS turned the listener off and it could not be turned on again.
 pub const LISTENER_LOST_LINE: &str = r#"{"type":"listener-lost"}"#;
 
+/// The longest line the app reads (`MAX_LINE` in `ui/desktop/src/utils/fnKeyHelper.ts`).
+/// Every line here fits; [`listeners_line`] leaves out what would not.
+pub const MAX_LINE: usize = 4096;
+
+/// The most apps a `listeners` line names.
+pub const MAX_LISTENER_APPS: usize = 16;
+
+/// The longest bundle identifier a `listeners` line names.
+pub const MAX_BUNDLE_ID: usize = 255;
+
+/// How often the helper reads the list of event taps again, on a thread of its own.
+pub const LISTENERS_POLL: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// `CGEventMaskBit(kCGEventFlagsChanged)`: the only event that carries fn.
+pub const FLAGS_CHANGED_BIT: u64 = 1u64 << EVENT_FLAGS_CHANGED;
+
+/// `CGEventTapInformation`, as `CGGetEventTapList` fills it (CoreGraphics'
+/// `CGEventTypes.h`). The layout is pinned by `the_tap_information_layout_is_48_bytes`,
+/// measured against the SDK. `enabled` is C's one-byte `bool`, read as a byte so no value
+/// macOS writes can be an invalid Rust `bool`.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Default)]
+pub struct CGEventTapInformation {
+    pub event_tap_id: u32,
+    pub tap_point: u32,
+    pub options: u32,
+    pub events_of_interest: u64,
+    pub tapping_process: i32,
+    pub process_being_tapped: i32,
+    pub enabled: u8,
+    pub min_usec_latency: f32,
+    pub avg_usec_latency: f32,
+    pub max_usec_latency: f32,
+}
+const _: () = assert!(std::mem::size_of::<CGEventTapInformation>() == 48);
+
+/// One tap macOS listed, with what `mac.rs` read about the process that holds it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ListenerTap {
+    pub enabled: bool,
+    pub events_of_interest: u64,
+    pub pid: i32,
+    /// The process's executable (`proc_pidpath`), when it could be read.
+    pub path: Option<String>,
+    /// The identifier of the outermost `.app` in `path`, when it has one.
+    pub bundle: Option<String>,
+}
+
+/// Whether a tap counts at all: it is enabled, it asks for flags changed, and it is not this
+/// process's own. `mac.rs` reads a process's path and bundle only for a tap that counts.
+pub fn counts_as_listener(enabled: bool, events_of_interest: u64, pid: i32, own_pid: i32) -> bool {
+    enabled && events_of_interest & FLAGS_CHANGED_BIT != 0 && pid != own_pid
+}
+
+/// The outermost `.app` folder in an executable's path, which names the app it belongs to
+/// (a helper app inside an app belongs to the outer one). None for a path with no app in it,
+/// a relative path, and a component named only `.app`.
+pub fn outermost_app(path: &str) -> Option<&str> {
+    if !path.starts_with('/') {
+        return None;
+    }
+    let mut component_start = 0;
+    for (slash, _) in path.match_indices('/') {
+        let component = path.get(component_start..slash)?;
+        if component.len() > ".app".len() && component.ends_with(".app") {
+            return path.get(..slash);
+        }
+        component_start = slash + 1;
+    }
+    None
+}
+
+/// Whether a process is part of macOS: an Apple bundle, or a program in a system folder.
+/// Siri holds such a tap on every Mac, and none of them acts on fn for dictation.
+pub fn is_system_process(path: &str, bundle: &str) -> bool {
+    bundle.starts_with("com.apple.")
+        || ["/System/", "/usr/", "/Library/Apple/"]
+            .iter()
+            .any(|prefix| path.starts_with(prefix))
+}
+
+/// A bundle identifier a line may carry: 1 to [`MAX_BUNDLE_ID`] bytes of letters, digits,
+/// dots and hyphens, so nothing in it needs escaping and nothing else reaches the app.
+pub fn valid_bundle_id(bundle: &str) -> bool {
+    !bundle.is_empty()
+        && bundle.len() <= MAX_BUNDLE_ID
+        && bundle
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-'))
+}
+
+/// The apps a `listeners` line names: the bundle of every tap that counts
+/// ([`counts_as_listener`]), leaving out a process with no readable path or no bundle, a part
+/// of macOS ([`is_system_process`]), the app this helper sits in (`own_bundle`), and an
+/// identifier that is not one ([`valid_bundle_id`]). Sorted, each once, at most
+/// [`MAX_LISTENER_APPS`].
+pub fn listener_bundles(
+    taps: &[ListenerTap],
+    own_pid: i32,
+    own_bundle: Option<&str>,
+) -> Vec<String> {
+    let named: std::collections::BTreeSet<&str> = taps
+        .iter()
+        .filter(|tap| counts_as_listener(tap.enabled, tap.events_of_interest, tap.pid, own_pid))
+        .filter_map(|tap| Some((tap.path.as_deref()?, tap.bundle.as_deref()?)))
+        .filter(|(path, bundle)| !is_system_process(path, bundle))
+        .map(|(_, bundle)| bundle)
+        .filter(|bundle| Some(*bundle) != own_bundle && valid_bundle_id(bundle))
+        .collect();
+    named
+        .into_iter()
+        .take(MAX_LISTENER_APPS)
+        .map(str::to_string)
+        .collect()
+}
+
+/// `{"type":"listeners","apps":[...],"t":<ms>}`. Only identifiers [`valid_bundle_id`]
+/// accepts are written, at most [`MAX_LISTENER_APPS`], and no more than fit in [`MAX_LINE`].
+pub fn listeners_line(bundles: &[String], at_ms: u64) -> String {
+    let tail = format!(r#"],"t":{at_ms}}}"#);
+    let mut line = String::from(r#"{"type":"listeners","apps":["#);
+    let named = bundles
+        .iter()
+        .filter(|bundle| valid_bundle_id(bundle))
+        .take(MAX_LISTENER_APPS);
+    for (written, bundle) in named.enumerate() {
+        let comma = usize::from(written > 0);
+        if line.len() + comma + bundle.len() + 2 + tail.len() > MAX_LINE {
+            break;
+        }
+        if comma == 1 {
+            line.push(',');
+        }
+        line.push('"');
+        line.push_str(bundle);
+        line.push('"');
+    }
+    line.push_str(&tail);
+    line
+}
+
+/// Whether to write a `listeners` line for the set read `now`: always when it was asked for
+/// (after ready, and on the command), and otherwise only when it differs from the `last`
+/// one written.
+pub fn listeners_to_write(last: Option<&[String]>, now: &[String], asked: bool) -> bool {
+    asked || last != Some(now)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     const SHIFT: u64 = 0x0002_0000;
+    const CONTROL: u64 = 0x0004_0000;
+    const OPTION: u64 = 0x0008_0000;
     const COMMAND: u64 = 0x0010_0000;
+    /// `kVK_Shift`, `kVK_Control`, `kVK_Option` and `kVK_Command`.
     const SHIFT_KEY: i64 = 56;
+    const CONTROL_KEY: i64 = 59;
+    const OPTION_KEY: i64 = 58;
     const COMMAND_KEY: i64 = 55;
+    /// The three modifiers a person may dictate with, with their key and flag.
+    const CHORD_KEYS: [(i64, u64, Mod); 3] = [
+        (SHIFT_KEY, SHIFT, Mod::Shift),
+        (CONTROL_KEY, CONTROL, Mod::Control),
+        (OPTION_KEY, OPTION, Mod::Option),
+    ];
     const HW: Source = Source::Hardware;
     const MADE_UP: Source = Source::Synthesized;
     /// `kVK_ANSI_A`, and `kVK_LeftArrow`.
@@ -419,7 +752,7 @@ mod tests {
         let mut tracker = FnTracker::new();
         assert_eq!(
             tracker.flags_changed(63, SECONDARY_FN, HW, down),
-            vec![Signal::FnDown]
+            vec![Signal::FnDown(None)]
         );
         assert_eq!(tracker.flags_changed(63, 0, HW, up), vec![Signal::FnUp]);
         tracker
@@ -430,7 +763,7 @@ mod tests {
         let mut tracker = FnTracker::new();
         assert_eq!(
             tracker.flags_changed(63, SECONDARY_FN, HW, 0),
-            vec![Signal::FnDown]
+            vec![Signal::FnDown(None)]
         );
         assert_eq!(tracker.flags_changed(63, SECONDARY_FN, HW, 10), vec![]);
         assert_eq!(tracker.flags_changed(63, 0, HW, 20), vec![Signal::FnUp]);
@@ -443,7 +776,7 @@ mod tests {
         let mut tracker = FnTracker::new();
         assert_eq!(
             tracker.flags_changed(179, SECONDARY_FN, MADE_UP, 0),
-            vec![Signal::FnDown]
+            vec![Signal::FnDown(None)]
         );
         assert_eq!(
             tracker.flags_changed(179, 0, MADE_UP, 10),
@@ -477,13 +810,17 @@ mod tests {
         assert_eq!(tracker.key_down(2_080 + TAP_FOLLOW_MS + 1, letter()), None);
         assert_eq!(tracker.key_down(2_080 + TAP_FOLLOW_MS + 2, letter()), None);
 
+        // Rule change in protocol version 3 (R7): Shift, Control and Option after a release no
+        // longer end the wait, so a chord double-tap survives the modifier pressed again
+        // between taps. Command from the keyboard still does, once, as Shift did in version 2.
         tracker.flags_changed(63, SECONDARY_FN, HW, 3_000);
         tracker.flags_changed(63, 0, HW, 3_080);
         assert_eq!(
-            tracker.flags_changed(SHIFT_KEY, SHIFT, HW, 3_100),
+            tracker.flags_changed(COMMAND_KEY, COMMAND, HW, 3_100),
             vec![Signal::Other]
         );
         assert_eq!(tracker.key_down(3_120, letter()), None);
+        tracker.flags_changed(COMMAND_KEY, 0, HW, 3_150);
 
         // While fn is down again, every key is reported, as before any release.
         tracker.flags_changed(63, 0, HW, 3_200);
@@ -505,7 +842,7 @@ mod tests {
             assert_eq!(tracker.key_down(1_210, key(code, HW, false)), None);
             assert_eq!(
                 tracker.flags_changed(63, SECONDARY_FN, HW, 1_220),
-                vec![Signal::FnDown]
+                vec![Signal::FnDown(None)]
             );
             assert_eq!(tracker.key_down(1_230, key(code, HW, false)), None);
             assert_eq!(tracker.hold_deadline(), Some(1_220 + FN_HOLD_MS));
@@ -543,9 +880,11 @@ mod tests {
             Some(Signal::Other)
         );
 
+        // Rule change in protocol version 3 (R7): a modifier from the keyboard after a release
+        // ends the wait only when it is Command; this step used Shift in version 2.
         let mut tracker = tapped(2_000, 2_090);
         assert_eq!(
-            tracker.flags_changed(SHIFT_KEY, SHIFT, HW, 2_100),
+            tracker.flags_changed(COMMAND_KEY, COMMAND, HW, 2_100),
             vec![Signal::Other]
         );
     }
@@ -578,11 +917,24 @@ mod tests {
             );
             assert_eq!(tracker.held_due(1_000 + FN_HOLD_MS), None, "{facts:?}");
         }
-        // A modifier added from any source spoils it too.
+        // A modifier added from any source spoils it too. Rule change in protocol version 3
+        // (R4a): inside the chord grace one of Shift, Control or Option makes a chord, so this
+        // step adds Shift after the grace (it was 50 ms in version 2), and Command inside it.
         let mut tracker = FnTracker::new();
         tracker.flags_changed(63, SECONDARY_FN, HW, 1_000);
         assert_eq!(
-            tracker.flags_changed(SHIFT_KEY, SECONDARY_FN | SHIFT, MADE_UP, 1_050),
+            tracker.flags_changed(
+                SHIFT_KEY,
+                SECONDARY_FN | SHIFT,
+                MADE_UP,
+                1_000 + FN_CHORD_GRACE_MS + 1
+            ),
+            vec![Signal::Other]
+        );
+        let mut tracker = FnTracker::new();
+        tracker.flags_changed(63, SECONDARY_FN, HW, 1_000);
+        assert_eq!(
+            tracker.flags_changed(COMMAND_KEY, SECONDARY_FN | COMMAND, MADE_UP, 1_050),
             vec![Signal::Other]
         );
     }
@@ -679,18 +1031,27 @@ mod tests {
         assert_eq!(event_ms(ns(1_000), 5_000), 1_000);
     }
 
+    /// Rewritten from `a_modifier_pressed_while_fn_is_down_is_other_and_its_release_is_not`:
+    /// its Shift came 10 ms after fn, which protocol version 3 reads as a chord (R4a). A
+    /// modifier after the grace is still another key (R4c), and its release says nothing.
     #[test]
-    fn a_modifier_pressed_while_fn_is_down_is_other_and_its_release_is_not() {
-        let mut tracker = FnTracker::new();
-        tracker.flags_changed(63, SECONDARY_FN, HW, 0);
-        assert_eq!(
-            tracker.flags_changed(SHIFT_KEY, SECONDARY_FN | SHIFT, HW, 10),
-            vec![Signal::Other]
-        );
-        assert_eq!(
-            tracker.flags_changed(SHIFT_KEY, SECONDARY_FN, HW, 20),
-            vec![]
-        );
+    fn a_modifier_after_the_grace_is_other() {
+        for (code, flag) in [
+            (SHIFT_KEY, SHIFT),
+            (CONTROL_KEY, CONTROL),
+            (OPTION_KEY, OPTION),
+        ] {
+            let mut tracker = FnTracker::new();
+            tracker.flags_changed(63, SECONDARY_FN, HW, 0);
+            assert_eq!(
+                tracker.flags_changed(code, SECONDARY_FN | flag, HW, FN_CHORD_GRACE_MS + 1),
+                vec![Signal::Other]
+            );
+            assert_eq!(tracker.hold_deadline(), None);
+            assert_eq!(tracker.flags_changed(code, SECONDARY_FN, HW, 200), vec![]);
+            assert_eq!(tracker.held_due(FN_HOLD_MS), None);
+            assert_eq!(tracker.flags_changed(63, 0, HW, 400), vec![Signal::FnUp]);
+        }
     }
 
     #[test]
@@ -699,7 +1060,7 @@ mod tests {
         assert_eq!(tracker.flags_changed(COMMAND_KEY, COMMAND, HW, 0), vec![]);
         assert_eq!(
             tracker.flags_changed(63, COMMAND | SECONDARY_FN, HW, 10),
-            vec![Signal::FnDown, Signal::Other]
+            vec![Signal::FnDown(None), Signal::Other]
         );
     }
 
@@ -729,7 +1090,7 @@ mod tests {
         // And the next press is an ordinary fn down.
         assert_eq!(
             tracker.flags_changed(63, SECONDARY_FN, HW, 400),
-            vec![Signal::FnDown]
+            vec![Signal::FnDown(None)]
         );
     }
 
@@ -764,13 +1125,31 @@ mod tests {
     }
 
     /// Every line the helper writes, exactly, as `parseFnHelperLine` in
-    /// `ui/desktop/src/utils/fnKeyHelper.ts` reads them. None carries a key code.
+    /// `ui/desktop/src/utils/fnKeyHelper.ts` reads them. None carries a key code. Rewritten
+    /// from `the_held_line_and_ready_v2_are_the_lines_the_app_parses` for protocol version 3:
+    /// the ready line says 3, fn down carries `mod`, and the `chord` and `listeners` lines are
+    /// new; the held, other, permission and listener-lost lines are unchanged.
     #[test]
-    fn the_held_line_and_ready_v2_are_the_lines_the_app_parses() {
+    fn the_fn_down_chord_and_listeners_lines_are_the_lines_the_app_parses() {
+        assert_eq!(PROTOCOL_VERSION, 3);
         assert_eq!(
-            signal_line(Signal::FnDown, 1200),
-            r#"{"type":"fn","down":true,"t":1200}"#
+            signal_line(Signal::FnDown(None), 1200),
+            r#"{"type":"fn","down":true,"mod":null,"t":1200}"#
         );
+        for (modifier, word) in [
+            (Mod::Shift, "shift"),
+            (Mod::Control, "control"),
+            (Mod::Option, "option"),
+        ] {
+            assert_eq!(
+                signal_line(Signal::FnDown(Some(modifier)), 1200),
+                format!(r#"{{"type":"fn","down":true,"mod":"{word}","t":1200}}"#)
+            );
+            assert_eq!(
+                signal_line(Signal::Chord(modifier), 1250),
+                format!(r#"{{"type":"chord","mod":"{word}","t":1250}}"#)
+            );
+        }
         assert_eq!(
             signal_line(Signal::FnUp, 1500),
             r#"{"type":"fn","down":false,"t":1500}"#
@@ -782,26 +1161,82 @@ mod tests {
         assert_eq!(signal_line(Signal::Other, 7), r#"{"type":"other","t":7}"#);
         assert_eq!(
             ready_line(Permission::Granted, true, Some(2), 900),
-            r#"{"type":"ready","v":2,"permission":"granted","listening":true,"fnUsage":2,"t":900}"#
+            r#"{"type":"ready","v":3,"permission":"granted","listening":true,"fnUsage":2,"t":900}"#
         );
         assert_eq!(
             ready_line(Permission::Denied, false, None, 0),
-            r#"{"type":"ready","v":2,"permission":"denied","listening":false,"fnUsage":null,"t":0}"#
+            r#"{"type":"ready","v":3,"permission":"denied","listening":false,"fnUsage":null,"t":0}"#
         );
         assert_eq!(
             ready_line(Permission::Granted, true, Some(9), 1),
-            r#"{"type":"ready","v":2,"permission":"granted","listening":true,"fnUsage":null,"t":1}"#
+            r#"{"type":"ready","v":3,"permission":"granted","listening":true,"fnUsage":null,"t":1}"#
         );
         assert_eq!(
             permission_line(Permission::Granted),
             r#"{"type":"permission","permission":"granted"}"#
         );
         assert_eq!(LISTENER_LOST_LINE, r#"{"type":"listener-lost"}"#);
+        assert_eq!(
+            listeners_line(&["com.electron.wispr-flow".to_string()], 42),
+            r#"{"type":"listeners","apps":["com.electron.wispr-flow"],"t":42}"#
+        );
+        assert_eq!(
+            listeners_line(&[], 43),
+            r#"{"type":"listeners","apps":[],"t":43}"#
+        );
+        assert_eq!(
+            listeners_line(&["a.b".to_string(), "c-d.e".to_string()], 44),
+            r#"{"type":"listeners","apps":["a.b","c-d.e"],"t":44}"#
+        );
+        // An identifier that is not one is never written, whatever the caller hands over:
+        // no quote, backslash or control character can reach the app's parser.
+        assert_eq!(
+            listeners_line(&["a\"b".to_string(), "ok.app".to_string()], 45),
+            r#"{"type":"listeners","apps":["ok.app"],"t":45}"#
+        );
+        // The longest listeners line still fits the app's line limit.
+        let longest: Vec<String> = (0..MAX_LISTENER_APPS + 4)
+            .map(|i| format!("{i:02}{}", "x".repeat(MAX_BUNDLE_ID - 2)))
+            .collect();
+        let line = listeners_line(&longest, u64::MAX);
+        assert!(line.len() <= MAX_LINE, "{}", line.len());
+        let parsed: serde_like::Line = serde_like::parse(&line);
+        assert!(parsed.apps > 0 && parsed.apps <= MAX_LISTENER_APPS);
         // The held line is timed at its threshold: down plus FN_HOLD_MS.
         let mut tracker = FnTracker::new();
         tracker.flags_changed(63, SECONDARY_FN, HW, 1_200);
         let at = tracker.held_due(1_600).expect("held is due");
         assert_eq!(signal_line(Signal::Held, at), r#"{"type":"held","t":1500}"#);
+        // Every line is one line, inside the app's limit.
+        for line in [
+            signal_line(Signal::FnDown(Some(Mod::Option)), u64::MAX),
+            signal_line(Signal::Chord(Mod::Control), u64::MAX),
+            ready_line(Permission::Granted, true, Some(3), u64::MAX),
+        ] {
+            assert!(!line.contains('\n') && line.len() <= MAX_LINE);
+        }
+    }
+
+    /// Just enough of a reader to count a listeners line's apps without a JSON crate: the
+    /// helper links nothing but system frameworks.
+    mod serde_like {
+        pub struct Line {
+            pub apps: usize,
+        }
+        pub fn parse(line: &str) -> Line {
+            let inside = line
+                .split_once('[')
+                .and_then(|(_, rest)| rest.split_once(']'))
+                .map(|(inside, _)| inside)
+                .expect("an apps list");
+            Line {
+                apps: if inside.is_empty() {
+                    0
+                } else {
+                    inside.split(',').count()
+                },
+            }
+        }
     }
 
     #[test]
@@ -812,5 +1247,672 @@ mod tests {
         assert_eq!(parse_command("CHECK"), None);
         assert_eq!(parse_command("check now"), None);
         assert_eq!(parse_command(""), None);
+    }
+
+    // ── Protocol version 3: fn with a modifier added (DD-101) ─────────────────────────
+
+    /// R2: fn pressed while exactly one of Shift, Control or Option is held, however long
+    /// before, is that modifier's press, and it is held like a bare one.
+    #[test]
+    fn fn_with_one_held_modifier_is_a_chord_press_with_a_hold() {
+        for (code, flag, modifier) in CHORD_KEYS {
+            let mut tracker = FnTracker::new();
+            assert_eq!(tracker.flags_changed(code, flag, HW, 0), vec![]);
+            assert_eq!(
+                tracker.flags_changed(63, flag | SECONDARY_FN, HW, 5_000),
+                vec![Signal::FnDown(Some(modifier))],
+                "{modifier:?}"
+            );
+            assert_eq!(tracker.hold_deadline(), Some(5_000 + FN_HOLD_MS));
+            assert_eq!(tracker.held_due(5_000 + FN_HOLD_MS - 1), None);
+            assert_eq!(
+                tracker.held_due(5_000 + FN_HOLD_MS),
+                Some(5_000 + FN_HOLD_MS)
+            );
+            assert_eq!(
+                tracker.flags_changed(63, flag, HW, 5_600),
+                vec![Signal::FnUp]
+            );
+        }
+    }
+
+    /// R3: fn pressed with Command, or with two or more modifiers, is a shortcut of its own,
+    /// as in version 2: fn down with no modifier, then `other`, and no hold.
+    #[test]
+    fn fn_with_command_or_two_modifiers_is_still_down_then_other() {
+        for held in [
+            COMMAND,
+            SHIFT | CONTROL,
+            CONTROL | OPTION,
+            SHIFT | OPTION,
+            CONTROL | COMMAND,
+            SHIFT | CONTROL | OPTION,
+        ] {
+            let mut tracker = FnTracker::new();
+            tracker.flags_changed(COMMAND_KEY, held, HW, 0);
+            assert_eq!(
+                tracker.flags_changed(63, held | SECONDARY_FN, HW, 10),
+                vec![Signal::FnDown(None), Signal::Other],
+                "{held:#x}"
+            );
+            assert_eq!(tracker.hold_deadline(), None, "{held:#x}");
+            assert_eq!(tracker.held_due(10 + FN_HOLD_MS), None, "{held:#x}");
+        }
+    }
+
+    /// R4a: one of the three joining a bare press inside the grace, the grace's last
+    /// millisecond included, makes it that modifier's press; the hold is still timed from
+    /// fn's own down.
+    #[test]
+    fn a_modifier_inside_the_grace_makes_a_chord_and_keeps_the_hold_time() {
+        for after in [1, 50, FN_CHORD_GRACE_MS] {
+            for (code, flag, modifier) in CHORD_KEYS {
+                let mut tracker = FnTracker::new();
+                assert_eq!(
+                    tracker.flags_changed(63, SECONDARY_FN, HW, 1_000),
+                    vec![Signal::FnDown(None)]
+                );
+                assert_eq!(
+                    tracker.flags_changed(code, SECONDARY_FN | flag, HW, 1_000 + after),
+                    vec![Signal::Chord(modifier)],
+                    "{modifier:?} {after}"
+                );
+                assert_eq!(tracker.hold_deadline(), Some(1_000 + FN_HOLD_MS));
+                assert_eq!(
+                    tracker.held_due(1_000 + FN_HOLD_MS),
+                    Some(1_000 + FN_HOLD_MS)
+                );
+                assert_eq!(
+                    tracker.flags_changed(63, flag, HW, 1_500),
+                    vec![Signal::FnUp]
+                );
+            }
+        }
+    }
+
+    /// R4c: anything else added to a modifier press spoils it: a second modifier, a
+    /// different one after its own was let go, Command, and a second modifier inside the
+    /// grace of a chord.
+    #[test]
+    fn a_second_modifier_or_command_spoils_a_chord_press() {
+        // Control held before fn, then Shift, or Command.
+        for (code, flag) in [
+            (SHIFT_KEY, SHIFT),
+            (COMMAND_KEY, COMMAND),
+            (OPTION_KEY, OPTION),
+        ] {
+            let mut tracker = FnTracker::new();
+            tracker.flags_changed(CONTROL_KEY, CONTROL, HW, 0);
+            tracker.flags_changed(63, CONTROL | SECONDARY_FN, HW, 100);
+            assert_eq!(
+                tracker.flags_changed(code, CONTROL | SECONDARY_FN | flag, HW, 150),
+                vec![Signal::Other],
+                "{flag:#x}"
+            );
+            assert_eq!(tracker.hold_deadline(), None);
+            assert_eq!(tracker.held_due(100 + FN_HOLD_MS), None);
+        }
+        // Control let go, then Option: a different modifier.
+        let mut tracker = FnTracker::new();
+        tracker.flags_changed(CONTROL_KEY, CONTROL, HW, 0);
+        tracker.flags_changed(63, CONTROL | SECONDARY_FN, HW, 100);
+        assert_eq!(
+            tracker.flags_changed(CONTROL_KEY, SECONDARY_FN, HW, 150),
+            vec![]
+        );
+        assert_eq!(
+            tracker.flags_changed(OPTION_KEY, SECONDARY_FN | OPTION, HW, 160),
+            vec![Signal::Other]
+        );
+        assert_eq!(tracker.held_due(100 + FN_HOLD_MS), None);
+        // A chord made inside the grace, then a second modifier inside it too.
+        let mut tracker = FnTracker::new();
+        tracker.flags_changed(63, SECONDARY_FN, HW, 1_000);
+        assert_eq!(
+            tracker.flags_changed(CONTROL_KEY, SECONDARY_FN | CONTROL, HW, 1_030),
+            vec![Signal::Chord(Mod::Control)]
+        );
+        assert_eq!(
+            tracker.flags_changed(OPTION_KEY, SECONDARY_FN | CONTROL | OPTION, HW, 1_060),
+            vec![Signal::Other]
+        );
+        assert_eq!(tracker.held_due(1_000 + FN_HOLD_MS), None);
+        // A bare press already spoiled by a letter is not saved by a modifier.
+        let mut tracker = FnTracker::new();
+        tracker.flags_changed(63, SECONDARY_FN, HW, 2_000);
+        assert_eq!(tracker.key_down(2_010, letter()), Some(Signal::Other));
+        assert_eq!(
+            tracker.flags_changed(CONTROL_KEY, SECONDARY_FN | CONTROL, HW, 2_020),
+            vec![Signal::Other]
+        );
+        assert_eq!(tracker.held_due(2_000 + FN_HOLD_MS), None);
+    }
+
+    /// R5: letting go of the press's own modifier, before or after `held`, ends nothing: the
+    /// hold goes on until fn is released.
+    #[test]
+    fn letting_go_of_the_chord_modifier_keeps_the_hold() {
+        for (code, flag, _) in CHORD_KEYS {
+            // Pressed before fn, let go before the threshold.
+            let mut tracker = FnTracker::new();
+            tracker.flags_changed(code, flag, HW, 0);
+            tracker.flags_changed(63, flag | SECONDARY_FN, HW, 100);
+            assert_eq!(tracker.flags_changed(code, SECONDARY_FN, HW, 200), vec![]);
+            assert_eq!(tracker.hold_deadline(), Some(100 + FN_HOLD_MS));
+            assert_eq!(tracker.held_due(100 + FN_HOLD_MS), Some(100 + FN_HOLD_MS));
+            assert_eq!(tracker.flags_changed(63, 0, HW, 900), vec![Signal::FnUp]);
+
+            // Joined inside the grace, let go after `held`.
+            let mut tracker = FnTracker::new();
+            tracker.flags_changed(63, SECONDARY_FN, HW, 1_000);
+            tracker.flags_changed(code, SECONDARY_FN | flag, HW, 1_040);
+            assert_eq!(
+                tracker.held_due(1_000 + FN_HOLD_MS),
+                Some(1_000 + FN_HOLD_MS)
+            );
+            assert_eq!(tracker.flags_changed(code, SECONDARY_FN, HW, 1_500), vec![]);
+            assert_eq!(tracker.flags_changed(63, 0, HW, 2_000), vec![Signal::FnUp]);
+        }
+    }
+
+    /// R4b: the press's own modifier pressed again after it was let go, while fn is still
+    /// down, is nothing.
+    #[test]
+    fn pressing_the_chord_modifier_again_while_fn_is_down_is_nothing() {
+        for (code, flag, _) in CHORD_KEYS {
+            let mut tracker = FnTracker::new();
+            tracker.flags_changed(code, flag, HW, 0);
+            tracker.flags_changed(63, flag | SECONDARY_FN, HW, 100);
+            assert_eq!(tracker.flags_changed(code, SECONDARY_FN, HW, 150), vec![]);
+            assert_eq!(
+                tracker.flags_changed(code, SECONDARY_FN | flag, HW, 250),
+                vec![]
+            );
+            assert_eq!(tracker.held_due(100 + FN_HOLD_MS), Some(100 + FN_HOLD_MS));
+            // After the grace of a chord made by joining, too.
+            let mut tracker = FnTracker::new();
+            tracker.flags_changed(63, SECONDARY_FN, HW, 1_000);
+            tracker.flags_changed(code, SECONDARY_FN | flag, HW, 1_020);
+            assert_eq!(tracker.flags_changed(code, SECONDARY_FN, HW, 1_080), vec![]);
+            assert_eq!(
+                tracker.flags_changed(code, SECONDARY_FN | flag, HW, 1_200),
+                vec![]
+            );
+            assert_eq!(
+                tracker.held_due(1_000 + FN_HOLD_MS),
+                Some(1_000 + FN_HOLD_MS)
+            );
+        }
+    }
+
+    /// R8: `held` is given once, at the threshold, for a press with a modifier, whichever
+    /// way the modifier came, and its line is the plain `held` line.
+    #[test]
+    fn held_is_given_for_a_chord_press() {
+        let mut tracker = FnTracker::new();
+        tracker.flags_changed(CONTROL_KEY, CONTROL, HW, 0);
+        tracker.flags_changed(63, CONTROL | SECONDARY_FN, HW, 2_000);
+        // A timer that fires late still writes the threshold's time, once.
+        let at = tracker.held_due(2_450).expect("held is due");
+        assert_eq!(at, 2_000 + FN_HOLD_MS);
+        assert_eq!(signal_line(Signal::Held, at), r#"{"type":"held","t":2300}"#);
+        assert_eq!(tracker.held_due(2_500), None);
+        assert_eq!(tracker.hold_deadline(), None);
+
+        let mut tracker = FnTracker::new();
+        tracker.flags_changed(63, SECONDARY_FN, HW, 3_000);
+        tracker.flags_changed(OPTION_KEY, SECONDARY_FN | OPTION, HW, 3_090);
+        assert_eq!(tracker.held_due(3_300), Some(3_300));
+        assert_eq!(tracker.held_due(3_301), None);
+        // A modifier added after `held` is another key, as in version 2.
+        assert_eq!(
+            tracker.flags_changed(SHIFT_KEY, SECONDARY_FN | OPTION | SHIFT, HW, 3_400),
+            vec![Signal::Other]
+        );
+    }
+
+    /// R7: within the double-tap gap after a release, Shift, Control and Option from the
+    /// keyboard end nothing and leave the wait open, so the next letter still counts; Command
+    /// from the keyboard and a letter each end the wait, once. A Command a program makes up
+    /// ends nothing, as in version 2.
+    #[test]
+    fn after_a_release_shift_control_and_option_do_not_end_the_wait_but_command_and_a_letter_do() {
+        let mut tracker = tapped(1_000, 1_080);
+        for (at, (code, flag, _)) in [1_100, 1_120, 1_140].into_iter().zip(CHORD_KEYS) {
+            assert_eq!(
+                tracker.flags_changed(code, flag, HW, at),
+                vec![],
+                "{flag:#x}"
+            );
+            assert_eq!(
+                tracker.flags_changed(code, 0, HW, at + 5),
+                vec![],
+                "{flag:#x}"
+            );
+        }
+        assert_eq!(tracker.key_down(1_200, letter()), Some(Signal::Other));
+        assert_eq!(tracker.key_down(1_210, letter()), None);
+
+        let mut tracker = tapped(2_000, 2_080);
+        assert_eq!(
+            tracker.flags_changed(COMMAND_KEY, COMMAND, MADE_UP, 2_090),
+            vec![]
+        );
+        assert_eq!(
+            tracker.flags_changed(COMMAND_KEY, 0, MADE_UP, 2_095),
+            vec![]
+        );
+        assert_eq!(
+            tracker.flags_changed(COMMAND_KEY, COMMAND, HW, 2_100),
+            vec![Signal::Other]
+        );
+        assert_eq!(tracker.flags_changed(COMMAND_KEY, 0, HW, 2_110), vec![]);
+        // The window is spent: neither a letter nor Command counts again.
+        assert_eq!(tracker.key_down(2_150, letter()), None);
+        assert_eq!(
+            tracker.flags_changed(COMMAND_KEY, COMMAND, HW, 2_160),
+            vec![]
+        );
+
+        // Command with a chord modifier already held still counts.
+        let mut tracker = tapped(3_000, 3_080);
+        tracker.flags_changed(CONTROL_KEY, CONTROL, HW, 3_090);
+        assert_eq!(
+            tracker.flags_changed(COMMAND_KEY, CONTROL | COMMAND, HW, 3_100),
+            vec![Signal::Other]
+        );
+        // Past the gap nothing counts.
+        let mut tracker = tapped(4_000, 4_080);
+        assert_eq!(
+            tracker.flags_changed(COMMAND_KEY, COMMAND, HW, 4_080 + TAP_FOLLOW_MS + 1),
+            vec![]
+        );
+    }
+
+    /// A Control plus fn double-tap is two taps with no `other` between them, whether
+    /// Control stays down between the taps or is let go and pressed again, and a bare tap
+    /// followed by a Control plus fn tap is too.
+    #[test]
+    fn a_chord_double_tap_with_the_modifier_let_go_between_taps_is_two_taps() {
+        // Let go and pressed again between the taps.
+        let mut tracker = FnTracker::new();
+        let mut lines = Vec::new();
+        lines.extend(tracker.flags_changed(CONTROL_KEY, CONTROL, HW, 0));
+        lines.extend(tracker.flags_changed(63, CONTROL | SECONDARY_FN, HW, 100));
+        lines.extend(tracker.flags_changed(63, CONTROL, HW, 180));
+        lines.extend(tracker.flags_changed(CONTROL_KEY, 0, HW, 200));
+        lines.extend(tracker.flags_changed(CONTROL_KEY, CONTROL, HW, 300));
+        lines.extend(tracker.flags_changed(63, CONTROL | SECONDARY_FN, HW, 350));
+        lines.extend(tracker.flags_changed(63, CONTROL, HW, 420));
+        lines.extend(tracker.flags_changed(CONTROL_KEY, 0, HW, 450));
+        assert_eq!(
+            lines,
+            vec![
+                Signal::FnDown(Some(Mod::Control)),
+                Signal::FnUp,
+                Signal::FnDown(Some(Mod::Control)),
+                Signal::FnUp,
+            ]
+        );
+        assert_eq!(tracker.held_due(LATER), None, "two taps, no hold");
+
+        // Control held throughout.
+        let mut tracker = FnTracker::new();
+        let mut lines = Vec::new();
+        lines.extend(tracker.flags_changed(CONTROL_KEY, CONTROL, HW, 0));
+        lines.extend(tracker.flags_changed(63, CONTROL | SECONDARY_FN, HW, 100));
+        lines.extend(tracker.flags_changed(63, CONTROL, HW, 170));
+        lines.extend(tracker.flags_changed(63, CONTROL | SECONDARY_FN, HW, 300));
+        lines.extend(tracker.flags_changed(63, CONTROL, HW, 380));
+        assert_eq!(
+            lines,
+            vec![
+                Signal::FnDown(Some(Mod::Control)),
+                Signal::FnUp,
+                Signal::FnDown(Some(Mod::Control)),
+                Signal::FnUp,
+            ]
+        );
+
+        // A bare tap, then Control, then a Control plus fn tap.
+        let mut tracker = tapped(1_000, 1_080);
+        let mut lines = Vec::new();
+        lines.extend(tracker.flags_changed(CONTROL_KEY, CONTROL, HW, 1_150));
+        lines.extend(tracker.flags_changed(63, CONTROL | SECONDARY_FN, HW, 1_200));
+        lines.extend(tracker.flags_changed(63, CONTROL, HW, 1_270));
+        assert_eq!(
+            lines,
+            vec![Signal::FnDown(Some(Mod::Control)), Signal::FnUp]
+        );
+
+        // Joined inside the grace on each tap.
+        let mut tracker = FnTracker::new();
+        let mut lines = Vec::new();
+        lines.extend(tracker.flags_changed(63, SECONDARY_FN, HW, 5_000));
+        lines.extend(tracker.flags_changed(CONTROL_KEY, SECONDARY_FN | CONTROL, HW, 5_030));
+        lines.extend(tracker.flags_changed(63, CONTROL, HW, 5_090));
+        lines.extend(tracker.flags_changed(CONTROL_KEY, 0, HW, 5_100));
+        lines.extend(tracker.flags_changed(63, SECONDARY_FN, HW, 5_200));
+        lines.extend(tracker.flags_changed(CONTROL_KEY, SECONDARY_FN | CONTROL, HW, 5_220));
+        lines.extend(tracker.flags_changed(63, CONTROL, HW, 5_290));
+        assert_eq!(
+            lines,
+            vec![
+                Signal::FnDown(None),
+                Signal::Chord(Mod::Control),
+                Signal::FnUp,
+                Signal::FnDown(None),
+                Signal::Chord(Mod::Control),
+                Signal::FnUp,
+            ]
+        );
+    }
+
+    /// A press's modifier never carries over: the next bare press is bare, and a blind gap
+    /// forgets the grace.
+    #[test]
+    fn a_press_starts_with_no_modifier_of_its_own() {
+        let mut tracker = FnTracker::new();
+        tracker.flags_changed(CONTROL_KEY, CONTROL, HW, 0);
+        tracker.flags_changed(63, CONTROL | SECONDARY_FN, HW, 10);
+        tracker.flags_changed(63, CONTROL, HW, 50);
+        tracker.flags_changed(CONTROL_KEY, 0, HW, 60);
+        assert_eq!(
+            tracker.flags_changed(63, SECONDARY_FN, HW, LATER),
+            vec![Signal::FnDown(None)]
+        );
+        assert_eq!(tracker.reset_after_blind_gap(), Some(Signal::FnUp));
+        // A modifier right after the reset joins nothing.
+        assert_eq!(
+            tracker.flags_changed(CONTROL_KEY, CONTROL, HW, LATER + 10),
+            vec![]
+        );
+    }
+
+    // ── Collision detection: who else taps modifier keys ──────────────────────────────
+
+    /// `CGEventTapInformation` as CoreGraphics lays it out, measured with clang against the
+    /// macOS SDK (`sizeof` and `offsetof` of the C struct, 2026-11-27): 48 bytes, 8-byte
+    /// aligned.
+    #[test]
+    fn the_tap_information_layout_is_48_bytes() {
+        use std::mem::{align_of, offset_of, size_of};
+        assert_eq!(size_of::<CGEventTapInformation>(), 48);
+        assert_eq!(align_of::<CGEventTapInformation>(), 8);
+        assert_eq!(
+            [
+                offset_of!(CGEventTapInformation, event_tap_id),
+                offset_of!(CGEventTapInformation, tap_point),
+                offset_of!(CGEventTapInformation, options),
+                offset_of!(CGEventTapInformation, events_of_interest),
+                offset_of!(CGEventTapInformation, tapping_process),
+                offset_of!(CGEventTapInformation, process_being_tapped),
+                offset_of!(CGEventTapInformation, enabled),
+                offset_of!(CGEventTapInformation, min_usec_latency),
+                offset_of!(CGEventTapInformation, avg_usec_latency),
+                offset_of!(CGEventTapInformation, max_usec_latency),
+            ],
+            [0, 4, 8, 16, 24, 28, 32, 36, 40, 44]
+        );
+    }
+
+    const OWN_PID: i32 = 4_242;
+    const WISPR: &str = "/Applications/Wispr Flow.app/Contents/MacOS/Wispr Flow";
+    /// flagsChanged and key down, as most hotkey apps ask.
+    const KEYS_MASK: u64 = (1 << 12) | (1 << 10);
+
+    fn tap(pid: i32, path: Option<&str>, bundle: Option<&str>) -> ListenerTap {
+        ListenerTap {
+            enabled: true,
+            events_of_interest: KEYS_MASK,
+            pid,
+            path: path.map(str::to_string),
+            bundle: bundle.map(str::to_string),
+        }
+    }
+
+    #[test]
+    fn listener_bundles_drop_apple_system_unbundled_own_and_disabled_taps() {
+        let taps = vec![
+            tap(100, Some(WISPR), Some("com.electron.wispr-flow")),
+            // Siri, as on every Mac.
+            tap(
+                101,
+                Some("/System/Applications/Siri.app/Contents/MacOS/Siri"),
+                Some("com.apple.Siri"),
+            ),
+            // An Apple bundle outside /System.
+            tap(
+                102,
+                Some("/Applications/Xcode.app/Contents/MacOS/Xcode"),
+                Some("com.apple.dt.Xcode"),
+            ),
+            // System processes with no bundle, and one whose path could not be read.
+            tap(103, Some("/usr/libexec/universalaccessd"), None),
+            tap(104, None, None),
+            tap(
+                105,
+                Some("/Library/Apple/System/Library/Thing.app/Contents/MacOS/Thing"),
+                Some("org.example.thing"),
+            ),
+            tap(
+                106,
+                Some("/System/Library/CoreServices/Other.app/Contents/MacOS/Other"),
+                Some("org.example.other"),
+            ),
+            // A third-party process with no bundle.
+            tap(107, Some("/opt/homebrew/bin/skhd"), None),
+            // This helper itself, and another process of the app it sits in.
+            tap(
+                OWN_PID,
+                Some("/Applications/Biorouter.app/Contents/Resources/bin/biorouter-fnkey"),
+                Some("org.biorouter.desktop"),
+            ),
+            tap(
+                108,
+                Some("/Applications/Biorouter.app/Contents/MacOS/Biorouter"),
+                Some("org.biorouter.desktop"),
+            ),
+            // A disabled tap, as Logi Options+ held one.
+            ListenerTap {
+                enabled: false,
+                ..tap(
+                    109,
+                    Some("/Applications/Logi Options+.app/Contents/MacOS/x"),
+                    Some("com.logi.cp-dev-mgr"),
+                )
+            },
+        ];
+        assert_eq!(
+            listener_bundles(&taps, OWN_PID, Some("org.biorouter.desktop")),
+            vec!["com.electron.wispr-flow".to_string()]
+        );
+        // Without a bundle of its own (a dev build), the app's other process counts.
+        assert_eq!(
+            listener_bundles(&taps, OWN_PID, None),
+            vec![
+                "com.electron.wispr-flow".to_string(),
+                "org.biorouter.desktop".to_string()
+            ]
+        );
+        assert!(is_system_process("/System/x", "org.example"));
+        assert!(is_system_process("/usr/sbin/x", "org.example"));
+        assert!(is_system_process("/Library/Apple/x", "org.example"));
+        assert!(is_system_process("/Applications/X.app/x", "com.apple.X"));
+        assert!(!is_system_process(
+            "/Applications/X.app/x",
+            "com.applesauce.X"
+        ));
+        assert!(!is_system_process(
+            "/Library/Application Support/x",
+            "org.example"
+        ));
+        assert!(!is_system_process("/Users/me/System/x", "org.example"));
+    }
+
+    #[test]
+    fn count_only_taps_on_flags_changed() {
+        assert!(counts_as_listener(true, 1 << 12, 100, OWN_PID));
+        assert!(counts_as_listener(true, KEYS_MASK, 100, OWN_PID));
+        assert!(counts_as_listener(true, u64::MAX, 100, OWN_PID));
+        // Key down alone, mouse events, nothing.
+        assert!(!counts_as_listener(true, 1 << 10, 100, OWN_PID));
+        assert!(!counts_as_listener(
+            true,
+            (1 << 1) | (1 << 2) | (1 << 5),
+            100,
+            OWN_PID
+        ));
+        assert!(!counts_as_listener(true, 0, 100, OWN_PID));
+        // Disabled, or this process's own tap.
+        assert!(!counts_as_listener(false, 1 << 12, 100, OWN_PID));
+        assert!(!counts_as_listener(true, 1 << 12, OWN_PID, OWN_PID));
+
+        let mouse_only = ListenerTap {
+            events_of_interest: (1 << 1) | (1 << 2),
+            ..tap(100, Some(WISPR), Some("com.electron.wispr-flow"))
+        };
+        let keys_only = ListenerTap {
+            events_of_interest: 1 << 10,
+            ..tap(
+                101,
+                Some("/Applications/Keys.app/Contents/MacOS/Keys"),
+                Some("org.example.keys"),
+            )
+        };
+        let flags = ListenerTap {
+            events_of_interest: 1 << 12,
+            ..tap(
+                102,
+                Some("/Applications/Flags.app/Contents/MacOS/Flags"),
+                Some("org.example.flags"),
+            )
+        };
+        assert_eq!(
+            listener_bundles(&[mouse_only, keys_only, flags], OWN_PID, None),
+            vec!["org.example.flags".to_string()]
+        );
+    }
+
+    #[test]
+    fn the_outermost_app_names_the_bundle() {
+        // A helper app inside an app: the outer one is the bundle.
+        assert_eq!(
+            outermost_app(
+                "/Applications/Wispr Flow.app/Contents/Frameworks/Wispr Flow Helper.app/Contents/MacOS/Wispr Flow Helper"
+            ),
+            Some("/Applications/Wispr Flow.app")
+        );
+        assert_eq!(outermost_app(WISPR), Some("/Applications/Wispr Flow.app"));
+        assert_eq!(
+            outermost_app("/Users/me/Applications/Tool.app/Contents/MacOS/tool"),
+            Some("/Users/me/Applications/Tool.app")
+        );
+        // No app in the path, a name that only starts like one, or an app with no name.
+        assert_eq!(outermost_app("/opt/homebrew/bin/skhd"), None);
+        assert_eq!(outermost_app("/Applications/My.application/bin/x"), None);
+        assert_eq!(outermost_app("/Applications/X.app"), None);
+        assert_eq!(outermost_app("/weird/.app/Contents/MacOS/x"), None);
+        assert_eq!(outermost_app(""), None);
+        assert_eq!(outermost_app("relative/Thing.app/Contents/MacOS/x"), None);
+    }
+
+    #[test]
+    fn listener_bundles_are_checked_sorted_deduplicated_and_capped_at_16() {
+        let mut taps = vec![
+            tap(
+                1,
+                Some("/Applications/B.app/Contents/MacOS/b"),
+                Some("org.example.b"),
+            ),
+            tap(
+                2,
+                Some("/Applications/A.app/Contents/MacOS/a"),
+                Some("org.example.a"),
+            ),
+            // The same app twice (two taps, or two processes).
+            tap(
+                3,
+                Some("/Applications/A.app/Contents/MacOS/a"),
+                Some("org.example.a"),
+            ),
+            // Not identifiers: a space, a quote, a slash, empty, too long, not ASCII.
+            tap(
+                4,
+                Some("/Applications/C.app/Contents/MacOS/c"),
+                Some("org.example c"),
+            ),
+            tap(
+                5,
+                Some("/Applications/D.app/Contents/MacOS/d"),
+                Some("org.\"example"),
+            ),
+            tap(
+                6,
+                Some("/Applications/E.app/Contents/MacOS/e"),
+                Some("org/example"),
+            ),
+            tap(7, Some("/Applications/F.app/Contents/MacOS/f"), Some("")),
+            tap(
+                8,
+                Some("/Applications/G.app/Contents/MacOS/g"),
+                Some(&"g".repeat(MAX_BUNDLE_ID + 1)),
+            ),
+            tap(
+                9,
+                Some("/Applications/H.app/Contents/MacOS/h"),
+                Some("org.exämple"),
+            ),
+        ];
+        assert_eq!(
+            listener_bundles(&taps, OWN_PID, None),
+            vec!["org.example.a".to_string(), "org.example.b".to_string()]
+        );
+        assert!(valid_bundle_id(&"g".repeat(MAX_BUNDLE_ID)));
+        assert!(valid_bundle_id("com.electron.wispr-flow"));
+        assert!(valid_bundle_id("ABC.def-9"));
+        for bad in ["", "a b", "a_b", "a\nb", "a\"b", "a\\b", "ä"] {
+            assert!(!valid_bundle_id(bad), "{bad:?}");
+        }
+
+        // Twenty distinct apps: the first sixteen by name.
+        taps.clear();
+        for i in (0..20).rev() {
+            taps.push(tap(
+                100 + i,
+                Some("/Applications/X.app/Contents/MacOS/x"),
+                Some(&format!("org.example.app{i:02}")),
+            ));
+        }
+        let listed = listener_bundles(&taps, OWN_PID, None);
+        assert_eq!(listed.len(), MAX_LISTENER_APPS);
+        let want: Vec<String> = (0..16).map(|i| format!("org.example.app{i:02}")).collect();
+        assert_eq!(listed, want);
+    }
+
+    /// A listeners line goes out after ready and on the command whatever it says, and
+    /// otherwise only when the set changed.
+    #[test]
+    fn a_listeners_line_is_written_when_asked_or_when_the_set_changes() {
+        let wispr = vec!["com.electron.wispr-flow".to_string()];
+        assert!(
+            listeners_to_write(None, &[], false),
+            "the first one, after ready"
+        );
+        assert!(listeners_to_write(None, &wispr, false));
+        assert!(!listeners_to_write(Some(&wispr), &wispr, false));
+        assert!(listeners_to_write(Some(&wispr), &wispr, true), "asked");
+        assert!(listeners_to_write(Some(&wispr), &[], false));
+        assert!(listeners_to_write(Some(&[]), &wispr, false));
+        assert!(!listeners_to_write(Some(&[]), &[], false));
+    }
+
+    #[test]
+    fn listeners_is_an_exact_command_word() {
+        assert_eq!(parse_command("listeners"), Some(Command::Listeners));
+        assert_eq!(parse_command(" listeners\n"), Some(Command::Listeners));
+        assert_eq!(parse_command("LISTENERS"), None);
+        assert_eq!(parse_command("listeners now"), None);
+        assert_eq!(parse_command("listener"), None);
     }
 }

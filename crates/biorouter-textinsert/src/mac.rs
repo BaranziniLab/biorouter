@@ -7,7 +7,12 @@
 //! the Text Input Sources API want them. A reader thread answers `front` and the access requests
 //! at once. One worker thread pastes, one insert at a time, and waits (for the modifiers, for
 //! the restore) off the main thread, so a `front` asked while an insert is under way is not
-//! kept waiting.
+//! kept waiting. Because the worker finishes an insert, the restore included, before it takes
+//! the next, two dictations in a row each snapshot what the person copied, never the text of
+//! the one before.
+//!
+//! What an insert needs from the system goes through [`Desk`], so the worker's own loop runs in
+//! a test on a private pasteboard with a post that only records what it would have pasted.
 
 use std::ffi::c_void;
 use std::io::Write;
@@ -27,11 +32,10 @@ use objc2_foundation::NSString;
 
 use crate::pasteboard;
 use crate::protocol::{
-    access_line, front_line, insert_refusal, inserted_line, modifiers_held, parse_args,
-    parse_request, past_deadline, paste_flags, ready_line, recover_id, refused_line,
-    reported_bundle, reported_pid, v_key_code, FrontFacts, InsertFacts, LineReader, Next, Op,
-    Options, Parsed, Refusal, Request, Text, ANSI_V_KEY_CODE, MAX_REQUEST_LINE, MODIFIER_POLL,
-    MODIFIER_WAIT, RESTORE_DELAY,
+    access_line, front_line, insert_refusal, inserted_line, may_post, parse_args, parse_request,
+    paste_flags, ready_line, recover_id, refused_line, reported_bundle, reported_pid,
+    restore_delay, v_key_code, wait_for_release, FrontFacts, InsertFacts, LineReader, Next, Op,
+    Options, Parsed, Refusal, Request, Restored, Text, ANSI_V_KEY_CODE, MAX_REQUEST_LINE,
 };
 
 type CFTypeRef = *const c_void;
@@ -234,16 +238,6 @@ fn post_command_v(pid: i32, key_code: u16) -> bool {
     .is_some()
 }
 
-/// Wait, briefly, for the person to let go of the modifiers.
-fn wait_for_modifiers() {
-    let started = Instant::now();
-    while modifiers_held(CGEventSource::flags_state(CGEventSourceStateID::HIDSystemState).0)
-        && started.elapsed() < MODIFIER_WAIT
-    {
-        std::thread::sleep(MODIFIER_POLL);
-    }
-}
-
 /// Whether `pid` may receive the paste now.
 fn check(pid: i32) -> Result<(), Refusal> {
     let post_allowed = post_allowed();
@@ -262,11 +256,24 @@ fn check(pid: i32) -> Result<(), Refusal> {
     }
 }
 
-fn in_time(received: Instant) -> Result<(), Refusal> {
-    if past_deadline(received.elapsed()) {
-        Err(Refusal::Failed)
-    } else {
+/// When an insert's request arrived, and when the worker began it: later, for an insert that
+/// waited in the queue for the one before it to finish.
+#[derive(Clone, Copy)]
+struct Times {
+    received: Instant,
+    started: Instant,
+}
+
+/// Whether the paste of `chars` characters may still be posted at `now` ([`may_post`]).
+fn in_time(now: Instant, times: Times, chars: usize) -> Result<(), Refusal> {
+    if may_post(
+        now.saturating_duration_since(times.received),
+        now.saturating_duration_since(times.started),
+        chars,
+    ) {
         Ok(())
+    } else {
+        Err(Refusal::Failed)
     }
 }
 
@@ -279,57 +286,120 @@ struct Kept(pasteboard::Snapshot);
 // thread, and retain counts are atomic. It is never read off the main thread.
 unsafe impl Send for Kept {}
 
+/// What an insert needs from the system. [`MacDesk`] is the real one; a test's stands in with a
+/// private pasteboard and a post that records.
+trait Desk {
+    /// Whether `pid` may receive the paste now.
+    fn check(&self, pid: i32) -> Result<(), Refusal>;
+    /// The key code that types `v` in the current layout.
+    fn v_key_code(&self) -> u16;
+    /// Run `work` with the pasteboard inserts go through, on the thread AppKit wants it on.
+    fn with_pasteboard<T: Send>(&self, work: impl FnOnce(&NSPasteboard) -> T + Send) -> T;
+    /// The modifiers the HID system says are down now.
+    fn modifier_flags(&self) -> u64;
+    /// Post Command-V to `pid`.
+    fn post(&self, pid: i32, key_code: u16) -> bool;
+    /// Wait this long.
+    fn pause(&self, wait: Duration);
+    /// The clock an insert's times are kept on, callable from the main thread too.
+    fn clock(&self) -> &(dyn Fn() -> Instant + Sync);
+}
+
+/// The system itself: the main thread for AppKit, the HID system's flags, the real post.
+struct MacDesk;
+
+impl Desk for MacDesk {
+    fn check(&self, pid: i32) -> Result<(), Refusal> {
+        check(pid)
+    }
+
+    fn v_key_code(&self) -> u16 {
+        on_main(layout_v_key_code)
+    }
+
+    fn with_pasteboard<T: Send>(&self, work: impl FnOnce(&NSPasteboard) -> T + Send) -> T {
+        on_main(|| autoreleasepool(|_| work(&target_pasteboard())))
+    }
+
+    fn modifier_flags(&self) -> u64 {
+        CGEventSource::flags_state(CGEventSourceStateID::HIDSystemState).0
+    }
+
+    fn post(&self, pid: i32, key_code: u16) -> bool {
+        post_command_v(pid, key_code)
+    }
+
+    fn pause(&self, wait: Duration) {
+        std::thread::sleep(wait);
+    }
+
+    fn clock(&self) -> &(dyn Fn() -> Instant + Sync) {
+        &Instant::now
+    }
+}
+
 /// One insert: judge, keep the pasteboard, write the text, look again, paste, wait, put the
-/// pasteboard back. Whatever happens after the text is written, the pasteboard is put back.
+/// pasteboard back. Whatever happens after the text is written, the pasteboard is put back, and
+/// an insert that pasted answers how that left it.
 ///
 /// The pasteboard is read and written on the main thread: reading a type the pasteboard derives
 /// (or another app promised) fulfils it synchronously, which AppKit expects there.
-fn paste(pid: i32, text: &Text, received: Instant) -> Result<(), Refusal> {
-    check(pid)?;
-    let key_code = on_main(layout_v_key_code);
-    let prepared = on_main(|| {
-        autoreleasepool(|_| {
-            let pasteboard = target_pasteboard();
-            let kept = pasteboard::snapshot(&pasteboard);
-            in_time(received)?;
-            let written = pasteboard::write_transient_text(&pasteboard, text.as_str());
-            Ok((Kept(kept), written))
-        })
+fn paste(desk: &impl Desk, pid: i32, text: &Text, times: Times) -> Result<Restored, Refusal> {
+    desk.check(pid)?;
+    let key_code = desk.v_key_code();
+    let now = desk.clock();
+    let chars = text.as_str().chars().count();
+    let prepared = desk.with_pasteboard(|pasteboard| {
+        let kept = pasteboard::snapshot(pasteboard);
+        // A slow snapshot (another app fulfilling what it promised) can use up the time.
+        in_time(now(), times, chars)?;
+        let written = pasteboard::write_transient_text(pasteboard, text.as_str());
+        Ok((Kept(kept), written))
     });
     let (kept, written) = prepared?;
     let outcome = if written.ok {
-        wait_for_modifiers();
+        // Wait, briefly, for the person to let go of the modifiers: a Control still down after
+        // Control plus fn would otherwise reach the app as Control-Command-V.
+        let waiting = now();
+        wait_for_release(
+            || desk.modifier_flags(),
+            || now().saturating_duration_since(waiting),
+            |wait| desk.pause(wait),
+        );
         // The last look: a password field focused, or another app brought forward, while the
         // text was being prepared.
-        check(pid).and_then(|()| in_time(received)).and_then(|()| {
-            if post_command_v(pid, key_code) {
-                Ok(())
-            } else {
-                Err(Refusal::Failed)
-            }
-        })
+        desk.check(pid)
+            .and_then(|()| in_time(now(), times, chars))
+            .and_then(|()| {
+                if desk.post(pid, key_code) {
+                    Ok(())
+                } else {
+                    Err(Refusal::Failed)
+                }
+            })
     } else {
         Err(Refusal::Failed)
     };
     if outcome.is_ok() {
-        std::thread::sleep(RESTORE_DELAY);
+        desk.pause(restore_delay(chars));
     }
-    on_main(move || {
+    let restored = desk.with_pasteboard(move |pasteboard| {
         // The whole wrapper moves to the main thread, not only the snapshot inside it.
         let kept = kept;
-        autoreleasepool(|_| pasteboard::restore(&target_pasteboard(), kept.0, written))
+        pasteboard::put_back(pasteboard, kept.0, written)
     });
-    outcome
+    outcome.map(|()| restored)
 }
 
 struct Job {
     id: u64,
     pid: i32,
     text: Text,
+    /// When its request was read, on the desk's clock.
     received: Instant,
 }
 
-fn insert(job: Job) -> String {
+fn insert(desk: &impl Desk, job: Job) -> String {
     let Job {
         id,
         pid,
@@ -339,12 +409,25 @@ fn insert(job: Job) -> String {
     if CLOSING.load(Ordering::Acquire) {
         return refused_line(id, Refusal::Failed);
     }
-    let outcome = autoreleasepool(|_| paste(pid, &text, received));
+    // Begun now: after the insert before it, its restore included, for one that waited (F13).
+    let times = Times {
+        received,
+        started: (desk.clock())(),
+    };
+    let outcome = autoreleasepool(|_| paste(desk, pid, &text, times));
     // Zeroed here, before the answer is written.
     drop(text);
     match outcome {
-        Ok(()) => inserted_line(id),
+        Ok(restored) => inserted_line(id, restored),
         Err(refusal) => refused_line(id, refusal),
+    }
+}
+
+/// The worker: one insert at a time, in the order the app asked, each answered once it is
+/// finished, its restore included, and before the next one begins.
+fn run_worker(desk: &impl Desk, queue: mpsc::Receiver<Job>, mut answer: impl FnMut(&str)) {
+    for job in queue {
+        answer(&insert(desk, job));
     }
 }
 
@@ -404,10 +487,7 @@ pub fn run() {
     let (jobs, queue) = mpsc::channel::<Job>();
     let (finished, worker_done) = mpsc::channel::<()>();
     std::thread::spawn(move || {
-        for job in queue {
-            let answer = insert(job);
-            emit(&answer);
-        }
+        run_worker(&MacDesk, queue, emit);
         let _ = finished.send(());
     });
     std::thread::spawn(move || {
@@ -430,7 +510,445 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use objc2::msg_send;
+    use objc2::rc::autoreleasepool;
+    use objc2::runtime::ProtocolObject;
+    use objc2_app_kit::{
+        NSPasteboardItem, NSPasteboardTypeRTF, NSPasteboardTypeString, NSPasteboardWriting,
+    };
     use objc2_core_graphics::{CGEventField, CGEventType};
+    use objc2_foundation::{NSArray, NSData};
+    use std::cell::{Cell, RefCell};
+    use std::collections::VecDeque;
+    use std::sync::atomic::AtomicU64;
+    use std::sync::Arc;
+
+    /// `kCGEventFlagMaskControl`.
+    const CONTROL: u64 = 0x0004_0000;
+
+    /// The worker's system for a test: a private pasteboard of its own (released when the test
+    /// ends, so no test touches the general one), a post that records the text the pasteboard
+    /// held when it was posted, pauses that are only recorded, and the modifiers it is told. Its
+    /// clock moves only by those pauses and by the time it is told the pasteboard work takes.
+    struct TestDesk {
+        pasteboard: Retained<NSPasteboard>,
+        /// Answers to `modifier_flags`, one per read; nothing held once they run out.
+        flags: RefCell<VecDeque<u64>>,
+        reads: Cell<usize>,
+        /// The text on the pasteboard at each post, and how many flag reads came before it.
+        posts: RefCell<Vec<(Option<String>, usize)>>,
+        pauses: RefCell<Vec<Duration>>,
+        checks: Cell<usize>,
+        /// The check (counted from 1) that finds another app in front.
+        refuse_check: Option<usize>,
+        /// Whether a post fails, as `CGEventPostToPid` can when no event could be made.
+        fail_post: bool,
+        /// How long each pasteboard visit takes on the clock, in order; nothing once they run out.
+        pasteboard_costs: RefCell<VecDeque<Duration>>,
+        /// The clock: nanoseconds past `now`'s start.
+        ticks: Arc<AtomicU64>,
+        now: Box<dyn Fn() -> Instant + Sync>,
+    }
+
+    impl TestDesk {
+        fn new() -> Self {
+            let ticks = Arc::new(AtomicU64::new(0));
+            let start = Instant::now();
+            let read = Arc::clone(&ticks);
+            Self {
+                pasteboard: NSPasteboard::pasteboardWithUniqueName(),
+                flags: RefCell::new(VecDeque::new()),
+                reads: Cell::new(0),
+                posts: RefCell::new(Vec::new()),
+                pauses: RefCell::new(Vec::new()),
+                checks: Cell::new(0),
+                refuse_check: None,
+                fail_post: false,
+                pasteboard_costs: RefCell::new(VecDeque::new()),
+                ticks,
+                now: Box::new(move || start + Duration::from_nanos(read.load(Ordering::SeqCst))),
+            }
+        }
+
+        fn advance(&self, by: Duration) {
+            let nanos = u64::try_from(by.as_nanos()).expect("a test's time fits");
+            self.ticks.fetch_add(nanos, Ordering::SeqCst);
+        }
+
+        /// One item per slice, each with its types and their bytes.
+        fn put_items(&self, items: &[&[(&NSString, &[u8])]]) {
+            self.pasteboard.clearContents();
+            let items: Vec<Retained<ProtocolObject<dyn NSPasteboardWriting>>> = items
+                .iter()
+                .map(|types| {
+                    let item = NSPasteboardItem::new();
+                    for (kind, bytes) in *types {
+                        assert!(item.setData_forType(&NSData::with_bytes(bytes), kind));
+                    }
+                    ProtocolObject::from_retained(item)
+                })
+                .collect();
+            assert!(self
+                .pasteboard
+                .writeObjects(&NSArray::from_retained_slice(&items)));
+        }
+
+        fn text(&self) -> Option<String> {
+            // SAFETY: an AppKit constant.
+            self.pasteboard
+                .stringForType(unsafe { NSPasteboardTypeString })
+                .map(|text| text.to_string())
+        }
+
+        /// Every item, every type and its bytes.
+        fn contents(&self) -> Vec<Vec<(String, Vec<u8>)>> {
+            self.pasteboard
+                .pasteboardItems()
+                .map(|items| {
+                    items
+                        .iter()
+                        .map(|item| {
+                            item.types()
+                                .iter()
+                                .map(|kind| {
+                                    let data = item.dataForType(&kind).map(|data| data.to_vec());
+                                    (kind.to_string(), data.unwrap_or_default())
+                                })
+                                .collect()
+                        })
+                        .collect()
+                })
+                .unwrap_or_default()
+        }
+
+        fn put(&self, types: &[(&NSString, &[u8])]) {
+            self.pasteboard.clearContents();
+            let item = NSPasteboardItem::new();
+            for (kind, bytes) in types {
+                assert!(item.setData_forType(&NSData::with_bytes(bytes), kind));
+            }
+            let items: Vec<Retained<ProtocolObject<dyn NSPasteboardWriting>>> =
+                vec![ProtocolObject::from_retained(item)];
+            assert!(self
+                .pasteboard
+                .writeObjects(&NSArray::from_retained_slice(&items)));
+        }
+    }
+
+    impl Drop for TestDesk {
+        fn drop(&mut self) {
+            // SAFETY: `releaseGlobally` takes no arguments and returns nothing; the pasteboard is
+            // not used after it.
+            let () = unsafe { msg_send![&*self.pasteboard, releaseGlobally] };
+        }
+    }
+
+    impl Desk for TestDesk {
+        fn check(&self, _pid: i32) -> Result<(), Refusal> {
+            self.checks.set(self.checks.get() + 1);
+            if Some(self.checks.get()) == self.refuse_check {
+                Err(Refusal::TargetChanged)
+            } else {
+                Ok(())
+            }
+        }
+
+        fn v_key_code(&self) -> u16 {
+            ANSI_V_KEY_CODE
+        }
+
+        fn with_pasteboard<T: Send>(&self, work: impl FnOnce(&NSPasteboard) -> T + Send) -> T {
+            if let Some(cost) = self.pasteboard_costs.borrow_mut().pop_front() {
+                self.advance(cost);
+            }
+            work(&self.pasteboard)
+        }
+
+        fn modifier_flags(&self) -> u64 {
+            self.reads.set(self.reads.get() + 1);
+            self.flags.borrow_mut().pop_front().unwrap_or(0)
+        }
+
+        fn post(&self, _pid: i32, _key_code: u16) -> bool {
+            self.posts
+                .borrow_mut()
+                .push((self.text(), self.reads.get()));
+            !self.fail_post
+        }
+
+        fn pause(&self, wait: Duration) {
+            self.pauses.borrow_mut().push(wait);
+            self.advance(wait);
+        }
+
+        fn clock(&self) -> &(dyn Fn() -> Instant + Sync) {
+            &*self.now
+        }
+    }
+
+    /// A request read now on `desk`'s clock.
+    fn job(desk: &TestDesk, id: u64, text: &str) -> Job {
+        job_at(id, text, (desk.now)())
+    }
+
+    fn job_at(id: u64, text: &str, received: Instant) -> Job {
+        Job {
+            id,
+            pid: 501,
+            text: Text::new(text.to_string()),
+            received,
+        }
+    }
+
+    fn worker_answers(desk: &TestDesk, jobs: Vec<Job>) -> Vec<serde_json::Value> {
+        let (send, queue) = mpsc::channel();
+        for job in jobs {
+            send.send(job).unwrap();
+        }
+        drop(send);
+        let mut answers = Vec::new();
+        run_worker(desk, queue, |line| {
+            answers.push(serde_json::from_str(line).expect("an answer is JSON"))
+        });
+        answers
+    }
+
+    /// F13 (W-A4): two dictations in a row into another app. The worker finishes the first,
+    /// its restore included, before it takes the second, so the second snapshot is of what the
+    /// person copied, not of the first text, and the clipboard ends as it began. The first
+    /// paste waits for a Control still held after Control plus fn (F19); each restore waits as
+    /// long as its own text asks (F8).
+    #[test]
+    fn two_inserts_in_a_row_snapshot_the_original_not_the_first_text() {
+        autoreleasepool(|_| {
+            let desk = TestDesk::new();
+            // SAFETY: AppKit constants.
+            let (string, rtf) = unsafe { (NSPasteboardTypeString, NSPasteboardTypeRTF) };
+            desk.put(&[
+                (string, b"what the person copied".as_slice()),
+                (rtf, br"{\rtf1\ansi what the {\b person} copied}".as_slice()),
+            ]);
+            let before = desk.contents();
+            desk.flags.borrow_mut().extend([CONTROL, CONTROL]);
+            let long = "word ".repeat(4_000);
+
+            let answers = worker_answers(
+                &desk,
+                vec![job(&desk, 1, "first dictation"), job(&desk, 2, &long)],
+            );
+
+            assert_eq!(
+                answers,
+                vec![
+                    serde_json::json!({"id":1,"type":"inserted","restored":"all"}),
+                    serde_json::json!({"id":2,"type":"inserted","restored":"all"}),
+                ]
+            );
+            let posts = desk.posts.borrow().clone();
+            assert_eq!(
+                posts,
+                vec![
+                    (Some("first dictation".to_string()), 3),
+                    (Some(long.clone()), 4),
+                ],
+                "each paste saw its own text, the first only once Control was let go"
+            );
+            assert_eq!(
+                *desk.pauses.borrow(),
+                vec![
+                    crate::protocol::MODIFIER_POLL,
+                    crate::protocol::MODIFIER_POLL,
+                    restore_delay("first dictation".chars().count()),
+                    restore_delay(long.chars().count()),
+                ]
+            );
+            assert_eq!(
+                restore_delay(long.chars().count()),
+                Duration::from_millis(600)
+            );
+            assert_eq!(desk.contents(), before, "the clipboard ends as it began");
+        });
+    }
+
+    /// An insert refused at the last look still puts the clipboard back, posts nothing, and
+    /// the next insert goes ahead.
+    #[test]
+    fn a_refused_insert_still_puts_the_clipboard_back() {
+        autoreleasepool(|_| {
+            let mut desk = TestDesk::new();
+            // The first insert's second check: another app came to the front.
+            desk.refuse_check = Some(2);
+            // SAFETY: an AppKit constant.
+            let string = unsafe { NSPasteboardTypeString };
+            desk.put(&[(string, b"what the person copied".as_slice())]);
+            let before = desk.contents();
+            let answers =
+                worker_answers(&desk, vec![job(&desk, 7, "first"), job(&desk, 8, "second")]);
+            assert_eq!(
+                answers,
+                vec![
+                    serde_json::json!({"id":7,"type":"refused","reason":"target-changed"}),
+                    serde_json::json!({"id":8,"type":"inserted","restored":"all"}),
+                ]
+            );
+            assert_eq!(desk.posts.borrow().len(), 1);
+            assert_eq!(desk.contents(), before);
+        });
+    }
+
+    /// A Command-V that could not be posted (no event could be made): the answer is `failed`,
+    /// so the app copies the text; the pasteboard is put back at once, every item and type of
+    /// it, with no restore delay, because nothing was pasted that could still read the text;
+    /// the dictated text is not left on it; and the next insert goes ahead.
+    #[test]
+    fn a_failed_post_answers_failed_and_puts_everything_back_at_once() {
+        autoreleasepool(|_| {
+            let mut desk = TestDesk::new();
+            desk.fail_post = true;
+            // SAFETY: AppKit constants.
+            let (string, rtf) = unsafe { (NSPasteboardTypeString, NSPasteboardTypeRTF) };
+            let private = NSString::from_str("org.biorouter.test.private-kind");
+            desk.put_items(&[
+                &[
+                    (string, b"what the person copied".as_slice()),
+                    (rtf, br"{\rtf1\ansi what the {\b person} copied}".as_slice()),
+                    (&*private, [0_u8, 1, 2, 255].as_slice()),
+                ],
+                &[(&*private, b"a second item".as_slice())],
+            ]);
+            let before = desk.contents();
+            assert_eq!(before.len(), 2, "two items to put back");
+
+            let answers = worker_answers(&desk, vec![job(&desk, 4, "dictated words")]);
+
+            assert_eq!(
+                answers,
+                vec![serde_json::json!({"id":4,"type":"refused","reason":"failed"})]
+            );
+            assert_eq!(
+                *desk.posts.borrow(),
+                vec![(Some("dictated words".to_string()), 1)],
+                "one Command-V was tried, with the text on the pasteboard"
+            );
+            assert!(
+                desk.pauses.borrow().is_empty(),
+                "no restore delay after a post that failed"
+            );
+            assert_eq!(desk.contents(), before, "every item and type comes back");
+            assert_ne!(desk.text().as_deref(), Some("dictated words"));
+
+            // The worker goes on: the next insert pastes.
+            desk.fail_post = false;
+            let answers = worker_answers(&desk, vec![job(&desk, 5, "next words")]);
+            assert_eq!(
+                answers,
+                vec![serde_json::json!({"id":5,"type":"inserted","restored":"all"})]
+            );
+            assert_eq!(desk.contents(), before);
+        });
+    }
+
+    /// F13: the next dictation's text arrives while the first is still pasting, and the first
+    /// is slow (its snapshot waited 1.8 s for an app fulfilling what it promised, and Control
+    /// was still down for 150 ms). The second begins when the first has put the clipboard back,
+    /// 2.15 s after its request arrived, and is pasted: its two seconds count from then.
+    #[test]
+    fn an_insert_queued_behind_a_slow_one_is_still_pasted() {
+        autoreleasepool(|_| {
+            let desk = TestDesk::new();
+            // SAFETY: AppKit constants.
+            let (string, rtf) = unsafe { (NSPasteboardTypeString, NSPasteboardTypeRTF) };
+            desk.put(&[
+                (string, b"what the person copied".as_slice()),
+                (rtf, br"{\rtf1\ansi what the {\b person} copied}".as_slice()),
+            ]);
+            let before = desk.contents();
+            let ms = Duration::from_millis;
+            desk.pasteboard_costs.borrow_mut().push_back(ms(1_800));
+            desk.flags.borrow_mut().extend([CONTROL; 15]);
+            let start = (desk.now)();
+
+            let answers = worker_answers(
+                &desk,
+                vec![
+                    job_at(1, "first dictation", start),
+                    job_at(2, "second dictation", start + ms(200)),
+                ],
+            );
+
+            assert_eq!(
+                answers,
+                vec![
+                    serde_json::json!({"id":1,"type":"inserted","restored":"all"}),
+                    serde_json::json!({"id":2,"type":"inserted","restored":"all"}),
+                ]
+            );
+            assert_eq!(
+                *desk.posts.borrow(),
+                vec![
+                    (Some("first dictation".to_string()), 16),
+                    (Some("second dictation".to_string()), 17),
+                ],
+                "each paste saw its own text"
+            );
+            // The first ended at 2.35 s (1.8 s, 150 ms of Control, 400 ms before the restore),
+            // the second 400 ms later.
+            assert_eq!((desk.now)().saturating_duration_since(start), ms(2_750));
+            assert_eq!(desk.contents(), before, "the clipboard ends as it began");
+        });
+    }
+
+    /// F9 with F13: a queued insert is never pasted so late that its answer would reach the app
+    /// after `INSERT_TIMEOUT_MS` from its request, when the app has copied the text already.
+    /// Behind a first insert that took 3.4 s, a text that waits 1,500 ms before its restore is
+    /// refused and copied, and a short one, which waits 400 ms, is still pasted.
+    #[test]
+    fn a_queued_insert_is_refused_when_its_answer_would_come_after_the_app_gave_up() {
+        autoreleasepool(|_| {
+            let desk = TestDesk::new();
+            // SAFETY: an AppKit constant.
+            let string = unsafe { NSPasteboardTypeString };
+            desk.put(&[(string, b"what the person copied".as_slice())]);
+            let before = desk.contents();
+            let ms = Duration::from_millis;
+            desk.pasteboard_costs.borrow_mut().push_back(ms(1_900));
+            let long = "a".repeat(110_000);
+            assert_eq!(
+                restore_delay(long.len()),
+                crate::protocol::MAX_RESTORE_DELAY
+            );
+            let start = (desk.now)();
+
+            let answers = worker_answers(
+                &desk,
+                vec![
+                    job_at(1, &long, start),
+                    job_at(2, &long, start),
+                    job_at(3, "short words", start),
+                ],
+            );
+
+            assert_eq!(
+                answers,
+                vec![
+                    serde_json::json!({"id":1,"type":"inserted","restored":"all"}),
+                    serde_json::json!({"id":2,"type":"refused","reason":"failed"}),
+                    serde_json::json!({"id":3,"type":"inserted","restored":"all"}),
+                ]
+            );
+            let posted: Vec<Option<String>> = desk
+                .posts
+                .borrow()
+                .iter()
+                .map(|(text, _)| text.clone())
+                .collect();
+            assert_eq!(
+                posted,
+                vec![Some(long.clone()), Some("short words".to_string())]
+            );
+            assert_eq!(desk.contents(), before, "the clipboard ends as it began");
+        });
+    }
 
     #[test]
     fn the_paste_events_carry_command_only_and_the_layout_key() {

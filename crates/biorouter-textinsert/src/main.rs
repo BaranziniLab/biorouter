@@ -8,7 +8,11 @@
 //!
 //! To insert, it puts the text on the pasteboard for a moment (marked transient and concealed, and
 //! kept off Universal Clipboard), posts one Command-V to the app's own process, then puts back what
-//! the pasteboard held, unless something else was copied in the meantime (`pasteboard.rs`).
+//! the pasteboard held, unless something else was copied in the meantime, and answers how the
+//! clipboard was left (`pasteboard.rs`). A password the pasteboard held is not put back: the
+//! pasteboard is cleared instead, so a password manager's own clearing still works. A long text
+//! stays there longer before the restore (`restore_delay`), so a slow app pastes it and not the
+//! old contents. One insert finishes, its restore included, before the next begins.
 //!
 //! Posting events needs macOS **Accessibility**. The helper reads it with
 //! `CGPreflightPostEventAccess`, which never prompts; the prompt comes only from

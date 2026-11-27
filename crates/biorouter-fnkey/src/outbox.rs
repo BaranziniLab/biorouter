@@ -14,24 +14,26 @@
 //! 1. An `other` line that changes nothing: one that follows another `other` with no fn line
 //!    between them. Only the first key in a press spoils it, and only the first key after a
 //!    release ends the wait for a second tap; the app ignores the rest.
-//! 2. A status line (`ready`, `permission`, `listener-lost`) with a newer one of its kind queued
-//!    behind it: the app keeps only the latest.
-//! 3. The oldest whole press: its fn down, its `held`, its fn up, the keys inside it and the key
-//!    that followed it, all together, so the app never sees half of a press.
+//! 2. A status line (`ready`, `permission`, `listener-lost`, `listeners`) with a newer one of its
+//!    kind queued behind it: the app keeps only the latest.
+//! 3. The oldest whole press: its fn down, its `chord`, its `held`, its fn up, the keys inside it
+//!    and the key that followed it, all together, so the app never sees half of a press.
 //!
 //! The first `other` of a press is never dropped on its own, although it is only timing: it is
 //! what marks fn with an arrow or a letter as a shortcut, and without it the app would read that
 //! press as dictation. A `held` line is never dropped on its own either: it is what starts a
-//! push to talk while fn is still down. An fn up whose fn down was already written is never
-//! dropped, nor the fn down of a press still held, so a hold the app saw begin is always seen to
-//! end (a blind gap's reset in `FnTracker::reset_after_blind_gap` reports its fn up through the
-//! same queue).
+//! push to talk while fn is still down. Nor is a `chord`: it is what makes a press the
+//! modifier's, and without it the app would read the rest of the press as a bare fn. An fn up
+//! whose fn down was already written is never dropped, nor the fn down of a press still held, so
+//! a hold the app saw begin is always seen to end (a blind gap's reset in
+//! `FnTracker::reset_after_blind_gap` reports its fn up through the same queue).
 //!
-//! With none of those left to drop, the queue holds at most ten lines: an fn up, an fn down, one
-//! `other` in each of the three stretches around them, the `held` of each of the two presses and
-//! one line of each status kind. So with any bound above ten a full queue always has a line to
-//! drop, and the queue never grows past [`CAPACITY`]. (Were it ever to have none, the new line
-//! would be queued anyway: a line the app needs is worth more than the bound.)
+//! With none of those left to drop, the queue holds at most thirteen lines: an fn up, an fn
+//! down, one `other` in each of the three stretches around them, the `chord` and the `held` of
+//! each of the two presses and one line of each of the four status kinds. So with any bound
+//! above thirteen a full queue always has a line to drop, and the queue never grows past
+//! [`CAPACITY`]. (Were it ever to have none, the new line would be queued anyway: a line the app
+//! needs is worth more than the bound.)
 
 use std::collections::VecDeque;
 use std::io::Write;
@@ -42,7 +44,7 @@ use crate::protocol::Signal;
 
 /// Lines the queue holds before it drops one. A busy app reads far fewer behind.
 pub const CAPACITY: usize = 256;
-const _: () = assert!(CAPACITY > 10);
+const _: () = assert!(CAPACITY > 13);
 
 /// What a queued line is, for the overflow policy.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -50,18 +52,21 @@ pub enum LineKind {
     FnDown,
     FnUp,
     Held,
+    Chord,
     Other,
     Ready,
     Permission,
     ListenerLost,
+    Listeners,
 }
 
 impl LineKind {
     pub fn of(signal: Signal) -> Self {
         match signal {
-            Signal::FnDown => Self::FnDown,
+            Signal::FnDown(_) => Self::FnDown,
             Signal::FnUp => Self::FnUp,
             Signal::Held => Self::Held,
+            Signal::Chord(_) => Self::Chord,
             Signal::Other => Self::Other,
         }
     }
@@ -71,7 +76,10 @@ impl LineKind {
     }
 
     fn is_status(self) -> bool {
-        matches!(self, Self::Ready | Self::Permission | Self::ListenerLost)
+        matches!(
+            self,
+            Self::Ready | Self::Permission | Self::ListenerLost | Self::Listeners
+        )
     }
 }
 
@@ -176,9 +184,9 @@ impl<T> Outbox<T> {
             })
     }
 
-    /// Rule 3: the oldest fn down whose fn up is queued too, with the `held` and `other` lines
-    /// between them and the `other` right after the up (before the next fn line). Status lines in
-    /// between stay.
+    /// Rule 3: the oldest fn down whose fn up is queued too, with the `chord`, `held` and `other`
+    /// lines between them and the `other` right after the up (before the next fn line). Status
+    /// lines in between stay.
     fn first_whole_press(&self) -> Option<Vec<usize>> {
         let down = self
             .lines
@@ -188,7 +196,7 @@ impl<T> Outbox<T> {
         let mut released = false;
         for (index, (kind, _)) in self.lines.iter().enumerate().skip(down + 1) {
             match (released, kind) {
-                (false, LineKind::Other | LineKind::Held) => press.push(index),
+                (false, LineKind::Other | LineKind::Held | LineKind::Chord) => press.push(index),
                 (false, LineKind::FnUp) => {
                     press.push(index);
                     released = true;
@@ -305,8 +313,11 @@ impl SharedOutbox {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::protocol::{signal_line, FnTracker, KeyFacts, Source, FN_HOLD_MS, SECONDARY_FN};
-    use LineKind::{FnDown, FnUp, Held, Other};
+    use crate::protocol::{
+        signal_line, FnTracker, KeyFacts, Mod, Source, CONTROL_FLAG, FN_HOLD_MS, OPTION_FLAG,
+        SECONDARY_FN, SHIFT_FLAG,
+    };
+    use LineKind::{Chord, FnDown, FnUp, Held, Listeners, Other};
 
     /// A key down of one of the kinds the tracker tells apart: a letter from the keyboard,
     /// the globe key, a made-up letter, a repeat.
@@ -511,12 +522,14 @@ mod tests {
     fn assert_alternates(written: &[Signal]) {
         let mut down = false;
         let mut held = false;
+        let mut chord = false;
         for signal in written {
             match signal {
-                Signal::FnDown => {
+                Signal::FnDown(_) => {
                     assert!(!down, "a down while one was held: {written:?}");
                     down = true;
                     held = false;
+                    chord = false;
                 }
                 Signal::FnUp => {
                     assert!(down, "an up with no down: {written:?}");
@@ -526,6 +539,12 @@ mod tests {
                     assert!(down, "a held with no press down: {written:?}");
                     assert!(!held, "two helds in one press: {written:?}");
                     held = true;
+                }
+                Signal::Chord(_) => {
+                    assert!(down, "a chord with no press down: {written:?}");
+                    assert!(!chord, "two chords in one press: {written:?}");
+                    assert!(!held, "a chord after held: {written:?}");
+                    chord = true;
                 }
                 Signal::Other => {}
             }
@@ -568,6 +587,140 @@ mod tests {
         }
         written.extend(drain(&mut outbox));
         assert!(outbox.dropped() > 0);
+        assert_alternates(&written);
+    }
+
+    /// A `chord` goes only with its whole press, never on its own, as a `held` does: it is
+    /// what makes a press the modifier's, and the app would read the rest of the press as a
+    /// bare fn without it. Only the newest `listeners` line queued is kept, as for every
+    /// status kind.
+    #[test]
+    fn outbox_never_drops_a_chord_alone_and_keeps_only_the_newest_listeners() {
+        let mut outbox = filled(
+            4,
+            &[
+                (Listeners, "l1"),
+                (FnDown, "d"),
+                (Chord, "c"),
+                (Listeners, "l2"),
+            ],
+        );
+        outbox.push(Listeners, "l3");
+        assert_eq!(drain(&mut outbox), vec!["d", "c", "l2", "l3"]);
+        assert_eq!(outbox.dropped(), 1);
+
+        let mut outbox = filled(
+            4,
+            &[(FnDown, "d1"), (Chord, "c1"), (FnUp, "u1"), (FnDown, "d2")],
+        );
+        outbox.push(Chord, "c2");
+        assert_eq!(drain(&mut outbox), vec!["d2", "c2"]);
+        assert_eq!(outbox.dropped(), 3);
+
+        // A chord whose fn down the app already read is never dropped, nor the chord of a
+        // press still held: with nothing else to drop the queue goes past its bound.
+        let mut outbox = Outbox::new(2);
+        outbox.push(FnDown, "d1");
+        assert_eq!(outbox.pop(), Some("d1"));
+        outbox.push(Chord, "c1");
+        outbox.push(Held, "h1");
+        outbox.push(FnUp, "u1");
+        outbox.push(FnDown, "d2");
+        outbox.push(Chord, "c2");
+        assert_eq!(drain(&mut outbox), vec!["c1", "h1", "u1", "d2", "c2"]);
+        assert_eq!(outbox.dropped(), 0);
+
+        // A listeners line is never taken for a press's line: it stays when its press goes.
+        let mut outbox = filled(
+            4,
+            &[
+                (FnDown, "d1"),
+                (Listeners, "l"),
+                (FnUp, "u1"),
+                (FnDown, "d2"),
+            ],
+        );
+        outbox.push(FnUp, "u2");
+        assert_eq!(drain(&mut outbox), vec!["l", "d2", "u2"]);
+    }
+
+    /// What the tracker reports for presses with Shift, Control and Option among them,
+    /// pushed through a small queue read now and then: the bound holds and every chord the
+    /// app reads sits inside a press it read the down of, once, before its `held`.
+    #[test]
+    fn a_backlog_with_modifier_presses_keeps_every_chord_with_its_press() {
+        let mut tracker = FnTracker::new();
+        let mut outbox = Outbox::new(16);
+        let mut seed: u64 = 0x9e37_79b9_7f4a_7c15;
+        let mut next = || {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            seed
+        };
+        let mut fn_down = false;
+        let mut modifiers = 0u64;
+        let mut written = Vec::new();
+        for at in 0..5_000u64 {
+            let flags =
+                |fn_down: bool, modifiers: u64| modifiers | if fn_down { SECONDARY_FN } else { 0 };
+            let signals: Vec<Signal> = match next() % 12 {
+                0..=2 => {
+                    fn_down = !fn_down;
+                    tracker.flags_changed(63, flags(fn_down, modifiers), Source::Hardware, at * 10)
+                }
+                3..=5 => {
+                    let modifier = [SHIFT_FLAG, CONTROL_FLAG, OPTION_FLAG][(next() % 3) as usize];
+                    modifiers ^= modifier;
+                    let code = match modifier {
+                        SHIFT_FLAG => 56,
+                        CONTROL_FLAG => 59,
+                        _ => 58,
+                    };
+                    tracker.flags_changed(
+                        code,
+                        flags(fn_down, modifiers),
+                        Source::Hardware,
+                        at * 10,
+                    )
+                }
+                6 => {
+                    fn_down = false;
+                    modifiers = 0;
+                    tracker.reset_after_blind_gap().into_iter().collect()
+                }
+                7 => tracker
+                    .held_due(at * 10 + FN_HOLD_MS)
+                    .map(|_| Signal::Held)
+                    .into_iter()
+                    .collect(),
+                roll => tracker
+                    .key_down(at * 10, some_key(roll))
+                    .into_iter()
+                    .collect(),
+            };
+            for signal in signals {
+                outbox.push(LineKind::of(signal), signal);
+                assert!(outbox.len() <= 16, "{}", outbox.len());
+            }
+            if next() % 50 == 0 {
+                written.extend(outbox.pop());
+            }
+        }
+        written.extend(drain(&mut outbox));
+        assert!(outbox.dropped() > 0, "the backlog never filled the queue");
+        assert!(
+            written
+                .iter()
+                .any(|signal| matches!(signal, Signal::Chord(_))),
+            "no chord was ever written"
+        );
+        assert!(
+            written
+                .iter()
+                .any(|signal| matches!(signal, Signal::FnDown(Some(Mod::Control)))),
+            "no Control press was ever written"
+        );
         assert_alternates(&written);
     }
 
@@ -622,7 +775,7 @@ mod tests {
         };
         let writer = std::thread::spawn(move || OUTBOX.write_lines(&mut pipe));
 
-        OUTBOX.push(FnDown, signal_line(Signal::FnDown, 1));
+        OUTBOX.push(FnDown, signal_line(Signal::FnDown(None), 1));
         // The writer takes the fn down and blocks writing it.
         while OUTBOX.snapshot().0 != 0 {
             std::thread::yield_now();
@@ -641,7 +794,7 @@ mod tests {
         set(Pipe::Open);
         assert!(OUTBOX.flush_for(Duration::from_secs(5)));
         let mut expected = vec![
-            signal_line(Signal::FnDown, 1),
+            signal_line(Signal::FnDown(None), 1),
             signal_line(Signal::Other, 2),
         ];
         expected.extend((994..1_000).map(|at| signal_line(Signal::Other, at)));

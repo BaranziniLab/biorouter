@@ -15,7 +15,10 @@
 //! * a chat id is shown only for a chat the caller may list that still holds the
 //!   recorded incarnation, so a publicized entry from a private chat loses its chat id for
 //!   a public caller, and a reissued id links to nothing;
-//! * every write needs the proof.
+//! * every write needs the proof;
+//! * an entry that cannot be written does not fail the dictation: the transcript is
+//!   delivered, the history is left as it was, and the one line logged names the stream's
+//!   log id and never the text (F12, DD-102).
 //!
 //! The worker is this test binary, speaking the worker protocol with a fixed transcript
 //! (`synthetic_worker`), so every stream yields text without a speech model. The tests
@@ -25,7 +28,7 @@
 mod test_sandbox;
 
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use axum::body::{Body, Bytes};
@@ -783,6 +786,197 @@ impl Drop for StagedPolicy {
     fn drop(&mut self) {
         let _ = std::fs::remove_file(&self.0);
     }
+}
+
+/// Everything this binary logs from the moment a test asks, for the log hygiene of an entry
+/// that cannot be written.
+fn captured_logs() -> &'static Arc<Mutex<Vec<u8>>> {
+    static LOGS: OnceLock<Arc<Mutex<Vec<u8>>>> = OnceLock::new();
+    LOGS.get_or_init(|| {
+        let buffer = Arc::new(Mutex::new(Vec::new()));
+        let sink = Arc::clone(&buffer);
+        let subscriber = tracing_subscriber::fmt()
+            .with_max_level(tracing::Level::TRACE)
+            .with_ansi(false)
+            .with_writer(move || LogWriter(Arc::clone(&sink)))
+            .finish();
+        let _ = tracing::subscriber::set_global_default(subscriber);
+        buffer
+    })
+}
+
+struct LogWriter(Arc<Mutex<Vec<u8>>>);
+
+impl std::io::Write for LogWriter {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        self.0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .extend_from_slice(bytes);
+        Ok(bytes.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+/// What was logged after `mark` bytes.
+fn logged_since(mark: usize) -> String {
+    let logs = captured_logs()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    String::from_utf8_lossy(logs.get(mark..).unwrap_or_default()).into_owned()
+}
+
+/// Makes the history file unwritable while it lives, and puts it back as it was after. A
+/// read-only file, or, for a process that may write one anyway (one running as root), a
+/// folder where the file was, which cannot be appended to either.
+struct UnwritableHistory {
+    file: PathBuf,
+    permissions: std::fs::Permissions,
+    kept: Vec<u8>,
+    as_folder: bool,
+}
+
+impl UnwritableHistory {
+    fn make(file: &Path) -> Self {
+        let kept = std::fs::read(file).expect("the history file exists");
+        let permissions = std::fs::metadata(file).unwrap().permissions();
+        let mut read_only = permissions.clone();
+        read_only.set_readonly(true);
+        std::fs::set_permissions(file, read_only).unwrap();
+        let as_folder = std::fs::OpenOptions::new().append(true).open(file).is_ok();
+        if as_folder {
+            std::fs::set_permissions(file, permissions.clone()).unwrap();
+            std::fs::remove_file(file).unwrap();
+            std::fs::create_dir(file).unwrap();
+        }
+        Self {
+            file: file.to_path_buf(),
+            permissions,
+            kept,
+            as_folder,
+        }
+    }
+}
+
+impl Drop for UnwritableHistory {
+    fn drop(&mut self) {
+        if self.as_folder {
+            let _ = std::fs::remove_dir(&self.file);
+            let _ = std::fs::write(&self.file, &self.kept);
+        } else {
+            let _ = std::fs::set_permissions(&self.file, self.permissions.clone());
+        }
+    }
+}
+
+/// The name a log line gives a stream: the first 8 hex characters of its id's SHA-256, as
+/// `log_id_of` in `routes/dictation.rs` makes it.
+fn log_id(stream_id: &str) -> String {
+    <sha2::Sha256 as sha2::Digest>::digest(stream_id.as_bytes())[..4]
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
+}
+
+/// F12 (W-A6): a history that cannot take the entry never fails the dictation. The
+/// transcript is delivered whole, the history is left as it was, and the stream logs one
+/// fixed warning that names its log id; no line it logs carries the text, or any word of it.
+#[tokio::test(flavor = "multi_thread")]
+#[serial]
+async fn an_unwritable_history_still_delivers_the_dictation_and_logs_no_text() {
+    if !engine_runs() {
+        return;
+    }
+    const SAID: &str = "Quillborough tamarind lantern";
+    let _ = captured_logs();
+    empty_history();
+    let _env = env_lock::lock_env([(TEXT_ENV, Some(SAID))]);
+    let kept = add(seeded("an entry kept before", EntryTier::Public));
+    let file = history::history_dir().join(history::store::HISTORY_FILE);
+    let before = std::fs::read(&file).expect("the history file exists");
+    let unwritable = UnwritableHistory::make(&file);
+    let state = state().await;
+    let app = app(&state);
+    let mark = captured_logs().lock().unwrap().len();
+
+    let started = Instant::now();
+    let id = open(&app, Caller::Proof, request("crew")).await;
+    let mut answer = call(
+        &app,
+        "POST",
+        &format!("/dictation/streams/{id}/finish?seq=0"),
+        Caller::SecretOnly,
+        Body::from(hum(1.0)),
+    )
+    .await;
+    while answer.status == StatusCode::ACCEPTED && started.elapsed() < Duration::from_secs(60) {
+        answer = get(
+            &app,
+            &format!(
+                "/dictation/streams/{id}?wait_ms={}",
+                dictation::MAX_READ_WAIT_MS
+            ),
+            Caller::SecretOnly,
+        )
+        .await;
+    }
+    assert_eq!(
+        answer.status,
+        StatusCode::OK,
+        "{:?}",
+        String::from_utf8_lossy(&answer.raw)
+    );
+    assert_eq!(answer.body["text"], SAID, "the dictation is delivered");
+
+    // The entry is dropped off the decode's task, after the answer.
+    const DROPPED: &str = "dictation history entry dropped";
+    let waiting = Instant::now();
+    while !logged_since(mark).contains(DROPPED) {
+        assert!(
+            waiting.elapsed() < Duration::from_secs(30),
+            "no line says the entry was dropped: {}",
+            logged_since(mark)
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert_eq!(
+        delete_stream(&app, &id).await.status,
+        StatusCode::NO_CONTENT
+    );
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let logged = logged_since(mark);
+    let dropped: Vec<&str> = logged
+        .lines()
+        .filter(|line| line.contains(DROPPED))
+        .collect();
+    assert_eq!(dropped.len(), 1, "one line: {logged}");
+    assert!(dropped[0].contains("WARN"), "{}", dropped[0]);
+    assert!(
+        dropped[0].contains(&format!("stream={}", log_id(&id))),
+        "the line names the stream's log id: {}",
+        dropped[0]
+    );
+    assert!(
+        !logged.contains(&id),
+        "no line carries the stream id itself"
+    );
+    for word in SAID.split(' ') {
+        assert!(
+            !logged.to_lowercase().contains(&word.to_lowercase()),
+            "a line carries {word:?}: {logged}"
+        );
+    }
+
+    drop(unwritable);
+    assert_eq!(
+        std::fs::read(&file).unwrap(),
+        before,
+        "the history is left as it was"
+    );
+    let held: Vec<String> = entries().into_iter().map(|entry| entry.id).collect();
+    assert_eq!(held, vec![kept]);
 }
 
 // ── listing ──────────────────────────────────────────────────────────────────────────

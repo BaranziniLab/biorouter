@@ -1,5 +1,12 @@
 //! The pasteboard half of an insert: keep what the pasteboard holds, put the dictated text there
-//! for the paste, then put back what was kept.
+//! for the paste, then put back what was kept, and say how the clipboard was left
+//! ([`Restored`]).
+//!
+//! A password is not put back. When what the pasteboard held is marked concealed
+//! (`org.nspasteboard.ConcealedType`, what password managers write), the snapshot keeps none of
+//! its data and the pasteboard is cleared after the paste: a copy put back gets a new change
+//! count, and a password manager that clears its copy by change count would then leave the
+//! password on the clipboard for good.
 //!
 //! Every function takes the pasteboard it works on, so the tests run on private named pasteboards
 //! (`NSPasteboard::pasteboardWithUniqueName`) and nothing here can reach the general pasteboard.
@@ -16,9 +23,10 @@ use objc2_app_kit::{
 };
 use objc2_foundation::{NSArray, NSData, NSString};
 
+pub use crate::protocol::RestoreOutcome;
 use crate::protocol::{
-    should_restore, snapshot_restorable, ACCESS_BEHAVIOR_ALWAYS_DENY, CONCEALED_TYPE,
-    TRANSIENT_TYPE,
+    restored, should_restore, snapshot_restorable, Restored, ACCESS_BEHAVIOR_ALWAYS_DENY,
+    CONCEALED_TYPE, MAX_SNAPSHOT_BYTES, TRANSIENT_TYPE,
 };
 
 /// One kept item: each of its types with the data it held.
@@ -27,9 +35,12 @@ type SavedItem = Vec<(Retained<NSString>, Retained<NSData>)>;
 /// What the pasteboard held before the text was written.
 pub struct Snapshot {
     items: Vec<SavedItem>,
-    /// Types whose data could not be read (a provider that gave nothing). They are not restored.
-    #[cfg_attr(not(test), allow(dead_code))]
+    /// Types whose data could not be read (a provider that gave nothing), or that would have
+    /// taken the snapshot past [`MAX_SNAPSHOT_BYTES`]. They are not restored.
     pub skipped: usize,
+    /// What was there is marked concealed (a password): none of it is kept, and the pasteboard
+    /// is cleared after the paste rather than refilled.
+    pub concealed: bool,
     /// Whether putting this snapshot back would restore what was there. Not when the pasteboard
     /// could not be read at all: clearing it then would lose the person's copy and the text.
     pub restorable: bool,
@@ -45,42 +56,78 @@ impl Snapshot {
 
 static SKIP_REPORTED: AtomicBool = AtomicBool::new(false);
 
-/// Keep every item and type of `pasteboard`. A type whose data cannot be read is left out, with
-/// one fixed log line per process: the insert never waits on how faithfully the pasteboard can
-/// be put back.
+/// Reads one type of one item: `dataForType:`, or a test's stand-in.
+pub type ReadType<'a> = &'a dyn Fn(&NSPasteboardItem, &NSString) -> Option<Retained<NSData>>;
+
+/// Keep every item and type of `pasteboard`, up to [`MAX_SNAPSHOT_BYTES`]. A type whose data
+/// cannot be read is left out, with one fixed log line per process: the insert never waits on
+/// how faithfully the pasteboard can be put back.
 pub fn snapshot(pasteboard: &NSPasteboard) -> Snapshot {
+    snapshot_with(pasteboard, MAX_SNAPSHOT_BYTES, &|item, kind| {
+        item.dataForType(kind)
+    })
+}
+
+/// [`snapshot`], keeping at most `cap` bytes and reading each type with `read`. A type that
+/// would take the snapshot past `cap` is left out, as an unreadable one is, and both count in
+/// [`Snapshot::skipped`]. An item marked concealed is never read: the snapshot keeps nothing
+/// and says so.
+pub fn snapshot_with(pasteboard: &NSPasteboard, cap: usize, read: ReadType<'_>) -> Snapshot {
     let mut items = Vec::new();
     let mut skipped = 0;
     if reads_denied(pasteboard) {
         return Snapshot {
             items,
             skipped,
+            concealed: false,
             restorable: false,
         };
     }
-    let mut reported = 0;
-    if let Some(list) = pasteboard.pasteboardItems() {
-        reported = list.len();
-        for item in list.iter() {
-            let mut saved = SavedItem::new();
-            for kind in item.types().iter() {
-                match item.dataForType(&kind) {
-                    Some(data) => saved.push((kind, data)),
-                    None => skipped += 1,
+    let Some(list) = pasteboard.pasteboardItems() else {
+        return Snapshot {
+            items,
+            skipped,
+            concealed: false,
+            restorable: snapshot_restorable(false, 0, 0),
+        };
+    };
+    let concealed_type = NSString::from_str(CONCEALED_TYPE);
+    let concealed = list
+        .iter()
+        .any(|item| item.types().iter().any(|kind| *kind == *concealed_type));
+    if concealed {
+        // A password: nothing of it is read, and the pasteboard is cleared after the paste.
+        return Snapshot {
+            items,
+            skipped,
+            concealed: true,
+            restorable: true,
+        };
+    }
+    let mut kept_bytes: usize = 0;
+    for item in list.iter() {
+        let mut saved = SavedItem::new();
+        for kind in item.types().iter() {
+            match read(&item, &kind) {
+                Some(data) if kept_bytes.saturating_add(data.len()) <= cap => {
+                    kept_bytes += data.len();
+                    saved.push((kind, data));
                 }
+                Some(_) | None => skipped += 1,
             }
-            if !saved.is_empty() {
-                items.push(saved);
-            }
+        }
+        if !saved.is_empty() {
+            items.push(saved);
         }
     }
     if skipped > 0 && !SKIP_REPORTED.swap(true, Ordering::Relaxed) {
-        eprintln!("biorouter-textinsert: a pasteboard type could not be read and is not restored");
+        eprintln!("biorouter-textinsert: a pasteboard type could not be kept and is not restored");
     }
-    let restorable = snapshot_restorable(false, reported, items.len());
+    let restorable = snapshot_restorable(false, list.len(), items.len());
     Snapshot {
         items,
         skipped,
+        concealed: false,
         restorable,
     }
 }
@@ -130,25 +177,16 @@ pub fn write_transient_text(pasteboard: &NSPasteboard, text: &str) -> Written {
     Written { count, ok }
 }
 
-/// What [`restore`] did.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum RestoreOutcome {
-    /// The pasteboard holds what it held before the text was written.
-    Restored,
-    /// Something was copied after the text; it is left alone.
-    Moved,
-    /// The pasteboard would not take the kept items back.
-    Failed,
-    /// What was there could not be read, so the text is left where a copy would leave it.
-    NotRead,
-}
-
 /// Put `snapshot` back on `pasteboard`, only if the pasteboard still holds what the helper wrote
 /// (its change count is still `written.count`). An empty snapshot of a readable pasteboard clears
-/// the text.
+/// the text, and so does a concealed one, which is never refilled.
 pub fn restore(pasteboard: &NSPasteboard, snapshot: Snapshot, written: Written) -> RestoreOutcome {
     if !should_restore(written.count, pasteboard.changeCount()) {
         return RestoreOutcome::Moved;
+    }
+    if snapshot.concealed {
+        pasteboard.clearContents();
+        return RestoreOutcome::Cleared;
     }
     if !snapshot.restorable {
         return RestoreOutcome::NotRead;
@@ -176,9 +214,16 @@ pub fn restore(pasteboard: &NSPasteboard, snapshot: Snapshot, written: Written) 
     }
 }
 
+/// [`restore`], and how that left the person's clipboard: what the `inserted` answer says.
+pub fn put_back(pasteboard: &NSPasteboard, snapshot: Snapshot, written: Written) -> Restored {
+    let incomplete = snapshot.skipped > 0;
+    restored(restore(pasteboard, snapshot, written), incomplete)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::protocol::Restored;
     use objc2::msg_send;
     use objc2::rc::autoreleasepool;
     use objc2_app_kit::{NSPasteboardTypeFileURL, NSPasteboardTypePNG, NSPasteboardTypeRTF};
@@ -291,7 +336,10 @@ mod tests {
             assert_eq!(before.len(), 3);
 
             let kept = snapshot(&pasteboard);
-            assert_eq!((kept.len(), kept.skipped, kept.restorable), (3, 0, true));
+            assert_eq!(
+                (kept.len(), kept.skipped, kept.concealed, kept.restorable),
+                (3, 0, false, true)
+            );
 
             let written = write_transient_text(&pasteboard, "the dictated words");
             assert!(written.ok);
@@ -362,6 +410,166 @@ mod tests {
                 RestoreOutcome::Restored
             );
             assert_eq!(the_text(&pasteboard), None);
+            assert!(contents(&pasteboard).is_empty());
+        });
+    }
+
+    /// F5 (W-A1): a password a password manager copied is not put back. The snapshot keeps none
+    /// of it, and after the paste the pasteboard is cleared, so the text goes too and the
+    /// password manager's own clearing, which goes by change count, is not defeated.
+    #[test]
+    fn a_concealed_original_is_cleared_not_restored() {
+        autoreleasepool(|_| {
+            let pasteboard = TestPasteboard::new();
+            // SAFETY: an AppKit constant.
+            let string = unsafe { NSPasteboardTypeString };
+            let concealed = NSString::from_str(CONCEALED_TYPE);
+            put(
+                &pasteboard,
+                &[&[
+                    (string, b"correct horse battery staple".as_slice()),
+                    (&concealed, b"".as_slice()),
+                ]],
+            );
+            let kept = snapshot(&pasteboard);
+            assert!(kept.concealed);
+            assert_eq!(kept.len(), 0, "nothing of a password is kept");
+            let written = write_transient_text(&pasteboard, "the dictated words");
+            assert!(written.ok);
+            assert_eq!(put_back(&pasteboard, kept, written), Restored::Cleared);
+            assert!(contents(&pasteboard).is_empty());
+            assert_eq!(the_text(&pasteboard), None);
+            assert!(pasteboard.changeCount() > written.count);
+
+            // A copy made after the text is still left alone.
+            put(
+                &pasteboard,
+                &[&[
+                    (string, b"another secret".as_slice()),
+                    (&concealed, b"".as_slice()),
+                ]],
+            );
+            let kept = snapshot(&pasteboard);
+            let written = write_transient_text(&pasteboard, "dictated");
+            pasteboard.clearContents();
+            assert!(pasteboard.setString_forType(&NSString::from_str("copied later"), string));
+            assert_eq!(put_back(&pasteboard, kept, written), Restored::Moved);
+            assert_eq!(the_text(&pasteboard).as_deref(), Some("copied later"));
+        });
+    }
+
+    /// Types of this test's own, which AppKit derives nothing from, so what a test puts there
+    /// is exactly what the pasteboard reports.
+    fn own_type(name: &str) -> Retained<NSString> {
+        NSString::from_str(&format!("org.biorouter.textinsert-test.{name}"))
+    }
+
+    /// F4 (W-A2): a type that cannot be read is left out, the rest goes back, and the answer
+    /// says `partial`. The read is a stand-in that refuses one type, as a provider that gives
+    /// nothing would.
+    #[test]
+    fn an_unreadable_type_makes_the_restore_partial_and_the_rest_comes_back() {
+        autoreleasepool(|_| {
+            let pasteboard = TestPasteboard::new();
+            let (text, rich, image) = (own_type("text"), own_type("rich"), own_type("image"));
+            put(
+                &pasteboard,
+                &[
+                    &[
+                        (&text, b"what the person copied".as_slice()),
+                        (&rich, br"{\rtf1\ansi copied}".as_slice()),
+                    ],
+                    &[(&image, PNG)],
+                ],
+            );
+            let before = contents(&pasteboard);
+            let kept = snapshot_with(&pasteboard, MAX_SNAPSHOT_BYTES, &|item, kind| {
+                if *kind == *rich {
+                    None
+                } else {
+                    item.dataForType(kind)
+                }
+            });
+            assert_eq!((kept.len(), kept.skipped, kept.restorable), (2, 1, true));
+            let written = write_transient_text(&pasteboard, "the dictated words");
+            assert_eq!(put_back(&pasteboard, kept, written), Restored::Partial);
+            let after = contents(&pasteboard);
+            assert_eq!(
+                after,
+                vec![vec![before[0][0].clone()], before[1].clone()],
+                "the text and the image came back, the unreadable type did not"
+            );
+        });
+    }
+
+    /// F4 (W-A2): the snapshot keeps at most its cap; a type that would take it past is left
+    /// out and reported, and what fits still comes back.
+    #[test]
+    fn types_past_the_snapshot_cap_are_skipped_and_reported() {
+        autoreleasepool(|_| {
+            let pasteboard = TestPasteboard::new();
+            let (small, large, image) = (own_type("small"), own_type("large"), own_type("image"));
+            let big = vec![b'x'; 4_096];
+            put(
+                &pasteboard,
+                &[
+                    &[(&small, b"small".as_slice())],
+                    &[(&large, big.as_slice())],
+                    &[(&image, PNG)],
+                ],
+            );
+            let before = contents(&pasteboard);
+            let cap = b"small".len() + PNG.len();
+            let kept = snapshot_with(&pasteboard, cap, &|item, kind| item.dataForType(kind));
+            assert_eq!((kept.len(), kept.skipped, kept.restorable), (2, 1, true));
+            let written = write_transient_text(&pasteboard, "dictated");
+            assert_eq!(put_back(&pasteboard, kept, written), Restored::Partial);
+            assert_eq!(
+                contents(&pasteboard),
+                vec![before[0].clone(), before[2].clone()]
+            );
+
+            // Within the cap nothing is left out, and everything is `all`.
+            put(
+                &pasteboard,
+                &[&[(&small, b"small".as_slice())], &[(&image, PNG)]],
+            );
+            let before = contents(&pasteboard);
+            let kept = snapshot_with(&pasteboard, cap, &|item, kind| item.dataForType(kind));
+            assert_eq!(kept.skipped, 0);
+            let written = write_transient_text(&pasteboard, "dictated");
+            assert_eq!(put_back(&pasteboard, kept, written), Restored::All);
+            assert_eq!(contents(&pasteboard), before);
+            assert_eq!(MAX_SNAPSHOT_BYTES, 64 * 1024 * 1024);
+        });
+    }
+
+    /// What `put_back` answers for the other ways a restore ends: a copy made after the text,
+    /// a pasteboard that could not be read (the text stays), and an empty one.
+    #[test]
+    fn put_back_says_how_the_clipboard_was_left() {
+        autoreleasepool(|_| {
+            let pasteboard = TestPasteboard::new();
+            // SAFETY: an AppKit constant.
+            let string = unsafe { NSPasteboardTypeString };
+            put(&pasteboard, &[&[(string, b"before".as_slice())]]);
+            let kept = snapshot(&pasteboard);
+            let written = write_transient_text(&pasteboard, "dictated");
+            assert_eq!(put_back(&pasteboard, kept, written), Restored::All);
+            assert_eq!(the_text(&pasteboard).as_deref(), Some("before"));
+
+            // Every type unreadable: nothing is put back and the text stays.
+            put(&pasteboard, &[&[(string, b"before".as_slice())]]);
+            let kept = snapshot_with(&pasteboard, MAX_SNAPSHOT_BYTES, &|_, _| None);
+            assert!(!kept.restorable);
+            let written = write_transient_text(&pasteboard, "dictated");
+            assert_eq!(put_back(&pasteboard, kept, written), Restored::KeptText);
+            assert_eq!(the_text(&pasteboard).as_deref(), Some("dictated"));
+
+            pasteboard.clearContents();
+            let kept = snapshot(&pasteboard);
+            let written = write_transient_text(&pasteboard, "dictated");
+            assert_eq!(put_back(&pasteboard, kept, written), Restored::All);
             assert!(contents(&pasteboard).is_empty());
         });
     }
