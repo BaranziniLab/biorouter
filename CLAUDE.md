@@ -2447,29 +2447,43 @@ binary, from `BaranziniLab/biorouter-models`.
   microphone, and the checklist records the two apart.
 - **The fn key and the indicator (macOS).** Hold fn to talk, double-tap fn for hands-free
   (`ui/desktop/src/utils/fnGesture.ts`; routing in `utils/dictationFnKey.ts`, the composer side in
-  `components/dictation/fnGestureClient.ts`). Electron cannot see fn, so `crates/biorouter-fnkey`, a
-  listen-only Quartz event tap with no dependencies, runs as the app's child while the shortcut is
-  on and speaks protocol v2: fn down, fn up, `held` (the press is still down 300 ms later) and
-  "another key" (while fn is down, or a real hardware key soon after a release), each with the
-  event's own time; it judges key codes, autorepeat and the event source inside itself and writes
-  none of them, and the app refuses a v1 helper (DD-98). ⚠ It creates the tap only after
-  `CGPreflightListenEventAccess` says Input Monitoring is granted, because creating one without it
-  makes macOS prompt; the prompt comes only from **Open Input Monitoring** in Settings. Never add a
-  code path, test or script that creates a tap or calls `CGRequestListenEventAccess` unasked. The
-  setting is `<config>/dictation/fn-key.json`, written only by main, like `anywhere.json`.
-  `ui/desktop/scripts/build-fn-key-helper.mjs` stages it for `bundle:default` and `bundle:intel`,
-  and `release.sh verify` checks it is in the app, for the app's architecture, at macOS 12.0
-  (`scripts/check-fn-key-helper-bundled.sh`). Typing into the app in front (DD-97) is a second,
-  post-only helper, `crates/biorouter-textinsert`, staged and checked the same way
-  (`scripts/check-text-insert-helper-bundled.sh`, which also requires the daemon's Team ID), with
-  its setting in `<config>/dictation/insert.json`. ⚠ Same rule for its Accessibility grant: only the
-  Settings button's `dictation:insert:open-settings` may call `requestAccess` (the one path to
+  `components/dictation/fnGestureClient.ts`). Electron cannot see fn, so `crates/biorouter-fnkey`,
+  a listen-only Quartz event tap with no dependencies, runs as the app's child while the shortcut
+  is on and speaks protocol v3: fn down (with `mod`, the one of Shift, Control or Option held with
+  it, or none), fn up, `chord` (one of those three joined a bare press within 100 ms), `held` (the
+  press is still down 300 ms later) and "another key" (while fn is down, or a real hardware key or
+  Command soon after a release; Shift, Control and Option after a release no longer count), each
+  with the event's own time; it judges key codes, autorepeat and the event source inside itself
+  and writes none of them, and the app refuses a v1 or v2 helper (DD-98, DD-101). A modifier plus
+  fn does what fn does (owner ruling O-46): **Dictation key** is Automatic (fn, plus the modifier
+  plus fn at any time, and fn alone left to a listed app while it runs), fn, or the modifier plus
+  fn; **Key held with fn** is Control (`DEFAULT_FN_MODIFIER`), Option or Shift, never Command. A
+  collision is an app on Biorouter's reviewed list (`utils/fnCollision.ts`, Wispr Flow only) among
+  the bundle ids the helper's `listeners` line reports from `CGGetEventTapList`, which asks for no
+  permission and creates nothing; only that table's names reach the interface, because Siri and
+  hotkey tools tap modifier keys on most Macs. When a listed app appears after the helper started,
+  main restarts the helper once while idle (the ordinary start path, so Biorouter's tap stays
+  ahead of a filtering one): never a second tap, never a prompt. No button sets **Press 🌐 key to**
+  (O-47). ⚠ It creates the tap only after `CGPreflightListenEventAccess` says Input Monitoring is
+  granted, because creating one without it makes macOS prompt; the prompt comes only from **Open
+  Input Monitoring** in Settings. Never add a code path, test or script that creates a tap or
+  calls `CGRequestListenEventAccess` unasked. The setting is `<config>/dictation/fn-key.json`,
+  written only by main, like `anywhere.json`. `ui/desktop/scripts/build-fn-key-helper.mjs` stages
+  it for `bundle:default` and `bundle:intel`, and `release.sh verify` checks it is in the app, for
+  the app's architecture, at macOS 12.0 (`scripts/check-fn-key-helper-bundled.sh`). Typing into
+  the app in front (DD-97) is a second, post-only helper, `crates/biorouter-textinsert`, staged
+  and checked the same way (`scripts/check-text-insert-helper-bundled.sh`, which also requires the
+  daemon's Team ID), with its setting in `<config>/dictation/insert.json`; its `inserted` answer
+  says how it left the clipboard (`restored`), and a copied password is cleared rather than put
+  back (DD-102). ⚠ Same rule for its Accessibility grant: only the Settings button's
+  `dictation:insert:open-settings` may call `requestAccess` (the one path to
   `CGRequestPostEventAccess`), and its tests use a named pasteboard, never the general one. The
-  on-screen capsule (`utils/dictationIndicator.ts`) is a non-focusable, click-through panel fed only
-  an activity word and a level over `dictation:indicator`; main paints it from the generated theme
-  tokens for the family and mode a window reports as words over `theme:appearance`, never a colour
-  from a page (DD-99). ⌘⇧D keeps working; on macOS AppKit hides D's key up while ⌘ is held, so its
-  hold is timed to the first modifier release ([surfaces](docs/dictation/surfaces.md), "Gestures").
+  on-screen capsule (`utils/dictationIndicator.ts`) is a non-focusable, click-through panel fed
+  only an activity word and a level over `dictation:indicator`; main paints it from the generated
+  theme tokens for the family and mode a window reports as words over `theme:appearance`, never a
+  colour from a page (DD-99). ⌘⇧D keeps working; on macOS AppKit hides D's key up while ⌘ is held,
+  so its hold is timed to the first modifier release ([surfaces](docs/dictation/surfaces.md),
+  "Gestures").
 - **The dictionary tier rule.** `bias_set` in `crates/biorouter/src/dictation/bias.rs` is the only
   producer of the entries recognition may use, and one value feeds the token prompt, the decoder
   bonus and every correction step (DD-36); `eligible_entries_are_built_only_by_bias_set` pins its

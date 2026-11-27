@@ -1,12 +1,21 @@
 import { act, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { FnKeySettings, FnKeyView } from '../../../utils/dictationFnKey';
+import {
+  fnActive,
+  fnKeyLabel,
+  type FnActive,
+  type FnKeySettings,
+  type FnKeyView,
+} from '../../../utils/dictationFnKey';
+import type { KnownFnApp } from '../../../utils/fnCollision';
 import type { FnKeyStatus } from '../../../utils/fnKeyHelper';
 import { BROWSER_SURFACE_MARKER } from '../../../utils/surface';
 import {
   DICTATION_ACTIONS,
   DICTATION_MESSAGES,
+  FN_KEY_LABELS,
+  FN_MODIFIER_LABELS,
   FN_USAGE_ACTIONS,
   dictationMessage,
 } from '../../dictation/copy';
@@ -27,13 +36,32 @@ const status = (over: Partial<FnKeyStatus> = {}): FnKeyStatus => ({
   ...over,
 });
 
+// Main always fills `combination` and `modifier` (`parseFnKeySettings`), and computes `active`
+// with `fnActive` from the setting and the app it found (DD-101).
 const view = (
-  over: { settings?: Partial<FnKeySettings>; status?: Partial<FnKeyStatus> } = {}
-): FnKeyView => ({
-  settings: { enabled: true, otherApps: false, ...over.settings },
-  status: status(over.status),
-  anywhereOn: true,
-});
+  over: {
+    settings?: Partial<FnKeySettings>;
+    status?: Partial<FnKeyStatus>;
+    active?: FnActive;
+  } = {}
+): FnKeyView => {
+  const settings: FnKeySettings = {
+    enabled: true,
+    otherApps: false,
+    combination: 'automatic',
+    modifier: 'control',
+    ...over.settings,
+  };
+  const fnStatus = status(over.status);
+  return {
+    settings,
+    status: fnStatus,
+    anywhereOn: true,
+    active: over.active ?? fnActive(settings, fnStatus.collidingApp ?? null),
+  };
+};
+
+const WISPR: KnownFnApp = { bundle: 'com.electron.wispr-flow', name: 'Wispr Flow' };
 
 let broadcast: ((next: FnKeyView) => void) | null = null;
 
@@ -71,7 +99,13 @@ describe('Dictate with the fn key (macOS)', () => {
     const control = await fnSwitch();
     expect(control).toHaveAttribute('aria-checked', 'true');
     await user.click(control);
-    expect(set).toHaveBeenCalledWith({ enabled: false, otherApps: false });
+    // The whole setting goes to main, the two DD-101 fields included.
+    expect(set).toHaveBeenCalledWith({
+      enabled: false,
+      otherApps: false,
+      combination: 'automatic',
+      modifier: 'control',
+    });
     await waitFor(() => expect(control).toHaveAttribute('aria-checked', 'false'));
   });
 
@@ -176,6 +210,255 @@ describe('Dictate with the fn key (macOS)', () => {
   });
 });
 
+/**
+ * **Dictation key** and **Key held with fn** (DD-101, owner ruling O-46): fn stays the key for most
+ * people, and a modifier plus fn does the same job when another app also uses fn. The status line
+ * says which key works now and why; the conflict note about macOS's own fn action shows only while
+ * fn alone dictates.
+ */
+describe('Dictation key and Key held with fn (macOS)', () => {
+  const keyGroup = () => screen.findByRole('radiogroup', { name: DICTATION_ACTIONS.dictationKey });
+  const modifierGroup = () =>
+    screen.queryByRole('radiogroup', { name: DICTATION_ACTIONS.keyHeldWithFn });
+  const statusLine = () => screen.queryByTestId('dictation-fn-key-status');
+
+  afterEach(() => {
+    delete document.documentElement.dataset.biorouterSurface;
+  });
+
+  it('offers Automatic, fn and the chosen modifier plus fn, and says fn works with no clash', async () => {
+    bridge(view());
+    render(<DictationShortcutRows />);
+    const group = await keyGroup();
+    const radios = within(group).getAllByRole('radio');
+    expect(radios.map((radio) => radio.textContent)).toEqual([
+      FN_KEY_LABELS.automatic,
+      FN_KEY_LABELS.fn,
+      FN_KEY_LABELS.control,
+    ]);
+    expect(within(group).getByRole('radio', { name: FN_KEY_LABELS.automatic })).toHaveAttribute(
+      'aria-checked',
+      'true'
+    );
+    expect(statusLine()).toHaveTextContent(
+      dictationMessage('MSG-FN-KEY-AUTO', { alt: FN_KEY_LABELS.control })
+    );
+    expect(statusLine()).toHaveTextContent('Using fn. Control+fn works too.');
+    expect(
+      screen.getByRole('button', { name: `About ${DICTATION_ACTIONS.dictationKey}` })
+    ).toHaveAccessibleDescription(
+      dictationMessage('MSG-FN-KEY-HELP', { alt: FN_KEY_LABELS.control })
+    );
+  });
+
+  it('says it switched, and names the app, while a listed app also uses fn in Automatic', async () => {
+    bridge(view({ status: { collidingApp: WISPR } }));
+    render(<DictationShortcutRows />);
+    await keyGroup();
+    expect(statusLine()).toHaveTextContent('Using Control+fn, because Wispr Flow also uses fn.');
+    expect(statusLine()).toHaveTextContent(
+      dictationMessage('MSG-FN-KEY-SWITCHED', { alt: FN_KEY_LABELS.control, app: WISPR.name })
+    );
+  });
+
+  it('warns that one press may start both under the fn choice while a listed app runs', async () => {
+    bridge(view({ settings: { combination: 'fn' }, status: { collidingApp: WISPR } }));
+    const first = render(<DictationShortcutRows />);
+    const group = await keyGroup();
+    expect(within(group).getByRole('radio', { name: FN_KEY_LABELS.fn })).toHaveAttribute(
+      'aria-checked',
+      'true'
+    );
+    expect(statusLine()).toHaveTextContent('Wispr Flow also uses fn, so one press may start both.');
+    first.unmount();
+
+    // No listed app: the fn choice says nothing.
+    resetFnKeyStoreForTests();
+    bridge(view({ settings: { combination: 'fn' } }));
+    const second = render(<DictationShortcutRows />);
+    await keyGroup();
+    expect(statusLine()).toBeNull();
+    second.unmount();
+
+    // The modifier choice says nothing either, with or without a listed app.
+    for (const collidingApp of [null, WISPR]) {
+      resetFnKeyStoreForTests();
+      bridge(view({ settings: { combination: 'modifier' }, status: { collidingApp } }));
+      const shown = render(<DictationShortcutRows />);
+      await keyGroup();
+      expect(statusLine()).toBeNull();
+      shown.unmount();
+    }
+  });
+
+  it('hides Key held with fn for the fn choice and shows it for the other two', async () => {
+    bridge(view({ settings: { combination: 'fn' } }));
+    const first = render(<DictationShortcutRows />);
+    await keyGroup();
+    expect(modifierGroup()).toBeNull();
+    first.unmount();
+
+    for (const combination of ['automatic', 'modifier'] as const) {
+      resetFnKeyStoreForTests();
+      bridge(view({ settings: { combination } }));
+      const shown = render(<DictationShortcutRows />);
+      await keyGroup();
+      expect(modifierGroup()).not.toBeNull();
+      shown.unmount();
+    }
+  });
+
+  it('offers Control, Option and Shift, never Command, and explains why in its InfoTip', async () => {
+    bridge(view({ settings: { modifier: 'option' } }));
+    render(<DictationShortcutRows />);
+    await keyGroup();
+    const group = modifierGroup()!;
+    const radios = within(group).getAllByRole('radio');
+    expect(radios.map((radio) => radio.textContent)).toEqual([
+      FN_MODIFIER_LABELS.control,
+      FN_MODIFIER_LABELS.option,
+      FN_MODIFIER_LABELS.shift,
+    ]);
+    expect(within(group).getByRole('radio', { name: FN_MODIFIER_LABELS.option })).toHaveAttribute(
+      'aria-checked',
+      'true'
+    );
+    expect(screen.queryByRole('radio', { name: /command|⌘/i })).toBeNull();
+    expect(
+      screen.getByRole('button', { name: `About ${DICTATION_ACTIONS.keyHeldWithFn}` })
+    ).toHaveAccessibleDescription(DICTATION_MESSAGES['MSG-FN-MODIFIER-HELP']);
+    // The Dictation key option names the chosen modifier.
+    expect(screen.getByRole('radio', { name: FN_KEY_LABELS.option })).toBeInTheDocument();
+    expect(screen.queryByRole('radio', { name: FN_KEY_LABELS.control })).toBeNull();
+  });
+
+  it('writes the whole setting through main for each choice', async () => {
+    const { set } = bridge(view());
+    const user = userEvent.setup();
+    render(<DictationShortcutRows />);
+    await keyGroup();
+    await user.click(screen.getByRole('radio', { name: FN_KEY_LABELS.control }));
+    expect(set).toHaveBeenLastCalledWith({
+      enabled: true,
+      otherApps: false,
+      combination: 'modifier',
+      modifier: 'control',
+    });
+    await waitFor(() =>
+      expect(screen.getByRole('radio', { name: FN_KEY_LABELS.control })).toHaveAttribute(
+        'aria-checked',
+        'true'
+      )
+    );
+    await user.click(screen.getByRole('radio', { name: FN_MODIFIER_LABELS.shift }));
+    expect(set).toHaveBeenLastCalledWith({
+      enabled: true,
+      otherApps: false,
+      combination: 'modifier',
+      modifier: 'shift',
+    });
+    await waitFor(() =>
+      expect(screen.getByRole('radio', { name: FN_KEY_LABELS.shift })).toBeInTheDocument()
+    );
+    await user.click(screen.getByRole('radio', { name: FN_KEY_LABELS.fn }));
+    expect(set).toHaveBeenLastCalledWith({
+      enabled: true,
+      otherApps: false,
+      combination: 'fn',
+      modifier: 'shift',
+    });
+  });
+
+  it('shows macOS’s own fn note only while fn alone dictates', async () => {
+    // The modifier choice: fn alone is left to other apps, so macOS's fn action is not Biorouter's.
+    bridge(view({ settings: { combination: 'modifier' }, status: { fnUsage: 2 } }));
+    const first = render(<DictationShortcutRows />);
+    await keyGroup();
+    expect(screen.queryByTestId('dictation-fn-conflict')).toBeNull();
+    first.unmount();
+
+    // Automatic while a listed app runs: the same.
+    resetFnKeyStoreForTests();
+    bridge(view({ status: { fnUsage: 2, collidingApp: WISPR } }));
+    const second = render(<DictationShortcutRows />);
+    await keyGroup();
+    expect(screen.queryByTestId('dictation-fn-conflict')).toBeNull();
+    second.unmount();
+
+    // Automatic with no clash: fn alone dictates, so the note shows.
+    resetFnKeyStoreForTests();
+    bridge(view({ status: { fnUsage: 2 } }));
+    render(<DictationShortcutRows />);
+    await keyGroup();
+    expect(screen.getByTestId('dictation-fn-conflict')).toHaveTextContent(
+      dictationMessage('MSG-FN-CONFLICT', { action: FN_USAGE_ACTIONS[2] })
+    );
+  });
+
+  it('names the key that works now in the fn help and the other apps help', async () => {
+    const cases: Array<[Partial<FnKeySettings>, KnownFnApp | null, string]> = [
+      [{}, null, 'fn'],
+      [{}, WISPR, 'Control+fn'],
+      [{ combination: 'fn' }, WISPR, 'fn'],
+      [{ combination: 'modifier', modifier: 'option' }, null, 'Option+fn'],
+    ];
+    for (const [settings, collidingApp, key] of cases) {
+      resetFnKeyStoreForTests();
+      bridge(view({ settings, status: { collidingApp } }));
+      const shown = render(
+        <>
+          <DictationShortcutRows />
+          <FnOtherAppsRow />
+        </>
+      );
+      await keyGroup();
+      expect(
+        screen.getByRole('button', { name: `About ${DICTATION_ACTIONS.dictateWithFn}` })
+      ).toHaveAccessibleDescription(dictationMessage('MSG-FN-HELP', { key }));
+      expect(
+        screen.getByRole('button', { name: `About ${DICTATION_ACTIONS.useFnInOtherApps}` })
+      ).toHaveAccessibleDescription(dictationMessage('MSG-FN-OTHER-APPS', { key }));
+      shown.unmount();
+    }
+  });
+
+  it('names each key with the copy module’s words', () => {
+    expect(fnKeyLabel(null)).toBe(FN_KEY_LABELS.fn);
+    expect(fnKeyLabel('control')).toBe(FN_KEY_LABELS.control);
+    expect(fnKeyLabel('option')).toBe(FN_KEY_LABELS.option);
+    expect(fnKeyLabel('shift')).toBe(FN_KEY_LABELS.shift);
+  });
+
+  it('shows no key rows while the shortcut is off or the listener is missing', async () => {
+    bridge(view({ settings: { enabled: false } }));
+    const first = render(<DictationShortcutRows />);
+    await fnSwitch();
+    expect(screen.queryByRole('radiogroup')).toBeNull();
+    first.unmount();
+
+    resetFnKeyStoreForTests();
+    bridge(view({ status: { supported: false, listening: false } }));
+    render(<DictationShortcutRows />);
+    await fnSwitch();
+    expect(screen.queryByRole('radiogroup')).toBeNull();
+  });
+
+  it('renders nothing of it off macOS or on a browser surface', async () => {
+    bridge(view(), 'win32');
+    const first = render(<DictationShortcutRows />);
+    await screen.findByTestId('dictation-chord-row');
+    expect(screen.queryByRole('radiogroup')).toBeNull();
+    first.unmount();
+
+    resetFnKeyStoreForTests();
+    bridge(view());
+    document.documentElement.dataset.biorouterSurface = BROWSER_SURFACE_MARKER;
+    const second = render(<DictationShortcutRows />);
+    await act(async () => undefined);
+    expect(second.container).toBeEmptyDOMElement();
+  });
+});
+
 describe('the keyboard shortcut off macOS', () => {
   it('names Ctrl+Shift+D and why there is no fn, with no switch', async () => {
     bridge(view({ settings: { enabled: false }, status: { supported: false } }), 'win32');
@@ -197,7 +480,12 @@ describe('Use fn in other apps', () => {
     });
     expect(control).toHaveAttribute('aria-checked', 'false');
     await user.click(control);
-    expect(set).toHaveBeenCalledWith({ enabled: true, otherApps: true });
+    expect(set).toHaveBeenCalledWith({
+      enabled: true,
+      otherApps: true,
+      combination: 'automatic',
+      modifier: 'control',
+    });
     act(() => broadcast!(view({ settings: { enabled: false } })));
     await waitFor(() => expect(screen.queryByRole('switch')).toBeNull());
   });

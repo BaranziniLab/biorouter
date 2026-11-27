@@ -129,10 +129,12 @@ export const DICTATION_MESSAGES = {
     "Biorouter's menu bar icon is off, so Dictate to clipboard is not in its menu. Choose a shortcut below, or turn on Show in menu bar in Settings > App.",
   'MSG-CLIPBOARD-EXPLAIN':
     'Dictate to clipboard puts the text on your system clipboard. After that it is outside Biorouter: any program on this computer can read it, including an agent with shell access in any chat; clipboard managers may keep it; Universal Clipboard or Windows cloud clipboard may sync it to your other devices; and the app you paste into decides where it goes. When Biorouter types into the app you are using, the text is on the clipboard for a moment before Biorouter puts back what was there. The text is also kept in your dictation history, which you can turn off. Your private dictionary terms are used only for a recording you start with Include my private terms.',
+  // `<key>` is the key that dictates now: fn, or the chosen modifier plus fn (DD-101, `fnKeyLabel`).
   'MSG-FN-HELP':
-    'Hold fn to talk and let go to insert. Double-tap fn to dictate hands-free, and double-tap again to stop.',
+    'Hold <key> to talk and let go to insert. Double-tap <key> to dictate hands-free, and double-tap again to stop.',
+  // Protocol version 3 also says which one of Shift, Control or Option is held with fn (DD-101).
   'MSG-FN-PERMISSION':
-    'Allow Biorouter in Privacy & Security > Input Monitoring so fn can start dictation. Biorouter keeps only whether fn is held and drops every other key.',
+    'Allow Biorouter in Privacy & Security > Input Monitoring so fn can start dictation. Biorouter keeps only whether fn is held and which of Shift, Control or Option is held with it, and drops every other key.',
   // Also the composer's one-time note at the first fn press (DD-98, `biorouter:fn-conflict-shown`):
   // macOS runs its own fn action on every tap, so a double-tap can run it twice.
   'MSG-FN-CONFLICT':
@@ -143,7 +145,22 @@ export const DICTATION_MESSAGES = {
     'The fn key listener stopped and could not start again. Turn the switch off and on to retry.',
   'MSG-FN-MISSING': 'This build of Biorouter has no fn key listener, so fn cannot start dictation.',
   'MSG-FN-OTHER-APPS':
-    'Hold or double-tap fn in any app while Biorouter is open. The text goes into that app, or to the clipboard when Biorouter cannot type there.',
+    'Hold or double-tap <key> in any app while Biorouter is open. The text goes into that app, or to the clipboard when Biorouter cannot type there.',
+  // The alternative key (DD-101, 2026-11-27): a modifier plus fn does what fn does, for when
+  // another app also uses fn. `<alt>` is the chosen combination (Control+fn by default) and
+  // `<app>` the name from Biorouter's own list of apps known to use fn (`fnCollision.ts`), never
+  // text another app reports. The first five are Settings' **Dictation key** and **Key held with
+  // fn** rows; the last two are the composer's one-time key notice, with **More in Settings**.
+  'MSG-FN-KEY-HELP':
+    'Automatic uses fn, or <alt> while another app that uses fn is open, and <alt> always works too. Choose fn or <alt> to use one key only.',
+  'MSG-FN-KEY-AUTO': 'Using fn. <alt> works too.',
+  'MSG-FN-KEY-SWITCHED': 'Using <alt>, because <app> also uses fn.',
+  'MSG-FN-KEY-SHARED': '<app> also uses fn, so one press may start both.',
+  'MSG-FN-MODIFIER-HELP': 'Command is left out because macOS uses it for shortcuts.',
+  'MSG-FN-USE-ALT-COLLISION':
+    '<app> also uses fn. Hold <alt> to dictate in Biorouter, or double-tap it for hands-free.',
+  'MSG-FN-USE-ALT-CHOSEN':
+    'Biorouter dictates with <alt>. Hold it to talk, or double-tap it for hands-free.',
   // Typing the text where the person is (DD-97, macOS; "Inserting text" and S18 in the catalog's
   // document). MSG-INSERT-LOST is the composer's notice when the field a transcript was for has
   // gone; the next four are main's notifications after a refused insert, each beside the copy
@@ -157,9 +174,17 @@ export const DICTATION_MESSAGES = {
     'You switched apps before the text was ready, so Biorouter copied it. Paste with <key>.',
   'MSG-INSERT-FAILED': 'Biorouter could not type the text, so it copied it. Paste with <key>.',
   'MSG-INSERT-HELP':
-    'Biorouter pastes the text into the app you are using, then puts back what was on your clipboard. Password fields are skipped.',
+    'Biorouter pastes the text into the app you are using, then puts back what was on your clipboard. A copied password is cleared, and password fields are skipped.',
   'MSG-INSERT-PERMISSION':
     'Allow Biorouter in Privacy & Security > Accessibility so it can type into other apps.',
+  // After a paste that worked, what the helper could not put back on the clipboard (DD-102,
+  // `restored` in its `inserted` answer). Nothing shows for `all` or `moved`.
+  'MSG-INSERT-CLIPBOARD-PARTIAL':
+    'Typed into the app, but Biorouter could not put back everything that was on your clipboard.',
+  'MSG-INSERT-CLIPBOARD-KEPT':
+    'Typed into the app. The text is still on your clipboard, because Biorouter could not put back what was there.',
+  'MSG-INSERT-PASSWORD-CLEARED':
+    'Typed into the app. Your clipboard held a password, so Biorouter cleared it instead of putting it back.',
   'MSG-CHORD-HELP':
     'In a message box, tap <chord> to start or stop, or hold it to talk. Windows and Linux do not let apps see the fn key, so Biorouter uses this key combination here.',
   'MSG-SHORTCUT-HELP':
@@ -253,6 +278,18 @@ export const DICTATION_ACTIONS = {
   dictateWithFn: 'Dictate with the fn key',
   /** Under **Dictate into other apps** on macOS: the fn gestures there too. */
   useFnInOtherApps: 'Use fn in other apps',
+  /**
+   * Under **Dictate with the fn key** (DD-101): which press dictates, fn, a modifier plus fn, or
+   * Automatic; and the modifier. Their options are {@link FN_KEY_LABELS} and
+   * {@link FN_MODIFIER_LABELS}.
+   */
+  dictationKey: 'Dictation key',
+  keyHeldWithFn: 'Key held with fn',
+  /**
+   * The tray item for 5 minutes after Biorouter typed into another app (DD-102): the person's
+   * click writes the last text to the clipboard, nothing else does.
+   */
+  copyLastDictation: 'Copy last dictation',
   openInputMonitoring: 'Open Input Monitoring',
   openKeyboardSettings: 'Open Keyboard settings',
   /**
@@ -294,8 +331,11 @@ export const DICTATION_LABELS = {
   arming: 'Starting microphone…',
   recording: 'Stop dictation, <time>',
   recordingTooltip: 'Stop and insert · Esc cancels',
-  /** After **Dictate** in the idle tooltip while the fn shortcut works (macOS). */
-  fnGesture: 'hold or double-tap fn',
+  /**
+   * After **Dictate** in the idle tooltip while the fn shortcut works (macOS), naming the key
+   * that dictates now (DD-101): `<key>` is fn or the chosen modifier plus fn (`fnKeyLabel`).
+   */
+  fnGestureWith: 'hold or double-tap <key>',
   transcribing: 'Transcribing…',
   finishFirst: 'Finish dictating first',
   listening: 'Listening…',
@@ -359,6 +399,55 @@ export const INSERT_REFUSAL_MESSAGES = {
 export function insertRefusalMessage(reason: InsertRefusalReason, pasteKey: string): string {
   return dictationMessage(INSERT_REFUSAL_MESSAGES[reason], { key: pasteKey });
 }
+
+/**
+ * What the insertion helper did with the clipboard after a paste that worked (DD-102, `restored`
+ * in its `inserted` answer): `all` put everything back; `moved` left alone a copy made during the
+ * paste; `partial` put back all but what it could not read or what passed its size cap;
+ * `kept-text` could not put back what was there, so the dictated text stays; `cleared` cleared a
+ * copied password instead of putting it back.
+ */
+export type InsertRestoreOutcome = 'all' | 'moved' | 'partial' | 'kept-text' | 'cleared';
+
+/** The notification for each restore that did not put everything back. */
+export const INSERT_RESTORE_MESSAGES = {
+  partial: 'MSG-INSERT-CLIPBOARD-PARTIAL',
+  'kept-text': 'MSG-INSERT-CLIPBOARD-KEPT',
+  cleared: 'MSG-INSERT-PASSWORD-CLEARED',
+} as const satisfies Readonly<
+  Record<Exclude<InsertRestoreOutcome, 'all' | 'moved'>, DictationMessageId>
+>;
+
+/**
+ * The sentence for a restore outcome, or null when there is nothing to say: everything was put
+ * back, a copy the person made was left alone, or the helper did not say (an older helper).
+ */
+export function insertRestoreMessage(restored: InsertRestoreOutcome | undefined): string | null {
+  if (restored === 'partial' || restored === 'kept-text' || restored === 'cleared') {
+    return dictationMessage(INSERT_RESTORE_MESSAGES[restored]);
+  }
+  return null;
+}
+
+/**
+ * The options of **Dictation key** (DD-101): Automatic, fn alone, or the chosen modifier plus fn.
+ * `fnKeyLabel` (`utils/dictationFnKey.ts`) names the key that works now with the same words.
+ * Command is never one: macOS and every app use it for shortcuts.
+ */
+export const FN_KEY_LABELS = {
+  automatic: 'Automatic',
+  fn: 'fn',
+  control: 'Control+fn',
+  option: 'Option+fn',
+  shift: 'Shift+fn',
+} as const;
+
+/** The options of **Key held with fn** (DD-101), Control first, the default. */
+export const FN_MODIFIER_LABELS = {
+  control: 'Control',
+  option: 'Option',
+  shift: 'Shift',
+} as const;
 
 /**
  * MSG-FN-CONFLICT's `<action>`: what macOS does with fn, by `AppleFnUsageType` (System Settings >
