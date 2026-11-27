@@ -6,10 +6,26 @@
  * same reason as `anywhere.json` (`dictationAnywhere.ts`): a keyboard listener is not something
  * `/config/upsert` or a renderer's storage should be able to turn on. It is on by default on
  * macOS; no other system lets an app see fn, so it is off and has no switch elsewhere.
+ *
+ * It also holds the dictation key (DD-101): Automatic (fn, and a modifier with fn, giving bare fn
+ * up only while an app that also acts on fn runs), fn alone, or the modifier with fn, and which
+ * modifier that is (Control unless the person chose Option or Shift). A file written before the
+ * key existed reads as Automatic with Control.
  */
 import type { AnywherePhase } from './dictationAnywhere';
-import type { FnIntent, FnIntentEvent } from './fnGesture';
+import {
+  DEFAULT_FN_MODIFIER,
+  fnAccept,
+  parseFnCombination,
+  parseFnModifier,
+  type FnAccept,
+  type FnCombination,
+  type FnIntent,
+  type FnIntentEvent,
+  type FnModifier,
+} from './fnGesture';
 import type { FnKeyStatus, FnLineTrace } from './fnKeyHelper';
+import { KNOWN_FN_APPS, type KnownFnApp } from './fnCollision';
 
 export interface FnKeySettings {
   /** The fn gestures dictate into Biorouter. */
@@ -19,6 +35,29 @@ export interface FnKeySettings {
    * while `enabled` and **Dictate into other apps** are on.
    */
   otherApps: boolean;
+  /** The dictation key: Automatic, fn alone, or the modifier with fn. Parse always fills it. */
+  combination?: FnCombination;
+  /** The modifier held with fn for Automatic and the modifier choice. Parse always fills it. */
+  modifier?: FnModifier;
+}
+
+/**
+ * Which key dictates now, as main computes it ({@link fnActive}) for Settings, the microphone's
+ * tooltip and the one-time key notice. It says nothing about whether the shortcut is on or the
+ * listener runs: {@link fnShortcutWorks} says that.
+ */
+export interface FnActive {
+  /** fn alone dictates now. */
+  bare: boolean;
+  /** The modifier whose chord with fn dictates now, or null for none. */
+  modifier: FnModifier | null;
+  /**
+   * Why: the person chose fn or the modifier (`chosen`), Automatic with no listed app running
+   * (`automatic`), or Automatic giving bare fn up to a listed app (`collision`).
+   */
+  reason: 'chosen' | 'automatic' | 'collision';
+  /** The listed app that also acts on fn and runs now, whatever the choice; null for none. */
+  collidingApp: KnownFnApp | null;
 }
 
 /** What the renderer is told: the setting, the listener's state, and the clipboard switch. */
@@ -27,20 +66,83 @@ export interface FnKeyView {
   status: FnKeyStatus;
   /** **Dictate into other apps** is on, so **Use fn in other apps** can apply. */
   anywhereOn: boolean;
+  /** Which key dictates now ({@link fnActive}); missing before main computes it. */
+  active?: FnActive;
 }
 
 export function defaultFnKeySettings(platform: string): FnKeySettings {
-  return { enabled: platform === 'darwin', otherApps: false };
+  return {
+    enabled: platform === 'darwin',
+    otherApps: false,
+    combination: 'automatic',
+    modifier: DEFAULT_FN_MODIFIER,
+  };
 }
 
 export function parseFnKeySettings(raw: unknown, platform: string): FnKeySettings {
-  if (platform !== 'darwin') return { enabled: false, otherApps: false };
+  if (platform !== 'darwin') {
+    return {
+      enabled: false,
+      otherApps: false,
+      combination: 'automatic',
+      modifier: DEFAULT_FN_MODIFIER,
+    };
+  }
   if (!raw || typeof raw !== 'object') return defaultFnKeySettings(platform);
   const row = raw as Record<string, unknown>;
   return {
     enabled: typeof row.enabled === 'boolean' ? row.enabled : true,
     otherApps: row.otherApps === true,
+    // Missing in every file written before the dictation key; Command and unknown words too.
+    combination: parseFnCombination(row.combination),
+    modifier: parseFnModifier(row.modifier),
   };
+}
+
+/**
+ * Which key dictates now, from the setting and the listed app the helper saw running
+ * (`FnKeyStatus.collidingApp`). Automatic takes fn and the modifier with fn, and bare fn only
+ * while no listed app runs; the fn choice takes fn alone, and the modifier choice the modifier
+ * alone. The colliding app is named whatever the choice, so Settings can say when fn is shared.
+ */
+export function fnActive(
+  settings: FnKeySettings,
+  collidingApp: KnownFnApp | null | undefined
+): FnActive {
+  const combination = parseFnCombination(settings.combination);
+  const app = collidingApp ?? null;
+  const accept: FnAccept = fnAccept(combination, parseFnModifier(settings.modifier), app !== null);
+  return {
+    bare: accept.bare,
+    modifier: accept.modifier,
+    reason: combination !== 'automatic' ? 'chosen' : app ? 'collision' : 'automatic',
+    collidingApp: app,
+  };
+}
+
+const KEY_LABELS: Record<FnModifier, string> = {
+  control: 'Control+fn',
+  option: 'Option+fn',
+  shift: 'Shift+fn',
+};
+
+/** A dictation key as the interface names it: `fn`, or `Control+fn`, `Option+fn`, `Shift+fn`. */
+export function fnKeyLabel(mod: FnModifier | null): string {
+  return mod === null ? 'fn' : KEY_LABELS[mod];
+}
+
+const ARIA_KEYS: Record<FnModifier, string> = {
+  control: 'Control+Fn',
+  option: 'Alt+Fn',
+  shift: 'Shift+Fn',
+};
+
+/**
+ * A dictation key as `aria-keyshortcuts` spells it: the key names of the UI Events standard, so
+ * Option is `Alt` there.
+ */
+export function fnKeyAriaShortcut(mod: FnModifier | null): string {
+  return mod === null ? 'Fn' : ARIA_KEYS[mod];
 }
 
 /** Whether the shortcut works now: macOS, on, and the listener running. */
@@ -257,6 +359,8 @@ export type FnTraceRecord =
       actions: FnAction[];
       /** When main handled the intent, on its clock. */
       at: number;
+      /** Which presses dictated when it came (`FnKeyService.accept`); left out when missing. */
+      accept?: FnAccept;
     };
 
 /** A time or id for the trace: a finite number, else `none`. */
@@ -286,21 +390,53 @@ const PHASES: readonly AnywherePhase[] = [
   'review',
 ];
 
+const TRACE_MODIFIERS: readonly FnModifier[] = ['shift', 'control', 'option'];
+
+/** A modifier for the trace: one of the three words, else `none`. */
+function traceMod(mod: FnModifier | null | undefined): string {
+  return mod && TRACE_MODIFIERS.includes(mod) ? mod : 'none';
+}
+
+/** A bundle id for the trace: only one on Biorouter's own list, else `none`. */
+function traceKnown(bundle: string | null): string {
+  return KNOWN_FN_APPS.find((app) => app.bundle === bundle)?.bundle ?? 'none';
+}
+
+/**
+ * Which presses dictate, for the trace: `fn` for bare fn and the modifier's name for the
+ * modifier with fn, joined by `+` (Automatic with no collision is `fn+control`), or `none`.
+ */
+function traceAccept(accept: FnAccept): string {
+  const parts: string[] = [];
+  if (accept.bare) parts.push('fn');
+  if (accept.modifier) parts.push(traceMod(accept.modifier));
+  return parts.length ? parts.join('+') : 'none';
+}
+
 /**
  * One line of the fn trace (`BIOROUTER_FN_TRACE=1`, unpackaged app only). It holds line types,
- * intent words, gesture ids, window ids, phases and times, and nothing else: there is no key code
- * to log, a view's id is left out, and no text of any kind reaches it.
+ * intent words, gesture ids, window ids, phases, times, the modifier held with fn, how many apps
+ * watch modifier keys and which listed app is among them, and nothing else: there is no key code
+ * to log, a view's id is left out, no unlisted app is named, and no text of any kind reaches it.
  */
 export function formatFnTrace(record: FnTraceRecord): string {
   if (record.kind === 'line') {
-    return [
+    const parts = [
       'fn-trace line',
       `type=${record.line}`,
       `helper=${traceNumber(record.helperT)}`,
       `mapped=${traceNumber(record.mappedAt, 1)}`,
       `arrival=${traceNumber(record.arrivalAt, 1)}`,
       `timed=${record.timedBy ?? 'none'}`,
-    ].join(' ');
+    ];
+    if (record.mod !== undefined) parts.push(`mod=${traceMod(record.mod)}`);
+    if (record.listeners) {
+      parts.push(
+        `count=${traceNumber(record.listeners.count)}`,
+        `known=${traceKnown(record.listeners.known)}`
+      );
+    }
+    return parts.join(' ');
   }
   const { world } = record;
   const phase = PHASES.includes(world.anywherePhase) ? world.anywherePhase : 'unknown';
@@ -315,5 +451,6 @@ export function formatFnTrace(record: FnTraceRecord): string {
     `recording=${world.recordingWindowId === null ? 'none' : `window:${traceNumber(world.recordingWindowId)}`}`,
     `anywhere=${phase}`,
     `actions=${record.actions.length ? record.actions.map(traceAction).join(',') : 'none'}`,
+    ...(record.accept ? [`accept=${traceAccept(record.accept)}`] : []),
   ].join(' ');
 }

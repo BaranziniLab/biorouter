@@ -1,8 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import {
   defaultFnKeySettings,
+  fnActive,
   fnDictationRunning,
   fnGestureRoute,
+  fnKeyAriaShortcut,
+  fnKeyLabel,
   fnShortcutWorks,
   fnStartRoute,
   fnToggleRoute,
@@ -10,10 +13,12 @@ import {
   parseFnKeySettings,
   planFnIntent,
   type FnAction,
+  type FnKeySettings,
   type FnLatch,
   type FnWorld,
 } from './dictationFnKey';
 import type { FnIntent } from './fnGesture';
+import { KNOWN_FN_APPS } from './fnCollision';
 
 const world = (over: Partial<FnWorld> = {}): FnWorld => ({
   focusedAppWindowId: null,
@@ -23,27 +28,69 @@ const world = (over: Partial<FnWorld> = {}): FnWorld => ({
   ...over,
 });
 
+/** The dictation key fields every parsed setting carries since DD-101: Automatic with Control. */
+const KEYS = { combination: 'automatic', modifier: 'control' } as const;
+
 describe('the fn key setting', () => {
+  // Rewritten for DD-101: the setting gained the dictation key and the modifier held with fn,
+  // which parse always fills (Automatic and Control unless the file says otherwise).
   it('is on by default on macOS and off, with no way on, elsewhere', () => {
-    expect(defaultFnKeySettings('darwin')).toEqual({ enabled: true, otherApps: false });
-    expect(defaultFnKeySettings('win32')).toEqual({ enabled: false, otherApps: false });
-    expect(parseFnKeySettings({ enabled: true, otherApps: true }, 'linux')).toEqual({
-      enabled: false,
+    expect(defaultFnKeySettings('darwin')).toEqual({ enabled: true, otherApps: false, ...KEYS });
+    expect(defaultFnKeySettings('win32')).toEqual({ enabled: false, otherApps: false, ...KEYS });
+    expect(
+      parseFnKeySettings(
+        { enabled: true, otherApps: true, combination: 'modifier', modifier: 'shift' },
+        'linux'
+      )
+    ).toEqual({ enabled: false, otherApps: false, ...KEYS });
+    expect(parseFnKeySettings(null, 'darwin')).toEqual({
+      enabled: true,
       otherApps: false,
+      ...KEYS,
     });
-    expect(parseFnKeySettings(null, 'darwin')).toEqual({ enabled: true, otherApps: false });
     expect(parseFnKeySettings({ enabled: false }, 'darwin')).toEqual({
       enabled: false,
       otherApps: false,
+      ...KEYS,
     });
     expect(parseFnKeySettings({ enabled: 'no', otherApps: 'yes' }, 'darwin')).toEqual({
       enabled: true,
       otherApps: false,
+      ...KEYS,
     });
     expect(parseFnKeySettings({ enabled: true, otherApps: true }, 'darwin')).toEqual({
       enabled: true,
       otherApps: true,
+      ...KEYS,
     });
+  });
+
+  it('a file written before the dictation key reads as Automatic with Control', () => {
+    expect(parseFnKeySettings({ enabled: true, otherApps: false }, 'darwin')).toEqual({
+      enabled: true,
+      otherApps: false,
+      combination: 'automatic',
+      modifier: 'control',
+    });
+  });
+
+  it('reads each dictation key and modifier it knows, and anything else as the defaults', () => {
+    for (const combination of ['automatic', 'fn', 'modifier'] as const) {
+      for (const modifier of ['control', 'option', 'shift'] as const) {
+        expect(
+          parseFnKeySettings({ enabled: true, otherApps: false, combination, modifier }, 'darwin')
+        ).toEqual({ enabled: true, otherApps: false, combination, modifier });
+      }
+    }
+    // Command is never a choice: macOS and every app use it for shortcuts.
+    for (const modifier of ['command', 'cmd', 'Command', 'fn', 'alt', '', 3, null, ['control']]) {
+      expect(parseFnKeySettings({ modifier }, 'darwin').modifier, String(modifier)).toBe('control');
+    }
+    for (const combination of ['Automatic', 'control+fn', 'bare', '', 1, null, {}]) {
+      expect(parseFnKeySettings({ combination }, 'darwin').combination, String(combination)).toBe(
+        'automatic'
+      );
+    }
   });
 
   it('works only on macOS, switched on, with the listener running', () => {
@@ -441,5 +488,153 @@ describe('the fn trace', () => {
     ).toBe(
       'fn-trace intent intent=cancel-hold gesture=3 at=3.0 route=anywhere focus=none embedded=none recording=none anywhere=unknown actions=anywhere:cancel,send:cancel-hold:1'
     );
+  });
+});
+
+describe('which key works now', () => {
+  const settings = (over: Partial<FnKeySettings> = {}): FnKeySettings => ({
+    enabled: true,
+    otherApps: false,
+    combination: 'automatic',
+    modifier: 'control',
+    ...over,
+  });
+  const wispr = KNOWN_FN_APPS[0];
+
+  it('Automatic with nothing listed running: fn, and Control+fn too', () => {
+    expect(fnActive(settings(), null)).toEqual({
+      bare: true,
+      modifier: 'control',
+      reason: 'automatic',
+      collidingApp: null,
+    });
+    expect(fnActive(settings(), undefined)).toEqual(fnActive(settings(), null));
+  });
+
+  it('Automatic with a listed app running: only the modifier, because of that app', () => {
+    expect(fnActive(settings({ modifier: 'option' }), wispr)).toEqual({
+      bare: false,
+      modifier: 'option',
+      reason: 'collision',
+      collidingApp: wispr,
+    });
+  });
+
+  it('the fn choice: fn alone, with or without a listed app, which is still named', () => {
+    expect(fnActive(settings({ combination: 'fn' }), null)).toEqual({
+      bare: true,
+      modifier: null,
+      reason: 'chosen',
+      collidingApp: null,
+    });
+    expect(fnActive(settings({ combination: 'fn' }), wispr)).toEqual({
+      bare: true,
+      modifier: null,
+      reason: 'chosen',
+      collidingApp: wispr,
+    });
+  });
+
+  it('the modifier choice: the modifier alone, with or without a listed app', () => {
+    for (const app of [null, wispr]) {
+      expect(fnActive(settings({ combination: 'modifier', modifier: 'shift' }), app)).toEqual({
+        bare: false,
+        modifier: 'shift',
+        reason: 'chosen',
+        collidingApp: app,
+      });
+    }
+  });
+
+  it('a setting with no dictation key fields reads as Automatic with Control', () => {
+    expect(fnActive({ enabled: true, otherApps: false }, null)).toEqual(fnActive(settings(), null));
+    expect(
+      fnActive({ enabled: true, otherApps: false, modifier: 'command' as never }, wispr)
+    ).toEqual(fnActive(settings(), wispr));
+  });
+
+  it('names each key as the interface shows it', () => {
+    expect(fnKeyLabel(null)).toBe('fn');
+    expect(fnKeyLabel('control')).toBe('Control+fn');
+    expect(fnKeyLabel('option')).toBe('Option+fn');
+    expect(fnKeyLabel('shift')).toBe('Shift+fn');
+  });
+
+  it('names each key as aria-keyshortcuts spells it (Option is Alt there)', () => {
+    expect(fnKeyAriaShortcut(null)).toBe('Fn');
+    expect(fnKeyAriaShortcut('control')).toBe('Control+Fn');
+    expect(fnKeyAriaShortcut('option')).toBe('Alt+Fn');
+    expect(fnKeyAriaShortcut('shift')).toBe('Shift+Fn');
+  });
+});
+
+describe('the fn trace in version 3', () => {
+  it('names the modifier of an fn down or chord line, none for a bare press', () => {
+    const base = { helperT: 40, mappedAt: 1, arrivalAt: 2, timedBy: 'helper' as const };
+    expect(formatFnTrace({ kind: 'line', line: 'fn-down', ...base, mod: null })).toBe(
+      'fn-trace line type=fn-down helper=40 mapped=1.0 arrival=2.0 timed=helper mod=none'
+    );
+    expect(formatFnTrace({ kind: 'line', line: 'fn-down', ...base, mod: 'control' })).toBe(
+      'fn-trace line type=fn-down helper=40 mapped=1.0 arrival=2.0 timed=helper mod=control'
+    );
+    expect(formatFnTrace({ kind: 'line', line: 'chord', ...base, mod: 'option' })).toBe(
+      'fn-trace line type=chord helper=40 mapped=1.0 arrival=2.0 timed=helper mod=option'
+    );
+  });
+
+  it('names a listeners line by its count and a listed app only, never another id', () => {
+    const line = (listeners: { count: number; known: string | null }) =>
+      formatFnTrace({
+        kind: 'line',
+        line: 'listeners',
+        helperT: 9,
+        mappedAt: null,
+        arrivalAt: 3,
+        timedBy: null,
+        listeners,
+      });
+    expect(line({ count: 2, known: 'com.electron.wispr-flow' })).toBe(
+      'fn-trace line type=listeners helper=9 mapped=none arrival=3.0 timed=none count=2 known=com.electron.wispr-flow'
+    );
+    expect(line({ count: 0, known: null })).toBe(
+      'fn-trace line type=listeners helper=9 mapped=none arrival=3.0 timed=none count=0 known=none'
+    );
+    // A known name that is not a listed bundle never reaches the trace.
+    expect(line({ count: 1, known: 'com.example.secret' })).toBe(
+      'fn-trace line type=listeners helper=9 mapped=none arrival=3.0 timed=none count=1 known=none'
+    );
+  });
+
+  it('names a restart by type only', () => {
+    expect(
+      formatFnTrace({
+        kind: 'line',
+        line: 'restart',
+        helperT: null,
+        mappedAt: null,
+        arrivalAt: 7,
+        timedBy: null,
+      })
+    ).toBe('fn-trace line type=restart helper=none mapped=none arrival=7.0 timed=none');
+  });
+
+  it('names which presses dictate on an intent record', () => {
+    const intent = (accept: { bare: boolean; modifier: 'control' | 'option' | 'shift' | null }) =>
+      formatFnTrace({
+        kind: 'intent',
+        intent: 'prime',
+        gesture: 1,
+        route: { kind: 'window', windowId: 2 },
+        world: world({ focusedAppWindowId: 2 }),
+        actions: [send(2, 'prime')],
+        at: 5,
+        accept,
+      });
+    const head =
+      'fn-trace intent intent=prime gesture=1 at=5.0 route=window:2 focus=window:2 embedded=none recording=none anywhere=off actions=send:prime:2';
+    expect(intent({ bare: true, modifier: 'control' })).toBe(`${head} accept=fn+control`);
+    expect(intent({ bare: false, modifier: 'option' })).toBe(`${head} accept=option`);
+    expect(intent({ bare: true, modifier: null })).toBe(`${head} accept=fn`);
+    expect(intent({ bare: false, modifier: null })).toBe(`${head} accept=none`);
   });
 });

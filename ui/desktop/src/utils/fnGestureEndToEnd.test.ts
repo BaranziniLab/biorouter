@@ -9,7 +9,9 @@
  *
  *  - a double-tap gives one hands-free recording, and the first tap's capture is discarded;
  *  - a second double-tap stops it, and the text goes into the composer;
- *  - a single tap leaves nothing running.
+ *  - a single tap leaves nothing running;
+ *  - with an app that also uses fn running (DD-101), a Control+fn double-tap still gives one
+ *    hands-free recording, Control let go between the taps, and a bare fn hold starts nothing.
  */
 import { EventEmitter } from 'node:events';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -34,7 +36,7 @@ import {
 } from '../components/dictation/fnGestureClient';
 import { windowDictationActivity } from '../components/dictation/indicatorReport';
 import { planFnIntent, type FnAction, type FnLatch, type FnWorld } from './dictationFnKey';
-import type { FnIntent } from './fnGesture';
+import type { FnIntent, FnNote } from './fnGesture';
 import { FnKeyService, type HelperProcess } from './fnKeyHelper';
 
 /** The helper process, as `fnKeyHelper.test.ts` fakes it: what it writes is what the test says. */
@@ -49,7 +51,11 @@ class FakeHelper extends EventEmitter implements HelperProcess {
 
 const WINDOW = 1;
 const KEY = 'tab:a';
-const READY = '{"type":"ready","v":2,"permission":"granted","listening":true,"fnUsage":0,"t":0}';
+// Protocol version 3 (DD-101); this was version 2, which the app now refuses.
+const READY = '{"type":"ready","v":3,"permission":"granted","listening":true,"fnUsage":0,"t":0}';
+/** What the helper reports when Wispr Flow runs: a listed app beside one Biorouter ignores. */
+const WISPR_RUNS =
+  '{"type":"listeners","apps":["com.example.hotkeys","com.electron.wispr-flow"],"t":0}';
 
 let now = 0;
 let helper: FakeHelper;
@@ -57,6 +63,7 @@ let service: FnKeyService;
 let latch: FnLatch | null;
 let actions: FnAction[];
 let intents: Array<{ intent: FnIntent; gesture: number }>;
+let notes: FnNote[];
 let captures: FakeCapture[];
 let streams: FakeStream[];
 let field: HTMLTextAreaElement;
@@ -97,6 +104,7 @@ beforeEach(() => {
   latch = null;
   actions = [];
   intents = [];
+  notes = [];
   captures = [];
   streams = [];
   resetFnGestureClientForTests();
@@ -166,6 +174,7 @@ beforeEach(() => {
       }
     },
     onStatus: () => undefined,
+    onNote: (note) => notes.push(note),
     now: () => now,
   });
   service.setActive(true);
@@ -241,5 +250,62 @@ describe('fn from the helper to the composer', () => {
     streams[0].finishDeferred.resolve(transcript('hypoxia'));
     await settle();
     expect(field.value).toBe('hypoxia');
+  });
+
+  it('with Wispr Flow running, a Control+fn double-tap gives one hands-free recording; a second one stops it', async () => {
+    await line(500, WISPR_RUNS);
+    expect(service.status().collidingApp?.name).toBe('Wispr Flow');
+    // Control held from before the first press, let go after it, and pressed again just after
+    // fn went down for the second (a chord within the grace). The helper writes nothing for
+    // Control between the taps.
+    await line(1000, '{"type":"fn","down":true,"mod":"control","t":1000}');
+    await line(1090, '{"type":"fn","down":false,"t":1090}');
+    await line(1220, '{"type":"fn","down":true,"mod":null,"t":1220}');
+    await line(1250, '{"type":"chord","mod":"control","t":1250}');
+    await line(1310, '{"type":"fn","down":false,"t":1310}');
+    expect(intents.map((step) => step.intent)).toEqual(['prime', 'cancel-hold', 'prime', 'toggle']);
+    expect(new Set(intents.map((step) => step.gesture)).size).toBe(1);
+    expect(captures).toHaveLength(2);
+    expect(captures[0].cancelled).toBe(true);
+    expect(captures[1].cancelled).toBe(false);
+    expect(captures[1].stopped).toBe(false);
+    captures[1].live();
+    expect(getDictationSnapshot()).toMatchObject({ key: KEY, activity: 'recording' });
+    captures[1].speak(2);
+
+    // The stop, with Control held for both taps.
+    for (const [at, json] of [
+      [6000, '{"type":"fn","down":true,"mod":"control","t":6000}'],
+      [6090, '{"type":"fn","down":false,"t":6090}'],
+      [6220, '{"type":"fn","down":true,"mod":"control","t":6220}'],
+      [6310, '{"type":"fn","down":false,"t":6310}'],
+    ] as const)
+      await line(at, json);
+    expect(intents.slice(4).map((step) => step.intent)).toEqual([
+      'prime',
+      'cancel-hold',
+      'prime',
+      'toggle',
+    ]);
+    expect(captures).toHaveLength(2);
+    expect(captures[1].stopped).toBe(true);
+    streams[streams.length - 1].finishDeferred.resolve(transcript('EPAS1 levels'));
+    await settle();
+    expect(field.value).toBe('EPAS1 levels');
+    expect(isDictationRunning()).toBe(false);
+    expect(notes).toEqual([]);
+  });
+
+  it('with Wispr Flow running, a bare fn hold gives no action and one note', async () => {
+    await line(500, WISPR_RUNS);
+    await fn(1000, true);
+    await line(1300, '{"type":"held","t":1300}');
+    await fn(2500, false);
+    expect(intents).toEqual([]);
+    expect(actions).toEqual([]);
+    expect(notes).toEqual(['ignored-bare-hold']);
+    expect(captures).toHaveLength(0);
+    expect(getDictationSnapshot().activity).toBe('idle');
+    expect(isDictationRunning()).toBe(false);
   });
 });
