@@ -201,8 +201,10 @@ impl SkipReason {
     }
 }
 
-/// True when `dir` is at or beneath a tree this module refuses to read.
-fn is_opaque_tree(dir: &Path, home: Option<&Path>) -> bool {
+/// True when `dir` is at or beneath a tree this module refuses to read. Also
+/// asked by a read-only verifier's folder check (`subagent_presets`), which
+/// prunes the same trees.
+pub(crate) fn is_opaque_tree(dir: &Path, home: Option<&Path>) -> bool {
     let opaque_component = dir.components().any(|component| match component {
         Component::Normal(name) => OPAQUE_COMPONENTS
             .iter()
@@ -317,7 +319,7 @@ impl Drop for InflightGuard {
 ///
 /// Touches the filesystem (`is_file`), so it is resolved inside the blocking
 /// task rather than on the turn's async path.
-fn global_biorouterignore() -> Option<PathBuf> {
+pub(crate) fn global_biorouterignore() -> Option<PathBuf> {
     let path = Paths::config_dir().join(".biorouterignore");
     path.is_file().then_some(path)
 }

@@ -16,6 +16,7 @@ use crate::agents::default_worker;
 use crate::agents::session_skills::{self, SessionSkillOverride};
 use crate::agents::subagent_handle::{self, BackgroundSubagent};
 use crate::agents::subagent_handler::{run_complete_subagent_task_outcome, SubagentRunOutcome};
+use crate::agents::subagent_presets::SpawnPreset;
 use crate::agents::subagent_result::SubagentResult;
 use crate::agents::subagent_task_config::{ChildExtensionChanges, TaskConfig};
 use crate::agents::tool_execution::ToolCallResult;
@@ -982,6 +983,13 @@ pub struct SubagentParams {
     /// on the child before it runs.
     #[serde(default)]
     pub monitors: Option<Vec<MonitorSpec>>,
+    /// J-P03: a spawn preset (`no_tools`, `only_extensions`, `read_only`).
+    /// Checked against the other arguments at the tool entry by
+    /// [`spawn_preset_refusal`], applied last in [`judge_child`], and turned
+    /// into the child's fixed tool set once its extensions load
+    /// ([`crate::agents::subagent_presets`]). It only ever takes away.
+    #[serde(default)]
+    pub preset: Option<SpawnPreset>,
 }
 
 /// The longest `role` label kept, in characters.
@@ -1202,7 +1210,7 @@ pub fn create_subagent_tool(sub_workflows: &[SubWorkflow]) -> Tool {
             "extensions": {
                 "type": "array",
                 "items": {"type": "string"},
-                "description": "OMIT this to give the subagent the extensions this chat has right now, which is almost always right: it starts with the same capabilities on and off as this chat. Naming a subset restricts it to those. An empty array leaves it with NO tools at all: it can only think and write text, so use that only for a pure reasoning or writing task. To change one or two, use add_extensions or remove_extensions instead."
+                "description": "OMIT this to give the subagent the extensions this chat has right now, which is almost always right: it starts with the same capabilities on and off as this chat. Naming a subset restricts it to those. An empty array removes every extension, but Biorouter's own tools stay; for a subagent with no tools at all use preset no_tools. To change one or two, use add_extensions or remove_extensions instead."
             },
             "add_extensions": {
                 "type": "array",
@@ -1255,6 +1263,11 @@ pub fn create_subagent_tool(sub_workflows: &[SubWorkflow]) -> Tool {
                 "type": "string",
                 "maxLength": MAX_ROLE_CHARS,
                 "description": "A short label for what this subagent does, shown beside it in the side panel (for example \"reviewer\" or \"data loader\"). At most 40 characters; a longer label is cut."
+            },
+            "preset": {
+                "type": "string",
+                "enum": SpawnPreset::NAMES,
+                "description": "Optional. Fixes what the subagent can use for its whole run, and nothing can be added to it later. \"no_tools\": no tools at all, for an independent reviewer of text you put in instructions (it cannot read files, so paste what it must judge). \"only_extensions\": exactly the extensions you name in extensions, from this chat's own, and none of Biorouter's other tools; do not combine it with add_extensions. \"read_only\": a verifier that keeps only tools that read (Developer's text_editor for view alone) and loses every tool that writes, runs commands or acts; its result says whether any file in the working folder changed while it ran. Omit it for an ordinary subagent."
             },
             "monitors": monitors_schema()
         }
@@ -1661,6 +1674,12 @@ fn handle_subagent_tool_inner(
     // change about the extensions its child inherits is resolved and gated
     // before a session, an in-flight slot or a provider exists, so a refused
     // add leaves nothing behind. It is applied in `judge_child`.
+    //
+    // The preset first (J-P03): a preset that contradicts the other
+    // arguments says so, rather than an unknown-name refusal that does not.
+    if let Some(refusal) = spawn_preset_refusal(&parsed_params, &task_config.extensions) {
+        return ToolCallResult::from(Err(refusal));
+    }
     match child_extension_changes(&parsed_params, &task_config) {
         Ok(changes) => task_config.extension_changes = changes,
         Err(refusal) => return ToolCallResult::from(Err(refusal)),
@@ -2602,6 +2621,11 @@ async fn run_blocking_child(
     if let Some(note) = child_privacy.default_worker_note {
         call_result.content.push(Content::text(note));
     }
+    if let Some(preset) = params.preset {
+        call_result
+            .content
+            .push(Content::text(preset.parent_note()));
+    }
     Ok(call_result)
 }
 
@@ -3198,6 +3222,11 @@ async fn spawn_background_subagent(
         text.push_str("\n\n");
         text.push_str(note);
     }
+    // J-P03: what the preset fixed, said once, here, for the same reason.
+    if let Some(preset) = params.preset {
+        text.push_str("\n\n");
+        text.push_str(preset.parent_note());
+    }
 
     CallToolResult {
         content: vec![Content::text(text)],
@@ -3569,17 +3598,138 @@ async fn default_model_for_provider(provider_name: &str) -> Result<String> {
         })
 }
 
+/// `extensions`: keep only the inherited extensions it names, by key or, for
+/// a capability Biorouter ships, by the label a person sees, the rule
+/// `add_extensions` and `remove_extensions` use ([`names_extension`]). It used
+/// to compare normalised keys alone, which matched a label that normalises to
+/// the key ("Auto Visualiser", "Chat Recall") but silently matched nothing
+/// for one that does not ("Biorouter Copilot" for `computercontroller`,
+/// "Web & Documents" for `webdocuments`, "Application Drafter" for
+/// `agent_drafter`, "Code Execution" for `code_execution`).
 fn narrow_child_extensions_by_name(task_config: &mut TaskConfig, params: &SubagentParams) {
     if let Some(extension_names) = &params.extensions {
-        let requested = extension_names
-            .iter()
-            .map(|name| extension_request_key(name))
-            .collect::<std::collections::HashSet<_>>();
         task_config.extensions.retain(|extension| {
-            requested.contains(&crate::agents::extension_manager::normalize(
-                &extension.key(),
-            ))
+            extension_names
+                .iter()
+                .any(|name| names_extension(name.trim(), extension))
         });
+    }
+}
+
+/// J-P03: a preset that contradicts this spawn's other arguments, refused at
+/// the tool entry before a session, an in-flight slot or a provider exists.
+/// `inherited` is the chat's live roster, which `only_extensions` names from.
+fn spawn_preset_refusal(
+    params: &SubagentParams,
+    inherited: &[crate::agents::ExtensionConfig],
+) -> Option<ErrorData> {
+    let refuse = |why: String| Some(spawn_refusal(format!("{why} Nothing was started.")));
+    let named = params.extensions.as_deref().unwrap_or_default();
+    match params.preset? {
+        SpawnPreset::NoTools => {
+            if !named.is_empty() || !params.add_extensions.is_empty() {
+                return refuse(
+                    "The no_tools preset gives the subagent no extension at all, so it cannot \
+                     be combined with extensions or add_extensions. Omit them, or use the \
+                     only_extensions preset to name the ones it should have."
+                        .to_string(),
+                );
+            }
+            if !params.add_skills.is_empty() {
+                return refuse(
+                    "The no_tools preset leaves the subagent no way to load a skill, so it \
+                     cannot be combined with add_skills. Put what it needs from the skill in \
+                     its instructions."
+                        .to_string(),
+                );
+            }
+            None
+        }
+        SpawnPreset::OnlyExtensions => {
+            // A skill is loaded through the Skills capability. Under this
+            // preset the child holds only what `extensions` names, so a skill
+            // added without it could never be loaded, and the spawn would
+            // promise a skill the child cannot use.
+            if !params.add_skills.is_empty()
+                && !named
+                    .iter()
+                    .any(|requested| names_skills_capability(requested.trim()))
+            {
+                return refuse(
+                    "The only_extensions preset gives the subagent only the extensions named \
+                     in extensions, and a skill is loaded through Skills, so add_skills needs \
+                     Skills in extensions too. Add it there, or put what the subagent needs \
+                     from the skill in its instructions."
+                        .to_string(),
+                );
+            }
+            if !params.add_extensions.is_empty() {
+                return refuse(
+                    "The only_extensions preset gives the subagent exactly the extensions \
+                     named in extensions, from this chat's own, so it cannot be combined with \
+                     add_extensions. Name every one it should have in extensions."
+                        .to_string(),
+                );
+            }
+            if named.is_empty() {
+                return refuse(format!(
+                    "The only_extensions preset needs extensions: name the extensions of this \
+                     chat the subagent should have ({}).",
+                    extension_labels(inherited)
+                ));
+            }
+            for requested in named {
+                let requested = requested.trim();
+                if let Some(why) = self_managed_capability(requested) {
+                    return refuse(format!(
+                        "extensions names '{requested}', which is not switched per subagent: \
+                         {why}."
+                    ));
+                }
+                if !inherited
+                    .iter()
+                    .any(|config| names_extension(requested, config))
+                {
+                    return refuse(format!(
+                        "extensions names '{requested}', which this chat does not have. With \
+                         the only_extensions preset the subagent can be given only this \
+                         chat's own extensions: {}.",
+                        extension_labels(inherited)
+                    ));
+                }
+            }
+            None
+        }
+        SpawnPreset::ReadOnly => None,
+    }
+}
+
+/// Whether `requested` names the Skills capability, by key or by label.
+fn names_skills_capability(requested: &str) -> bool {
+    extension_request_key(requested) == crate::agents::skills_extension::EXTENSION_NAME
+        || crate::agents::extension_manager::resolve_bundled_extension(requested).is_some_and(
+            |target| {
+                crate::agents::extension_manager::normalize(&target.key())
+                    == crate::agents::skills_extension::EXTENSION_NAME
+            },
+        )
+}
+
+/// J-P03: the preset's part of [`judge_child`], run LAST, after the narrowing,
+/// the changes and the tier and affiliation filter, so it only ever takes away
+/// from what they admitted. The tools are fixed later, once the extensions
+/// load ([`crate::agents::subagent_presets::ToolClamp`]); here only what can be
+/// decided from the configs: `no_tools` keeps no extension and `read_only`
+/// drops the acting ones whole. `only_extensions` was narrowed to its list
+/// already.
+fn apply_preset_to_extensions(task_config: &mut TaskConfig, preset: Option<SpawnPreset>) {
+    task_config.preset = preset;
+    match preset {
+        None | Some(SpawnPreset::OnlyExtensions) => {}
+        Some(SpawnPreset::NoTools) => task_config.extensions.clear(),
+        Some(SpawnPreset::ReadOnly) => task_config
+            .extensions
+            .retain(|config| !crate::agents::subagent_presets::is_acting_extension(config)),
     }
 }
 
@@ -4203,6 +4353,8 @@ fn judge_child(
         child_affiliation,
         privacy_enforced,
     );
+    // J-P03: the preset, last. It never touches `privacy_tier`, stamped above.
+    apply_preset_to_extensions(&mut task_config, params.preset);
 
     let public_by_ceiling = child_axes.lowers(child_model);
     Ok((
@@ -4547,7 +4699,7 @@ mod tests {
     /// of these tests fails that test and leaves the rest untouched, which is
     /// exactly what the `PoisonError::into_inner` dance was reaching for.
     /// `privacy_toggle.rs` serialises its own matrix the same way.
-    static QUEUE_DEPTH_TESTS: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+    pub(super) static QUEUE_DEPTH_TESTS: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
     /// The gate's real body, driven concurrently over a semaphore this test
     /// owns: a spawn that gets a permit at once is never counted as pending, a
@@ -6645,6 +6797,7 @@ mod tests {
             phase: None,
             role: None,
             monitors: None,
+            preset: None,
         };
         let workflow = build_workflow(&params, &HashMap::new()).expect("ad-hoc workflow");
         let instructions = workflow.instructions.expect("instructions");
@@ -11659,3 +11812,9 @@ mod person_hint_tests;
 #[cfg(test)]
 #[path = "subagent_tool_default_worker_tests.rs"]
 mod default_worker_spawn_tests;
+
+/// J-P03: the spawn presets (`no_tools`, `only_extensions`, `read_only`), end
+/// to end through the tool's own arguments.
+#[cfg(test)]
+#[path = "subagent_presets_tests.rs"]
+mod subagent_presets_tests;

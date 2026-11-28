@@ -57,6 +57,13 @@ pub(crate) struct SubagentRuntimeProfile {
     sub_workflows: Vec<SubWorkflow>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     extension_grants: Vec<ExtensionGrant>,
+    /// J-P03: the preset child's fixed tools, installed again on restore after
+    /// the granted extensions, so a child continued after an eviction is held
+    /// exactly as its first run was (the grants alone know nothing about
+    /// Biorouter's own tools). An older daemon refuses a profile carrying it
+    /// (`deny_unknown_fields`) rather than running the child without it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    tool_clamp: Option<super::subagent_presets::ToolClamp>,
 }
 
 impl SubagentRuntimeProfile {
@@ -77,9 +84,20 @@ impl SubagentRuntimeProfile {
             response,
             sub_workflows,
             extension_grants,
+            tool_clamp: None,
         };
         profile.validate()?;
         Ok(profile)
+    }
+
+    /// The same profile, carrying a preset child's fixed tools.
+    pub(crate) fn with_tool_clamp(
+        mut self,
+        clamp: Option<super::subagent_presets::ToolClamp>,
+    ) -> Result<Self> {
+        self.tool_clamp = clamp;
+        self.validate()?;
+        Ok(self)
     }
 
     pub(crate) async fn persist(
@@ -202,6 +220,10 @@ impl SubagentRuntimeProfile {
             }
         }
 
+        if let Some(clamp) = &self.tool_clamp {
+            clamp.validate()?;
+        }
+
         let mut subworkflow_names = HashSet::new();
         for subworkflow in &self.sub_workflows {
             if subworkflow.name.trim().is_empty() || subworkflow.path.trim().is_empty() {
@@ -234,6 +256,18 @@ pub fn persisted_subagent_extension_projection(
         .map(ExtensionGrant::ui_projection)
         .collect::<Result<Vec<_>>>()
         .map(Some)
+}
+
+/// J-P03: the preset a child was started with, read from its runtime profile.
+/// `None` for an ordinary child, a chat that is not one, or a profile that
+/// cannot be read (which a restore refuses anyway).
+pub(crate) fn spawn_preset_of(
+    extension_data: &ExtensionData,
+) -> Option<super::subagent_presets::SpawnPreset> {
+    let (profile, _) = SubagentRuntimeProfile::load(extension_data)
+        .ok()
+        .flatten()?;
+    profile.tool_clamp.map(|clamp| clamp.preset())
 }
 
 impl ExtensionGrant {
@@ -486,6 +520,13 @@ impl Agent {
             || expected.iter().any(|grant| !restored.contains(grant))
         {
             bail!("cold subagent extension set does not match its persisted grant");
+        }
+
+        // J-P03: after the granted extensions, because installing the clamp
+        // seals the extension manager.
+        if let Some(clamp) = profile.tool_clamp.clone() {
+            self.install_spawn_tool_clamp(clamp)
+                .context("failed to restore the subagent's tool preset")?;
         }
 
         if legacy_profile {

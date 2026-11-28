@@ -31,6 +31,8 @@ struct SubagentPromptContext {
     task_instructions: String,
     tool_count: usize,
     available_tools: String,
+    /// J-P03: what the child's preset fixed, when it has one.
+    preset_note: Option<String>,
 }
 
 /// Why a child's turn ended early: `(wire code, human-readable message)`.
@@ -581,6 +583,22 @@ pub(crate) async fn run_complete_subagent_task_outcome(
         )
     };
 
+    // J-P03: a read-only verifier's parent records the working folder right
+    // before the run and again once it settles, on both spawn paths (both run
+    // here). Read before `task_config` moves into the run. The first walk
+    // answers to the run's own Stop; the second to the parent's, so a child
+    // stopped by itself is still compared.
+    let folder_before = match task_config.preset {
+        Some(crate::agents::subagent_presets::SpawnPreset::ReadOnly) => Some(
+            crate::agents::subagent_presets::snapshot_folder(
+                task_config.parent_working_dir.clone(),
+                Some(run_token.clone()),
+            )
+            .await,
+        ),
+        _ => None,
+    };
+
     let ChildRun {
         conversation: messages,
         final_output,
@@ -618,6 +636,8 @@ pub(crate) async fn run_complete_subagent_task_outcome(
                 .is_some_and(super::subagent_result::conversation_has_user_direct);
             result.tokens = fetch_subagent_tokens(&session_manager, &session_id).await;
             result.model = ran_on;
+            result.folder_check =
+                compare_folder(folder_before.as_ref(), cancellation_token.clone()).await;
             return SubagentRunOutcome { result, cancelled };
         }
     };
@@ -651,7 +671,65 @@ pub(crate) async fn run_complete_subagent_task_outcome(
     result.human_intervened = super::subagent_result::conversation_has_user_direct(&messages);
     result.tokens = fetch_subagent_tokens(&session_manager, &session_id).await;
     result.model = ran_on;
+    result.folder_check = compare_folder(folder_before.as_ref(), cancellation_token.clone()).await;
     SubagentRunOutcome { result, cancelled }
+}
+
+/// J-P03: `before` against the working folder as it stands now, when there is
+/// a `before`. `cancel` is the parent's token: a Stop of the chat that started
+/// the run ends the walk's wait.
+async fn compare_folder(
+    before: Option<&crate::agents::subagent_presets::FolderSnapshot>,
+    cancel: Option<CancellationToken>,
+) -> Option<Box<crate::agents::subagent_presets::FolderCheck>> {
+    let before = before?;
+    let after =
+        crate::agents::subagent_presets::snapshot_folder(before.root().to_path_buf(), cancel).await;
+    Some(Box::new(before.compare(&after)))
+}
+
+/// J-P03: fix a preset child's tools now that its extensions have loaded and
+/// their tools can be read, and before anything lists them for its model.
+///
+/// The clamp is computed from `loaded`, the extensions this spawn granted, and
+/// installed FIRST, which seals the child's extension manager. Only then is
+/// every extension the manager holds that the clamp keeps nothing of removed:
+/// the child is addressable from the moment it is registered, so another
+/// chat's `workspace_set_tools` may have added one in between, and sealing
+/// first is what guarantees nothing arrives after the sweep. The clamp would
+/// refuse such an extension's tools anyway; the sweep keeps it out of Code
+/// Execution's catalogue and the records. Returns the extensions the child
+/// really holds, for the records built from them.
+async fn install_preset_clamp(
+    agent: &Agent,
+    session_id: &str,
+    preset: crate::agents::subagent_presets::SpawnPreset,
+    loaded: Vec<crate::agents::extension::ExtensionConfig>,
+) -> Result<(
+    Vec<crate::agents::extension::ExtensionConfig>,
+    crate::agents::subagent_presets::ToolClamp,
+)> {
+    use crate::agents::subagent_presets::{extension_key, ToolClamp};
+    let offered = agent.list_tools(session_id, None).await;
+    let clamp = ToolClamp::for_preset(preset, &offered, &loaded);
+    agent.install_spawn_tool_clamp(clamp.clone())?;
+    for key in agent.list_extensions().await {
+        if clamp.keeps_extension(&key) {
+            continue;
+        }
+        if let Err(error) = agent.remove_extension(&key).await {
+            // The clamp, not the removal, is what keeps its tools away.
+            debug!(
+                "could not unload '{key}' from a {} subagent: {error}",
+                preset.as_str()
+            );
+        }
+    }
+    let kept = loaded
+        .into_iter()
+        .filter(|extension| clamp.keeps_extension(&extension_key(extension)))
+        .collect();
+    Ok((kept, clamp))
 }
 
 /// The provider and model a child runs on, as its result names them:
@@ -909,10 +987,6 @@ fn get_agent_messages(
         // outcome.
         let loaded = load_granted_extensions(&agent, task_config.extensions).await;
 
-        // Consumed by `persist_spawn_context` further down; bound here because
-        // the record is written after several other preparation steps.
-        let extension_names: Vec<String> = loaded.iter().map(|e| e.name().to_string()).collect();
-
         let has_response_schema = workflow.response.is_some();
         agent
             .apply_workflow_components(
@@ -921,6 +995,22 @@ fn get_agent_messages(
                 true,
             )
             .await;
+
+        // J-P03: a preset child's tools are fixed here, after the extensions
+        // and the structured-output tool exist and before the list below, the
+        // prompt, the runtime profile and the spawn record are built from them.
+        let (loaded, preset_clamp) = match task_config.preset {
+            Some(preset) => {
+                let (loaded, clamp) =
+                    install_preset_clamp(&agent, &session_id, preset, loaded).await?;
+                (loaded, Some(clamp))
+            }
+            None => (loaded, None),
+        };
+
+        // Consumed by `persist_spawn_context` further down; bound here because
+        // the record is written after several other preparation steps.
+        let extension_names: Vec<String> = loaded.iter().map(|e| e.name().to_string()).collect();
 
         // Prep binding 2: the prompt context below moves `system_instructions`
         // into `task_instructions`.
@@ -974,6 +1064,9 @@ fn get_agent_messages(
                     .map(|t| t.name.to_string())
                     .collect::<Vec<_>>()
                     .join(", "),
+                preset_note: task_config
+                    .preset
+                    .map(|preset| preset.child_note().to_string()),
             },
         )
         .map_err(|e| anyhow!("Failed to render subagent system prompt: {}", e))?;
@@ -994,7 +1087,8 @@ fn get_agent_messages(
             workflow.sub_workflows.clone().unwrap_or_default(),
             &loaded,
             &runtime_tool_names,
-        )?;
+        )?
+        .with_tool_clamp(preset_clamp)?;
         runtime_profile
             .persist(&session_manager, &session_id)
             .await
@@ -2063,6 +2157,7 @@ mod tests {
             extension_changes: Default::default(),
             skill_override: Default::default(),
             unrecorded_request: None,
+            preset: None,
         };
 
         // The sentinel: an agent nobody else owns, parked under the child's id.
@@ -2861,6 +2956,7 @@ mod tests {
             extension_changes: Default::default(),
             skill_override: Default::default(),
             unrecorded_request: None,
+            preset: None,
         };
 
         let _result =
@@ -3068,6 +3164,7 @@ mod tests {
             extension_changes: Default::default(),
             skill_override: Default::default(),
             unrecorded_request: None,
+            preset: None,
         };
         (config, workflow, task_config)
     }

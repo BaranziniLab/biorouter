@@ -109,6 +109,7 @@ pub mod subagent_execution_tool;
 // parent waits on with `workspace_watch`, instead of blocking the turn.
 pub mod subagent_handle;
 pub mod subagent_handler;
+pub mod subagent_presets;
 pub mod subagent_result;
 pub mod subagent_roster;
 pub(crate) mod subagent_runtime_profile;

@@ -1899,6 +1899,8 @@ struct ChatBridgeDispatch {
     subagent: Option<BridgedSubagentContext>,
     plan: CodingAgentBridgePlan,
     catalog_changed: AtomicBool,
+    /// J-P03: a preset child's fixed tools, asked for every bridged call.
+    tool_clamp: Option<Arc<crate::agents::subagent_presets::ToolClamp>>,
 }
 
 impl ChatBridgeDispatch {
@@ -1934,6 +1936,13 @@ impl ChatBridgeDispatch {
             );
         }
         let name = call.name.as_ref();
+        if let Some(refusal) = self
+            .tool_clamp
+            .as_ref()
+            .and_then(|clamp| clamp.refusal(name, call.arguments.as_ref()))
+        {
+            return Err(refusal);
+        }
         // ⚠ Before the grant lookup, because the reporter has no grant to find:
         // it belongs to no capability, so `target_for_tool` returns `None` and
         // the `else` below would refuse it as "not in this turn's bridge". Its
@@ -10805,6 +10814,7 @@ impl Agent {
             subagent,
             plan,
             catalog_changed: AtomicBool::new(false),
+            tool_clamp: self.spawn_tool_clamp().cloned(),
         }
     }
 
@@ -10898,6 +10908,12 @@ impl Agent {
             )
             .await;
         let (mut tools, granted) = self.keep_a_crew_grants_tool_limit(session_id, tools).await;
+        // J-P03: the registry recovery and the platform pushes above never saw
+        // a preset child's clamp; the bridge lists what it lists and refuses
+        // the rest (`enforce_tool_access` asks the clamp too).
+        if let Some(clamp) = self.spawn_tool_clamp() {
+            tools.retain(|tool| clamp.offers(&tool.name));
+        }
         // The bridge's own roster decides how Copilot's `get_app_state` names the browser.
         crate::agents::reply_parts::route_copilot_for_roster(&mut tools);
         // Gate B-1 refuses a granted chat both, so the plan holds neither.
@@ -11142,6 +11158,19 @@ impl Agent {
         cancellation_token: Option<CancellationToken>,
         session: &Session,
     ) -> (String, Result<ToolCallResult, ErrorData>) {
+        // J-P03: a preset child's fixed tools, asked before every branch below,
+        // because the platform tools have no other roster check: a roster is
+        // advice, and this is the boundary.
+        if let Some(clamp) = self.spawn_tool_clamp() {
+            if let Some(refusal) =
+                clamp.refusal(tool_call.name.as_ref(), tool_call.arguments.as_ref())
+            {
+                return (
+                    request_id,
+                    Err(ErrorData::new(ErrorCode::INVALID_REQUEST, refusal, None)),
+                );
+            }
+        }
         let crew_admission = match crate::crew::manager() {
             Ok(crew) => {
                 crew.authorize_session_tool(&session.id, tool_call.name.as_ref())
@@ -11876,6 +11905,13 @@ impl Agent {
     /// through this method, so a rule implemented at this level would simply
     /// not be on that path.
     pub async fn add_extension(&self, extension: ExtensionConfig) -> ExtensionResult<()> {
+        // J-P03: before the Frontend arm, which never reaches the (sealed)
+        // extension manager.
+        if self.spawn_tool_clamp().is_some() {
+            return Err(crate::agents::extension::ExtensionError::ConfigError(
+                crate::agents::subagent_presets::SEALED_REFUSAL.to_string(),
+            ));
+        }
         match &extension {
             ExtensionConfig::Frontend {
                 tools,
@@ -12442,6 +12478,14 @@ impl Agent {
             // stopped with `workspace_close`, all of which the workspace
             // extension already advertises and all of which work for foreground
             // children and for the human as well.
+        }
+
+        // J-P03: a preset child is offered its fixed tools and nothing else,
+        // whatever loaded or was pushed above since it started.
+        if matches!(audience, ToolAudience::Model) {
+            if let Some(clamp) = self.spawn_tool_clamp() {
+                prefixed_tools.retain(|tool| clamp.offers(&tool.name));
+            }
         }
 
         if matches!(audience, ToolAudience::Model) {
@@ -22546,6 +22590,109 @@ mod tests {
             let result = dispatched.expect("dispatched").result.await.unwrap();
             assert_eq!(result.content.len(), 1, "{index}: {:?}", result.content);
         }
+    }
+
+    /// J-P03: a preset child's coding-agent bridge lists only its clamped
+    /// tools, although the bridge recovers capability tools from the registry
+    /// and pushes the bug reporter beside the roster, and `enforce_tool_access`
+    /// asks the clamp before the bug reporter's exception and before any grant
+    /// lookup, so a tool the plan never listed is refused with the preset's
+    /// sentence and a clamped one still passes.
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn a_preset_childs_bridge_lists_and_admits_only_its_clamped_tools() {
+        use crate::agents::subagent_presets::{SpawnPreset, ToolClamp};
+        let (agent, session_id) = agent_with_one_extension_for_tests().await;
+        let fixture = ExtensionConfig::stdio(
+            "bridgefixture",
+            "unused-fixture-command",
+            "ordinary public extension bridge fixture",
+            30_u64,
+        );
+        agent
+            .extension_manager
+            .add_client(
+                fixture.key(),
+                fixture,
+                Arc::new(BridgeFixtureClient),
+                None,
+                None,
+            )
+            .await;
+        let provider: Arc<dyn Provider> = Arc::new(BridgedChildProvider { name: "codex" });
+        let tools = agent.list_tools(&session_id, None).await;
+        let unclamped = agent
+            .prepare_coding_agent_bridge_plan(&session_id, &provider, &tools)
+            .await
+            .expect("Codex needs a bridge plan");
+        assert!(
+            unclamped
+                .tools
+                .iter()
+                .any(|tool| tool.name == "bridgefixture__capability_status"),
+            "the fixture's tool is bridged before the clamp"
+        );
+
+        let todo: Vec<ExtensionConfig> = agent
+            .get_extension_configs()
+            .await
+            .into_iter()
+            .filter(|config| config.key() == "todo")
+            .collect();
+        let clamp = ToolClamp::for_preset(SpawnPreset::OnlyExtensions, &tools, &todo);
+        agent.install_spawn_tool_clamp(clamp.clone()).unwrap();
+
+        let tools = agent.list_tools(&session_id, None).await;
+        let plan = agent
+            .prepare_coding_agent_bridge_plan(&session_id, &provider, &tools)
+            .await
+            .expect("Codex needs a bridge plan");
+        let listed: Vec<String> = plan
+            .tools
+            .iter()
+            .map(|tool| tool.name.to_string())
+            .collect();
+        assert!(
+            !listed.is_empty(),
+            "the clamped todo tools are still bridged"
+        );
+        assert!(
+            listed.iter().all(|name| clamp.offers(name)),
+            "the bridge lists only clamped tools: {listed:?}"
+        );
+        let dispatch = agent.chat_bridge_dispatch(&provider, None, plan);
+        let call = |name: &str| CallToolRequestParams {
+            name: name.to_string().into(),
+            arguments: Some(object!({"command": "ls"})),
+            meta: None,
+            task: None,
+        };
+        for name in [
+            "bridgefixture__capability_status",
+            "developer__shell",
+            PLATFORM_REPORT_BUG_TOOL_NAME,
+            "computercontroller__click",
+        ] {
+            let refused = dispatch
+                .enforce_tool_access(&session_id, &call(name))
+                .await
+                .expect_err(name);
+            assert!(
+                refused.contains(
+                    "is not available to this subagent: it was started with the \
+                     only_extensions preset"
+                ),
+                "{name}: {refused}"
+            );
+        }
+        let admitted = listed
+            .iter()
+            .find(|name| name.starts_with("todo__"))
+            .expect("a todo tool is bridged");
+        dispatch
+            .enforce_tool_access(&session_id, &call(admitted))
+            .await
+            .expect("a clamped tool passes the bridge");
     }
 
     async fn agent_with_one_extension_for_tests() -> (Agent, String) {

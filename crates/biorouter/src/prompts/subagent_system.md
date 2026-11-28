@@ -21,6 +21,9 @@ The maximum number of turns to respond is {{max_turns}}.
 # Tool Usage Guidelines
 **CRITICAL**: Be efficient with tool usage. Use tools only when absolutely necessary to complete your task. Here are the available tools you have access to:
 You have access to {{tool_count}} tools: {{available_tools}}
+{% if preset_note %}
+{{preset_note}}
+{% endif %}
 
 **Tool Efficiency Rules**:
 - Use the minimum number of tools needed to complete your task

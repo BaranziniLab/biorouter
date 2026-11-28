@@ -648,6 +648,7 @@ mod tests {
             human_intervened: false,
             stopped_by_monitor: None,
             decisions: None,
+            folder_check: None,
         }
     }
 

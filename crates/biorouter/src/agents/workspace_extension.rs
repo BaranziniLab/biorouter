@@ -4101,6 +4101,31 @@ impl WorkspaceClient {
         //
         let write_target = self.refuse_unless_writable(cap, &args.session_id).await?;
 
+        // J-P03: a subagent started with a tool preset had its tools fixed
+        // when it started, and its agent refuses any add. Said here, after the
+        // write gate (so nothing is learned about a chat the caller may not
+        // change) and before any card, rather than as a failure halfway.
+        if !args.add_extensions.is_empty() {
+            let preset = self
+                .context
+                .session_manager
+                .get_session(&args.session_id, false)
+                .await
+                .ok()
+                .and_then(|target| {
+                    crate::agents::subagent_runtime_profile::spawn_preset_of(&target.extension_data)
+                });
+            if let Some(preset) = preset {
+                return Err(format!(
+                    "workspace_set_tools cannot add extensions to {}: it is a subagent started \
+                     with the {} preset, whose tools were fixed when it started. Start a new \
+                     subagent with the tools it needs instead.",
+                    args.session_id,
+                    preset.as_str()
+                ));
+            }
+        }
+
         let add_configs = Self::resolve_added_extensions(cap, &args.add_extensions)?;
         self.refuse_workspace_grant_to_subagent(&args.session_id, &add_configs)
             .await?;
@@ -13914,6 +13939,54 @@ pub(crate) mod tests {
         );
     }
 
+    /// J-P03: a subagent started with a tool preset had its tools fixed when it
+    /// started. Another chat's `workspace_set_tools` is told so before any
+    /// card, rather than failing halfway on the child's sealed agent.
+    #[tokio::test]
+    #[serial_test::serial(workspace_services)]
+    async fn set_tools_refuses_to_add_to_a_preset_subagent() {
+        let c = client();
+        let sm = c.context.session_manager.clone();
+        let target = sm
+            .create_session(
+                std::env::temp_dir(),
+                "a reviewer".into(),
+                crate::session::session_manager::SessionType::SubAgent,
+            )
+            .await
+            .unwrap();
+        let clamp = crate::agents::subagent_presets::ToolClamp::for_preset(
+            crate::agents::subagent_presets::SpawnPreset::NoTools,
+            &[],
+            &[],
+        );
+        crate::agents::subagent_runtime_profile::SubagentRuntimeProfile::new(
+            "a reviewer".into(),
+            None,
+            Vec::new(),
+            &[],
+            &[],
+        )
+        .unwrap()
+        .with_tool_clamp(Some(clamp))
+        .unwrap()
+        .persist(&sm, &target.id)
+        .await
+        .unwrap();
+
+        let result = set_tools(
+            &c,
+            serde_json::json!({ "session_id": target.id, "add_extensions": ["Auto Visualiser"] }),
+        )
+        .await;
+        let text = text_of(&result);
+        assert_eq!(result.is_error, Some(true), "got: {text}");
+        assert!(
+            text.contains("started with the no_tools preset"),
+            "got: {text}"
+        );
+    }
+
     /// ⚠ **A conversation may not re-tool ITSELF, because that is an escalation.**
     ///
     /// Found by review, not by a test, which is why this one exists.
@@ -15733,6 +15806,7 @@ pub(crate) mod tests {
                 human_intervened: false,
                 stopped_by_monitor: None,
                 decisions: None,
+                folder_check: None,
             });
 
             let watched = c

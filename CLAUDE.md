@@ -2052,7 +2052,12 @@ and the capability itself by [`docs/extensions/built-in/workspace.md`](docs/exte
   `remove_extensions`, `add_skills` and `remove_skills` change that for one child
   (`subagent_tool::resolve_child_extension_changes`, `resolve_child_skills`). An add the chat does
   not hold takes the one agent enable gate, `extension_enable_refusal`, on the spawning call's
-  admitted capability, and every add still passes `judge_child`'s tier filter.
+  admitted capability, and every add still passes `judge_child`'s tier filter. `extensions`
+  narrows by key or by the label a person sees (`names_extension`, the rule the adds use). A
+  spawn `preset` (`no_tools`, `only_extensions`, `read_only`; `agents/subagent_presets.rs`) runs
+  last in `judge_child`, only removes, never moves the tier, and is held by one `ToolClamp` on
+  the child's `ExtensionManager`, which seals it and refuses at its dispatch every tool outside
+  the clamp ([subagents.md](docs/agent-loop/subagents.md#presets-a-reviewer-an-allowlist-a-verifier)).
 - **GUI tab/pane layer:** `ui/desktop/src/components/chatGroups/`.
 
 **The delegation gate** (`Agent::subagents_enabled`, `agents/agent.rs`) has

@@ -104,6 +104,11 @@ pub struct TaskConfig {
     /// coding-agent bridge spawn, a test, an embedder) checks the recorded
     /// spend alone.
     pub unrecorded_request: Option<UnrecordedRequest>,
+    /// J-P03: the spawn preset this child was started with, set by
+    /// `subagent_tool::judge_child` from the spawn's `preset`. The child's
+    /// run turns it into a [`crate::agents::subagent_presets::ToolClamp`]
+    /// once its extensions have loaded. `None` is an ordinary child.
+    pub preset: Option<crate::agents::subagent_presets::SpawnPreset>,
 }
 
 /// One spawn's changes to the extensions a child inherits from its parent's
@@ -151,6 +156,7 @@ impl fmt::Debug for TaskConfig {
             .field("extension_changes", &self.extension_changes)
             .field("skill_override", &self.skill_override)
             .field("unrecorded_request", &self.unrecorded_request)
+            .field("preset", &self.preset)
             .finish()
     }
 }
@@ -187,6 +193,7 @@ impl TaskConfig {
             extension_changes: ChildExtensionChanges::default(),
             skill_override: SessionSkillOverride::default(),
             unrecorded_request: None,
+            preset: None,
         }
     }
 

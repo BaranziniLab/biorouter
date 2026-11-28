@@ -78,7 +78,7 @@ const FALLBACK_CHARS_PER_TOKEN: usize = 3;
 
 /// Directory (relative to the session working dir) that holds offloaded tool
 /// output. It carries its own `.gitignore` so it never shows up in `git status`.
-const HANDLE_DIR: &str = ".biorouter/tool-output";
+pub(crate) const HANDLE_DIR: &str = ".biorouter/tool-output";
 
 /// Everything the handler needs to place the handle where the model's file and
 /// shell tools can actually reach it.

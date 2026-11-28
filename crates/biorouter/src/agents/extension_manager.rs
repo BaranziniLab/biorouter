@@ -445,6 +445,13 @@ pub struct ExtensionManager {
     tools_cache: Mutex<Option<Arc<ToolsSnapshot>>>,
     tools_cache_version: AtomicU64,
     working_dir: Mutex<WorkspaceBinding>,
+    /// J-P03: a preset child's fixed tools, set once by [`Self::seal`]
+    /// (`Agent::install_spawn_tool_clamp`) and never replaced. While it is set
+    /// nothing can be added, by `manage_extensions`, by another chat or by
+    /// Code Execution's catalogue, and [`Self::dispatch_tool_call`] refuses
+    /// every tool outside it, whoever calls. Removing still works: it only
+    /// takes away.
+    tool_clamp: std::sync::OnceLock<Arc<crate::agents::subagent_presets::ToolClamp>>,
 }
 
 struct WorkspaceBinding {
@@ -1915,7 +1922,38 @@ impl ExtensionManager {
             )),
             computer_use: Arc::default(),
             browser_use: Arc::default(),
+            tool_clamp: std::sync::OnceLock::new(),
         }
+    }
+
+    /// J-P03: fix this manager's tools to `clamp`, which refuses every later
+    /// add and every call outside it. One way: there is no unseal. Sealing
+    /// again with the same clamp (a restore on a live agent) is a no-op; any
+    /// other clamp is refused, so a preset can never be replaced or widened.
+    pub(crate) fn seal(
+        &self,
+        clamp: crate::agents::subagent_presets::ToolClamp,
+    ) -> anyhow::Result<()> {
+        let installed = self.tool_clamp.get_or_init(|| Arc::new(clamp.clone()));
+        if **installed != clamp {
+            anyhow::bail!("this subagent already holds a different tool preset");
+        }
+        Ok(())
+    }
+
+    /// The preset child's fixed tools, or `None` for every other manager.
+    pub(crate) fn spawn_tool_clamp(
+        &self,
+    ) -> Option<&Arc<crate::agents::subagent_presets::ToolClamp>> {
+        self.tool_clamp.get()
+    }
+
+    pub fn is_sealed(&self) -> bool {
+        self.tool_clamp.get().is_some()
+    }
+
+    fn sealed_refusal() -> ExtensionError {
+        ExtensionError::ConfigError(crate::agents::subagent_presets::SEALED_REFUSAL.to_string())
     }
 
     #[cfg(test)]
@@ -2262,6 +2300,9 @@ impl ExtensionManager {
         config: ExtensionConfig,
         origin: ExtensionOrigin,
     ) -> ExtensionResult<()> {
+        if self.is_sealed() {
+            return Err(Self::sealed_refusal());
+        }
         let config_name = config.key().to_string();
         let sanitized_name = normalize(&config_name);
         if sanitized_name == "computercontroller"
@@ -2481,6 +2522,11 @@ impl ExtensionManager {
         if !Self::should_load_over(extensions.get(&final_name), origin) {
             return Ok(());
         }
+        // J-P03: and the seal, again, under the same lock: a preset child's
+        // tools may have been fixed while this client was being built.
+        if self.is_sealed() {
+            return Err(Self::sealed_refusal());
+        }
         extensions.insert(
             final_name,
             Extension {
@@ -2603,7 +2649,14 @@ impl ExtensionManager {
         info: Option<ServerInfo>,
         temp_dir: Option<TempDir>,
     ) {
-        self.extensions.lock().await.insert(
+        // J-P03: asked under the lock the insert takes, so a seal set while
+        // this call waited cannot be passed.
+        let mut extensions = self.extensions.lock().await;
+        if self.is_sealed() {
+            tracing::warn!("refused to add '{name}' to a sealed subagent's extensions");
+            return;
+        }
+        extensions.insert(
             name,
             Extension {
                 config,
@@ -2616,6 +2669,7 @@ impl ExtensionManager {
                 origin: ExtensionOrigin::Explicit,
             },
         );
+        drop(extensions);
         self.invalidate_tools_cache_and_bump_version().await;
     }
 
@@ -2636,6 +2690,9 @@ impl ExtensionManager {
         // a redundant connect/handshake + a transient double-server).
         if self.extensions.lock().await.contains_key(name) {
             return Ok(());
+        }
+        if self.is_sealed() {
+            return Err(Self::sealed_refusal());
         }
         let (server_read, client_write) = tokio::io::duplex(65536);
         let (client_read, server_write) = tokio::io::duplex(65536);
@@ -2669,7 +2726,13 @@ impl ExtensionManager {
             bundled: None,
             available_tools: Vec::new(),
         };
-        self.extensions.lock().await.insert(
+        // J-P03: and again under the lock the insert takes: a preset child's
+        // tools may have been fixed while the server was being connected.
+        let mut extensions = self.extensions.lock().await;
+        if self.is_sealed() {
+            return Err(Self::sealed_refusal());
+        }
+        extensions.insert(
             name.to_string(),
             Extension {
                 config,
@@ -2686,6 +2749,7 @@ impl ExtensionManager {
                 origin: ExtensionOrigin::Explicit,
             },
         );
+        drop(extensions);
         self.invalidate_tools_cache_and_bump_version().await;
         Ok(())
     }
@@ -4262,6 +4326,16 @@ impl ExtensionManager {
     ) -> Result<ToolCallResult> {
         // Some models strip the tool prefix, so auto-add it for known code_execution tools.
         let prefixed_name = self.prefixed_tool_name(tool_call.name.as_ref()).await;
+        // J-P03: a preset child's fixed tools. Here because this is the choke
+        // point every path shares (the agent loop, `POST /agent/call_tool`, a
+        // Code Execution script, the coding-agent bridge), so a tool an
+        // extension added in the middle of the run, or one no list offered, is
+        // refused whoever names it.
+        if let Some(refusal) = self.tool_clamp.get().and_then(|clamp| {
+            clamp.refusal_for_extension_call(&prefixed_name, tool_call.arguments.as_ref())
+        }) {
+            anyhow::bail!(refusal);
+        }
         // Crew: a chat a grant restricts calls only its worker tools and the checklist (gate
         // B-1), and a Crew tool a chat is not offered is refused here as well as left off its
         // tool list (AO-12). This is the choke point every path shares: the agent loop,

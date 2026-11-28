@@ -327,6 +327,12 @@ pub struct SubagentResult {
     /// and failed checks reach the parent too, not only stops.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub decisions: Option<String>,
+    /// J-P03: a read-only verifier's working folder, compared before and after
+    /// its run by the chat that started it. `None` for every other child.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    /// Boxed for the reason `stopped_by_monitor` is: it is rare, and this
+    /// envelope rides by value in several enums.
+    pub folder_check: Option<Box<crate::agents::subagent_presets::FolderCheck>>,
 }
 
 impl SubagentResult {
@@ -344,6 +350,7 @@ impl SubagentResult {
             human_intervened: false,
             stopped_by_monitor: None,
             decisions: None,
+            folder_check: None,
         }
     }
 
@@ -449,6 +456,7 @@ impl SubagentResult {
             human_intervened: false,
             stopped_by_monitor: None,
             decisions: None,
+            folder_check: None,
         }
     }
 
@@ -535,6 +543,7 @@ impl SubagentResult {
             human_intervened: false,
             stopped_by_monitor: None,
             decisions: None,
+            folder_check: None,
         }
     }
 
@@ -582,6 +591,14 @@ impl SubagentResult {
                 out.push_str("\n\n");
             }
             out.push_str(&decisions);
+        }
+        // J-P03: said whenever it was made, changed or not: "nothing changed"
+        // is what lets the parent rely on a verifier's result.
+        if let Some(check) = &self.folder_check {
+            if !out.is_empty() {
+                out.push_str("\n\n");
+            }
+            out.push_str(&check.sentence());
         }
         let footer = self.footer_line();
         if !footer.is_empty() {

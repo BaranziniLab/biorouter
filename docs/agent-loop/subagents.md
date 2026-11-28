@@ -421,11 +421,40 @@ The spawn tool has three fields for this, and the agent names an extension by th
 
 - `remove_extensions` takes an extension or capability away from that subagent. It is always allowed.
 - `add_extensions` gives that subagent one this chat does not have, for example one you switched off for the chat. It must be installed and not turned off in Settings: an extension you turned off in Settings stays yours to turn back on, and the agent is told to ask you. A private extension is never given to a public chat's subagent, and the refusal reads the same whether or not the extension is installed.
-- `extensions` restricts the subagent to a list. An empty list leaves it with no tools at all.
+- `extensions` restricts the subagent to a list, by the name you see or by key. An empty list removes every extension, but Biorouter's own tools (managing workflows, schedules, the bug reporter) stay; for a subagent with no tools at all, use the `no_tools` preset below.
 
 The changes apply to that one subagent; the chat and its other subagents keep their own setup. Workspace Control and Crew are never added or removed this way: a subagent is never given Workspace Control, and Crew comes only from a Crew grant or a Crew task. A name that matches nothing refuses the spawn, nothing is started, and the agent is told the names it can use.
 
-Whatever is added or inherited, the subagent's own privacy tier is checked last (see [A child cannot change the privacy tier](#a-child-cannot-change-the-privacy-tier)).
+Whatever is added or inherited, the subagent's own privacy tier is checked after everything above (see [A child cannot change the privacy tier](#a-child-cannot-change-the-privacy-tier)); only a preset, below, comes after it.
+
+### Presets: a reviewer, an allowlist, a verifier
+
+The spawn tool's `preset` field fixes what a subagent can use for its whole run. You can ask for one in plain words ("have a subagent with no tools review this paragraph", "verify the results with a read-only subagent"), and the agent can choose one itself. A preset only ever takes away: it is applied after everything above and after the privacy tier check, so it can never give a subagent more than it would otherwise get, and it never changes the subagent's tier.
+
+| Preset | What the subagent has | Use it for |
+|---|---|---|
+| `no_tools` | No extension and no tool at all. It works only from what the agent writes into its instructions. | An independent review of text the agent pastes in, with no way to look anything up or change anything. |
+| `only_extensions` | Exactly the extensions named in `extensions`, each one the chat itself has, with the tools they had when it started, and none of Biorouter's other tools. | A subagent that should touch one data source and nothing else. |
+| `read_only` | Only tools marked read-only. Biorouter Copilot, the Biorouter Browser, Code Execution, app control, Crew and Workspace Control are removed whole; any other tool stays only if its extension marks it read-only; Developer's `text_editor` stays for viewing files and nothing else; the shell goes. | Checking work without any chance of changing it. |
+
+What holds for every preset:
+
+- **Nothing can be added later.** The subagent's tools are fixed once its extensions have loaded. Turning an extension on with the Extension Manager, `workspace_set_tools` from another chat, an `/ext:` mention in a message and anything else that adds a tool is refused. A tool the subagent was not given is refused whoever names it: its own model, a Code Execution script it runs, or a direct call from outside. A subagent can still never start subagents of its own or use Workspace Control.
+- **It survives a restart.** The preset is stored with the subagent, so continuing it later, after the app was restarted, holds it the same way. An older version of Biorouter refuses to continue such a subagent rather than running it without its preset.
+- **Contradictions are refused before anything starts**: `no_tools` with `extensions`, `add_extensions` or `add_skills`; `only_extensions` without `extensions`, with `add_extensions`, naming an extension the chat does not have, naming Workspace Control or Crew, or with `add_skills` unless Skills is one of the named extensions (a skill is loaded through Skills).
+- **Biorouter's structured-output tool stays**, because it is how a subagent started from a workflow with a response format reports. So does reading back the subagent's own earlier tool results that were too large to keep in the conversation, except under `no_tools`.
+
+What `read_only` means, exactly:
+
+- **Read-only is what a tool says about itself.** A tool stays when its extension marks it read-only, which means it changes nothing, not that it stays on this computer. The Decisions capability's question tool, for example, is marked read-only and still asks a decision model, which costs money; a third-party extension's own marking is taken as it stands.
+- **Most of Biorouter's file and document readers mark nothing**, so they go: Knowledge, Web & Documents and Memory are not available to a `read_only` subagent. Reading files works through Developer's `text_editor`, and a reader that marks its tools read-only (Chat Recall, Skills) keeps working.
+
+A `read_only` subagent's result also carries a working folder check. Just before the subagent starts and again when it finishes, the chat that started it records the files in the working folder by size and content hash (very large files by size and modification time) and reports the difference: no file changed, or the files that changed, appeared or disappeared, 20 of each by name. The subagent had no tool that writes, so a change means this chat, another subagent or another program changed the folder while it ran, or one of its tools wrote although it is marked read-only; either way the agent is told to check before relying on the result.
+
+- **What is compared.** Links are recorded by their target and never followed, and the check never crosses into another disk or a network share. Left out, and said to be: what `.gitignore`, `.ignore` or `.biorouterignore` excludes; `.git` apart from `HEAD`, `config` and `hooks`; dependency and cache folders such as `node_modules`, `.venv`, `__pycache__` and any folder holding a `CACHEDIR.TAG` (Cargo's `target`); system and cloud-sync folders; the folder where Biorouter keeps oversized tool results (`.biorouter/tool-output/`) and Biorouter's own data folders.
+- **When it is not done.** A working folder that is your home folder, the root of a disk, or inside a system or cloud-sync folder is not walked at all, and the result says so. Each walk stops after 10 seconds, 20,000 files or 100,000 entries, and the run gives up on a walk that has not answered within 15 seconds, so a large folder can add up to about half a minute to a `read_only` spawn.
+- **It never claims more than it saw.** A folder it could not read is named, and a walk that stopped early says what it did not reach: the result then reads "no change was found in the part that was checked", never "no file changed".
+- **First run only.** It runs for the subagent's first run, not when someone continues it later.
 
 ### Skills and Contexts
 
@@ -493,10 +522,11 @@ Subagents have access to these safe operations:
 The following operations are blocked to ensure subagents remain focused on their assigned tasks without affecting the broader system state:
 
 - **Subagent spawning**: Cannot create additional subagents to prevent infinite recursion
-- **Extension management**: Cannot enable, disable, or modify extensions to avoid conflicts with the main session
-- **Schedule management**: Cannot create, modify, or delete scheduled tasks to prevent interference with parent workflows
+- **Tools beyond a preset**: A subagent started with a [preset](#presets-a-reviewer-an-allowlist-a-verifier) cannot be given any tool after it starts, by anyone
+- **Extension management**: A subagent never changes the extensions of the chat that started it. A subagent started with a preset cannot turn any extension on or off at all; one without a preset that holds the Extension Manager can change its own.
+- **Schedule management**: A subagent started with a preset cannot create, modify, or delete scheduled tasks.
 
-> **Note.** Subagents can browse extensions for suggestions but cannot enable them to avoid modifying the parent session.
+> **Note.** Subagents can browse extensions for suggestions. A subagent started with a preset cannot enable them.
 
 ### A child cannot change the privacy tier
 
