@@ -79,15 +79,15 @@ window.BAAM_DETAILS = {
   },
   bioroffice: {
     domain: 'Productivity',
-    what: 'Packages the open source OfficeCLI engine (iOfficeAI, Apache-2.0), so the agent can create, read, analyze and edit .docx, .xlsx and .pptx files without Microsoft Office. One tool, officecli, covers document edits, tables, charts, pivot tables, Excel formula evaluation (more than 150 functions) and rendering to HTML or PNG. Four bundled skills (office suite, Word, Excel, PowerPoint) load at the start of a session. More specific ones, such as academic-paper, pitch-deck and financial-model, load when a task needs them.',
+    what: 'Packages the open source OfficeCLI engine (iOfficeAI, Apache-2.0; its NOTICE credits goworm, who created and maintains it), so the agent can create, read, analyze and edit .docx, .xlsx and .pptx files without Microsoft Office. One tool, officecli, covers document edits, tables, charts, pivot tables, Excel formula evaluation (more than 150 functions) and rendering to HTML or PNG. BiorOffice runs the engine unmodified as a child process and removes OfficeCLI\'s own install, update and download instructions from what the engine returns to the agent; a document\'s own text passes unchanged. Four bundled skills (office suite, Word, Excel, PowerPoint) load at the start of a session. More specific ones, such as academic-paper, pitch-deck and financial-model, load when a task needs them.',
     asks: [
       'Turn this results table into an Excel workbook with a bar chart.',
       'Write a Word document from my notes with headings, a table of contents and footnotes.',
       'Make a PowerPoint of six slides that summarizes this analysis, with speaker notes.'
     ],
     tools: ['officecli'],
-    toolsNote: 'Its commands include create, view, get, query, set, add, remove, move, swap, validate and batch.',
-    needs: 'No credentials and no Microsoft Office. OfficeCLI 1.0.163 ships inside the bundle for macOS on Apple silicon, with its licence and notices. Other platforms download the same release the first time it starts, checked against its published SHA-256. It needs uv.',
+    toolsNote: 'Its commands include create, view, get, query, set, add, remove, move, swap, validate and batch. Commands that would install, update or register OfficeCLI (install, update, mcp, skills install and their help) are answered by BiorOffice and never reach the engine, however they are spelled.',
+    needs: 'No credentials and no Microsoft Office. OfficeCLI 1.0.163 ships inside the bundle for macOS on Apple silicon, with its licence and notices. Other platforms download the same release the first time it starts, checked against its published SHA-256. The engine never installs or updates itself. It needs uv.',
     sources: ['Local .docx, .xlsx and .pptx files']
   },
   benchlingagent: {
@@ -125,7 +125,7 @@ window.BAAM_DETAILS = {
     ],
     tools: ['protocolsio_status', 'protocolsio_get'],
     skills: ['protocols-io-methods'],
-    needs: 'PROTOCOLS_IO_TOKEN (secret), which the v3 API requires; it goes only to protocols.io. It needs uv.',
+    needs: 'PROTOCOLS_IO_TOKEN (secret), sent only to www.protocols.io. The extension\'s settings mark it optional, but without it the v3 API answers "Authorization token is not correct", so set it before you search. It needs uv.',
     sources: ['Protocols.io API v3']
   },
   idcagent: {
@@ -278,15 +278,15 @@ window.BAAM_DETAILS = {
   },
   markitdownagent: {
     domain: 'Productivity',
-    what: 'Wraps Microsoft\'s MarkItDown 0.1.9 (MIT) as one tool that converts a file or URL to Markdown. It is meant for the formats the built-in document tools do not read: PowerPoint, EPUB, Outlook .msg, older .xls, notebooks, ZIP archives, image and audio metadata, YouTube transcripts, RSS and Wikipedia pages.',
+    what: 'Wraps Microsoft\'s MarkItDown 0.1.9 (MIT, Copyright (c) Microsoft Corporation) as one tool, convert_to_markdown, that converts a local file or a URL to Markdown. It is meant for the formats the built-in document tools do not read: PowerPoint, EPUB, Outlook .msg, older .xls, notebooks, ZIP archives, image and audio metadata, YouTube transcripts, RSS and Wikipedia pages. MarkItDown is installed with only the extras docx, outlook, pdf, pptx, xls, xlsx and youtube-transcription, so speech is never transcribed (audio gives its metadata only) and the Azure cloud converters and PyMuPDF are not installed. The tool refuses addresses on this machine and link-local addresses and never loads MarkItDown plugins. Its error messages are ported from Microsoft\'s markitdown-mcp (MIT). Adam Fourney is the listed author of markitdown and markitdown-mcp, and MarkItDown\'s PDF converter carries work by the GitHub account lesyk.',
     asks: [
-      'Check whether the markitdown command is installed.',
-      'Convert report.pdf in ~/Documents to Markdown with markitdown.',
-      'Plan the markitdown command to convert slides.pptx and show me what will run before running it.'
+      'Convert ~/Downloads/slides.pptx to Markdown and summarize each slide.',
+      'Read the Outlook message ~/Documents/invite.msg and tell me who sent it and what it asks.',
+      'Convert the Wikipedia page on multiple sclerosis to Markdown and list its section headings.'
     ],
     tools: ['convert_to_markdown'],
-    needs: 'No credentials. MarkItDown and its converters install with the extension. It needs uv.',
-    sources: ['Local documents you name']
+    needs: 'No credentials. MarkItDown and the converters for these formats install with the extension. It needs uv, and on a Mac macOS 13 or later. Image and audio metadata come from exiftool when it is installed.',
+    sources: ['Local documents, and http or https URLs, that you name']
   },
   adaptyvbiofoundryagent: {
     domain: 'Lab & ELN',

@@ -106,7 +106,7 @@
       "id": "bioroffice",
       "name": "BiorOffice",
       "organization": "BaranziniLab · UCSF",
-      "version": "v1.1.0",
+      "version": "v1.1.2",
       "description": "Create, read, and edit Word (.docx), Excel (.xlsx), and PowerPoint (.pptx) files from chat. Handles headings, tables, charts, and 150+ Excel functions with live formula evaluation. Built on the open-source OfficeCLI engine, so no Microsoft Office install is needed. Ships four bundled skills for the office suite, Word, Excel, and PowerPoint.",
       "tags": [
         "MCP",
@@ -117,7 +117,7 @@
         "PowerPoint"
       ],
       "github": "https://github.com/BaranziniLab/BiorOffice",
-      "download": "https://github.com/BaranziniLab/BiorOffice/releases/download/v1.1.0/bioroffice.brxt",
+      "download": "https://github.com/BaranziniLab/BiorOffice/releases/download/v1.1.2/bioroffice.brxt",
       "filename": "bioroffice.brxt",
       "license": "Apache-2.0",
       "privacy": "public"
@@ -314,19 +314,19 @@
       "id": "markitdownagent",
       "name": "MarkItDownAgent",
       "organization": "BaranziniLab · BRXT",
-      "version": "v0.2.0",
+      "version": "v0.3.1",
       "description": "Convert files the built-in document tools do not read to Markdown with Microsoft's MarkItDown 0.1.9 (MIT): PowerPoint, EPUB, Outlook .msg, older .xls, notebooks, ZIP archives, image and audio metadata, YouTube transcripts, RSS and Wikipedia pages. One tool.",
       "tags": [
         "MCP",
         "MarkItDown",
         "Documents",
         "Markdown",
-        "Apache-2.0"
+        "Apache-2.0 AND MIT"
       ],
       "github": "https://github.com/BaranziniLab/MarkItDownAgent",
-      "download": "https://github.com/BaranziniLab/MarkItDownAgent/releases/download/v0.2.0/markitdownagent.brxt",
+      "download": "https://github.com/BaranziniLab/MarkItDownAgent/releases/download/v0.3.1/markitdownagent.brxt",
       "filename": "markitdownagent.brxt",
-      "license": "Apache-2.0",
+      "license": "Apache-2.0 AND MIT",
       "privacy": "public"
     },
     {
