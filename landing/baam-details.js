@@ -339,14 +339,14 @@ window.BAAM_DETAILS = {
   },
   gptragent: {
     domain: 'Code',
-    what: 'Connects Biorouter to an R session you already have open, through the gptr package\'s MCP endpoint. The agent can find your running sessions, look at objects in memory without reloading data, and run R code in that session to analyse, plot or fix things in place. Every call passes gptr\'s own permission settings, and Biorouter asks before code runs. The extension is private: a chat on a public model never sees it, because a live session holds whatever you loaded.',
+    what: 'Connects Biorouter to an R session you already have open, through the gptr package\'s MCP endpoint. The agent can find your running sessions, look at objects in memory without reloading data, and run R code in that session to analyse, plot or fix things in place. Every call passes gptr\'s own permission settings, and Biorouter asks before code runs. The extension is private: a chat on a public model never sees it, because a live session holds whatever you loaded. Made by the Baranzini Lab (Wanjun Gu, UCSF); the bridge lives in the gptr repository and is released with gptr.',
     asks: [
       'Look at the data frame I have loaded and tell me what is wrong with the dates.',
       'Fit a mixed model on df in my session and plot the residuals.',
       'My last command failed; read the traceback and fix it in place.'
     ],
     tools: ['sessions', 'inspect', 'r'],
-    needs: 'R with the gptr package (1.0 or later; plan mode needs 1.2 or later) and a session started with gptr\'s MCP endpoint, and uv. A private model in Biorouter.',
+    needs: 'R with the gptr package (1.0 or later; plan mode needs 1.2.0 or later, and recording 1.3.0), a session served through gptr\'s MCP endpoint, and uv. Served with no mode named, gptr 1.3.0 and later use auto mode by default, so the agent may change objects; mode = "manual" lets it only read. A private model in Biorouter.',
     sources: [
       'Your own R session, through gptr (Broccolito/gptr)'
     ]

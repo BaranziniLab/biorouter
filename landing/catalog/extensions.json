@@ -2465,9 +2465,9 @@
       "id": "gptragent",
       "display_name": "gptr Agent",
       "manifest_name": "gptragent",
-      "repository": "Broccolito/GptrAgent",
+      "repository": "Broccolito/gptr",
       "group": "tools",
-      "version": "0.1.2",
+      "version": "1.3.1",
       "status": "active",
       "aliases": [],
       "job": "r.live-session",
@@ -2517,6 +2517,11 @@
           "version": "0.1.2",
           "date": "2026-11-22",
           "note": "the plan-mode overview lists the session's objects on gptr 1.2.0, not the empty scratch environment each call runs in"
+        },
+        {
+          "version": "1.3.1",
+          "date": "2026-11-28",
+          "note": "the bridge moved into the gptr package repository (Broccolito/gptr) and is released with gptr, under gptr's version; 1.3.1 corrects the permission mode wording of the attach helper and the setup message (serving with no mode named takes gptr's default, auto from gptr 1.3.0, not read-only) and credits the lab in NOTICE: Made by the Baranzini Lab (Wanjun Gu, UCSF)"
         }
       ],
       "summary": "Work inside an R session you already have open. Biorouter inspects, analyses, plots and fixes objects in memory through gptr, without reloading data, and every call passes gptr's permission settings. Private: a public model never sees your session. 3 tools and a bundled gptr-live-r skill. Needs R with the gptr package (1.0 or later) and uv.",
@@ -2527,9 +2532,9 @@
         "gptr"
       ],
       "release": {
-        "tag": "v0.1.2",
+        "tag": "v1.3.1",
         "asset": "gptragent.brxt",
-        "sha256": "6de59047c1e87eed76fb9e67fbb75c9ac7c404eac7cbd75ed144091087fb1ea0"
+        "sha256": "446e76bf8aa981334e6d7d0bbe4756be3e0455570b18c9fb72e97c4943b90c80"
       }
     },
     {
