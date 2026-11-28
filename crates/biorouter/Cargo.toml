@@ -203,6 +203,11 @@ libc = "0.2"
 dbus-secret-service = "4.1"
 
 [dev-dependencies]
+# The built-in fetchers reach public internet addresses only, so a test that
+# drives `webdocuments__web_scrape` against its own loopback mock admits that
+# one server (`biorouter_mcp::safe_fetch::test_support`). Dev-dependencies only:
+# a normal dependency would compile the seam into the shipped binaries.
+biorouter-mcp = { path = "../biorouter-mcp", features = ["test-support"] }
 agent-client-protocol-schema = "0.10.5"
 tempfile = "3.15.0"
 serde_yaml = "0.9.34"
