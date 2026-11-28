@@ -1652,18 +1652,18 @@ for the result.`;
       expect(img).toHaveAttribute('alt', 'Figure one');
     });
 
-    it('renders a remote https image directly without touching the read IPC', async () => {
+    // A remote image waits for a click (OP-P0-09, owner answer D15); the full
+    // behaviour is in MarkdownContent.remoteImages.test.tsx.
+    it('draws a remote https image as a load button, touching neither the read IPC nor the web', async () => {
       const electron = installElectronMock();
       const content = '![Remote](https://example.com/plot.png)';
 
       render(<MarkdownContent content={content} workingDir="/home/ada/project/docs" />);
 
-      const img = await waitFor(() => {
-        const el = document.querySelector('img');
-        expect(el).not.toBeNull();
-        return el as HTMLImageElement;
-      });
-      expect(img.getAttribute('src')).toBe('https://example.com/plot.png');
+      expect(
+        await screen.findByRole('button', { name: /load image from example\.com/i })
+      ).toBeInTheDocument();
+      expect(document.querySelector('img')).toBeNull();
       expect(electron.readArtifactFile).not.toHaveBeenCalled();
     });
 

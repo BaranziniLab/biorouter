@@ -17,6 +17,7 @@ import {
   isFilePathAllowedForPreview,
   isPathContained,
   isSensitivePreviewPath,
+  reachesUnchosenNetworkHost,
 } from './pathContainment';
 
 const protectedSystemPath =
@@ -233,5 +234,85 @@ describe('isFilePathAllowedForPreview', () => {
         fullyAutomatic: true,
       })
     ).toBe(false);
+  });
+});
+
+/**
+ * On Windows a path that starts with two separators (`\\host\share\…`,
+ * `//host/…`, `\\?\UNC\…`) is a network path, and the `realpath` and `lstat`
+ * the file read starts with open an SMB connection to that host, which may try
+ * to sign in to it. The renderer asks for previews of paths a model wrote, so a
+ * model could make the app reach a host of its choosing with no click (review
+ * finding on OP-P0-09, round 1). Such a path is refused before the filesystem is
+ * touched, unless it lies on a share the person put in scope.
+ */
+describe('network paths on Windows', () => {
+  const roots = ['C:\\Users\\ada', 'C:\\Users\\ada\\AppData\\Local\\Temp'];
+  let realpath: MockInstance<typeof fs.realpathSync>;
+  let lstat: MockInstance<typeof fs.lstatSync>;
+
+  beforeEach(() => {
+    realpath = vi.spyOn(fs, 'realpathSync');
+    lstat = vi.spyOn(fs, 'lstatSync');
+  });
+
+  afterEach(() => {
+    realpath.mockRestore();
+    lstat.mockRestore();
+  });
+
+  it.each([
+    '\\\\evil.test\\share\\a.png',
+    '//evil.test/share/a.png',
+    '\\\\evil.test\\IPC$',
+    '\\\\?\\UNC\\evil.test\\share\\a.png',
+    '\\\\.\\UNC\\evil.test\\share\\a.png',
+  ])('refuses %s in every mode without touching the filesystem', (candidate) => {
+    for (const fullyAutomatic of [false, true]) {
+      expect(
+        isFilePathAllowedForPreview(candidate, roots, { fullyAutomatic, platform: 'win32' })
+      ).toBe(false);
+    }
+    expect(realpath).not.toHaveBeenCalled();
+    expect(lstat).not.toHaveBeenCalled();
+  });
+
+  it('names a network host nobody chose', () => {
+    expect(reachesUnchosenNetworkHost('\\\\evil.test\\share\\a.png', roots, 'win32')).toBe(true);
+    expect(reachesUnchosenNetworkHost('//evil.test/a.png', roots, 'win32')).toBe(true);
+  });
+
+  it('keeps a file on the share the person works in', () => {
+    const share = ['\\\\lab-server\\share\\proj', ...roots];
+    expect(reachesUnchosenNetworkHost('\\\\lab-server\\share\\proj\\fig.png', share, 'win32')).toBe(
+      false
+    );
+    expect(reachesUnchosenNetworkHost('//LAB-SERVER/share/proj/out/fig.png', share, 'win32')).toBe(
+      false
+    );
+    expect(reachesUnchosenNetworkHost('\\\\lab-server\\share\\proj', share, 'win32')).toBe(false);
+    // Another share, a sibling whose name extends the folder's, or a way out of it.
+    expect(reachesUnchosenNetworkHost('\\\\lab-server\\other\\fig.png', share, 'win32')).toBe(true);
+    expect(
+      reachesUnchosenNetworkHost('\\\\lab-server\\share\\proj2\\fig.png', share, 'win32')
+    ).toBe(true);
+    expect(
+      reachesUnchosenNetworkHost(
+        '\\\\lab-server\\share\\proj\\..\\..\\other\\fig.png',
+        share,
+        'win32'
+      )
+    ).toBe(true);
+  });
+
+  it('leaves drive paths alone', () => {
+    expect(reachesUnchosenNetworkHost('C:\\Users\\ada\\fig.png', roots, 'win32')).toBe(false);
+    expect(reachesUnchosenNetworkHost('Z:\\mapped\\fig.png', roots, 'win32')).toBe(false);
+  });
+
+  it('leaves POSIX paths alone: two leading slashes name the root there', () => {
+    for (const platform of ['darwin', 'linux'] as const) {
+      expect(reachesUnchosenNetworkHost('//evil.test/a.png', [], platform)).toBe(false);
+    }
   });
 });

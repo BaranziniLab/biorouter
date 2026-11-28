@@ -169,8 +169,45 @@ export function isSensitivePreviewPath(candidate: string): boolean {
   return false;
 }
 
+/** `\\host\share\…`, `//host/…`, `\\?\…` or `\\.\…`: two leading separators of either kind. */
+const WINDOWS_NETWORK_OR_DEVICE_PATH = /^[\\/]{2}/;
+
+/**
+ * Whether reading `candidate` would open a connection to a network host the
+ * person never put in scope. Windows only, and decided from the spelling alone,
+ * because the question exists to be asked BEFORE the filesystem is touched.
+ *
+ * On Windows a path with two leading separators is a UNC or device path, and the
+ * `realpath` and `lstat` every preview read starts with open an SMB connection
+ * to the host it names, which may also try to sign in to it. The renderer asks
+ * for previews of paths a model wrote (an image in a reply, a file a reply
+ * names), so without this a model could make the app reach a host of its choice
+ * with no click (OP-P0-09 review, round 1). A path on a share that is itself one
+ * of `roots` (the folder the person pointed the chat at, or a home on a share)
+ * stays readable. Elsewhere two leading slashes name the root, and nothing is
+ * refused.
+ */
+export function reachesUnchosenNetworkHost(
+  candidate: string,
+  roots: string[],
+  platform: typeof process.platform = process.platform
+): boolean {
+  if (platform !== 'win32' || !WINDOWS_NETWORK_OR_DEVICE_PATH.test(candidate)) return false;
+  // `path.win32` is lexical, so this reads no disk and asks no host. It folds
+  // `..` without climbing above the share.
+  const key = (p: string) => path.win32.resolve(p).replace(/\\+$/, '').toLowerCase();
+  const target = key(candidate);
+  return !roots.some((root) => {
+    if (!WINDOWS_NETWORK_OR_DEVICE_PATH.test(root)) return false;
+    const base = key(root);
+    return target === base || target.startsWith(`${base}\\`);
+  });
+}
+
 /**
  * The preview allowlist decision, factoring in the permission mode.
+ *   - A Windows network path outside `roots` is denied in EVERY mode, before
+ *     anything touches the filesystem (`reachesUnchosenNetworkHost`).
  *   - A sensitive path (above) is denied in EVERY mode.
  *   - In Fully-Automatic mode any other path is admitted (parity with the
  *     backend, which lets the agent write anywhere).
@@ -179,8 +216,9 @@ export function isSensitivePreviewPath(candidate: string): boolean {
 export function isFilePathAllowedForPreview(
   candidate: string,
   roots: string[],
-  opts: { fullyAutomatic: boolean }
+  opts: { fullyAutomatic: boolean; platform?: typeof process.platform }
 ): boolean {
+  if (reachesUnchosenNetworkHost(candidate, roots, opts.platform)) return false;
   if (isSensitivePreviewPath(candidate)) return false;
   if (opts.fullyAutomatic) return true;
   return isPathContained(candidate, roots);
