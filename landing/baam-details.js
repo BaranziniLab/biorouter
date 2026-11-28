@@ -125,7 +125,7 @@ window.BAAM_DETAILS = {
     ],
     tools: ['protocolsio_status', 'protocolsio_get'],
     skills: ['protocols-io-methods'],
-    needs: 'PROTOCOLS_IO_TOKEN (secret), which the v3 API requires; it goes only to protocols.io. It needs uv.',
+    needs: 'PROTOCOLS_IO_TOKEN (secret), sent only to www.protocols.io. The extension\'s settings mark it optional, but without it the v3 API answers "Authorization token is not correct", so set it before you search. It needs uv.',
     sources: ['Protocols.io API v3']
   },
   idcagent: {

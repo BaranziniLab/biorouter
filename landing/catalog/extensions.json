@@ -777,7 +777,7 @@
         {
           "name": "protocols-io-methods",
           "job": "lab.protocols-io.tool-usage",
-          "method_skill": null
+          "method_skill": "experimental-design"
         }
       ],
       "overlaps_builtin": [],
@@ -813,6 +813,11 @@
           "version": "0.2.0",
           "date": "2026-11-22",
           "note": "BRXT adapter kit: credential bound to its own host"
+        },
+        {
+          "version": "0.2.0",
+          "date": "2026-11-28",
+          "note": "Catalog correction, no new release: the bundled protocols-io-methods skill's method_skill is experimental-design, as that skill in the released v0.2.0 bundle names it (it was null). The detail card's token line now follows the v0.2.0 manifest and README: PROTOCOLS_IO_TOKEN is marked optional, and the v3 API answers \"Authorization token is not correct\" without it"
         }
       ]
     },
@@ -1956,12 +1961,7 @@
         "upstreams": [],
         "built_with": "brxt-adapter-kit 1.0.1"
       },
-      "third_party": [
-        {
-          "name": "zotero-mcp core",
-          "licence": "MIT"
-        }
-      ],
+      "third_party": [],
       "licence": "Apache-2.0",
       "release": {
         "tag": "v0.2.0",
@@ -1998,6 +1998,11 @@
           "version": "0.2.0",
           "date": "2026-11-22",
           "note": "BRXT adapter kit: credential bound to its own host"
+        },
+        {
+          "version": "0.2.0",
+          "date": "2026-11-28",
+          "note": "Catalog correction, no new release: third_party no longer lists \"zotero-mcp core, MIT\". The released v0.2.0 bundle holds no zotero-mcp code; it vendors only the BRXT adapter kit 1.0.1 and installs fastmcp, httpx and pydantic from PyPI"
         }
       ]
     },
