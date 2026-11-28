@@ -122,7 +122,7 @@ A copyright line for the lab's own work reads `Copyright <year> Baranzini Lab, U
 
 An entry holds `status`, `origin`, `line` (the card line), `summary` (the origin sentence), `licence`, `sources`, `ideas` (the current ones), `data_and_services`, `people`, `written_for_biorouter` (a bundle's components written here), `earlier` (versions with another origin, and ideas that shaped only an earlier version), `moved_to`, `licence_files` and `record`.
 
-- `licence_files` links a skill's `LICENSE-UPSTREAM` at the mirrored commit (or the skills repository's `LICENSE` when the row has no notice file), and an extension's `NOTICE` at its release tag.
+- `licence_files` links a skill's `LICENSE-UPSTREAM` at the mirrored commit (or the skills repository's `LICENSE` when the row has no notice file), and an extension's `NOTICE` at its release tag (at the repository root, or in the folder the extension is built from when `EXTENSION_NOTICE_PATHS` in `landing/scripts/lib/credits.mjs` names one: gptr Agent's is `mcp-bridge/NOTICE` in the gptr repository).
 - `record` links the skills README section `#provenance-and-credits` at the mirrored commit. It is null for extensions until their repositories carry the generated section.
 - Every `url` in an entry is an http(s) address or null. A reader allows unknown fields and checks `version`.
 

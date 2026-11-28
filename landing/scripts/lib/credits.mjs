@@ -171,11 +171,21 @@ function skillLinks(row, commit) {
   return { licence_files: notice, record: `${base}/README.md#provenance-and-credits` };
 }
 
+/**
+ * Extensions whose NOTICE is not at the root of their repository, by registry
+ * id. The row names the repository and the release tag but not the folder the
+ * extension is built from. gptr Agent moved into the gptr package repository
+ * at 1.3.1 and is built from mcp-bridge/ (the tree at v1.3.1 has no root
+ * NOTICE; read 2026-11-28).
+ */
+export const EXTENSION_NOTICE_PATHS = Object.freeze({ gptragent: 'mcp-bridge/NOTICE' });
+
 function extensionLinks(row) {
   const tag = text(row?.release?.tag);
   const repo = text(row?.repository);
   if (!tag || !repo || !REPO.test(repo)) return { licence_files: null, record: null };
-  return { licence_files: `https://github.com/${repo}/blob/${encodeURIComponent(tag)}/NOTICE`, record: null };
+  const notice = Object.hasOwn(EXTENSION_NOTICE_PATHS, row?.id) ? EXTENSION_NOTICE_PATHS[row.id] : 'NOTICE';
+  return { licence_files: `https://github.com/${repo}/blob/${encodeURIComponent(tag)}/${encPath(notice)}`, record: null };
 }
 
 /** The credits entry of one row. `catalog` is "extensions" or "skills". */

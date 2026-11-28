@@ -30,6 +30,7 @@ import {
   CREDITS_PATHS,
   CREDITS_VERSION,
   CURATED_SHELVES,
+  EXTENSION_NOTICE_PATHS,
   buildCredits,
   cardCreditSites,
   creditPageProblems,
@@ -217,6 +218,23 @@ test('an extension entry links its NOTICE at its release tag and has no full rec
   assert.equal(e.licence_files, 'https://github.com/BaranziniLab/ToyAgent/blob/v0.2.0/NOTICE');
   assert.equal(e.record, null);
   assert.deepEqual(e.written_for_biorouter, []);
+});
+
+test('an extension built from a folder of its repository links the NOTICE in that folder', () => {
+  // gptr Agent lives in the gptr package repository from 1.3.1, under mcp-bridge/;
+  // that tag has no NOTICE at the repository root.
+  assert.deepEqual({ ...EXTENSION_NOTICE_PATHS }, { gptragent: 'mcp-bridge/NOTICE' });
+  const row = CATALOGS.extensions.items.find((r) => r.id === 'gptragent');
+  assert.equal(row.repository, 'Broccolito/gptr');
+  assert.equal(
+    buildCredits(CATALOGS).extensions.gptragent.licence_files,
+    `https://github.com/Broccolito/gptr/blob/${row.release.tag}/mcp-bridge/NOTICE`,
+  );
+  // Every other extension keeps its NOTICE at the root, at its own release tag.
+  for (const [id, entry] of Object.entries(buildCredits(CATALOGS).extensions)) {
+    if (id === 'gptragent' || entry.licence_files === null) continue;
+    assert.match(entry.licence_files, /^https:\/\/github\.com\/[^/]+\/[^/]+\/blob\/[^/]+\/NOTICE$/, id);
+  }
 });
 
 test('a retired row keeps an entry and says where it went; an in-house bundle lists nothing as written for Biorouter', () => {
