@@ -313,8 +313,10 @@ export function ruleExtensionCredits(rows) {
 /**
  * PV14: the page's credit lines (creditPageProblems in lib/credits.mjs:
  * "card:<kind>:<id>", "card-id:<kind>:<offset>", "shelf:<shelf id>", "footer",
- * "stray", "text:<excerpt>", and "page" when the page lacks a landmark the
- * finders need), and, when `creditsTexts` is given ({ <CREDITS_PATHS entry>:
+ * "stray" (a curator class outside a shelf or the footer, or an item-credit
+ * class outside a card, counted page-wide), "text:<excerpt>", and "page" when
+ * the page lacks a landmark the finders need), and, when `creditsTexts` is
+ * given ({ <CREDITS_PATHS entry>:
  * text or null }), "file:<path>" for a copy that is missing or not byte-equal
  * to serializeCredits(buildCredits(...)), and "entry:<kind>:<id>" for an active
  * row with no entry in the parsed landing/credits.json.

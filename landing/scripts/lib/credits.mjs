@@ -350,6 +350,45 @@ export function curatorSites(html) {
   return { shelves, footer, stray: all - placed };
 }
 
+/**
+ * The number of item-credit classes anywhere on the page that no card covers:
+ * one in a shelf header, a group head, the moved list, the footer or a detail
+ * panel. Page-wide, as curatorSites counts the curator classes: a credit
+ * element is the generator's only where a card holds it.
+ */
+export function strayCardCredits(html, sites = cardCreditSites(html)) {
+  const all = (String(html).match(ANY_CREDIT_CLASS) ?? []).length;
+  const inCards = sites.reduce((n, s) => n + s.credits.length + s.stray, 0);
+  return all - inCards;
+}
+
+/**
+ * [start, end) of every generated element where it belongs: each card's
+ * <p class="item-credit">, each shelf's <p class="shelf-curator"> and the
+ * footer's <span class="foot-curator">. An element of one of these classes
+ * anywhere else is not generated. On a page without the landmarks the finders
+ * need, which PV14 already fails as "page", every such element is taken, so
+ * the scan still names only hand-written wording there.
+ */
+export function generatedCreditRanges(html) {
+  let sites;
+  let cur;
+  try {
+    sites = cardCreditSites(html);
+    cur = curatorSites(html);
+  } catch {
+    const text = String(html);
+    return [/<p class="item-credit">[\s\S]*?<\/p>/g, /<p class="shelf-curator">[\s\S]*?<\/p>/g, /<span class="foot-curator">[\s\S]*?<\/span>/g]
+      .flatMap((re) => [...text.matchAll(re)])
+      .map((m) => [m.index, m.index + m[0].length]);
+  }
+  return [
+    ...sites.flatMap((s) => s.credits),
+    ...Object.values(cur.shelves).flat(),
+    ...cur.footer,
+  ].map((c) => [c.start, c.end]);
+}
+
 /** The credits entry a card shows, or null. */
 export function entryFor(credits, kind, id) {
   const map = credits?.[kind];
@@ -361,12 +400,14 @@ export function entryFor(credits, kind, id) {
  * line that is missing, doubled, misplaced or different from what `credits`
  * (buildCredits' output) says, and for credit wording written by hand
  * elsewhere on the page. Subjects: "card:<kind>:<id>",
- * "card-id:<kind>:<offset>", "shelf:<shelf id>", "footer", "stray",
- * "text:<excerpt>".
+ * "card-id:<kind>:<offset>", "shelf:<shelf id>", "footer", "stray" (a
+ * curator class outside a shelf or the footer, or an item-credit class
+ * outside a card, both counted page-wide), "text:<excerpt>".
  */
 export function creditPageProblems(html, credits) {
   const out = [];
-  for (const s of cardCreditSites(html)) {
+  const sites = cardCreditSites(html);
+  for (const s of sites) {
     const where = `${s.kind === 'skills' ? 'skill' : 'extension'} card ${s.id ?? `at offset ${s.start}`}`;
     if (!s.id) {
       out.push({ subject: `card-id:${s.kind}:${s.start}`, message: `${where} has no download link, so no credits entry can be found for it` });
@@ -401,6 +442,10 @@ export function creditPageProblems(html, credits) {
   if (cur.footer.length !== 1) out.push({ subject: 'footer', message: `the footer has ${cur.footer.length} curator lines; it needs exactly one <span class="foot-curator">` });
   else if (cur.footer[0].inner !== want) out.push({ subject: 'footer', message: `the footer's curator line says "${cur.footer[0].inner}", not "${want}"` });
   if (cur.stray > 0) out.push({ subject: 'stray', message: `${cur.stray} curator class(es) sit outside a shelf or the footer, or on another element` });
+  const strayCredits = strayCardCredits(html, sites);
+  if (strayCredits > 0) {
+    out.push({ subject: 'stray', message: `${strayCredits} item-credit class(es) sit outside a card (a shelf header, the moved list, the footer or a detail panel); a credit line belongs on a card, written by node landing/scripts/write-credits.mjs` });
+  }
   for (const hit of handWrittenCredit(html)) {
     out.push({ subject: `text:${hit}`, message: `the page says "${hit}" outside a generated credit line; credit lives in the generated lines only (take it out of the card or heading text)` });
   }
@@ -426,7 +471,10 @@ function decodeReferences(text) {
 /**
  * Credit wording (CARD_CREDIT_PATTERN: "Made by the Baranzini Lab", "Adapted
  * from ", "Curated and organized by", "packaged for Biorouter by") anywhere in
- * the page's text outside the generated elements, as short excerpts. Comments
+ * the page's text outside the generated elements, as short excerpts. Only an
+ * element where the generator puts it is exempt (generatedCreditRanges): an
+ * item-credit outside a card, or a curator element outside a shelf or the
+ * footer, is read as page text like any other. Comments
  * and scripts are not text; attribute values are not read. Character
  * references are read as the characters a browser shows ("Adapted&#32;from",
  * "Adapted&nbsp;from" and "Ad&#97;pted from" all show the phrase), in one pass,
@@ -434,13 +482,20 @@ function decodeReferences(text) {
  * characters show nothing and are dropped.
  */
 export function handWrittenCredit(html) {
+  let page = String(html);
+  // Overlapping ranges (only on a malformed page) merged, then blanked back to
+  // front, so each range's offsets still hold when it is blanked.
+  const merged = [];
+  for (const [start, end] of generatedCreditRanges(page).sort((a, b) => a[0] - b[0])) {
+    const last = merged[merged.length - 1];
+    if (last && start < last[1]) last[1] = Math.max(last[1], end);
+    else merged.push([start, end]);
+  }
+  for (const [start, end] of merged.reverse()) page = page.slice(0, start) + ' ' + page.slice(end);
   const bare = decodeReferences(
-    String(html)
+    page
       .replace(/<!--[\s\S]*?-->/g, ' ')
       .replace(/<script\b[\s\S]*?<\/script>/gi, ' ')
-      .replace(/<p class="item-credit">[\s\S]*?<\/p>/g, ' ')
-      .replace(/<p class="shelf-curator">[\s\S]*?<\/p>/g, ' ')
-      .replace(/<span class="foot-curator">[\s\S]*?<\/span>/g, ' ')
       .replace(/<[^>]+>/g, ' '),
   )
     .replace(/[­​-‍⁠﻿]/g, '')

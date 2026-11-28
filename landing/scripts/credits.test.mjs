@@ -518,6 +518,47 @@ caught(
   },
   'stray',
 );
+// A credit element outside a card is not the generator's, wherever it sits and
+// whatever it says: the stray count is page-wide, as it is for the curator
+// classes, and its wording is read as hand-written page text. Before this, the
+// text scan skipped every <p class="item-credit"> on the page and the stray
+// count looked inside cards only, so each of these passed.
+// [where, anchor, the element goes 'before' or 'after' the anchor, its text]
+const OUTSIDE_A_CARD = [
+  ['a shelf header (the extensions group head)', '<div class="group-head"><h2>Extensions</h2>', 'before', 'Adapted from X.'],
+  ['a shelf header (the skills shelf bar)', '<div class="filter-chips" id="skill-chips"', 'before', 'Adapted from X.'],
+  ['the footer', `<span class="foot-curator">${escapeText(CURATED_BY)}</span>`, 'after', escapeText(MADE_BY_LAB)],
+  ['a detail template (the workflow card panel)', '<dl class="detail-list">', 'after', 'Adapted from X.'],
+  ['the moved list', '<details class="baam-moved" id="baam-moved">', 'after', 'Adapted from X.'],
+];
+for (const [where, anchor, side, text] of OUTSIDE_A_CARD) {
+  const el = `<p class="${CARD_CREDIT_CLASS}">${text}</p>`;
+  const insert = (h) => once(h, anchor, side === 'after' ? anchor + el : el + anchor);
+  caught(`an item-credit with credit wording in ${where} (stray)`, insert, 'stray');
+  caught(`an item-credit with credit wording in ${where} (text)`, insert, /^text:.*(?:Adapted from X\.|Made by the Baranzini Lab)/);
+}
+caught(
+  'an item-credit with no credit wording outside a card (stray)',
+  (h) => once(h, '<dl class="detail-list">', `<dl class="detail-list"><p class="${CARD_CREDIT_CLASS}">Nothing here.</p>`),
+  'stray',
+);
+
+test('a curator element outside every shelf and the footer is read as page text', () => {
+  // The moved list sits after the last shelf and before the footer. (One inside
+  // a shelf, a panel included, is that shelf's second line and fails "shelf:".)
+  const anchor = '<details class="baam-moved" id="baam-moved">';
+  const page = once(WRITTEN.html, anchor, `${anchor}<p class="shelf-curator">${escapeText(CURATED_BY)}</p>`);
+  assert.ok(subjects(creditPageProblems(page, WRITTEN.credits)).includes('stray'));
+  assert.ok(handWrittenCredit(page).some((hit) => hit.includes('Curated and organized by')), JSON.stringify(handWrittenCredit(page)));
+});
+
+test('a page without the landmarks still exempts its credit elements from the text scan', () => {
+  // PV14 fails such a page as "page"; the text scan must not then flood with
+  // every generated line.
+  const page = WRITTEN.html.replace('id="baam-moved"', 'id="baam-gone"');
+  assert.deepEqual(handWrittenCredit(page), []);
+});
+
 caught(
   'an item-credit class on another element',
   (h) => {

@@ -411,6 +411,25 @@ test('PV14 mutant: a curator line on a card (stray)', () => {
   assert.ok(failsAt(check({ html }), 'PV14', 'stray'));
 });
 
+// An item-credit outside every card is not a generated line, so its wording is
+// hand-written credit and the class is a stray. The stray count is page-wide,
+// as it is for the curator classes; before it was, each of these passed.
+for (const [where, anchor, side] of [
+  ['a shelf header', '<div class="group-head"><h2>Extensions</h2>', 'before'],
+  ['the footer', `<span class="foot-curator">${CURATED_BY}</span>`, 'after'],
+  ['a detail template', '<dl class="detail-list">', 'after'],
+]) {
+  test(`PV14 mutant: an item-credit with credit wording in ${where} (stray, text)`, () => {
+    const at = HTML.indexOf(anchor);
+    assert.notEqual(at, -1, `the anchor must be on the page, or this proves nothing`);
+    const el = '<p class="item-credit">Adapted from X.</p>';
+    const html = side === 'after' ? splice(HTML, at + anchor.length, at + anchor.length, el) : splice(HTML, at, at, el);
+    const res = check({ html });
+    assert.ok(failsAt(res, 'PV14', 'stray'), JSON.stringify(res.errors.filter((e) => e.rule === 'PV14')));
+    assert.ok(res.errors.some((e) => e.rule === 'PV14' && /^text:.*Adapted from X\./.test(e.subject)));
+  });
+}
+
 test('PV14 mutant: credit wording written by hand into a card description (text)', () => {
   assert.ok(!fails(check(), 'PV14', 'text:'));
   const s = site('extensions', 'zoteroagent');
