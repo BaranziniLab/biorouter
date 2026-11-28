@@ -85,6 +85,11 @@ jobs:
       - name: Check the BAAM catalog checker still catches what it must
         run: node --test landing/scripts/check-catalog.test.mjs
 
+      # credits.json and the card, shelf and footer lines in baam.html are
+      # written from one contract; the suite holds both writers to it.
+      - name: Check the credits generator and the page lines
+        run: node --test landing/scripts/credits.test.mjs
+
       - name: Check the BAAM catalogs agree with the page and with biorouter-skills
         run: node landing/scripts/check-catalog.mjs --remote
 
@@ -122,6 +127,12 @@ jobs:
       # cannot take; this reads the real pages in the same chromium.
       - name: Check the site's layout holds still in a browser
         run: node --test landing/scripts/layout-stability.browser.test.mjs
+
+      # Provenance and credits on the page being published: every card's credit
+      # line (rendered and without JavaScript), the curator lines, the opened
+      # row's provenance panel, and credit values that stay text.
+      - name: Check the BAAM credit lines and panel in a browser
+        run: node --test landing/scripts/baam-credits.browser.test.mjs
 
   # Baseten's model list and prices (`GET /v1/models`) need an API key, and
   # the app must not. This job reads them with a key held ONLY in the

@@ -200,6 +200,37 @@ JavaScript and CSS libraries compiled into the binary
   libraries it used and pointing at the full texts.
 
 
+ADAPTED TEXT IN BUILT-IN SKILLS
+===============================
+
+Some of the skills compiled into biorouter and biorouterd
+(crates/biorouter/src/agents/builtin_skills/) follow outside work. Each is
+named here with its source and licence.
+
+
+skill-creator, in develop-biorouter-skill
+-----------------------------------------
+  Used for:  the evaluation loop and the description optimization in the
+             built-in develop-biorouter-skill skill
+             (crates/biorouter/src/agents/builtin_skills/develop-biorouter-skill/SKILL.md),
+             which follow the skill-creator skill's method, rewritten for
+             Biorouter's runs, subagents, side panel and skill catalog
+  Licence:   Apache License 2.0 (Biorouter's LICENSE carries the same text)
+  Copyright: published by Anthropic; the upstream licence names no copyright
+             holder and the source ships no NOTICE file
+  Upstream:  https://github.com/anthropics/claude-plugins-official, path
+             plugins/skill-creator, the plugin's copy of the skill-creator
+             skill in https://github.com/anthropics/skills
+  Version:   pinned at commit de573bd84695c6657b28f05ffe32c37bb54d1f55
+  Licence text:
+    in this repository   LICENSE
+
+  Measured on 2026-11-28 against the upstream at that commit, with front
+  matter removed, text lowercased and whitespace collapsed: 2 of the 4,055
+  distinct six-word runs in SKILL.md also occur upstream, both in
+  skills/skill-creator/SKILL.md, and they touch 3 of its 499 lines (0.6%).
+
+
 OTHER DEPENDENCIES
 ==================
 

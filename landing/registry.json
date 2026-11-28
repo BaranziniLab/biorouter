@@ -212,7 +212,7 @@
       "github": "https://github.com/BaranziniLab/BioMCPAgent",
       "download": "https://github.com/BaranziniLab/BioMCPAgent/releases/download/v0.1.0/biomcpagent.brxt",
       "filename": "biomcpagent.brxt",
-      "license": "Apache-2.0 AND MIT",
+      "license": "Apache-2.0",
       "privacy": "public"
     },
     {
@@ -1847,7 +1847,7 @@
       "name": "PHI De-identification",
       "category": "Core",
       "type": "Auto-applied",
-      "description": "De-identify a clinical CSV, TSV or Excel table before analysis or sharing: a local script that makes no network calls checks it for the 18 HIPAA Safe Harbor identifiers and replaces, redacts or pseudonymizes what it finds. Text it cannot verify is redacted unless the person keeps the column, and the agent never reads the raw data. A person must spot-check the output before it leaves the institution. Adapted from the MIT-licensed deidentify skill in Aperivue/medsci-skills.",
+      "description": "De-identify a clinical CSV, TSV or Excel table before analysis or sharing: a local script that makes no network calls checks it for the 18 HIPAA Safe Harbor identifiers and replaces, redacts or pseudonymizes what it finds. Text it cannot verify is redacted unless the person keeps the column, and the agent never reads the raw data. A person must spot-check the output before it leaves the institution.",
       "tags": [
         "Clinical",
         "Privacy",

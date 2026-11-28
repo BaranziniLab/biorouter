@@ -10,18 +10,35 @@
 // extensions.json (every BAAM extension, active or not), skills.json (a mirror
 // of biorouter-skills catalog.json at the commit it records in source_commit)
 // and jobs.json (the job vocabulary, Biorouter's own jobs and the gap list).
-// This check reads them, the committed landing/registry.json and the parts of
-// landing/baam.html that registry.json does not carry (skill card versions, the
-// Moved and retired list, the hand-written counts), and fails when any of them
-// disagree or when a duplicate rule (D1 to D4) or the gap rule (G1) fails.
+// extensions.json and skills.json are in provenance format 2 ("format": 2);
+// jobs.json stays format 1. This check reads them, the committed
+// landing/registry.json and the parts of landing/baam.html that registry.json
+// does not carry (skill card versions, the Moved and retired list, the
+// hand-written counts, the credit lines), and fails when any of them disagree
+// or when a rule fails:
+//
+//   D1 to D4, G1   the duplicate rules and the gap rule (lib/catalog-rules.mjs)
+//   PV1 to PV13    the provenance row rules (lib/catalog-rules.mjs, ruleProvenance),
+//                  over the extension rows only: biorouter-skills gates the skill
+//                  rows itself, with a provenance baseline this repository does
+//                  not mirror
+//   PV14           the page and credits.json: every card's credit line, the shelf
+//                  and footer curator lines, no credit wording written by hand
+//                  (lib/credits.mjs, creditPageProblems), and, from the CLI,
+//                  landing/credits.json and the app's copy byte-equal to what
+//                  buildCredits gives, with an entry for every active row
+//   PV15           the extension rows' credits (ruleExtensionCredits below)
 //
 // build-registry.mjs runs the same checkCatalogs() on the registry it has just
 // built in memory, before it writes or compares anything, so the published
-// outputs can never be regenerated while a catalog disagrees with the page.
+// outputs can never be regenerated while a catalog disagrees with the page. It
+// passes no credits.json texts: it writes both copies itself and compares them
+// in --check.
 //
 // --skills-repo also compares the mirror with that checkout's catalog.json at
-// source_commit; --remote compares it with the copy on GitHub at that commit.
-// No dependencies.
+// source_commit, and landing/scripts/lib/catalog-rules.mjs with that commit's
+// scripts/lib/catalog-rules.mjs (the rules file is shared verbatim); --remote
+// compares both with the copies on GitHub at that commit. No dependencies.
 
 import { execFileSync } from 'node:child_process';
 import { readFileSync, existsSync, readdirSync } from 'node:fs';
@@ -39,7 +56,14 @@ import {
   ruleD3,
   ruleD4,
   ruleG1,
+  BRIDGE_USES,
+  RUN_USES,
+  isLabOwned,
+  ruleProvenance,
+  sourceKey,
+  usesOf,
 } from './lib/catalog-rules.mjs';
+import { CREDITS_PATHS, buildCredits, creditPageProblems, serializeCredits } from './lib/credits.mjs';
 
 const LANDING = join(dirname(fileURLToPath(import.meta.url)), '..');
 export const REPO_ROOT = join(LANDING, '..');
@@ -50,6 +74,13 @@ const SHA = /^[0-9a-f]{40}$/;
 const SHA256 = /^[0-9a-f]{64}$/;
 const SEMVER = /^\d+\.\d+\.\d+(\+[0-9A-Za-z.-]+)?$/;
 const GROUPS = new Set(['ucsf', 'tools', 'adapters']);
+/** The provenance format extensions.json and skills.json are in; jobs.json stays 1. */
+export const CATALOG_FORMAT = 2;
+/** The rules file, here and in biorouter-skills (shared verbatim, compared by --skills-repo and --remote). */
+export const RULES_PATH = 'landing/scripts/lib/catalog-rules.mjs';
+export const SKILLS_RULES_PATH = 'scripts/lib/catalog-rules.mjs';
+/** catalog.json is 1.1 MB in format 2; git's output buffer defaults to 1 MiB (ENOBUFS). */
+const GIT_MAX_BUFFER = 64 * 1024 * 1024;
 const CATEGORY_LABEL = { core: 'Core', developer: 'Developer', biomedical: 'Biomedical' };
 
 // ---------------------------------------------------------------- inputs
@@ -206,20 +237,143 @@ export function extensionRuleItems(catalog) {
 const failure = (rule, subject, message, refs = []) => ({ rule, subject, message, refs });
 const sameList = (a, b) => JSON.stringify([...(a ?? [])].sort()) === JSON.stringify([...(b ?? [])].sort());
 const statusTarget = (status) => (status.startsWith('superseded_by:') ? status.slice('superseded_by:'.length) : '');
+const filled = (x) => typeof x === 'string' && x.trim().length > 0;
+const HTTP_URL = /^https?:\/\/\S+$/;
+
+// ---------------------------------------------------------------- PV15
+
+/** The uses that let a third-party extension's line say "Runs X" or "Bridges to X" about its lead source. */
+const RUN_OR_BRIDGE_USES = Object.freeze([...RUN_USES, ...BRIDGE_USES]);
+/** The uses of an outside source an adapted or third-party extension is made of (the campaign checker's set). */
+const MATCH_USES = Object.freeze(['text', 'code', 'data', 'bundled', 'bundled-modified', 'launched']);
+
+/**
+ * PV15, over the extension rows (format 2). Subjects:
+ *
+ *   run:<id>                 a third-party row with no outside upstream it bundles,
+ *                            launches or forwards calls to (RUN_USES, BRIDGE_USES):
+ *                            its line would say "Runs X" or "Bridges to X" about a
+ *                            source it only copies from or depends on
+ *   match:<id>               an adapted or third-party row with no outside upstream
+ *                            whose use is text, code, data, bundled, bundled-modified
+ *                            or launched
+ *   entry:<id>:<source>      a bundled, bundled-modified or launched upstream without
+ *                            a display or repo, a licence, a credit or a what, or with
+ *                            neither a version nor a commit
+ *   data:<id>:<name>         a data or service entry with no name, no http(s) url or
+ *                            no terms, or terms that wait on the owner ("Pending the
+ *                            owner"); terms that were not read ("Not read") are a
+ *                            warning of the row rules instead
+ *   field:<id>:third_party   a row that still carries third_party (format 2 records
+ *                            it in source.upstreams)
+ *
+ * Every row is read, active or not.
+ */
+export function ruleExtensionCredits(rows) {
+  const out = [];
+  for (const row of Array.isArray(rows) ? rows : []) {
+    const id = row?.id;
+    const f = (subject, message) => out.push(failure('PV15', subject, `extension ${id}: ${message}`, [`extension:${id}`]));
+    const src = row?.source ?? {};
+    const ups = Array.isArray(src.upstreams) ? src.upstreams : [];
+    const outside = (uses) => ups.filter((u) => !isLabOwned(u) && usesOf(u).some((x) => uses.includes(x)));
+    if (src.origin === 'third-party' && !outside(RUN_OR_BRIDGE_USES).length) {
+      f(`run:${id}`, `is third-party, but no outside upstream is bundled, launched or hosted (${RUN_OR_BRIDGE_USES.join(', ')}), so its line would say "Runs" about a source it does not run; record the use of the program it runs`);
+    }
+    if ((src.origin === 'adapted' || src.origin === 'third-party') && !outside(MATCH_USES).length) {
+      f(`match:${id}`, `is ${src.origin}, but no outside upstream supplies text, code or data or is bundled or launched`);
+    }
+    ups.forEach((u, i) => {
+      if (!usesOf(u).some((x) => RUN_USES.includes(x))) return;
+      const missing = [];
+      if (!filled(u?.display) && !filled(u?.repo)) missing.push('a display or repo');
+      if (!filled(u?.licence)) missing.push('a licence');
+      if (!filled(u?.credit)) missing.push('a credit');
+      if (!filled(u?.what)) missing.push('a what');
+      if (!filled(u?.version) && !filled(u?.commit)) missing.push('a version or a commit');
+      const key = sourceKey(u) || `#${i}`;
+      if (missing.length) f(`entry:${id}:${key}`, `upstream ${key} is ${usesOf(u).join(', ')} but has no ${missing.join(', no ')}`);
+    });
+    (Array.isArray(src.data_and_services) ? src.data_and_services : []).forEach((d, n) => {
+      const problems = [];
+      if (!filled(d?.name)) problems.push('no name');
+      if (!filled(d?.url) || !HTTP_URL.test(d.url.trim())) problems.push('no http(s) url');
+      if (!filled(d?.terms)) problems.push('no terms');
+      else if (/^pending the owner\b/i.test(d.terms.trim())) problems.push(`terms that wait on the owner ("${d.terms.trim()}")`);
+      const name = filled(d?.name) ? d.name : `#${n}`;
+      if (problems.length) f(`data:${id}:${name}`, `data or service ${name}: ${problems.join('; ')}`);
+    });
+    if (row && Object.hasOwn(row, 'third_party')) f(`field:${id}:third_party`, '`third_party` is retired in format 2; its entries belong in source.upstreams');
+  }
+  return out;
+}
+
+// ---------------------------------------------------------------- PV14
+
+/**
+ * PV14: the page's credit lines (creditPageProblems in lib/credits.mjs:
+ * "card:<kind>:<id>", "card-id:<kind>:<offset>", "shelf:<shelf id>", "footer",
+ * "stray", "text:<excerpt>", and "page" when the page lacks a landmark the
+ * finders need), and, when `creditsTexts` is given ({ <CREDITS_PATHS entry>:
+ * text or null }), "file:<path>" for a copy that is missing or not byte-equal
+ * to serializeCredits(buildCredits(...)), and "entry:<kind>:<id>" for an active
+ * row with no entry in the parsed landing/credits.json.
+ */
+export function ruleCredits({ html, extensions, skills, creditsTexts = null }) {
+  const out = [];
+  const expected = buildCredits({ extensions, skills });
+  let page;
+  try {
+    page = creditPageProblems(html, expected);
+  } catch (e) {
+    page = [{ subject: 'page', message: `landing/baam.html cannot be read for its credit lines: ${e.message}` }];
+  }
+  for (const p of page) out.push(failure('PV14', p.subject, p.message));
+  if (!creditsTexts) return out;
+  const want = serializeCredits(expected);
+  for (const path of CREDITS_PATHS) {
+    const text = creditsTexts[path] ?? null;
+    if (text === null) out.push(failure('PV14', `file:${path}`, `${path} is missing; run node landing/scripts/build-registry.mjs`));
+    else if (text !== want) out.push(failure('PV14', `file:${path}`, `${path} differs from what the catalogs give (buildCredits); run node landing/scripts/build-registry.mjs`));
+  }
+  let published = null;
+  try {
+    published = JSON.parse(creditsTexts[CREDITS_PATHS[0]] ?? 'null');
+  } catch {
+    published = null;
+  }
+  if (published && typeof published === 'object') {
+    for (const [kind, cat] of [['extensions', extensions], ['skills', skills]]) {
+      const map = published[kind] && typeof published[kind] === 'object' ? published[kind] : {};
+      for (const row of (cat?.items ?? []).filter((r) => r.status === 'active')) {
+        if (!Object.hasOwn(map, row.id)) out.push(failure('PV14', `entry:${kind}:${row.id}`, `${CREDITS_PATHS[0]} has no ${kind} entry for the active row ${row.id}`));
+      }
+    }
+  }
+  return out;
+}
 
 /**
  * registry: { extensions, skills } as build-registry.mjs builds it.
  * html: landing/baam.html. catalogs: loadCatalogs(). builtins: readBuiltins().
+ * creditsTexts (optional): { 'landing/credits.json': text | null,
+ * 'ui/desktop/src/components/baam/credits.fallback.json': text | null }, the
+ * committed copies PV14 compares (CREDITS_PATHS); the CLI reads them, and
+ * build-registry.mjs passes none.
  * Returns { errors, warnings, accepted, counts }.
  */
-export function checkCatalogs({ registry, html, catalogs, builtins }) {
+export function checkCatalogs({ registry, html, catalogs, builtins, creditsTexts = null }) {
   const raw = [];
   const warnings = [];
   const { extensions: extCat, skills: skillCat, jobs } = catalogs;
 
   // Shapes.
-  if (extCat?.format !== 1) raw.push(failure('shape', 'format:extensions', 'extensions.json must have "format": 1'));
-  if (skillCat?.format !== 1) raw.push(failure('shape', 'format:skills', 'skills.json must have "format": 1'));
+  if (extCat?.format !== CATALOG_FORMAT) {
+    raw.push(failure('shape', 'format:extensions', `extensions.json must have "format": ${CATALOG_FORMAT} (it has ${JSON.stringify(extCat?.format)})`));
+  }
+  if (skillCat?.format !== CATALOG_FORMAT) {
+    raw.push(failure('shape', 'format:skills', `skills.json must have "format": ${CATALOG_FORMAT} (it has ${JSON.stringify(skillCat?.format)}); mirror a format 2 catalog.json with landing/scripts/sync-skill-catalog.mjs`));
+  }
   if (jobs?.format !== 1) raw.push(failure('shape', 'format:jobs', 'jobs.json must have "format": 1'));
   if (!SHA.test(skillCat?.source_commit ?? '')) {
     raw.push(failure('mirror', 'source-commit', 'skills.json has no source_commit; write it with landing/scripts/sync-skill-catalog.mjs'));
@@ -421,6 +575,15 @@ export function checkCatalogs({ registry, html, catalogs, builtins }) {
   }
   if (!byExt.size) raw.push(failure('shape', 'empty:extensions', 'extensions.json lists no extensions'));
 
+  // Provenance and credits. The row rules (PV1 to PV13) read the extension rows
+  // only: biorouter-skills runs them on the skill rows, with a provenance
+  // baseline this repository does not mirror.
+  const prov = ruleProvenance(extRows, { catalogFormat: CATALOG_FORMAT, catalog: 'extensions' });
+  raw.push(...prov.failures);
+  warnings.push(...prov.warnings);
+  raw.push(...ruleExtensionCredits(extRows));
+  raw.push(...ruleCredits({ html, extensions: extCat, skills: skillCat, creditsTexts }));
+
   const baseline = [...(extCat?.baseline_violations ?? []), ...(skillCat?.baseline_violations ?? [])];
   const done = [...(extCat?.done_work_packages ?? []), ...(skillCat?.done_work_packages ?? [])];
   const result = applyBaseline(raw, baseline, done);
@@ -437,6 +600,21 @@ function compareMirror(label, upstream, local) {
   return [failure('mirror', label, `landing/catalog/skills.json differs from ${label}; run landing/scripts/sync-skill-catalog.mjs`)];
 }
 
+/**
+ * The rules file is shared verbatim: `local` (landing/scripts/lib/catalog-rules.mjs)
+ * must equal `upstream` (biorouter-skills scripts/lib/catalog-rules.mjs at
+ * source_commit; null when that commit has none). Rule "mirror", subject "rules".
+ */
+export function compareRulesMirror(label, upstream, local) {
+  if (upstream === null || upstream === undefined) {
+    return [failure('mirror', 'rules', `${label} does not exist, so ${RULES_PATH} cannot be checked against it`)];
+  }
+  if (upstream === local) return [];
+  return [failure('mirror', 'rules', `${RULES_PATH} differs from ${label}; copy it with landing/scripts/sync-skill-catalog.mjs (never edit it here)`)];
+}
+
+const readOrNull = (path) => (existsSync(path) ? readFileSync(path, 'utf8') : null);
+
 // ---------------------------------------------------------------- CLI
 
 async function main(argv) {
@@ -448,20 +626,39 @@ async function main(argv) {
   const registry = JSON.parse(readFileSync(resolve(opt('--registry') ?? join(LANDING, 'registry.json')), 'utf8'));
   const html = readFileSync(resolve(opt('--html') ?? join(LANDING, 'baam.html')), 'utf8');
   const catalogs = loadCatalogs(dir);
-  const res = checkCatalogs({ registry, html, catalogs, builtins: readBuiltins(REPO_ROOT) });
+  // The committed credits.json and the app's copy (absent = null), for PV14's file and entry halves.
+  const creditsTexts = Object.fromEntries(CREDITS_PATHS.map((p) => [p, readOrNull(join(REPO_ROOT, p))]));
+  const res = checkCatalogs({ registry, html, catalogs, builtins: readBuiltins(REPO_ROOT), creditsTexts });
   const skillsText = readFileSync(join(dir, 'skills.json'), 'utf8');
+  const rulesText = readFileSync(join(REPO_ROOT, RULES_PATH), 'utf8');
   const commit = catalogs.skills.source_commit;
   const repo = opt('--skills-repo');
   if (repo) {
     if (!existsSync(join(repo, '.git'))) throw new Error(`${repo} is not a git checkout`);
-    const upstream = execFileSync('git', ['-C', repo, 'show', `${commit}:catalog.json`], { encoding: 'utf8' });
+    const git = (...args) => execFileSync('git', ['-C', repo, ...args], { encoding: 'utf8', maxBuffer: GIT_MAX_BUFFER });
+    const upstream = git('show', `${commit}:catalog.json`);
     res.errors.push(...compareMirror(`${repo} catalog.json at ${commit}`, upstream, skillsText));
+    let upstreamRules = null;
+    try {
+      upstreamRules = execFileSync('git', ['-C', repo, 'show', `${commit}:${SKILLS_RULES_PATH}`], {
+        encoding: 'utf8',
+        maxBuffer: GIT_MAX_BUFFER,
+        stdio: ['ignore', 'pipe', 'pipe'],
+      });
+    } catch {
+      upstreamRules = null;
+    }
+    res.errors.push(...compareRulesMirror(`${repo} ${SKILLS_RULES_PATH} at ${commit}`, upstreamRules, rulesText));
   }
   if (argv.includes('--remote')) {
     const url = `https://raw.githubusercontent.com/${SKILLS_REPO}/${commit}/catalog.json`;
     const resp = await fetch(url);
     if (!resp.ok) res.errors.push(failure('mirror', 'remote', `could not fetch ${url}: HTTP ${resp.status}`));
     else res.errors.push(...compareMirror(url, await resp.text(), skillsText));
+    const rulesUrl = `https://raw.githubusercontent.com/${SKILLS_REPO}/${commit}/${SKILLS_RULES_PATH}`;
+    const rulesResp = await fetch(rulesUrl);
+    if (!rulesResp.ok) res.errors.push(failure('mirror', 'rules', `could not fetch ${rulesUrl}: HTTP ${rulesResp.status}`));
+    else res.errors.push(...compareRulesMirror(rulesUrl, await rulesResp.text(), rulesText));
   }
   if (argv.includes('--json')) {
     console.log(JSON.stringify({ ok: res.errors.length === 0, ...res }, null, 2));
@@ -480,12 +677,16 @@ async function main(argv) {
   return res.errors.length ? 1 : 0;
 }
 
+// exitCode, not process.exit(): stdout to a pipe is asynchronous on macOS, and
+// exiting at once cut --json output at 64 KiB.
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   main(process.argv.slice(2)).then(
-    (code) => process.exit(code),
+    (code) => {
+      process.exitCode = code;
+    },
     (e) => {
       console.error(e.stack || e.message);
-      process.exit(2);
+      process.exitCode = 2;
     }
   );
 }

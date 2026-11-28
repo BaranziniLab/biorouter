@@ -61,6 +61,7 @@ check-registry:
     node landing/scripts/build-registry.mjs --check
     node --test landing/scripts/check-catalog.test.mjs
     node landing/scripts/check-catalog.mjs
+    node --test landing/scripts/credits.test.mjs
 
 # The set of private extensions is committed in three places at once: the
 # published landing/registry.json, the snapshot bundled in the desktop app, and
@@ -85,9 +86,11 @@ check-privacy-registry:
 # returns zeros for every rect, so it cannot stand in. NOT part of
 # `check-everything`: it resolves Playwright out of ui/desktop/node_modules and
 # needs a chromium, neither of which a bare checkout has. CI runs it as its own
-# job, and the landing deploy is gated on it.
+# job, and the landing deploy is gated on it. The credits suite beside it reads
+# every card's credit line, the curator lines and the provenance panel the same way.
 check-shelf:
     node --test landing/scripts/baam-privacy-facet.test.mjs
+    node --test landing/scripts/baam-credits.browser.test.mjs
 
 # Default release command
 release-binary:

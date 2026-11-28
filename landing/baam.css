@@ -171,6 +171,7 @@
 .icon-tile svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
 .icon-tile svg.glyph { stroke-width: 1.4; }
 .ext-card[data-privacy="private"] .icon-tile { background: var(--navy-wash); color: var(--navy); }
+.ext-card .icon-tile { grid-row: 1 / span 4; }
 
 /* Name, then org and version */
 .ext-meta, .skill-meta, .wf-meta {
@@ -197,12 +198,22 @@
 .ext-desc a, .skill-desc a { color: var(--ink); border-bottom: 1px solid var(--coral-bar); }
 .ext-desc strong, .skill-desc strong { font-weight: 400; color: var(--ink); }
 
+/* The credit line: one quiet line under the description, on its own grid row,
+   written into the page by write-credits.mjs (and by baam.js on a rendered
+   extension card). Workflow rows have none, so they keep their three rows. */
+.item-credit {
+  grid-column: 2; grid-row: 3; max-width: 760px; margin: 4px 0 0; min-width: 0;
+  font-size: var(--fs-sm); line-height: 1.5; color: var(--subtle); overflow-wrap: anywhere;
+}
+
 /* The tag row: privacy badge, then institution, then subject tags. ONE line:
    trimTagRows() in baam.js hides from the end whatever does not fit. */
 .ext-tags, .skill-tags, .wf-tags {
   grid-column: 2; grid-row: 3; min-width: 0; margin-top: 12px;
   display: flex; flex-wrap: wrap; gap: 6px;
 }
+/* Under the credit line on the rows that carry one. */
+.ext-tags, .skill-tags { grid-row: 4; }
 .ext-tags { max-height: 20px; overflow: hidden; }
 .tag {
   display: inline-flex; align-items: center; gap: 5px;
@@ -226,7 +237,7 @@
    controls centred on it slid down from under the pointer, so the chevron
    just pressed was not where a second press would land. */
 .ext-gh-link {
-  grid-column: 3; grid-row: 1 / span 3; align-self: start; margin: -4px 0 0 24px;
+  grid-column: 3; grid-row: 1 / span 4; align-self: start; margin: -4px 0 0 24px;
   width: var(--h-control); height: var(--h-control); display: grid; place-items: center;
   border-radius: var(--r-element); color: var(--muted);
   transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
@@ -244,6 +255,7 @@
 .brxt-chip svg, .skill-dl-btn svg { width: 14px; height: 14px; flex: none; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
 .brxt-chip:hover, .skill-dl-btn:hover { background: var(--fill-strong); text-decoration: none; }
 .brxt-chip:active, .skill-dl-btn:active { transform: scale(0.98); }
+.brxt-chip { grid-row: 1 / span 4; }
 .row-toggle {
   grid-column: 5; grid-row: 1 / span 3; align-self: start; margin: -4px 0 0 6px; padding: 0;
   width: var(--h-control); height: var(--h-control); display: grid; place-items: center;
@@ -251,6 +263,7 @@
   transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
 }
 .row-toggle svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; transition: transform var(--dur-med) var(--ease); }
+.ext-card > .row-toggle { grid-row: 1 / span 4; }
 .ext-card:hover > .row-toggle, .skill-card:hover > .row-toggle, .wf-card:hover > .row-toggle, .row-toggle:focus-visible { color: var(--ink); background: var(--fill-strong); }
 .open > .row-toggle { color: var(--ink); }
 .open > .row-toggle svg { transform: rotate(180deg); }
@@ -259,8 +272,12 @@
 .skill-card { grid-template-columns: 50px minmax(0, 1fr) auto auto; padding: 18px 0; }
 .skill-card .icon-tile { grid-row: 1 / span 3; }
 .skill-desc { margin-top: 3px; max-width: 720px; }
+.skill-card > .item-credit { max-width: 720px; margin-top: 2px; }
 .skill-tags { display: none; }
 .skill-card.open .skill-tags { display: flex; }
+/* A licence chip can name five licences, longer than a phone's card: it wraps
+   inside the card rather than running out of it. One-line chips keep 20px. */
+.skill-tags .tag { max-width: 100%; height: auto; min-height: 20px; padding-block: 2px; line-height: 1.25; white-space: normal; overflow-wrap: anywhere; }
 .skill-card .skill-dl-btn { grid-column: 3; grid-row: 1 / span 2; }
 .skill-card > .row-toggle { grid-column: 4; grid-row: 1 / span 2; }
 .skill-card .skill-meta { gap: 2px 10px; }
@@ -275,6 +292,7 @@
   margin-top: 22px; padding-top: 22px; border-top: 1px solid var(--line);
   cursor: auto; animation: baam-open var(--dur-med) var(--ease);
 }
+.ext-card > .row-detail, .skill-card > .row-detail { grid-row: 5; }
 @keyframes baam-open { from { opacity: 0; transform: translateY(-4px); } to { opacity: 1; transform: none; } }
 .detail-list { margin: 0; display: grid; gap: 18px; }
 .detail-row { display: grid; grid-template-columns: 150px minmax(0, 1fr); gap: 4px 28px; }
@@ -298,6 +316,26 @@
 .detail-row .how a { border-bottom: 1px solid var(--coral-bar); }
 .detail-row .how a:hover { text-decoration: none; color: var(--coral); }
 .detail-links { display: flex; flex-wrap: wrap; gap: 14px 36px; margin: 26px 0 4px 178px; }
+
+/* The "Provenance and credits" row, built by baam.js from credits.json. */
+.detail-row[data-row="credits"] dd > * + * { margin-top: 8px; }
+.detail-row .credit-k { color: var(--subtle); }
+.detail-row .credit-k + .credit-list { margin-top: 4px; }
+.detail-row .credit-list li { padding-left: 14px; position: relative; }
+.detail-row .credit-list li::before { content: ''; position: absolute; left: 0; top: 0.8em; width: 5px; height: 1px; background: var(--ghost); }
+.detail-row .credit-src { color: var(--ink); border-bottom: 1px solid var(--coral-bar); }
+.detail-row .credit-src:hover { text-decoration: none; color: var(--coral); }
+.detail-row .credit-more > summary {
+  cursor: pointer; width: fit-content;
+  font-size: var(--fs-sm); line-height: 1.6; color: var(--ink-2);
+}
+.detail-row .credit-more > summary:hover { color: var(--ink); }
+.detail-row .credit-more > .credit-list { margin-top: 6px; }
+.detail-row .credit-links { display: flex; flex-wrap: wrap; gap: 8px 28px; font-size: var(--fs-sm); }
+
+/* The curator line, once per shelf, at the shelf's end. The footer's
+   .foot-curator takes the brand column's own style (site.css). */
+.shelf-curator { margin: 32px 0 0; font-size: var(--fs-sm); line-height: 1.6; color: var(--subtle); }
 .wf-yaml {
   margin: 0; max-height: 360px; overflow: auto;
   background: var(--wash); border-radius: var(--r-container);
@@ -371,10 +409,14 @@
   .ext-meta, .wf-meta { grid-column: 2 / 5; grid-row: 1; }
   .ext-card > .row-toggle, .wf-card > .row-toggle { grid-column: 5; grid-row: 1; align-self: start; margin: -6px -6px 0 8px; }
   .ext-desc, .wf-desc { grid-column: 2 / -1; grid-row: 2; }
+  .ext-card > .item-credit { grid-column: 2 / -1; grid-row: 3; }
   .ext-tags, .wf-tags { grid-column: 2; grid-row: 3; align-self: center; }
-  .ext-gh-link { grid-column: 3; grid-row: 3; align-self: center; margin: 12px 0 0 16px; }
+  .ext-tags { grid-row: 4; }
+  .ext-gh-link { grid-column: 3; grid-row: 4; align-self: center; margin: 12px 0 0 16px; }
   .brxt-chip, .wf-card .skill-dl-btn { grid-column: 4 / 6; grid-row: 3; align-self: center; justify-self: end; margin: 12px 0 0 8px; }
+  .brxt-chip { grid-row: 4; }
   .ext-card > .row-detail, .wf-card > .row-detail { grid-column: 2 / -1; grid-row: 4; }
+  .ext-card > .row-detail { grid-row: 5; }
   .ext-card.open::before, .wf-card.open::before { top: 24px; }
 }
 
@@ -385,20 +427,27 @@
   .ext-card .icon-tile, .wf-card .icon-tile, .skill-card .icon-tile { display: none; }
   .ext-tags, .wf-tags { grid-column: 2 / -1; align-self: start; }
   .brxt-chip, .wf-card .skill-dl-btn { grid-column: 2; grid-row: 4; align-self: start; justify-self: start; margin: 16px 0 0; }
-  .ext-gh-link { grid-column: 3; grid-row: 4; align-self: start; margin: 16px 0 0 6px; }
+  .brxt-chip { grid-row: 5; }
+  .ext-gh-link { grid-column: 3; grid-row: 5; align-self: start; margin: 16px 0 0 6px; }
   .ext-card > .row-detail, .wf-card > .row-detail { grid-row: 5; }
+  .ext-card > .row-detail { grid-row: 6; }
 
   /* The name shares its line with the .zip and the chevron; the type line
-     under it takes the whole width, so a long /slug never breaks. */
+     under it takes the whole width, so a long /slug never breaks. The version
+     chip baam.js adds to the name block gets the next row, so it stays with the
+     name and never falls into the first free row (under the credit line, or
+     under an open row's panel). */
   .skill-card { grid-template-columns: minmax(0, 1fr) auto auto; padding: 16px 0; }
   .skill-card .skill-meta { display: contents; }
   .skill-card h3 { grid-column: 1; grid-row: 1; }
   .skill-card .skill-type { grid-column: 1 / -1; grid-row: 2; margin-top: 2px; }
-  .skill-desc { grid-column: 1 / -1; grid-row: 3; }
-  .skill-tags { grid-column: 1 / -1; grid-row: 4; }
+  .skill-card .skill-ver { grid-column: 1 / -1; grid-row: 3; margin-top: 2px; }
+  .skill-desc { grid-column: 1 / -1; grid-row: 4; }
+  .skill-card > .item-credit { grid-column: 1 / -1; grid-row: 5; }
+  .skill-tags { grid-column: 1 / -1; grid-row: 6; }
   .skill-card .skill-dl-btn { grid-column: 2; grid-row: 1; align-self: start; margin: -4px 0 0 12px; padding: 0 11px; }
   .skill-card > .row-toggle { grid-column: 3; grid-row: 1; align-self: start; margin: -5px -6px 0 4px; }
-  .skill-card > .row-detail { grid-column: 1 / -1; grid-row: 5; }
+  .skill-card > .row-detail { grid-column: 1 / -1; grid-row: 7; }
 
   .ext-card.open::before, .skill-card.open::before, .wf-card.open::before { left: -12px; }
 }

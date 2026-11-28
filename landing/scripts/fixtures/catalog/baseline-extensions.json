@@ -1,6 +1,6 @@
 {
-  "format": 1,
-  "description": "Source of truth for every BAAM extension, active or not (draft written by WP-02 for WP-01; baseline = BAAM today).",
+  "format": 2,
+  "description": "Source of truth for every BAAM extension, active or not (draft written by WP-02 for WP-01; baseline = BAAM today). Its provenance fields (source and contributors) are today's records from landing/catalog/extensions.json, not the baseline's, and this fixture feeds only the D3 calibration in check-catalog.test.mjs.",
   "done_work_packages": [],
   "baseline_violations": [
     {
@@ -148,9 +148,76 @@
       "source": {
         "origin": "in-house",
         "upstreams": [],
+        "ideas_from": [],
+        "data_and_services": [
+          {
+            "kind": "dataset",
+            "name": "UCSF Epic Caboodle CDW, de-identified (database CDW_NEW, schema deid_uf)",
+            "url": "https://data.ucsf.edu/research/ucsf-data",
+            "terms": "UCSF Information Commons self-serve de-identified data: for UCSF researchers once access is granted (a ServiceNow request); no IRB approval needed for the de-identified assets (UCSF Clinical Data page, data.ucsf.edu, read 2026-11-27)",
+            "credit": "University of California, San Francisco (UCSF Health DEID Clinical Data Warehouse)",
+            "cite": null,
+            "how": "read at run time"
+          },
+          {
+            "kind": "dataset",
+            "name": "cTAKES note concepts (note_concepts, note_concepts_sdoh)",
+            "url": "https://data.ucsf.edu/research/ucsf-data",
+            "terms": "UCSF Information Commons self-serve de-identified data: for UCSF researchers once access is granted (a ServiceNow request); no IRB approval needed for the de-identified assets (UCSF Clinical Data page, data.ucsf.edu, read 2026-11-27)",
+            "credit": "University of California, San Francisco (UCSF DEID Notes extracts, concepts from Apache cTAKES)",
+            "cite": null,
+            "how": "read at run time"
+          },
+          {
+            "kind": "dataset",
+            "name": "Clinical note text and metadata (note_text, note_metadata)",
+            "url": "https://data.ucsf.edu/research/ucsf-data",
+            "terms": "UCSF Information Commons self-serve de-identified data: for UCSF researchers once access is granted (a ServiceNow request); no IRB approval needed for the de-identified assets (UCSF Clinical Data page, data.ucsf.edu, read 2026-11-27)",
+            "credit": "University of California, San Francisco (UCSF DEID Notes)",
+            "cite": null,
+            "how": "read at run time"
+          },
+          {
+            "kind": "dataset",
+            "name": "The UCSF OMOP_DEID person table, used only to match a patient across the two databases",
+            "url": "https://data.ucsf.edu/research/ucsf-data",
+            "terms": "UCSF Information Commons self-serve de-identified data: for UCSF researchers once access is granted (a ServiceNow request); no IRB approval needed for the de-identified assets (UCSF Clinical Data page, data.ucsf.edu, read 2026-11-27)",
+            "credit": "University of California, San Francisco (UCSF DEID OMOP)",
+            "cite": null,
+            "how": "read at run time"
+          },
+          {
+            "kind": "dataset",
+            "name": "Data dictionary of 139 tables and about 5,000 columns (src/cdwagent/data/schema_reference.json)",
+            "url": "https://data.ucsf.edu/research/ucsf-data",
+            "terms": "Permitted: Wanjun Gu (Baranzini Lab, UCSF) confirmed on 2026-11-27 that UCSF and Epic permit publishing this data dictionary, derived from UCSF's Epic Caboodle data dictionary, in the public extension; the Caboodle dictionary it is derived from (.xlsx) stays under institutional control and is not in the repository, as CDWAgent's README says (recorded 2026-11-27)",
+            "credit": "University of California, San Francisco: derived from its Epic Caboodle data dictionary (Caboodle is Epic Systems Corporation's data warehouse)",
+            "cite": null,
+            "how": "derived and bundled: the README says the JSON is derived from the institution's Epic Caboodle data dictionary (.xlsx), which stays under institutional control and is not in the repository"
+          }
+        ],
+        "references": [
+          {
+            "kind": "repository",
+            "name": "MedCP",
+            "url": "https://github.com/BaranziniLab/MedCP",
+            "credit": "Baranzini Lab, UCSF",
+            "cite": null,
+            "note": "the lab's own architecture template (CDWAgent's README, Acknowledgments)"
+          },
+          {
+            "kind": "repository",
+            "name": "UCSFOMOPAgent",
+            "url": "https://github.com/BaranziniLab/UCSFOMOPAgent",
+            "credit": "Baranzini Lab, UCSF",
+            "cite": null,
+            "note": "the lab's sibling agent for the OMOP CDM, which CDWAgent is designed to pair with (CDWAgent's README, Acknowledgments)"
+          }
+        ],
+        "refused_sources": [],
+        "changes": null,
         "built_with": null
       },
-      "third_party": [],
       "licence": "Apache-2.0",
       "release": {
         "tag": "v0.5.1-brxt",
@@ -175,6 +242,18 @@
           "date": null,
           "note": "BAAM version before the November 2026 refresh"
         }
+      ],
+      "contributors": [
+        {
+          "name": "Gianmarco Bellucci",
+          "affiliation": null,
+          "role": "author"
+        },
+        {
+          "name": "Wanjun Gu",
+          "affiliation": "Baranzini Lab, UCSF",
+          "role": "author"
+        }
       ]
     },
     {
@@ -198,9 +277,32 @@
       "source": {
         "origin": "in-house",
         "upstreams": [],
+        "ideas_from": [],
+        "data_and_services": [
+          {
+            "kind": "dataset",
+            "name": "UCSF OMOP_DEID (OMOP CDM v5.4 on Microsoft SQL Server, schema omop)",
+            "url": "https://data.ucsf.edu/research/ucsf-data",
+            "terms": "UCSF Information Commons self-serve de-identified data: for UCSF researchers once access is granted (a ServiceNow request); no IRB approval needed for the de-identified assets (UCSF Clinical Data page, data.ucsf.edu, read 2026-11-27)",
+            "credit": "University of California, San Francisco (UCSF DEID OMOP)",
+            "cite": null,
+            "how": "read at run time"
+          },
+          {
+            "kind": "dataset",
+            "name": "OMOP standard vocabularies (the concept tables)",
+            "url": "https://athena.ohdsi.org",
+            "terms": "OHDSI Standardized Vocabularies content is Apache-2.0, except a few commercial source vocabularies (for example CPT4) that need EULA documentation or proof of a licence through Athena (HL7 Terminology page for OMOP, https://terminology.hl7.org/6.5.0/CodeSystem-OMOP.html, read 2026-11-27)",
+            "credit": "OHDSI (Observational Health Data Sciences and Informatics)",
+            "cite": null,
+            "how": "read at run time"
+          }
+        ],
+        "references": [],
+        "refused_sources": [],
+        "changes": null,
         "built_with": null
       },
-      "third_party": [],
       "licence": "Apache-2.0",
       "release": {
         "tag": "v0.2.0-brxt",
@@ -226,6 +328,18 @@
           "date": null,
           "note": "BAAM version before the November 2026 refresh"
         }
+      ],
+      "contributors": [
+        {
+          "name": "Wanjun Gu",
+          "affiliation": "Baranzini Lab, UCSF",
+          "role": "author"
+        },
+        {
+          "name": "Gianmarco Bellucci",
+          "affiliation": null,
+          "role": "author"
+        }
       ]
     },
     {
@@ -246,16 +360,39 @@
         "Automation"
       ],
       "source": {
-        "origin": "in-house",
-        "upstreams": [],
+        "origin": "third-party",
+        "upstreams": [
+          {
+            "kind": "package",
+            "repo": "microsoft/playwright-mcp",
+            "display": "Playwright MCP",
+            "url": "https://github.com/microsoft/playwright-mcp",
+            "path": null,
+            "commit": null,
+            "version": "0.0.86",
+            "licence": "Apache-2.0",
+            "copyright": "Copyright (c) Microsoft Corporation.",
+            "copyright_note": "licence read at v0.0.86",
+            "credit": "Microsoft Corporation",
+            "people": [],
+            "use": [
+              "launched"
+            ],
+            "what": "@playwright/mcp 0.0.86 from npm, launched with npx; not bundled",
+            "files": [],
+            "via": null,
+            "upstream_notice": false,
+            "owner": "external",
+            "taken": null
+          }
+        ],
+        "ideas_from": [],
+        "data_and_services": [],
+        "references": [],
+        "refused_sources": [],
+        "changes": "Packaging only: the lab wrote the extension (launcher, policy and packaging) around the program.",
         "built_with": null
       },
-      "third_party": [
-        {
-          "name": "@playwright/mcp",
-          "licence": "Apache-2.0"
-        }
-      ],
       "licence": "Apache-2.0",
       "release": {
         "tag": "v0.1.0-brxt",
@@ -277,6 +414,13 @@
           "version": "0.1.0",
           "date": null,
           "note": "BAAM version before the November 2026 refresh"
+        }
+      ],
+      "contributors": [
+        {
+          "name": "Wanjun Gu",
+          "affiliation": "Baranzini Lab, UCSF",
+          "role": "author"
         }
       ]
     },
@@ -300,9 +444,32 @@
       "source": {
         "origin": "in-house",
         "upstreams": [],
+        "ideas_from": [],
+        "data_and_services": [
+          {
+            "kind": "dataset",
+            "name": "SPOKE knowledge graph (Neo4j, about 43 million nodes)",
+            "url": "https://spoke.rbvi.ucsf.edu",
+            "terms": "the lab's own graph; reached with a passcode from UCSF (SPOKEAgent's BAAM details and README); the sources it integrates keep their own terms",
+            "credit": "Baranzini Lab, UCSF",
+            "cite": null,
+            "how": "read at run time"
+          },
+          {
+            "kind": "dataset",
+            "name": "Identifiers it resolves: DOID, Entrez, Ensembl, DrugBank, UMLS CUI, UBERON and GO",
+            "url": "https://spoke.rbvi.ucsf.edu",
+            "terms": "each identifier system keeps its own terms; DrugBank and UMLS are licence-restricted (custom DrugBank terms of use and licensing; terms: https://trust.drugbank.com/drugbank-trust-center/drugbank-terms-of-service (as BioMCP 0.9.3's source inventory records it, reviewed 2026-09-27); custom UMLS Metathesaurus license and terminology-specific appendices; terms: https://www.nlm.nih.gov/databases/umls.html (as BioMCP 0.9.3's source inventory records it, reviewed 2026-09-27))",
+            "credit": "the source vocabularies and databases SPOKE integrates",
+            "cite": null,
+            "how": "read at run time"
+          }
+        ],
+        "references": [],
+        "refused_sources": [],
+        "changes": null,
         "built_with": null
       },
-      "third_party": [],
       "licence": "Apache-2.0",
       "release": {
         "tag": "v0.4.1",
@@ -326,6 +493,23 @@
           "date": null,
           "note": "BAAM version before the November 2026 refresh"
         }
+      ],
+      "contributors": [
+        {
+          "name": "Wanjun Gu",
+          "affiliation": "Baranzini Lab, UCSF",
+          "role": "author"
+        },
+        {
+          "name": "Gianmarco Bellucci",
+          "affiliation": null,
+          "role": "author"
+        },
+        {
+          "name": "Ilan Ladabaum",
+          "affiliation": null,
+          "role": "editor"
+        }
       ]
     },
     {
@@ -347,16 +531,39 @@
         "Tree-sitter"
       ],
       "source": {
-        "origin": "in-house",
-        "upstreams": [],
+        "origin": "third-party",
+        "upstreams": [
+          {
+            "kind": "package",
+            "repo": "colbymchenry/codegraph",
+            "display": "CodeGraph",
+            "url": "https://github.com/colbymchenry/codegraph",
+            "path": null,
+            "commit": null,
+            "version": "1.6.4",
+            "licence": "MIT",
+            "copyright": "Copyright (c) 2026 Colby Mchenry",
+            "copyright_note": "credit spelled as LICENSE, the account profile and most commits spell it (Colby Mchenry); 429 commits spell it Colby McHenry, as the lab's NOTICE does; licence read at v1.6.4",
+            "credit": "Colby Mchenry",
+            "people": [],
+            "use": [
+              "launched"
+            ],
+            "what": "upstream release archives, downloaded at first use and checked against SHA256SUMS; not bundled",
+            "files": [],
+            "via": null,
+            "upstream_notice": false,
+            "owner": "external",
+            "taken": null
+          }
+        ],
+        "ideas_from": [],
+        "data_and_services": [],
+        "references": [],
+        "refused_sources": [],
+        "changes": "Packaging only: the lab wrote the extension (launcher, policy and packaging) around the program.",
         "built_with": null
       },
-      "third_party": [
-        {
-          "name": "codegraph",
-          "licence": "MIT"
-        }
-      ],
       "licence": "Apache-2.0",
       "release": {
         "tag": "v0.1.0",
@@ -373,6 +580,13 @@
           "version": "0.1.0",
           "date": null,
           "note": "BAAM version before the November 2026 refresh"
+        }
+      ],
+      "contributors": [
+        {
+          "name": "Wanjun Gu",
+          "affiliation": "Baranzini Lab, UCSF",
+          "role": "author"
         }
       ]
     },
@@ -397,16 +611,39 @@
         "PowerPoint"
       ],
       "source": {
-        "origin": "in-house",
-        "upstreams": [],
+        "origin": "third-party",
+        "upstreams": [
+          {
+            "kind": "package",
+            "repo": "iOfficeAI/OfficeCLI",
+            "display": "OfficeCLI",
+            "url": "https://github.com/iOfficeAI/OfficeCLI",
+            "path": null,
+            "commit": "fecece3ee6054f419d2e8ecca899d7498142d417",
+            "version": "1.0.163",
+            "licence": "Apache-2.0",
+            "copyright": "Copyright 2026 OfficeCLI (https://OfficeCLI.AI)",
+            "copyright_note": "credit: the holder its NOTICE names ('OfficeCLI (https://OfficeCLI.AI)'), with the GitHub organization that publishes it, iOfficeAI, in parentheses; its NOTICE says 'Created and maintained by goworm' (an account name, no personal name); people: none named: of all 6,319 commits of OfficeCLI at fecece3, nearly all are by the accounts zmworm (4,366 commits) and goworm (1,810 commits), which publish no personal name, and the 5 commit authors who publish a first and last name wrote a handful of commits each, so OfficeCLI is credited as itself; licence read at v1.0.163",
+            "credit": "OfficeCLI (iOfficeAI)",
+            "people": [],
+            "use": [
+              "bundled"
+            ],
+            "what": "source vendored under officecli/ unmodified (BiorOffice v1.1.0 against OfficeCLI v1.0.163 at fecece3: 1220 of 1220 files identical), and the macOS arm64 binary bundled, with its LICENSE, NOTICE and THIRD-PARTY-NOTICES.txt",
+            "files": [],
+            "via": null,
+            "upstream_notice": true,
+            "owner": "external",
+            "taken": null
+          }
+        ],
+        "ideas_from": [],
+        "data_and_services": [],
+        "references": [],
+        "refused_sources": [],
+        "changes": "Packaging only: the lab wrote the extension (launcher, policy and packaging) around the program. The four bundled skills (bioroffice-office-suite, -word, -excel, -powerpoint at v1.1.0) are the lab's own: 0.4% to 6.3% of their six-word runs appear in OfficeCLI v1.0.163's SKILL.md and skills/officecli, officecli-docx, officecli-xlsx and officecli-pptx (measured 2026-11-27, fetch_round1.py).",
         "built_with": null
       },
-      "third_party": [
-        {
-          "name": "OfficeCLI",
-          "licence": "Apache-2.0"
-        }
-      ],
       "licence": "Apache-2.0",
       "release": {
         "tag": "v1.0.0",
@@ -450,6 +687,13 @@
           "date": null,
           "note": "BAAM version before the November 2026 refresh"
         }
+      ],
+      "contributors": [
+        {
+          "name": "Wanjun Gu",
+          "affiliation": "Baranzini Lab, UCSF",
+          "role": "author"
+        }
       ]
     },
     {
@@ -474,9 +718,39 @@
       "source": {
         "origin": "in-house",
         "upstreams": [],
-        "built_with": null
+        "ideas_from": [
+          {
+            "kind": "skill",
+            "name": "Scientific Agent Skills",
+            "skills": [
+              "benchling-integration"
+            ],
+            "url": "https://github.com/K-Dense-AI/scientific-agent-skills",
+            "cite": "Timothy Kassis, Vinayak Agarwal, Yuhuan He, Darshil Patel and Aubrey M. Brueckner. Scientific Agent Skills: A Library of Procedural Knowledge for Research Agents. arXiv:2609.00065 (2026). doi:10.48550/arXiv.2609.00065",
+            "licence": "MIT",
+            "credit": "K-Dense Inc.",
+            "what": "the choice of service for version 0.1.0 followed K-Dense's skill list one for one (its benchling-integration skill)",
+            "evidence": "2026-11-21 inventory F2: original text; the current code is the lab's adapter kit",
+            "version_read": null,
+            "applies_to": "earlier"
+          }
+        ],
+        "data_and_services": [
+          {
+            "kind": "service",
+            "name": "Benchling REST API v2 on your tenant",
+            "url": "https://www.benchling.com",
+            "terms": "Used with the person's own Benchling account and credentials, so the terms Benchling sets for that account apply (recorded 2026-11-27; those terms were not read)",
+            "credit": "Benchling",
+            "cite": null,
+            "how": "read at run time"
+          }
+        ],
+        "references": [],
+        "refused_sources": [],
+        "changes": null,
+        "built_with": "brxt-adapter-kit 1.0.1"
       },
-      "third_party": [],
       "licence": "Apache-2.0",
       "release": {
         "tag": "v0.1.0-brxt",
@@ -505,6 +779,13 @@
           "date": null,
           "note": "BAAM version before the November 2026 refresh"
         }
+      ],
+      "contributors": [
+        {
+          "name": "Wanjun Gu",
+          "affiliation": "Baranzini Lab, UCSF",
+          "role": "author"
+        }
       ]
     },
     {
@@ -529,9 +810,39 @@
       "source": {
         "origin": "in-house",
         "upstreams": [],
-        "built_with": null
+        "ideas_from": [
+          {
+            "kind": "skill",
+            "name": "Scientific Agent Skills",
+            "skills": [
+              "dnanexus-integration"
+            ],
+            "url": "https://github.com/K-Dense-AI/scientific-agent-skills",
+            "cite": "Timothy Kassis, Vinayak Agarwal, Yuhuan He, Darshil Patel and Aubrey M. Brueckner. Scientific Agent Skills: A Library of Procedural Knowledge for Research Agents. arXiv:2609.00065 (2026). doi:10.48550/arXiv.2609.00065",
+            "licence": "MIT",
+            "credit": "K-Dense Inc.",
+            "what": "the choice of service for version 0.1.0 followed K-Dense's skill list one for one (its dnanexus-integration skill)",
+            "evidence": "2026-11-21 inventory F2: original text; the current code is the lab's adapter kit",
+            "version_read": null,
+            "applies_to": "earlier"
+          }
+        ],
+        "data_and_services": [
+          {
+            "kind": "service",
+            "name": "DNAnexus platform API (api.dnanexus.com)",
+            "url": "https://api.dnanexus.com",
+            "terms": "Used with the person's own DNAnexus account and credentials, so the terms DNAnexus sets for that account apply (recorded 2026-11-27; those terms were not read)",
+            "credit": "DNAnexus",
+            "cite": null,
+            "how": "read at run time"
+          }
+        ],
+        "references": [],
+        "refused_sources": [],
+        "changes": null,
+        "built_with": "brxt-adapter-kit 1.0.1"
       },
-      "third_party": [],
       "licence": "Apache-2.0",
       "release": {
         "tag": "v0.1.0-brxt",
@@ -554,6 +865,13 @@
           "version": "0.1.0",
           "date": null,
           "note": "BAAM version before the November 2026 refresh"
+        }
+      ],
+      "contributors": [
+        {
+          "name": "Wanjun Gu",
+          "affiliation": "Baranzini Lab, UCSF",
+          "role": "author"
         }
       ]
     },
@@ -579,9 +897,39 @@
       "source": {
         "origin": "in-house",
         "upstreams": [],
-        "built_with": null
+        "ideas_from": [
+          {
+            "kind": "skill",
+            "name": "Scientific Agent Skills",
+            "skills": [
+              "latchbio-integration"
+            ],
+            "url": "https://github.com/K-Dense-AI/scientific-agent-skills",
+            "cite": "Timothy Kassis, Vinayak Agarwal, Yuhuan He, Darshil Patel and Aubrey M. Brueckner. Scientific Agent Skills: A Library of Procedural Knowledge for Research Agents. arXiv:2609.00065 (2026). doi:10.48550/arXiv.2609.00065",
+            "licence": "MIT",
+            "credit": "K-Dense Inc.",
+            "what": "the choice of service for version 0.1.0 followed K-Dense's skill list one for one (its latchbio-integration skill)",
+            "evidence": "2026-11-21 inventory F2: original text; the current code is the lab's adapter kit",
+            "version_read": null,
+            "applies_to": "earlier"
+          }
+        ],
+        "data_and_services": [
+          {
+            "kind": "service",
+            "name": "Latch API",
+            "url": "https://latch.bio",
+            "terms": "Used with the person's own Latch account and credentials, so the terms LatchBio sets for that account apply (recorded 2026-11-27; those terms were not read)",
+            "credit": "LatchBio",
+            "cite": null,
+            "how": "called at run time by 0.1.0, the last version that called a service; 0.2.0 calls none"
+          }
+        ],
+        "references": [],
+        "refused_sources": [],
+        "changes": null,
+        "built_with": "brxt-adapter-kit 1.0.0"
       },
-      "third_party": [],
       "licence": "Apache-2.0",
       "release": {
         "tag": "v0.1.0-brxt",
@@ -604,6 +952,13 @@
           "version": "0.1.0",
           "date": null,
           "note": "BAAM version before the November 2026 refresh"
+        }
+      ],
+      "contributors": [
+        {
+          "name": "Wanjun Gu",
+          "affiliation": "Baranzini Lab, UCSF",
+          "role": "author"
         }
       ]
     },
@@ -629,9 +984,39 @@
       "source": {
         "origin": "in-house",
         "upstreams": [],
-        "built_with": null
+        "ideas_from": [
+          {
+            "kind": "skill",
+            "name": "Scientific Agent Skills",
+            "skills": [
+              "labarchive-integration"
+            ],
+            "url": "https://github.com/K-Dense-AI/scientific-agent-skills",
+            "cite": "Timothy Kassis, Vinayak Agarwal, Yuhuan He, Darshil Patel and Aubrey M. Brueckner. Scientific Agent Skills: A Library of Procedural Knowledge for Research Agents. arXiv:2609.00065 (2026). doi:10.48550/arXiv.2609.00065",
+            "licence": "MIT",
+            "credit": "K-Dense Inc.",
+            "what": "the choice of service for version 0.1.0 followed K-Dense's skill list one for one (its labarchive-integration skill)",
+            "evidence": "2026-11-21 inventory F2: original text; the current code is the lab's adapter kit",
+            "version_read": null,
+            "applies_to": "earlier"
+          }
+        ],
+        "data_and_services": [
+          {
+            "kind": "service",
+            "name": "LabArchives API",
+            "url": "https://www.labarchives.com",
+            "terms": "Used with the person's own LabArchives account and credentials, so the terms LabArchives sets for that account apply (recorded 2026-11-27; those terms were not read)",
+            "credit": "LabArchives",
+            "cite": null,
+            "how": "called at run time by 0.1.0, the last version that called a service; 0.2.0 calls none"
+          }
+        ],
+        "references": [],
+        "refused_sources": [],
+        "changes": null,
+        "built_with": "brxt-adapter-kit 1.0.1"
       },
-      "third_party": [],
       "licence": "Apache-2.0",
       "release": {
         "tag": "v0.1.0-brxt",
@@ -654,6 +1039,13 @@
           "version": "0.1.0",
           "date": null,
           "note": "BAAM version before the November 2026 refresh"
+        }
+      ],
+      "contributors": [
+        {
+          "name": "Wanjun Gu",
+          "affiliation": "Baranzini Lab, UCSF",
+          "role": "author"
         }
       ]
     },
@@ -679,9 +1071,39 @@
       "source": {
         "origin": "in-house",
         "upstreams": [],
-        "built_with": null
+        "ideas_from": [
+          {
+            "kind": "skill",
+            "name": "Scientific Agent Skills",
+            "skills": [
+              "omero-integration"
+            ],
+            "url": "https://github.com/K-Dense-AI/scientific-agent-skills",
+            "cite": "Timothy Kassis, Vinayak Agarwal, Yuhuan He, Darshil Patel and Aubrey M. Brueckner. Scientific Agent Skills: A Library of Procedural Knowledge for Research Agents. arXiv:2609.00065 (2026). doi:10.48550/arXiv.2609.00065",
+            "licence": "MIT",
+            "credit": "K-Dense Inc.",
+            "what": "the choice of service for version 0.1.0 followed K-Dense's skill list one for one (its omero-integration skill)",
+            "evidence": "2026-11-21 inventory F2: original text; the current code is the lab's adapter kit",
+            "version_read": null,
+            "applies_to": "earlier"
+          }
+        ],
+        "data_and_services": [
+          {
+            "kind": "service",
+            "name": "OMERO.web on the person's own server",
+            "url": "https://www.openmicroscopy.org/omero/",
+            "terms": "A server the person or their institution runs, so the terms of whoever runs it apply (recorded 2026-11-27)",
+            "credit": "Open Microscopy Environment",
+            "cite": null,
+            "how": "called at run time by 0.1.0, the last version that called a service; 0.2.0 calls none"
+          }
+        ],
+        "references": [],
+        "refused_sources": [],
+        "changes": null,
+        "built_with": "brxt-adapter-kit 1.0.1"
       },
-      "third_party": [],
       "licence": "Apache-2.0",
       "release": {
         "tag": "v0.1.0-brxt",
@@ -710,6 +1132,13 @@
           "date": null,
           "note": "BAAM version before the November 2026 refresh"
         }
+      ],
+      "contributors": [
+        {
+          "name": "Wanjun Gu",
+          "affiliation": "Baranzini Lab, UCSF",
+          "role": "author"
+        }
       ]
     },
     {
@@ -734,9 +1163,39 @@
       "source": {
         "origin": "in-house",
         "upstreams": [],
-        "built_with": null
+        "ideas_from": [
+          {
+            "kind": "skill",
+            "name": "Scientific Agent Skills",
+            "skills": [
+              "protocolsio-integration"
+            ],
+            "url": "https://github.com/K-Dense-AI/scientific-agent-skills",
+            "cite": "Timothy Kassis, Vinayak Agarwal, Yuhuan He, Darshil Patel and Aubrey M. Brueckner. Scientific Agent Skills: A Library of Procedural Knowledge for Research Agents. arXiv:2609.00065 (2026). doi:10.48550/arXiv.2609.00065",
+            "licence": "MIT",
+            "credit": "K-Dense Inc.",
+            "what": "the choice of service for version 0.1.0 followed K-Dense's skill list one for one (its protocolsio-integration skill)",
+            "evidence": "2026-11-21 inventory F2: original text; the current code is the lab's adapter kit",
+            "version_read": null,
+            "applies_to": "earlier"
+          }
+        ],
+        "data_and_services": [
+          {
+            "kind": "service",
+            "name": "Protocols.io API v3",
+            "url": "https://www.protocols.io",
+            "terms": "Used with the person's own Protocols.io account and credentials, so the terms protocols.io sets for that account apply (recorded 2026-11-27; those terms were not read)",
+            "credit": "protocols.io",
+            "cite": null,
+            "how": "read at run time"
+          }
+        ],
+        "references": [],
+        "refused_sources": [],
+        "changes": null,
+        "built_with": "brxt-adapter-kit 1.0.1"
       },
-      "third_party": [],
       "licence": "Apache-2.0",
       "release": {
         "tag": "v0.1.0-brxt",
@@ -759,6 +1218,13 @@
           "version": "0.1.0",
           "date": null,
           "note": "BAAM version before the November 2026 refresh"
+        }
+      ],
+      "contributors": [
+        {
+          "name": "Wanjun Gu",
+          "affiliation": "Baranzini Lab, UCSF",
+          "role": "author"
         }
       ]
     },
@@ -784,9 +1250,39 @@
       "source": {
         "origin": "in-house",
         "upstreams": [],
-        "built_with": null
+        "ideas_from": [
+          {
+            "kind": "skill",
+            "name": "Scientific Agent Skills",
+            "skills": [
+              "open-notebook"
+            ],
+            "url": "https://github.com/K-Dense-AI/scientific-agent-skills",
+            "cite": "Timothy Kassis, Vinayak Agarwal, Yuhuan He, Darshil Patel and Aubrey M. Brueckner. Scientific Agent Skills: A Library of Procedural Knowledge for Research Agents. arXiv:2609.00065 (2026). doi:10.48550/arXiv.2609.00065",
+            "licence": "MIT",
+            "credit": "K-Dense Inc.",
+            "what": "the choice of service for version 0.1.0 followed K-Dense's skill list one for one (its open-notebook skill)",
+            "evidence": "2026-11-21 inventory F2: original text; the current code is the lab's adapter kit",
+            "version_read": null,
+            "applies_to": "earlier"
+          }
+        ],
+        "data_and_services": [
+          {
+            "kind": "service",
+            "name": "Open Notebook server API",
+            "url": "https://github.com/lfnovo/open-notebook",
+            "terms": "A server the person or their institution runs, so the terms of whoever runs it apply (recorded 2026-11-27)",
+            "credit": "the Open Notebook project (lfnovo/open-notebook)",
+            "cite": null,
+            "how": "called at run time by 0.1.0, the last version that called a service; 0.2.0 calls none"
+          }
+        ],
+        "references": [],
+        "refused_sources": [],
+        "changes": null,
+        "built_with": "brxt-adapter-kit 1.0.0"
       },
-      "third_party": [],
       "licence": "Apache-2.0",
       "release": {
         "tag": "v0.1.0-brxt",
@@ -815,6 +1311,13 @@
           "date": null,
           "note": "BAAM version before the November 2026 refresh"
         }
+      ],
+      "contributors": [
+        {
+          "name": "Wanjun Gu",
+          "affiliation": "Baranzini Lab, UCSF",
+          "role": "author"
+        }
       ]
     },
     {
@@ -839,9 +1342,39 @@
       "source": {
         "origin": "in-house",
         "upstreams": [],
-        "built_with": null
+        "ideas_from": [
+          {
+            "kind": "skill",
+            "name": "Scientific Agent Skills",
+            "skills": [
+              "modal"
+            ],
+            "url": "https://github.com/K-Dense-AI/scientific-agent-skills",
+            "cite": "Timothy Kassis, Vinayak Agarwal, Yuhuan He, Darshil Patel and Aubrey M. Brueckner. Scientific Agent Skills: A Library of Procedural Knowledge for Research Agents. arXiv:2609.00065 (2026). doi:10.48550/arXiv.2609.00065",
+            "licence": "MIT",
+            "credit": "K-Dense Inc.",
+            "what": "the choice of service for version 0.1.0 followed K-Dense's skill list one for one (its modal skill)",
+            "evidence": "2026-11-21 inventory F2: original text; the current code is the lab's adapter kit",
+            "version_read": null,
+            "applies_to": "earlier"
+          }
+        ],
+        "data_and_services": [
+          {
+            "kind": "service",
+            "name": "Modal API",
+            "url": "https://modal.com",
+            "terms": "Used with the person's own Modal account and credentials, so the terms Modal sets for that account apply (recorded 2026-11-27; those terms were not read)",
+            "credit": "Modal",
+            "cite": null,
+            "how": "called at run time by 0.1.0, the last version that called a service; 0.2.0 calls none"
+          }
+        ],
+        "references": [],
+        "refused_sources": [],
+        "changes": null,
+        "built_with": "brxt-adapter-kit 1.0.0"
       },
-      "third_party": [],
       "licence": "Apache-2.0",
       "release": {
         "tag": "v0.1.0-brxt",
@@ -865,6 +1398,13 @@
           "date": null,
           "note": "BAAM version before the November 2026 refresh"
         }
+      ],
+      "contributors": [
+        {
+          "name": "Wanjun Gu",
+          "affiliation": "Baranzini Lab, UCSF",
+          "role": "author"
+        }
       ]
     },
     {
@@ -887,11 +1427,69 @@
         "Apache-2.0"
       ],
       "source": {
-        "origin": "in-house",
-        "upstreams": [],
+        "origin": "third-party",
+        "upstreams": [
+          {
+            "kind": "repository",
+            "repo": "ImagingDataCommons/IDC-REST-MCP",
+            "display": "IDC MCP server",
+            "url": "https://github.com/ImagingDataCommons/IDC-REST-MCP",
+            "path": null,
+            "commit": "d2452ce36c15b226455e9e96658eaa03fc0cc36f",
+            "version": "3.0.0b7",
+            "licence": "Apache-2.0",
+            "copyright": "Copyright 2026, Imaging Data Commons",
+            "copyright_note": "licence and holder read at tag v3.0.0b7 (d2452ce); no NOTICE file; credit as its pyproject.toml authors name it; people are the commit authors of src/ at that tag; its README asks users of IDC data to cite the per-dataset citations and the IDC paper (Fedorov et al., doi:10.1148/rg.230180)",
+            "credit": "Imaging Data Commons",
+            "people": [
+              "Andrey Fedorov",
+              "Steve Pieper"
+            ],
+            "use": [
+              "text",
+              "hosted"
+            ],
+            "what": "src/idcagent/tools_snapshot.json copies the tool definitions and instructions that the hosted server (api.imaging.datacommons.cancer.gov/mcp) publishes, reviewed against API 3.0.0b7; every call is forwarded to that server, which Imaging Data Commons runs",
+            "files": [],
+            "via": null,
+            "upstream_notice": false,
+            "owner": "external",
+            "taken": null
+          }
+        ],
+        "ideas_from": [
+          {
+            "kind": "skill",
+            "name": "Scientific Agent Skills",
+            "skills": [
+              "imaging-data-commons"
+            ],
+            "url": "https://github.com/K-Dense-AI/scientific-agent-skills",
+            "cite": "Timothy Kassis, Vinayak Agarwal, Yuhuan He, Darshil Patel and Aubrey M. Brueckner. Scientific Agent Skills: A Library of Procedural Knowledge for Research Agents. arXiv:2609.00065 (2026). doi:10.48550/arXiv.2609.00065",
+            "licence": "MIT",
+            "credit": "K-Dense Inc.",
+            "what": "the choice of service for version 0.1.0 followed K-Dense's skill list one for one (its imaging-data-commons skill)",
+            "evidence": "2026-11-21 inventory F2: original text; the current code is the lab's adapter kit",
+            "version_read": null,
+            "applies_to": "earlier"
+          }
+        ],
+        "data_and_services": [
+          {
+            "kind": "service",
+            "name": "NCI Imaging Data Commons REST API (api.imaging.datacommons.cancer.gov)",
+            "url": "https://api.imaging.datacommons.cancer.gov",
+            "terms": "each collection carries its own data licence, which get_licenses reports (IDCAgent's NOTICE); IDC asks users of its data to cite the per-dataset citations and the IDC paper (IDC-REST-MCP's README at 3.0.0b7)",
+            "credit": "National Cancer Institute Imaging Data Commons",
+            "cite": "Fedorov et al., the IDC paper, doi:10.1148/rg.230180 (as IDC-REST-MCP's README asks), with the per-dataset citations get_citations returns",
+            "how": "read at run time"
+          }
+        ],
+        "references": [],
+        "refused_sources": [],
+        "changes": "Packaging only: the lab wrote the extension (launcher, policy and packaging) around the program.",
         "built_with": null
       },
-      "third_party": [],
       "licence": "Apache-2.0",
       "release": {
         "tag": "v0.1.0-brxt",
@@ -914,6 +1512,13 @@
           "version": "0.1.0",
           "date": null,
           "note": "BAAM version before the November 2026 refresh"
+        }
+      ],
+      "contributors": [
+        {
+          "name": "Wanjun Gu",
+          "affiliation": "Baranzini Lab, UCSF",
+          "role": "author"
         }
       ]
     },
@@ -939,9 +1544,68 @@
       "source": {
         "origin": "in-house",
         "upstreams": [],
-        "built_with": null
+        "ideas_from": [],
+        "data_and_services": [
+          {
+            "kind": "service",
+            "name": "PubMed, through NCBI E-utilities",
+            "url": "https://eutils.ncbi.nlm.nih.gov/entrez/eutils",
+            "terms": "NLM does not claim the copyright on the abstracts in PubMed, though journal publishers or authors may, and NCBI places no restrictions on the molecular data it holds, though submitters may claim rights in theirs; scripts are to send E-utilities requests to eutils.ncbi.nlm.nih.gov, make no more than 3 requests a second, pass the tool and email parameters, run any series of more than 100 requests at weekends or between 9 pm and 5 am Eastern Time on weekdays, and make NCBI's disclaimer and copyright notice evident to their users (NCBI policies page, https://www.ncbi.nlm.nih.gov/home/about/policies/, read 2026-11-27)",
+            "credit": "National Center for Biotechnology Information, US National Library of Medicine",
+            "cite": null,
+            "how": "read at run time"
+          },
+          {
+            "kind": "service",
+            "name": "OpenAlex API",
+            "url": "https://openalex.org",
+            "terms": "OpenAlex data is under CC0, in the public domain (attribution appreciated, not required); free API use is capped at 100,000 credits a day and 100 requests a second, more on a paid plan (OpenAlex's documentation source, ourresearch/openalex-docs license.md and how-to-use-the-api/rate-limits-and-authentication.md at 8cec9db, read 2026-11-27)",
+            "credit": "OurResearch",
+            "cite": null,
+            "how": "read at run time"
+          },
+          {
+            "kind": "service",
+            "name": "Crossref REST API",
+            "url": "https://www.crossref.org",
+            "terms": "No sign-up is needed, almost none of the metadata is subject to copyright and it may be used for any purpose, though some abstracts may be under their publishers' or authors' copyright; the polite pool asks for a mailto address (Crossref REST API page, https://www.crossref.org/documentation/retrieve-metadata/rest-api/, read 2026-11-27)",
+            "credit": "Crossref",
+            "cite": null,
+            "how": "read at run time"
+          },
+          {
+            "kind": "service",
+            "name": "Semantic Scholar Graph API v1",
+            "url": "https://www.semanticscholar.org",
+            "terms": "The Allen Institute for Artificial Intelligence (AI2) grants a limited, non-exclusive, terminable licence to use the API to reach and display the data Semantic Scholar serves, which stay under the licences that come with them (such as CC BY-NC or ODC-BY) and, for third-party content, its owners' terms; users may not redistribute or sublicense the API or exceed or get around its rate limits, are to credit Semantic Scholar in material that draws on it, and are to cite The Semantic Scholar Open Data Platform in scientific publications whose results used it (Semantic Scholar API License Agreement, last updated May 17, 2023, https://www.semanticscholar.org/product/api/license, read 2026-11-28)",
+            "credit": "Allen Institute for AI",
+            "cite": null,
+            "how": "read at run time"
+          },
+          {
+            "kind": "service",
+            "name": "bioRxiv and medRxiv API (api.biorxiv.org)",
+            "url": "https://api.biorxiv.org",
+            "terms": "The API page states no terms of service; every record it returns carries its preprint's own licence, which governs reuse of that preprint (https://api.biorxiv.org/, read 2026-11-27)",
+            "credit": "Cold Spring Harbor Laboratory",
+            "cite": null,
+            "how": "read at run time"
+          },
+          {
+            "kind": "service",
+            "name": "Unpaywall API v2",
+            "url": "https://unpaywall.org",
+            "terms": "Not read: unpaywall.org's pages render only in a browser, and the API root (https://api.unpaywall.org/v2) names only its documentation page, whose terms were not read (checked 2026-11-27)",
+            "credit": "OurResearch",
+            "cite": null,
+            "how": "read at run time"
+          }
+        ],
+        "references": [],
+        "refused_sources": [],
+        "changes": null,
+        "built_with": "brxt-adapter-kit 1.0.1"
       },
-      "third_party": [],
       "licence": "Apache-2.0",
       "release": {
         "tag": "v0.1.0-brxt",
@@ -964,6 +1628,13 @@
           "version": "0.1.0",
           "date": null,
           "note": "BAAM version before the November 2026 refresh"
+        }
+      ],
+      "contributors": [
+        {
+          "name": "Wanjun Gu",
+          "affiliation": "Baranzini Lab, UCSF",
+          "role": "author"
         }
       ]
     },
@@ -989,9 +1660,32 @@
       "source": {
         "origin": "in-house",
         "upstreams": [],
-        "built_with": null
+        "ideas_from": [],
+        "data_and_services": [
+          {
+            "kind": "service",
+            "name": "NCBI E-utilities (eutils.ncbi.nlm.nih.gov/entrez/eutils)",
+            "url": "https://eutils.ncbi.nlm.nih.gov/entrez/eutils",
+            "terms": "NLM does not claim the copyright on the abstracts in PubMed, though journal publishers or authors may, and NCBI places no restrictions on the molecular data it holds, though submitters may claim rights in theirs; scripts are to send E-utilities requests to eutils.ncbi.nlm.nih.gov, make no more than 3 requests a second, pass the tool and email parameters, run any series of more than 100 requests at weekends or between 9 pm and 5 am Eastern Time on weekdays, and make NCBI's disclaimer and copyright notice evident to their users (NCBI policies page, https://www.ncbi.nlm.nih.gov/home/about/policies/, read 2026-11-27)",
+            "credit": "National Center for Biotechnology Information, US National Library of Medicine",
+            "cite": null,
+            "how": "called at run time by 0.1.0, the last version that called a service; 0.2.0 calls none"
+          },
+          {
+            "kind": "service",
+            "name": "NCBI BLAST (blast.ncbi.nlm.nih.gov/blast)",
+            "url": "https://blast.ncbi.nlm.nih.gov/blast",
+            "terms": "BLAST is public domain software, and NCBI places no restrictions on the molecular data it holds, though submitters may claim rights in theirs; the shared BLAST servers ask API users to call at most once every 10 seconds, poll one search at most once a minute, send the email and tool parameters, and run more than 50 searches at night or at weekends (BLAST developer page, https://blast.ncbi.nlm.nih.gov/doc/blast-help/developerinfo.html, and the NCBI policies page, https://www.ncbi.nlm.nih.gov/home/about/policies/, read 2026-11-27)",
+            "credit": "National Center for Biotechnology Information, US National Library of Medicine",
+            "cite": null,
+            "how": "called at run time by 0.1.0, the last version that called a service; 0.2.0 calls none"
+          }
+        ],
+        "references": [],
+        "refused_sources": [],
+        "changes": null,
+        "built_with": "brxt-adapter-kit 1.0.0"
       },
-      "third_party": [],
       "licence": "Apache-2.0",
       "release": {
         "tag": "v0.1.0-brxt",
@@ -1015,6 +1709,13 @@
           "date": null,
           "note": "BAAM version before the November 2026 refresh"
         }
+      ],
+      "contributors": [
+        {
+          "name": "Wanjun Gu",
+          "affiliation": "Baranzini Lab, UCSF",
+          "role": "author"
+        }
       ]
     },
     {
@@ -1037,11 +1738,78 @@
         "Apache-2.0"
       ],
       "source": {
-        "origin": "adapted",
-        "upstreams": [],
+        "origin": "third-party",
+        "upstreams": [
+          {
+            "kind": "package",
+            "repo": "helena-bioinformatics/folklore-mcp",
+            "display": "Folklore MCP",
+            "url": "https://github.com/helena-bioinformatics/folklore-mcp",
+            "path": null,
+            "commit": "37d425f84ab3f54840715f8574cd968b011f2038",
+            "version": "2.0.0",
+            "licence": "Apache-2.0",
+            "copyright": "Copyright 2026 Helena Bioinformatics",
+            "copyright_note": "licence and copyright line from the fork's LICENSE and NOTICE at folklore-biorouter-v2.0.0+biorouter.1; CITATION.cff asks users to cite 10.5281/zenodo.23991190",
+            "credit": "Helena Bioinformatics",
+            "people": [
+              "Vladimir Mitev"
+            ],
+            "use": [
+              "bundled-modified"
+            ],
+            "what": "the whole adapter, rebuilt from upstream commit 37d425f8 at 8a70b160 in the fork Broccolito/folklore-mcp",
+            "files": [],
+            "via": null,
+            "upstream_notice": true,
+            "owner": "external",
+            "taken": null
+          }
+        ],
+        "ideas_from": [],
+        "data_and_services": [
+          {
+            "kind": "service",
+            "name": "Folklore API by Helena Bioinformatics (api.helena.bio)",
+            "url": "https://api.helena.bio",
+            "terms": "Helena Bioinformatics states access, not data terms: 11 public tools without a key, 18 more with a key from the person's Folklore account, one shared rate budget (docs/RATE_LIMITS.md), and automated variant classifications that support qualified professional review and are not patient diagnoses or treatment recommendations; no licence is stated for the returned data (Broccolito/folklore-mcp README at folklore-biorouter-v2.0.0+biorouter.1, read 2026-11-27)",
+            "credit": "Helena Bioinformatics",
+            "cite": "Helena Bioinformatics. Folklore Clinical Variant Interpretation MCP 2.0.0. doi:10.5281/zenodo.23991190",
+            "how": "read at run time"
+          },
+          {
+            "kind": "dataset",
+            "name": "The Folklore genetics literature corpus, drawn from PubMed",
+            "url": "https://folklore.helena.bio",
+            "terms": "Helena Bioinformatics states no terms for the corpus as a whole (Broccolito/folklore-mcp README at folklore-biorouter-v2.0.0+biorouter.1, read 2026-11-27); the PubMed records it is drawn from keep NLM's terms: NLM public-domain search and metadata service; terms: https://www.ncbi.nlm.nih.gov/books/NBK25501/ (as BioMCP 0.9.3's source inventory records it, reviewed 2026-04-10)",
+            "credit": "Helena Bioinformatics (drawn from PubMed)",
+            "cite": null,
+            "how": "read at run time"
+          },
+          {
+            "kind": "service",
+            "name": "ClinVar assertions and population frequency evidence, as Folklore reports them",
+            "url": "https://folklore.helena.bio",
+            "terms": "NCBI public-domain submission archive; terms: https://www.ncbi.nlm.nih.gov/clinvar/docs/maintenance_use/ (as BioMCP 0.9.3's source inventory records it, reviewed 2026-09-27)",
+            "credit": "National Center for Biotechnology Information (ClinVar), as Helena Bioinformatics' Folklore API reports it",
+            "cite": null,
+            "how": "read at run time"
+          },
+          {
+            "kind": "service",
+            "name": "ClinGen Gene-Disease Validity, through the hosted service",
+            "url": "https://clinicalgenome.org",
+            "terms": "public ClinGen curation resources with publication and attribution expectations; terms: https://clinicalgenome.org/ (as BioMCP 0.9.3's source inventory records it, reviewed 2026-09-27)",
+            "credit": "Clinical Genome Resource (ClinGen), through Helena Bioinformatics' hosted service",
+            "cite": null,
+            "how": "read at run time"
+          }
+        ],
+        "references": [],
+        "refused_sources": [],
+        "changes": "Rebuilt from upstream commit 37d425f8 at 8a70b160: dependency updates and restored public-input warnings.",
         "built_with": null
       },
-      "third_party": [],
       "licence": "Apache-2.0",
       "release": {
         "tag": "folklore-biorouter-v2.0.0+biorouter.1",
@@ -1064,6 +1832,13 @@
           "version": "2.0.0+biorouter.1",
           "date": null,
           "note": "BAAM version before the November 2026 refresh"
+        }
+      ],
+      "contributors": [
+        {
+          "name": "Wanjun Gu",
+          "affiliation": "Baranzini Lab, UCSF",
+          "role": "author"
         }
       ]
     },
@@ -1089,9 +1864,41 @@
       "source": {
         "origin": "in-house",
         "upstreams": [],
-        "built_with": null
+        "ideas_from": [],
+        "data_and_services": [
+          {
+            "kind": "service",
+            "name": "ClinPGx API (api.clinpgx.org/v1)",
+            "url": "https://api.clinpgx.org/v1",
+            "terms": "PharmGKB's own domain now redirects to ClinPGx and the former terms pages are gone; the successor data-usage policy (read from the live page's JS bundle) states ClinPGx data is CC BY-SA 4.0. Verified 2026-09-28 against the same page CPIC was, since both routes lead to one policy; terms: https://www.clinpgx.org/page/dataUsagePolicy (as BioMCP 0.9.3's source inventory records it, reviewed 2026-09-28)",
+            "credit": "ClinPGx (formerly PharmGKB)",
+            "cite": null,
+            "how": "called at run time by 0.1.0, the last version that called a service; 0.2.0 calls none"
+          },
+          {
+            "kind": "service",
+            "name": "NCBI E-utilities (eutils.ncbi.nlm.nih.gov/entrez/eutils)",
+            "url": "https://eutils.ncbi.nlm.nih.gov/entrez/eutils",
+            "terms": "NLM does not claim the copyright on the abstracts in PubMed, though journal publishers or authors may, and NCBI places no restrictions on the molecular data it holds, though submitters may claim rights in theirs; scripts are to send E-utilities requests to eutils.ncbi.nlm.nih.gov, make no more than 3 requests a second, pass the tool and email parameters, run any series of more than 100 requests at weekends or between 9 pm and 5 am Eastern Time on weekdays, and make NCBI's disclaimer and copyright notice evident to their users (NCBI policies page, https://www.ncbi.nlm.nih.gov/home/about/policies/, read 2026-11-27)",
+            "credit": "National Center for Biotechnology Information, US National Library of Medicine",
+            "cite": null,
+            "how": "called at run time by 0.1.0, the last version that called a service; 0.2.0 calls none"
+          },
+          {
+            "kind": "service",
+            "name": "MyVariant.info API (myvariant.info/v1)",
+            "url": "https://myvariant.info/v1",
+            "terms": "BioThings aggregation service; indirect providers retain their own terms; terms: https://docs.myvariant.info/en/latest/ (as BioMCP 0.9.3's source inventory records it, reviewed 2026-09-27)",
+            "credit": "Scripps Research (Su and Wu labs)",
+            "cite": null,
+            "how": "called at run time by 0.1.0, the last version that called a service; 0.2.0 calls none"
+          }
+        ],
+        "references": [],
+        "refused_sources": [],
+        "changes": null,
+        "built_with": "brxt-adapter-kit 1.0.0"
       },
-      "third_party": [],
       "licence": "Apache-2.0",
       "release": {
         "tag": "v0.1.0-brxt",
@@ -1114,6 +1921,13 @@
           "version": "0.1.0",
           "date": null,
           "note": "BAAM version before the November 2026 refresh"
+        }
+      ],
+      "contributors": [
+        {
+          "name": "Wanjun Gu",
+          "affiliation": "Baranzini Lab, UCSF",
+          "role": "author"
         }
       ]
     },
@@ -1139,9 +1953,13 @@
       "source": {
         "origin": "in-house",
         "upstreams": [],
-        "built_with": null
+        "ideas_from": [],
+        "data_and_services": [],
+        "references": [],
+        "refused_sources": [],
+        "changes": null,
+        "built_with": "brxt-adapter-kit 1.0.0"
       },
-      "third_party": [],
       "licence": "Apache-2.0",
       "release": {
         "tag": "v0.1.0-brxt",
@@ -1164,6 +1982,13 @@
           "version": "0.1.0",
           "date": null,
           "note": "BAAM version before the November 2026 refresh"
+        }
+      ],
+      "contributors": [
+        {
+          "name": "Wanjun Gu",
+          "affiliation": "Baranzini Lab, UCSF",
+          "role": "author"
         }
       ]
     },
@@ -1189,9 +2014,13 @@
       "source": {
         "origin": "in-house",
         "upstreams": [],
-        "built_with": null
+        "ideas_from": [],
+        "data_and_services": [],
+        "references": [],
+        "refused_sources": [],
+        "changes": null,
+        "built_with": "brxt-adapter-kit 1.0.0"
       },
-      "third_party": [],
       "licence": "Apache-2.0",
       "release": {
         "tag": "v0.1.0-brxt",
@@ -1214,6 +2043,13 @@
           "version": "0.1.0",
           "date": null,
           "note": "BAAM version before the November 2026 refresh"
+        }
+      ],
+      "contributors": [
+        {
+          "name": "Wanjun Gu",
+          "affiliation": "Baranzini Lab, UCSF",
+          "role": "author"
         }
       ]
     },
@@ -1238,15 +2074,57 @@
       ],
       "source": {
         "origin": "in-house",
-        "upstreams": [],
-        "built_with": null
+        "upstreams": [
+          {
+            "kind": "package",
+            "repo": "rdkit/rdkit",
+            "display": "RDKit",
+            "url": "https://github.com/rdkit/rdkit",
+            "path": null,
+            "commit": null,
+            "version": "2026.09.2",
+            "licence": "BSD-3-Clause",
+            "copyright": "Copyright (c) 2006-2015, Rational Discovery LLC, Greg Landrum, and Julie Penzotti and others",
+            "copyright_note": "credit is the holder its license.txt names; RDKit publishes no shorter form such as 'Greg Landrum and contributors'; licence read at Release_2026_09_2",
+            "credit": "Rational Discovery LLC, Greg Landrum, and Julie Penzotti and others",
+            "people": [],
+            "use": [
+              "dependency"
+            ],
+            "what": "Python dependency",
+            "files": [],
+            "via": null,
+            "upstream_notice": false,
+            "owner": "external",
+            "taken": null
+          }
+        ],
+        "ideas_from": [],
+        "data_and_services": [
+          {
+            "kind": "service",
+            "name": "PubChem PUG REST (pubchem.ncbi.nlm.nih.gov/rest/pug)",
+            "url": "https://pubchem.ncbi.nlm.nih.gov/rest/pug",
+            "terms": "NCBI names PubChem among its resources that hold material contributed or licensed by others and possibly under copyright, whose holders' terms apply to reproduction, redistribution and commercial use; NCBI itself places no restrictions on the molecular data it holds (NCBI policies page, https://www.ncbi.nlm.nih.gov/home/about/policies/, read 2026-11-27). PubChem's own usage policy page renders only in a browser and was not read",
+            "credit": "National Center for Biotechnology Information, US National Library of Medicine",
+            "cite": null,
+            "how": "read at run time"
+          },
+          {
+            "kind": "service",
+            "name": "ChEMBL API (www.ebi.ac.uk/chembl/api/data)",
+            "url": "https://www.ebi.ac.uk/chembl/api/data",
+            "terms": "ChEMBL data is provided under Creative Commons Attribution-ShareAlike 3.0 (CC BY-SA 3.0); attribution is required and share-alike applies to adaptations (2026-09-27 pass added the ShareAlike obligation the earlier summary omitted); terms: https://www.ebi.ac.uk/chembl/ (as BioMCP 0.9.3's source inventory records it, reviewed 2026-09-27)",
+            "credit": "EMBL-EBI",
+            "cite": null,
+            "how": "read at run time"
+          }
+        ],
+        "references": [],
+        "refused_sources": [],
+        "changes": null,
+        "built_with": "brxt-adapter-kit 1.0.1"
       },
-      "third_party": [
-        {
-          "name": "RDKit",
-          "licence": "BSD-3-Clause"
-        }
-      ],
       "licence": "Apache-2.0",
       "release": {
         "tag": "v0.1.0-brxt",
@@ -1275,6 +2153,13 @@
           "date": null,
           "note": "BAAM version before the November 2026 refresh"
         }
+      ],
+      "contributors": [
+        {
+          "name": "Wanjun Gu",
+          "affiliation": "Baranzini Lab, UCSF",
+          "role": "author"
+        }
       ]
     },
     {
@@ -1299,9 +2184,50 @@
       "source": {
         "origin": "in-house",
         "upstreams": [],
-        "built_with": null
+        "ideas_from": [],
+        "data_and_services": [
+          {
+            "kind": "service",
+            "name": "RCSB PDB Data API (data.rcsb.org/rest/v1)",
+            "url": "https://data.rcsb.org/rest/v1",
+            "terms": "PDB archive data is CC0 1.0; terms: https://www.rcsb.org/pages/usage-policy (as BioMCP 0.9.3's source inventory records it, reviewed 2026-09-27)",
+            "credit": "RCSB Protein Data Bank",
+            "cite": null,
+            "how": "read at run time"
+          },
+          {
+            "kind": "service",
+            "name": "RCSB Search API (search.rcsb.org/rcsbsearch/v2)",
+            "url": "https://search.rcsb.org/rcsbsearch/v2",
+            "terms": "PDB archive data is CC0 1.0; terms: https://www.rcsb.org/pages/usage-policy (as BioMCP 0.9.3's source inventory records it, reviewed 2026-09-27)",
+            "credit": "RCSB Protein Data Bank",
+            "cite": null,
+            "how": "read at run time"
+          },
+          {
+            "kind": "service",
+            "name": "AlphaFold DB API (alphafold.ebi.ac.uk/api)",
+            "url": "https://alphafold.ebi.ac.uk/api",
+            "terms": "AlphaFold DB structural predictions are published for broad open use; terms: https://alphafold.ebi.ac.uk/faq (as BioMCP 0.9.3's source inventory records it, reviewed 2026-09-27)",
+            "credit": "EMBL-EBI and Google DeepMind",
+            "cite": null,
+            "how": "read at run time"
+          },
+          {
+            "kind": "service",
+            "name": "UniProt REST (rest.uniprot.org)",
+            "url": "https://rest.uniprot.org",
+            "terms": "CC BY 4.0; terms: https://www.uniprot.org/help/license (as BioMCP 0.9.3's source inventory records it, reviewed 2026-09-27)",
+            "credit": "UniProt Consortium",
+            "cite": null,
+            "how": "read at run time"
+          }
+        ],
+        "references": [],
+        "refused_sources": [],
+        "changes": null,
+        "built_with": "brxt-adapter-kit 1.0.1"
       },
-      "third_party": [],
       "licence": "Apache-2.0",
       "release": {
         "tag": "v0.1.0-brxt",
@@ -1330,6 +2256,13 @@
           "date": null,
           "note": "BAAM version before the November 2026 refresh"
         }
+      ],
+      "contributors": [
+        {
+          "name": "Wanjun Gu",
+          "affiliation": "Baranzini Lab, UCSF",
+          "role": "author"
+        }
       ]
     },
     {
@@ -1354,9 +2287,23 @@
       "source": {
         "origin": "in-house",
         "upstreams": [],
-        "built_with": null
+        "ideas_from": [],
+        "data_and_services": [
+          {
+            "kind": "service",
+            "name": "CELLxGENE Discover API (api.cellxgene.cziscience.com/discover/v1)",
+            "url": "https://api.cellxgene.cziscience.com/discover/v1",
+            "terms": "CC BY 4.0, cite the datasets used (CellxGeneCensusAgent's NOTICE)",
+            "credit": "Chan Zuckerberg Initiative (CZ CELLxGENE Discover)",
+            "cite": null,
+            "how": "called at run time by 0.1.0, the last version that called a service; 0.2.0 calls none"
+          }
+        ],
+        "references": [],
+        "refused_sources": [],
+        "changes": null,
+        "built_with": "brxt-adapter-kit 1.0.0"
       },
-      "third_party": [],
       "licence": "Apache-2.0",
       "release": {
         "tag": "v0.1.0-brxt",
@@ -1379,6 +2326,13 @@
           "version": "0.1.0",
           "date": null,
           "note": "BAAM version before the November 2026 refresh"
+        }
+      ],
+      "contributors": [
+        {
+          "name": "Wanjun Gu",
+          "affiliation": "Baranzini Lab, UCSF",
+          "role": "author"
         }
       ]
     },
@@ -1403,10 +2357,73 @@
       ],
       "source": {
         "origin": "in-house",
-        "upstreams": [],
-        "built_with": null
+        "upstreams": [
+          {
+            "kind": "package",
+            "repo": "Opentrons/opentrons",
+            "display": "opentrons",
+            "url": "https://github.com/Opentrons/opentrons",
+            "path": null,
+            "commit": null,
+            "version": "10.1.0",
+            "licence": "Apache-2.0",
+            "copyright": "Copyright 2015-2025 Opentrons Labworks, Inc.",
+            "copyright_note": "holder from its NOTICE at v10.1.0; licence read at v10.1.0",
+            "credit": "Opentrons Labworks, Inc.",
+            "people": [],
+            "use": [
+              "dependency"
+            ],
+            "what": "Python dependency, with opentrons-shared-data 10.1.0; its jsonschema pin is overridden to >=4.20,<5",
+            "files": [],
+            "via": null,
+            "upstream_notice": true,
+            "owner": "external",
+            "taken": null
+          }
+        ],
+        "ideas_from": [
+          {
+            "kind": "skill",
+            "name": "Scientific Agent Skills",
+            "skills": [
+              "opentrons-integration"
+            ],
+            "url": "https://github.com/K-Dense-AI/scientific-agent-skills",
+            "cite": "Timothy Kassis, Vinayak Agarwal, Yuhuan He, Darshil Patel and Aubrey M. Brueckner. Scientific Agent Skills: A Library of Procedural Knowledge for Research Agents. arXiv:2609.00065 (2026). doi:10.48550/arXiv.2609.00065",
+            "licence": "MIT",
+            "credit": "K-Dense Inc.",
+            "what": "the choice of service for version 0.1.0 followed K-Dense's skill list one for one (its opentrons-integration skill)",
+            "evidence": "2026-11-21 inventory F2: original text; the current code is the lab's adapter kit",
+            "version_read": null,
+            "applies_to": "earlier"
+          }
+        ],
+        "data_and_services": [
+          {
+            "kind": "service",
+            "name": "Opentrons shared data on GitHub (raw.githubusercontent.com/Opentrons/opentrons)",
+            "url": "https://raw.githubusercontent.com/Opentrons/opentrons",
+            "terms": "The files are the Opentrons/opentrons repository's, licensed Apache-2.0 (GitHub's licence API, read 2026-11-27), served under GitHub's Terms of Service",
+            "credit": "Opentrons Labworks, Inc. (served from GitHub)",
+            "cite": null,
+            "how": "read at run time"
+          },
+          {
+            "kind": "service",
+            "name": "GitHub contents API for the Opentrons repository (api.github.com)",
+            "url": "https://api.github.com",
+            "terms": "GitHub's Terms of Service, section H (API Terms), with the GitHub Privacy Statement: no abusive or excessively frequent requests, no sharing tokens to exceed rate limits, no downloading data for spam (https://docs.github.com/en/site-policy/github-terms/github-terms-of-service, read 2026-11-27)",
+            "credit": "GitHub",
+            "cite": null,
+            "how": "read at run time"
+          }
+        ],
+        "references": [],
+        "refused_sources": [],
+        "changes": null,
+        "built_with": "brxt-adapter-kit 1.0.1"
       },
-      "third_party": [],
       "licence": "Apache-2.0",
       "release": {
         "tag": "v0.1.0-brxt",
@@ -1429,6 +2446,13 @@
           "version": "0.1.0",
           "date": null,
           "note": "BAAM version before the November 2026 refresh"
+        }
+      ],
+      "contributors": [
+        {
+          "name": "Wanjun Gu",
+          "affiliation": "Baranzini Lab, UCSF",
+          "role": "author"
         }
       ]
     },
@@ -1454,9 +2478,39 @@
       "source": {
         "origin": "in-house",
         "upstreams": [],
-        "built_with": null
+        "ideas_from": [
+          {
+            "kind": "skill",
+            "name": "Scientific Agent Skills",
+            "skills": [
+              "ginkgo-cloud-lab"
+            ],
+            "url": "https://github.com/K-Dense-AI/scientific-agent-skills",
+            "cite": "Timothy Kassis, Vinayak Agarwal, Yuhuan He, Darshil Patel and Aubrey M. Brueckner. Scientific Agent Skills: A Library of Procedural Knowledge for Research Agents. arXiv:2609.00065 (2026). doi:10.48550/arXiv.2609.00065",
+            "licence": "MIT",
+            "credit": "K-Dense Inc.",
+            "what": "the choice of service for version 0.1.0 followed K-Dense's skill list one for one (its ginkgo-cloud-lab skill)",
+            "evidence": "2026-11-21 inventory F2: original text; the current code is the lab's adapter kit",
+            "version_read": null,
+            "applies_to": "earlier"
+          }
+        ],
+        "data_and_services": [
+          {
+            "kind": "service",
+            "name": "Ginkgo cloud lab API",
+            "url": "https://cloud.ginkgo.bio",
+            "terms": "Used with the person's own Ginkgo account and credentials, so the terms Ginkgo Bioworks sets for that account apply (recorded 2026-11-27; those terms were not read)",
+            "credit": "Ginkgo Bioworks",
+            "cite": null,
+            "how": "called at run time by 0.1.0, the last version that called a service; 0.2.0 calls none"
+          }
+        ],
+        "references": [],
+        "refused_sources": [],
+        "changes": null,
+        "built_with": "brxt-adapter-kit 1.0.0"
       },
-      "third_party": [],
       "licence": "Apache-2.0",
       "release": {
         "tag": "v0.1.0-brxt",
@@ -1479,6 +2533,13 @@
           "version": "0.1.0",
           "date": null,
           "note": "BAAM version before the November 2026 refresh"
+        }
+      ],
+      "contributors": [
+        {
+          "name": "Wanjun Gu",
+          "affiliation": "Baranzini Lab, UCSF",
+          "role": "author"
         }
       ]
     },
@@ -1503,10 +2564,64 @@
       ],
       "source": {
         "origin": "in-house",
-        "upstreams": [],
-        "built_with": null
+        "upstreams": [
+          {
+            "kind": "package",
+            "repo": "laminlabs/lamindb",
+            "display": "lamindb",
+            "url": "https://github.com/laminlabs/lamindb",
+            "path": null,
+            "commit": null,
+            "version": "2.12.2",
+            "licence": "Apache-2.0",
+            "copyright": null,
+            "copyright_note": "credit as lamindb's pyproject.toml authors name it at 2.12.2 (the extension's NOTICE writes 'Lamin Labs, Inc.'); licence read at 2.12.2; the licence file names no copyright holder",
+            "credit": "Lamin Labs",
+            "people": [],
+            "use": [
+              "dependency"
+            ],
+            "what": "Python dependency, with lamindb-core and lamindb-setup",
+            "files": [],
+            "via": null,
+            "upstream_notice": false,
+            "owner": "external",
+            "taken": null
+          }
+        ],
+        "ideas_from": [
+          {
+            "kind": "skill",
+            "name": "Scientific Agent Skills",
+            "skills": [
+              "lamindb"
+            ],
+            "url": "https://github.com/K-Dense-AI/scientific-agent-skills",
+            "cite": "Timothy Kassis, Vinayak Agarwal, Yuhuan He, Darshil Patel and Aubrey M. Brueckner. Scientific Agent Skills: A Library of Procedural Knowledge for Research Agents. arXiv:2609.00065 (2026). doi:10.48550/arXiv.2609.00065",
+            "licence": "MIT",
+            "credit": "K-Dense Inc.",
+            "what": "the choice of service for version 0.1.0 followed K-Dense's skill list one for one (its lamindb skill)",
+            "evidence": "2026-11-21 inventory F2: original text; the current code is the lab's adapter kit",
+            "version_read": null,
+            "applies_to": "earlier"
+          }
+        ],
+        "data_and_services": [
+          {
+            "kind": "service",
+            "name": "LaminHub (lamin.ai)",
+            "url": "https://lamin.ai",
+            "terms": "Used with the person's own LaminHub account and credentials, so the terms Lamin Labs sets for that account apply (recorded 2026-11-27; those terms were not read)",
+            "credit": "Lamin Labs",
+            "cite": null,
+            "how": "read at run time"
+          }
+        ],
+        "references": [],
+        "refused_sources": [],
+        "changes": null,
+        "built_with": "brxt-adapter-kit 1.0.1"
       },
-      "third_party": [],
       "licence": "Apache-2.0",
       "release": {
         "tag": "v0.1.0-brxt",
@@ -1529,6 +2644,13 @@
           "version": "0.1.0",
           "date": null,
           "note": "BAAM version before the November 2026 refresh"
+        }
+      ],
+      "contributors": [
+        {
+          "name": "Wanjun Gu",
+          "affiliation": "Baranzini Lab, UCSF",
+          "role": "author"
         }
       ]
     },
@@ -1553,10 +2675,87 @@
       ],
       "source": {
         "origin": "in-house",
-        "upstreams": [],
-        "built_with": null
+        "upstreams": [
+          {
+            "kind": "package",
+            "repo": "chanzuckerberg/cellxgene-census",
+            "display": "cellxgene-census",
+            "url": "https://github.com/chanzuckerberg/cellxgene-census",
+            "path": null,
+            "commit": null,
+            "version": "1.18.0",
+            "licence": "MIT",
+            "copyright": "Copyright (c) 2022, Chan Zuckerberg Initiative",
+            "copyright_note": "licence read at v1.18.0",
+            "credit": "Chan Zuckerberg Initiative",
+            "people": [],
+            "use": [
+              "dependency"
+            ],
+            "what": "Python dependency",
+            "files": [],
+            "via": null,
+            "upstream_notice": false,
+            "owner": "external",
+            "taken": null
+          },
+          {
+            "kind": "package",
+            "repo": "single-cell-data/TileDB-SOMA",
+            "display": "tiledbsoma",
+            "url": "https://github.com/single-cell-data/TileDB-SOMA",
+            "path": null,
+            "commit": null,
+            "version": null,
+            "licence": "MIT",
+            "copyright": "Copyright (c) The Chan Zuckerberg Initiative Foundation",
+            "copyright_note": "licence read at main; the licence also names: Copyright (c) TileDB, Inc.",
+            "credit": "The Chan Zuckerberg Initiative Foundation and TileDB, Inc.",
+            "people": [],
+            "use": [
+              "dependency"
+            ],
+            "what": "Python dependency of cellxgene-census",
+            "files": [],
+            "via": null,
+            "upstream_notice": false,
+            "owner": "external",
+            "taken": null
+          }
+        ],
+        "ideas_from": [
+          {
+            "kind": "skill",
+            "name": "Scientific Agent Skills",
+            "skills": [
+              "cellxgene-census"
+            ],
+            "url": "https://github.com/K-Dense-AI/scientific-agent-skills",
+            "cite": "Timothy Kassis, Vinayak Agarwal, Yuhuan He, Darshil Patel and Aubrey M. Brueckner. Scientific Agent Skills: A Library of Procedural Knowledge for Research Agents. arXiv:2609.00065 (2026). doi:10.48550/arXiv.2609.00065",
+            "licence": "MIT",
+            "credit": "K-Dense Inc.",
+            "what": "the choice of service for version 0.1.0 followed K-Dense's skill list one for one (its cellxgene-census skill)",
+            "evidence": "2026-11-21 inventory F2: original text; the current code is the lab's adapter kit",
+            "version_read": null,
+            "applies_to": "earlier"
+          }
+        ],
+        "data_and_services": [
+          {
+            "kind": "service",
+            "name": "CELLxGENE API (api.cellxgene.cziscience.com)",
+            "url": "https://api.cellxgene.cziscience.com",
+            "terms": "CC BY 4.0, cite the datasets used (CellxGeneCensusAgent's NOTICE)",
+            "credit": "Chan Zuckerberg Initiative (CZ CELLxGENE Discover)",
+            "cite": null,
+            "how": "read at run time"
+          }
+        ],
+        "references": [],
+        "refused_sources": [],
+        "changes": null,
+        "built_with": "brxt-adapter-kit 1.0.1"
       },
-      "third_party": [],
       "licence": "Apache-2.0",
       "release": {
         "tag": "v0.1.0-brxt",
@@ -1585,6 +2784,13 @@
           "date": null,
           "note": "BAAM version before the November 2026 refresh"
         }
+      ],
+      "contributors": [
+        {
+          "name": "Wanjun Gu",
+          "affiliation": "Baranzini Lab, UCSF",
+          "role": "author"
+        }
       ]
     },
     {
@@ -1609,9 +2815,39 @@
       "source": {
         "origin": "in-house",
         "upstreams": [],
-        "built_with": null
+        "ideas_from": [
+          {
+            "kind": "skill",
+            "name": "Scientific Agent Skills",
+            "skills": [
+              "depmap"
+            ],
+            "url": "https://github.com/K-Dense-AI/scientific-agent-skills",
+            "cite": "Timothy Kassis, Vinayak Agarwal, Yuhuan He, Darshil Patel and Aubrey M. Brueckner. Scientific Agent Skills: A Library of Procedural Knowledge for Research Agents. arXiv:2609.00065 (2026). doi:10.48550/arXiv.2609.00065",
+            "licence": "MIT",
+            "credit": "K-Dense Inc.",
+            "what": "the choice of service for version 0.1.0 followed K-Dense's skill list one for one (its depmap skill)",
+            "evidence": "2026-11-21 inventory F2: original text; the current code is the lab's adapter kit",
+            "version_read": null,
+            "applies_to": "earlier"
+          }
+        ],
+        "data_and_services": [
+          {
+            "kind": "service",
+            "name": "DepMap portal API (depmap.org/portal/api)",
+            "url": "https://depmap.org/portal/api",
+            "terms": "DepMap's own guidance says DepMap-generated data are generally CC BY 4.0 while other hosted projects may use different licenses; each file's Data Usage and Terms must be checked per download, and a 2026-07-28 staff update reports newly generated data carry restricted terms (research use free, commercial use separately licensed); terms: https://forum.depmap.org/t/license-for-data-found-in-the-depmap-portal/130 (as BioMCP 0.9.3's source inventory records it, reviewed 2026-10-01)",
+            "credit": "Broad Institute (DepMap)",
+            "cite": null,
+            "how": "called at run time by 0.1.0, the last version that called a service; 0.2.0 calls none"
+          }
+        ],
+        "references": [],
+        "refused_sources": [],
+        "changes": null,
+        "built_with": "brxt-adapter-kit 1.0.1"
       },
-      "third_party": [],
       "licence": "Apache-2.0",
       "release": {
         "tag": "v0.1.0-brxt",
@@ -1634,6 +2870,13 @@
           "version": "0.1.0",
           "date": null,
           "note": "BAAM version before the November 2026 refresh"
+        }
+      ],
+      "contributors": [
+        {
+          "name": "Wanjun Gu",
+          "affiliation": "Baranzini Lab, UCSF",
+          "role": "author"
         }
       ]
     },
@@ -1659,9 +2902,48 @@
       "source": {
         "origin": "in-house",
         "upstreams": [],
-        "built_with": null
+        "ideas_from": [
+          {
+            "kind": "skill",
+            "name": "Scientific Agent Skills",
+            "skills": [
+              "primekg"
+            ],
+            "url": "https://github.com/K-Dense-AI/scientific-agent-skills",
+            "cite": "Timothy Kassis, Vinayak Agarwal, Yuhuan He, Darshil Patel and Aubrey M. Brueckner. Scientific Agent Skills: A Library of Procedural Knowledge for Research Agents. arXiv:2609.00065 (2026). doi:10.48550/arXiv.2609.00065",
+            "licence": "MIT",
+            "credit": "K-Dense Inc.",
+            "what": "the choice of service for version 0.1.0 followed K-Dense's skill list one for one (its primekg skill)",
+            "evidence": "2026-11-21 inventory F2: original text; the current code is the lab's adapter kit",
+            "version_read": null,
+            "applies_to": "earlier"
+          }
+        ],
+        "data_and_services": [
+          {
+            "kind": "dataset",
+            "name": "PrimeKG 2.1 on Harvard Dataverse (doi:10.7910/DVN/IXA7BM): nodes.csv and edges.csv, downloaded from dataverse.harvard.edu/api/access/datafile (files 6180617 and 6180616)",
+            "url": "https://dataverse.harvard.edu/dataset.xhtml?persistentId=doi:10.7910/DVN/IXA7BM",
+            "terms": "CC0 1.0, as Harvard Dataverse reports the dataset's licence (doi:10.7910/DVN/IXA7BM, version 2.1; its native API, read 2026-11-27). A download is under Harvard Dataverse's General Terms of Use (the installation's own copy, read through https://dataverse.harvard.edu/api/info/applicationTermsOfUse, Dataverse 6.12.1, 2026-11-27): a downloader is a registered user or agrees to the Guest Terms of Use, follows the dataset's licence and the Community Norms, accepts that each download is recorded (account or temporary guest identification) and shown to the depositor, and does not download where the law forbids it; the Dataverse Community Norms (https://dataverse.org/best-practices/dataverse-community-norms, read 2026-11-27), which say they are not a binding agreement, ask work that uses the data to give the data citation Harvard Dataverse generates, and ask a third-party API application to have its users read and agree to both terms of use, post them where users can find them and state that it is not affiliated with Harvard Dataverse; the Harvard Dataverse API Terms of Use, which the General Terms of Use apply to any API use, were not read (support.dataverse.harvard.edu refused a generic client (HTTP 403) and the address the Community Norms give answers HTTP 404)",
+            "credit": "Payal Chandak, Kexin Huang and Marinka Zitnik",
+            "cite": "Chandak P, Huang K, Zitnik M. Building a knowledge graph to enable precision medicine. Scientific Data 10, 67 (2023). https://doi.org/10.1038/s41597-023-01960-3; data citation: Chandak, Payal, 2022, \"PrimeKG\", https://doi.org/10.7910/DVN/IXA7BM, Harvard Dataverse, V2",
+            "how": "downloaded once on request by primekg_download (394 MB, each file checked against its pinned size, MD5 and SHA-256), indexed and queried on this computer, not bundled (primekg_data.py and primekg_fetch.py at v0.2.0, 9c56c15)"
+          },
+          {
+            "kind": "service",
+            "name": "Harvard Dataverse API (PrimeKG dataset metadata)",
+            "url": "https://dataverse.harvard.edu/api",
+            "terms": "Not read: the Harvard Dataverse API Terms of Use (support.dataverse.harvard.edu refused a generic client (HTTP 403) and the address the Community Norms give answers HTTP 404). Read: Harvard Dataverse's General Terms of Use (the installation's own copy, read through https://dataverse.harvard.edu/api/info/applicationTermsOfUse, Dataverse 6.12.1, 2026-11-27), which make any API use subject to those API terms and ask every user to follow the Community Norms; the Dataverse Community Norms (https://dataverse.org/best-practices/dataverse-community-norms, read 2026-11-27), which say they are not a binding agreement, ask work that uses the data to give the data citation Harvard Dataverse generates, and ask a third-party API application to have its users read and agree to both terms of use, post them where users can find them and state that it is not affiliated with Harvard Dataverse",
+            "credit": "Harvard Dataverse",
+            "cite": null,
+            "how": "read at run time through primekg_get (GET), a target of the adapter.json at v0.2.0 (9c56c15)"
+          }
+        ],
+        "references": [],
+        "refused_sources": [],
+        "changes": null,
+        "built_with": "brxt-adapter-kit 1.0.1"
       },
-      "third_party": [],
       "licence": "Apache-2.0",
       "release": {
         "tag": "v0.1.0-brxt",
@@ -1690,6 +2972,13 @@
           "date": null,
           "note": "BAAM version before the November 2026 refresh"
         }
+      ],
+      "contributors": [
+        {
+          "name": "Wanjun Gu",
+          "affiliation": "Baranzini Lab, UCSF",
+          "role": "author"
+        }
       ]
     },
     {
@@ -1714,14 +3003,39 @@
       "source": {
         "origin": "in-house",
         "upstreams": [],
-        "built_with": null
+        "ideas_from": [
+          {
+            "kind": "skill",
+            "name": "Scientific Agent Skills",
+            "skills": [
+              "pyzotero"
+            ],
+            "url": "https://github.com/K-Dense-AI/scientific-agent-skills",
+            "cite": "Timothy Kassis, Vinayak Agarwal, Yuhuan He, Darshil Patel and Aubrey M. Brueckner. Scientific Agent Skills: A Library of Procedural Knowledge for Research Agents. arXiv:2609.00065 (2026). doi:10.48550/arXiv.2609.00065",
+            "licence": "MIT",
+            "credit": "K-Dense Inc.",
+            "what": "the choice of service for version 0.1.0 followed K-Dense's skill list one for one (its pyzotero skill)",
+            "evidence": "2026-11-21 inventory F2: original text; the current code is the lab's adapter kit",
+            "version_read": null,
+            "applies_to": "earlier"
+          }
+        ],
+        "data_and_services": [
+          {
+            "kind": "service",
+            "name": "Zotero Web API (api.zotero.org)",
+            "url": "https://api.zotero.org",
+            "terms": "Used with the person's own Zotero account and credentials, so the terms Corporation for Digital Scholarship sets for that account apply (recorded 2026-11-27; those terms were not read)",
+            "credit": "Corporation for Digital Scholarship",
+            "cite": null,
+            "how": "read at run time"
+          }
+        ],
+        "references": [],
+        "refused_sources": [],
+        "changes": null,
+        "built_with": "brxt-adapter-kit 1.0.1"
       },
-      "third_party": [
-        {
-          "name": "zotero-mcp core",
-          "licence": "MIT"
-        }
-      ],
       "licence": "Apache-2.0",
       "release": {
         "tag": "v0.1.0-brxt",
@@ -1745,6 +3059,13 @@
           "date": null,
           "note": "BAAM version before the November 2026 refresh"
         }
+      ],
+      "contributors": [
+        {
+          "name": "Wanjun Gu",
+          "affiliation": "Baranzini Lab, UCSF",
+          "role": "author"
+        }
       ]
     },
     {
@@ -1767,16 +3088,79 @@
         "Apache-2.0"
       ],
       "source": {
-        "origin": "in-house",
-        "upstreams": [],
+        "origin": "third-party",
+        "upstreams": [
+          {
+            "kind": "package",
+            "repo": "microsoft/markitdown",
+            "display": "MarkItDown",
+            "url": "https://github.com/microsoft/markitdown",
+            "path": null,
+            "commit": null,
+            "version": "0.1.9",
+            "licence": "MIT",
+            "copyright": "Copyright (c) Microsoft Corporation.",
+            "copyright_note": "licence read at v0.1.9",
+            "credit": "Microsoft Corporation",
+            "people": [],
+            "use": [
+              "dependency",
+              "launched"
+            ],
+            "what": "Python dependency, installed when the extension first starts, with only the extras docx, outlook, pdf, pptx, xls, xlsx and youtube-transcription; the extension runs it to convert each file",
+            "files": [],
+            "via": null,
+            "upstream_notice": false,
+            "owner": "external",
+            "taken": null
+          },
+          {
+            "kind": "package",
+            "repo": "microsoft/markitdown",
+            "display": "markitdown-mcp",
+            "url": "https://github.com/microsoft/markitdown",
+            "path": "packages/markitdown-mcp",
+            "commit": null,
+            "version": "0.0.1a8",
+            "licence": "MIT",
+            "copyright": "Copyright (c) Microsoft Corporation.",
+            "copyright_note": "read at the repository tag v0.1.9, where packages/markitdown-mcp is version 0.0.1a8 (its __about__.py) and declares MIT (its pyproject.toml); the holder line is the repository LICENSE's at that tag",
+            "credit": "Microsoft Corporation",
+            "people": [],
+            "use": [
+              "text"
+            ],
+            "what": "convert_to_markdown ports its error messages",
+            "files": [],
+            "via": null,
+            "upstream_notice": false,
+            "owner": "external",
+            "taken": null
+          }
+        ],
+        "ideas_from": [
+          {
+            "kind": "skill",
+            "name": "Scientific Agent Skills",
+            "skills": [
+              "markitdown"
+            ],
+            "url": "https://github.com/K-Dense-AI/scientific-agent-skills",
+            "cite": "Timothy Kassis, Vinayak Agarwal, Yuhuan He, Darshil Patel and Aubrey M. Brueckner. Scientific Agent Skills: A Library of Procedural Knowledge for Research Agents. arXiv:2609.00065 (2026). doi:10.48550/arXiv.2609.00065",
+            "licence": "MIT",
+            "credit": "K-Dense Inc.",
+            "what": "the choice of service for version 0.1.0 followed K-Dense's skill list one for one (its markitdown skill)",
+            "evidence": "2026-11-21 inventory F2: original text; the current code is the lab's adapter kit",
+            "version_read": null,
+            "applies_to": "earlier"
+          }
+        ],
+        "data_and_services": [],
+        "references": [],
+        "refused_sources": [],
+        "changes": "Packaging only: the lab wrote the extension (launcher, policy and packaging) around the program.",
         "built_with": null
       },
-      "third_party": [
-        {
-          "name": "markitdown",
-          "licence": "MIT"
-        }
-      ],
       "licence": "Apache-2.0",
       "release": {
         "tag": "v0.1.0-brxt",
@@ -1805,6 +3189,13 @@
           "date": null,
           "note": "BAAM version before the November 2026 refresh"
         }
+      ],
+      "contributors": [
+        {
+          "name": "Wanjun Gu",
+          "affiliation": "Baranzini Lab, UCSF",
+          "role": "author"
+        }
       ]
     },
     {
@@ -1829,9 +3220,39 @@
       "source": {
         "origin": "in-house",
         "upstreams": [],
-        "built_with": null
+        "ideas_from": [
+          {
+            "kind": "skill",
+            "name": "Scientific Agent Skills",
+            "skills": [
+              "adaptyv"
+            ],
+            "url": "https://github.com/K-Dense-AI/scientific-agent-skills",
+            "cite": "Timothy Kassis, Vinayak Agarwal, Yuhuan He, Darshil Patel and Aubrey M. Brueckner. Scientific Agent Skills: A Library of Procedural Knowledge for Research Agents. arXiv:2609.00065 (2026). doi:10.48550/arXiv.2609.00065",
+            "licence": "MIT",
+            "credit": "K-Dense Inc.",
+            "what": "the choice of service for version 0.1.0 followed K-Dense's skill list one for one (its adaptyv skill)",
+            "evidence": "2026-11-21 inventory F2: original text; the current code is the lab's adapter kit",
+            "version_read": null,
+            "applies_to": "earlier"
+          }
+        ],
+        "data_and_services": [
+          {
+            "kind": "service",
+            "name": "Adaptyv Bio API (api.adaptyvbio.com)",
+            "url": "https://api.adaptyvbio.com",
+            "terms": "Used with the person's own Adaptyv account and credentials, so the terms Adaptyv Bio sets for that account apply (recorded 2026-11-27; those terms were not read)",
+            "credit": "Adaptyv Bio",
+            "cite": null,
+            "how": "read at run time"
+          }
+        ],
+        "references": [],
+        "refused_sources": [],
+        "changes": null,
+        "built_with": "brxt-adapter-kit 1.0.1"
       },
-      "third_party": [],
       "licence": "Apache-2.0",
       "release": {
         "tag": "v0.1.0-brxt",
@@ -1854,6 +3275,13 @@
           "version": "0.1.0",
           "date": null,
           "note": "BAAM version before the November 2026 refresh"
+        }
+      ],
+      "contributors": [
+        {
+          "name": "Wanjun Gu",
+          "affiliation": "Baranzini Lab, UCSF",
+          "role": "author"
         }
       ]
     },
@@ -1879,9 +3307,59 @@
       "source": {
         "origin": "in-house",
         "upstreams": [],
-        "built_with": null
+        "ideas_from": [],
+        "data_and_services": [
+          {
+            "kind": "service",
+            "name": "bioRxiv and medRxiv API (api.biorxiv.org)",
+            "url": "https://api.biorxiv.org",
+            "terms": "The API page states no terms of service; every record it returns carries its preprint's own licence, which governs reuse of that preprint (https://api.biorxiv.org/, read 2026-11-27)",
+            "credit": "Cold Spring Harbor Laboratory",
+            "cite": null,
+            "how": "called at run time by 0.1.0, the last version that called a service; 0.2.0 calls none"
+          },
+          {
+            "kind": "service",
+            "name": "Crossref REST API (api.crossref.org)",
+            "url": "https://api.crossref.org",
+            "terms": "No sign-up is needed, almost none of the metadata is subject to copyright and it may be used for any purpose, though some abstracts may be under their publishers' or authors' copyright; the polite pool asks for a mailto address (Crossref REST API page, https://www.crossref.org/documentation/retrieve-metadata/rest-api/, read 2026-11-27)",
+            "credit": "Crossref",
+            "cite": null,
+            "how": "called at run time by 0.1.0, the last version that called a service; 0.2.0 calls none"
+          },
+          {
+            "kind": "service",
+            "name": "OpenAlex API (api.openalex.org)",
+            "url": "https://api.openalex.org",
+            "terms": "OpenAlex data is under CC0, in the public domain (attribution appreciated, not required); free API use is capped at 100,000 credits a day and 100 requests a second, more on a paid plan (OpenAlex's documentation source, ourresearch/openalex-docs license.md and how-to-use-the-api/rate-limits-and-authentication.md at 8cec9db, read 2026-11-27)",
+            "credit": "OurResearch",
+            "cite": null,
+            "how": "called at run time by 0.1.0, the last version that called a service; 0.2.0 calls none"
+          },
+          {
+            "kind": "service",
+            "name": "Semantic Scholar Graph API v1 (api.semanticscholar.org/graph/v1)",
+            "url": "https://api.semanticscholar.org/graph/v1",
+            "terms": "The Allen Institute for Artificial Intelligence (AI2) grants a limited, non-exclusive, terminable licence to use the API to reach and display the data Semantic Scholar serves, which stay under the licences that come with them (such as CC BY-NC or ODC-BY) and, for third-party content, its owners' terms; users may not redistribute or sublicense the API or exceed or get around its rate limits, are to credit Semantic Scholar in material that draws on it, and are to cite The Semantic Scholar Open Data Platform in scientific publications whose results used it (Semantic Scholar API License Agreement, last updated May 17, 2023, https://www.semanticscholar.org/product/api/license, read 2026-11-28)",
+            "credit": "Allen Institute for AI",
+            "cite": null,
+            "how": "called at run time by 0.1.0, the last version that called a service; 0.2.0 calls none"
+          },
+          {
+            "kind": "service",
+            "name": "NCBI E-utilities (eutils.ncbi.nlm.nih.gov/entrez/eutils)",
+            "url": "https://eutils.ncbi.nlm.nih.gov/entrez/eutils",
+            "terms": "NLM does not claim the copyright on the abstracts in PubMed, though journal publishers or authors may, and NCBI places no restrictions on the molecular data it holds, though submitters may claim rights in theirs; scripts are to send E-utilities requests to eutils.ncbi.nlm.nih.gov, make no more than 3 requests a second, pass the tool and email parameters, run any series of more than 100 requests at weekends or between 9 pm and 5 am Eastern Time on weekdays, and make NCBI's disclaimer and copyright notice evident to their users (NCBI policies page, https://www.ncbi.nlm.nih.gov/home/about/policies/, read 2026-11-27)",
+            "credit": "National Center for Biotechnology Information, US National Library of Medicine",
+            "cite": null,
+            "how": "called at run time by 0.1.0, the last version that called a service; 0.2.0 calls none"
+          }
+        ],
+        "references": [],
+        "refused_sources": [],
+        "changes": null,
+        "built_with": "brxt-adapter-kit 1.0.0"
       },
-      "third_party": [],
       "licence": "Apache-2.0",
       "release": {
         "tag": "v0.1.0-brxt",
@@ -1904,6 +3382,13 @@
           "version": "0.1.0",
           "date": null,
           "note": "BAAM version before the November 2026 refresh"
+        }
+      ],
+      "contributors": [
+        {
+          "name": "Wanjun Gu",
+          "affiliation": "Baranzini Lab, UCSF",
+          "role": "author"
         }
       ]
     },
@@ -1929,9 +3414,32 @@
       "source": {
         "origin": "in-house",
         "upstreams": [],
-        "built_with": null
+        "ideas_from": [],
+        "data_and_services": [
+          {
+            "kind": "service",
+            "name": "Exa API (api.exa.ai)",
+            "url": "https://api.exa.ai",
+            "terms": "Used with the person's own Exa account and credentials, so the terms Exa Labs sets for that account apply (recorded 2026-11-27; those terms were not read)",
+            "credit": "Exa Labs",
+            "cite": null,
+            "how": "read at run time"
+          },
+          {
+            "kind": "service",
+            "name": "Tavily API (api.tavily.com)",
+            "url": "https://api.tavily.com",
+            "terms": "Used with the person's own Tavily account and credentials, so the terms Tavily sets for that account apply (recorded 2026-11-27; those terms were not read)",
+            "credit": "Tavily",
+            "cite": null,
+            "how": "read at run time"
+          }
+        ],
+        "references": [],
+        "refused_sources": [],
+        "changes": null,
+        "built_with": "brxt-adapter-kit 1.0.1"
       },
-      "third_party": [],
       "licence": "Apache-2.0",
       "release": {
         "tag": "v0.1.0-brxt",
@@ -1954,6 +3462,13 @@
           "version": "0.1.0",
           "date": null,
           "note": "BAAM version before the November 2026 refresh"
+        }
+      ],
+      "contributors": [
+        {
+          "name": "Wanjun Gu",
+          "affiliation": "Baranzini Lab, UCSF",
+          "role": "author"
         }
       ]
     },
@@ -1979,9 +3494,39 @@
       "source": {
         "origin": "in-house",
         "upstreams": [],
-        "built_with": null
+        "ideas_from": [
+          {
+            "kind": "skill",
+            "name": "Scientific Agent Skills",
+            "skills": [
+              "tamarind"
+            ],
+            "url": "https://github.com/K-Dense-AI/scientific-agent-skills",
+            "cite": "Timothy Kassis, Vinayak Agarwal, Yuhuan He, Darshil Patel and Aubrey M. Brueckner. Scientific Agent Skills: A Library of Procedural Knowledge for Research Agents. arXiv:2609.00065 (2026). doi:10.48550/arXiv.2609.00065",
+            "licence": "MIT",
+            "credit": "K-Dense Inc.",
+            "what": "the choice of service for version 0.1.0 followed K-Dense's skill list one for one (its tamarind skill)",
+            "evidence": "2026-11-21 inventory F2: original text; the current code is the lab's adapter kit",
+            "version_read": null,
+            "applies_to": "earlier"
+          }
+        ],
+        "data_and_services": [
+          {
+            "kind": "service",
+            "name": "Tamarind Bio API (api.tamarind.bio)",
+            "url": "https://api.tamarind.bio",
+            "terms": "Used with the person's own Tamarind account and credentials, so the terms Tamarind Bio sets for that account apply (recorded 2026-11-27; those terms were not read)",
+            "credit": "Tamarind Bio",
+            "cite": null,
+            "how": "read at run time"
+          }
+        ],
+        "references": [],
+        "refused_sources": [],
+        "changes": null,
+        "built_with": "brxt-adapter-kit 1.0.1"
       },
-      "third_party": [],
       "licence": "Apache-2.0",
       "release": {
         "tag": "v0.1.0-brxt",
@@ -2004,6 +3549,13 @@
           "version": "0.1.0",
           "date": null,
           "note": "BAAM version before the November 2026 refresh"
+        }
+      ],
+      "contributors": [
+        {
+          "name": "Wanjun Gu",
+          "affiliation": "Baranzini Lab, UCSF",
+          "role": "author"
         }
       ]
     },
@@ -2028,10 +3580,110 @@
       ],
       "source": {
         "origin": "in-house",
-        "upstreams": [],
-        "built_with": null
+        "upstreams": [
+          {
+            "kind": "package",
+            "repo": "rowansci/rowan-python",
+            "display": "rowan-python",
+            "url": "https://github.com/rowansci/rowan-python",
+            "path": null,
+            "commit": null,
+            "version": "3.3.4",
+            "licence": "MIT",
+            "copyright": "Copyright (c) Rowan Scientific Corporation",
+            "copyright_note": "licence read at v3.3.4",
+            "credit": "Rowan Scientific Corporation",
+            "people": [],
+            "use": [
+              "dependency"
+            ],
+            "what": "Python dependency",
+            "files": [],
+            "via": null,
+            "upstream_notice": false,
+            "owner": "external",
+            "taken": null
+          },
+          {
+            "kind": "package",
+            "repo": "rowansci/stjames-public",
+            "display": "stjames",
+            "url": "https://github.com/rowansci/stjames-public",
+            "path": null,
+            "commit": null,
+            "version": null,
+            "licence": "MIT",
+            "copyright": "Copyright (c) Rowan Scientific Corporation",
+            "copyright_note": "licence read at master",
+            "credit": "Rowan Scientific Corporation",
+            "people": [],
+            "use": [
+              "dependency"
+            ],
+            "what": "Python dependency of rowan-python",
+            "files": [],
+            "via": null,
+            "upstream_notice": false,
+            "owner": "external",
+            "taken": null
+          },
+          {
+            "kind": "package",
+            "repo": "rdkit/rdkit",
+            "display": "RDKit",
+            "url": "https://github.com/rdkit/rdkit",
+            "path": null,
+            "commit": null,
+            "version": "2026.09.2",
+            "licence": "BSD-3-Clause",
+            "copyright": "Copyright (c) 2006-2015, Rational Discovery LLC, Greg Landrum, and Julie Penzotti and others",
+            "copyright_note": "credit is the holder its license.txt names; RDKit publishes no shorter form such as 'Greg Landrum and contributors'; licence read at Release_2026_09_2",
+            "credit": "Rational Discovery LLC, Greg Landrum, and Julie Penzotti and others",
+            "people": [],
+            "use": [
+              "dependency"
+            ],
+            "what": "Python dependency (2025.09.3 on Intel Macs)",
+            "files": [],
+            "via": null,
+            "upstream_notice": false,
+            "owner": "external",
+            "taken": null
+          }
+        ],
+        "ideas_from": [
+          {
+            "kind": "skill",
+            "name": "Scientific Agent Skills",
+            "skills": [
+              "rowan"
+            ],
+            "url": "https://github.com/K-Dense-AI/scientific-agent-skills",
+            "cite": "Timothy Kassis, Vinayak Agarwal, Yuhuan He, Darshil Patel and Aubrey M. Brueckner. Scientific Agent Skills: A Library of Procedural Knowledge for Research Agents. arXiv:2609.00065 (2026). doi:10.48550/arXiv.2609.00065",
+            "licence": "MIT",
+            "credit": "K-Dense Inc.",
+            "what": "the choice of service for version 0.1.0 followed K-Dense's skill list one for one (its rowan skill)",
+            "evidence": "2026-11-21 inventory F2: original text; the current code is the lab's adapter kit",
+            "version_read": null,
+            "applies_to": "earlier"
+          }
+        ],
+        "data_and_services": [
+          {
+            "kind": "service",
+            "name": "Rowan API (api.rowansci.com), through rowan-python",
+            "url": "https://api.rowansci.com",
+            "terms": "Used with the person's own Rowan account and credentials, so the terms Rowan Scientific Corporation sets for that account apply (recorded 2026-11-27; those terms were not read)",
+            "credit": "Rowan Scientific Corporation",
+            "cite": null,
+            "how": "read at run time"
+          }
+        ],
+        "references": [],
+        "refused_sources": [],
+        "changes": null,
+        "built_with": "brxt-adapter-kit 1.0.1"
       },
-      "third_party": [],
       "licence": "Apache-2.0",
       "release": {
         "tag": "v0.1.0-brxt",
@@ -2054,6 +3706,13 @@
           "version": "0.1.0",
           "date": null,
           "note": "BAAM version before the November 2026 refresh"
+        }
+      ],
+      "contributors": [
+        {
+          "name": "Wanjun Gu",
+          "affiliation": "Baranzini Lab, UCSF",
+          "role": "author"
         }
       ]
     },
@@ -2079,9 +3738,59 @@
       "source": {
         "origin": "in-house",
         "upstreams": [],
-        "built_with": null
+        "ideas_from": [],
+        "data_and_services": [
+          {
+            "kind": "service",
+            "name": "NCBI E-utilities (Gene, Protein, Nucleotide, ClinVar, dbSNP, PubMed)",
+            "url": "https://eutils.ncbi.nlm.nih.gov/entrez/eutils",
+            "terms": "NLM does not claim the copyright on the abstracts in PubMed, though journal publishers or authors may, and NCBI places no restrictions on the molecular data it holds, though submitters may claim rights in theirs; scripts are to send E-utilities requests to eutils.ncbi.nlm.nih.gov, make no more than 3 requests a second, pass the tool and email parameters, run any series of more than 100 requests at weekends or between 9 pm and 5 am Eastern Time on weekdays, and make NCBI's disclaimer and copyright notice evident to their users (NCBI policies page, https://www.ncbi.nlm.nih.gov/home/about/policies/, read 2026-11-27)",
+            "credit": "National Center for Biotechnology Information, US National Library of Medicine",
+            "cite": null,
+            "how": "read at run time through publicdb_get (GET), a target of the adapter.json at v0.2.0 (7614afd)"
+          },
+          {
+            "kind": "service",
+            "name": "NCBI BLAST URL API",
+            "url": "https://blast.ncbi.nlm.nih.gov/blast",
+            "terms": "BLAST is public domain software, and NCBI places no restrictions on the molecular data it holds, though submitters may claim rights in theirs; the shared BLAST servers ask API users to call at most once every 10 seconds, poll one search at most once a minute, send the email and tool parameters, and run more than 50 searches at night or at weekends (BLAST developer page, https://blast.ncbi.nlm.nih.gov/doc/blast-help/developerinfo.html, and the NCBI policies page, https://www.ncbi.nlm.nih.gov/home/about/policies/, read 2026-11-27)",
+            "credit": "National Center for Biotechnology Information, US National Library of Medicine",
+            "cite": null,
+            "how": "read at run time through publicdb_get (GET), a target of the adapter.json at v0.2.0 (7614afd)"
+          },
+          {
+            "kind": "service",
+            "name": "UniProt REST API",
+            "url": "https://rest.uniprot.org",
+            "terms": "CC BY 4.0; terms: https://www.uniprot.org/help/license (as BioMCP 0.9.3's source inventory records it, reviewed 2026-09-27)",
+            "credit": "UniProt Consortium",
+            "cite": null,
+            "how": "read at run time through publicdb_get (GET), a target of the adapter.json at v0.2.0 (7614afd)"
+          },
+          {
+            "kind": "service",
+            "name": "Ensembl REST API",
+            "url": "https://rest.ensembl.org",
+            "terms": "Ensembl imposes no restrictions on access to or use of its data and software; some included data and software may carry third-party constraints, which users must establish and follow (Ensembl disclaimer, https://www.ensembl.org/info/about/legal/disclaimer.html, read 2026-11-27)",
+            "credit": "EMBL-EBI (Ensembl)",
+            "cite": null,
+            "how": "read at run time through publicdb_get (GET, and POST on the routes it declares as reads), a target of the adapter.json at v0.2.0 (7614afd)"
+          },
+          {
+            "kind": "service",
+            "name": "ClinPGx (formerly PharmGKB)",
+            "url": "https://api.clinpgx.org/v1",
+            "terms": "PharmGKB's own domain now redirects to ClinPGx and the former terms pages are gone; the successor data-usage policy (read from the live page's JS bundle) states ClinPGx data is CC BY-SA 4.0. Verified 2026-09-28 against the same page CPIC was, since both routes lead to one policy; terms: https://www.clinpgx.org/page/dataUsagePolicy (as BioMCP 0.9.3's source inventory records it, reviewed 2026-09-28)",
+            "credit": "ClinPGx (formerly PharmGKB)",
+            "cite": null,
+            "how": "read at run time through publicdb_get (GET), a target of the adapter.json at v0.2.0 (7614afd)"
+          }
+        ],
+        "references": [],
+        "refused_sources": [],
+        "changes": null,
+        "built_with": "brxt-adapter-kit 1.0.1"
       },
-      "third_party": [],
       "licence": "Apache-2.0",
       "release": {
         "tag": "v0.1.0-brxt",
@@ -2104,6 +3813,13 @@
           "version": "0.1.0",
           "date": null,
           "note": "BAAM version before the November 2026 refresh"
+        }
+      ],
+      "contributors": [
+        {
+          "name": "Wanjun Gu",
+          "affiliation": "Baranzini Lab, UCSF",
+          "role": "author"
         }
       ]
     }

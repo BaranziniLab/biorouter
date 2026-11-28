@@ -154,6 +154,12 @@ A short example:
 
 The four fixtures in `scripts/brxt-adapter-kit/tests/fixtures/` show every field in use.
 
+## Provenance
+
+An adapter's provenance record (the services it calls, their publishers and terms, and the people who built the adapter) lives in its row in `landing/catalog/extensions.json`, not in the spec. The row's `source.built_with` names the kit release the adapter was built with (`brxt-adapter-kit 1.0.1` or `brxt-adapter-kit 1.0.0`), its `source.data_and_services` lists the services it reaches, and its `contributors` name the people behind it. BAAM's credit line and detail panel are generated from that row; [Provenance and credits](provenance.md) describes the record.
+
+A `provenance` key in the spec, from which the kit would render the adapter's README section and `NOTICE`, is planned for kit 1.1.0. Kit 1.0.1 refuses unknown keys, so no spec may carry it yet.
+
 ## Making a new adapter
 
 Run these from `scripts/brxt-adapter-kit/`, after `uv sync`.
@@ -242,6 +248,7 @@ Every adapter runs `tests/test_adapter_contract.py` in its CI: the vendored kit 
 ## Related documentation
 
 - [Installing an extension, and where its credentials go](installing-an-extension.md): how Biorouter installs a `.brxt` and stores its secrets.
+- [Provenance and credits](provenance.md): the record an adapter's catalog row carries, and the credit line generated from it.
 - [Capabilities, extensions, skills, and MCP agents](extensions-and-skills-guide.md): what an extension is to the person using it.
 - [Permission modes](../security/permission-modes.md): what Smart approval does with a read only or destructive tool.
 - [Developer](built-in/developer.md): the one command runner, and the secret guard the adapters' old runner skipped.

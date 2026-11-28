@@ -205,6 +205,15 @@ jobs:
         if: ${{ !cancelled() }}
         run: node --test landing/scripts/check-catalog.test.mjs
 
+      # Every BAAM card's credit line, the curator lines and credits.json come
+      # from one contract (landing/scripts/lib/credits.mjs). The suite pins its
+      # shape and the page writer, with a mutant for each way a line can go
+      # wrong; the `shelf` job reads the same lines in a browser.
+      - name: The credits generator and the page lines
+        working-directory: ${{ github.workspace }}
+        if: ${{ !cancelled() }}
+        run: node --test landing/scripts/credits.test.mjs
+
       - name: The BAAM catalogs agree with the page
         working-directory: ${{ github.workspace }}
         if: ${{ !cancelled() }}
@@ -301,6 +310,13 @@ jobs:
       - name: Access tiles
         working-directory: .
         run: node --test landing/scripts/access-tiles.browser.test.mjs
+
+      # Provenance and credits: every card's credit line in the rendered and the
+      # no-JS view, the curator lines, the opened row's provenance panel, credit
+      # values kept as text, and a search that never reads a credit line.
+      - name: BAAM credit lines and panel
+        working-directory: .
+        run: node --test landing/scripts/baam-credits.browser.test.mjs
 
   # ── Unit tests ────────────────────────────────────────────────────────────
   # On a pull request, three shards at once (`--shard=i/3`, vitest's own file

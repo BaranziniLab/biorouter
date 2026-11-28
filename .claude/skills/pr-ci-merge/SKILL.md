@@ -42,8 +42,8 @@ Reference files in this folder:
 7. **Never force-push, amend or rebase a pushed commit, or rewrite pushed history in any other
    way.** Other sessions hold those SHAs. A rewrite needs the owner's explicit word.
 8. **Stage by explicit path, and read `git status --short` before each commit.** Look for
-   generated files outside the folder you edited: the registry generator writes three files in
-   three directories, and a narrow `git add landing/` once missed two of them.
+   generated files outside the folder you edited: the registry generator writes five files in
+   three directories, never hand edited, and a narrow `git add landing/` once missed two of them.
 9. **Check the commit, not the working tree, for any generator or formatter gate.** A local
    `--check` reads the disk and passes while CI reads the commit:
    `tmp=$(mktemp -d) && git archive HEAD | tar -x -C "$tmp" && (cd "$tmp" && <check>)`.

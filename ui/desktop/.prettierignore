@@ -17,6 +17,13 @@ src/styles/main.css
 # would break that comparison. The generator owns this file's formatting.
 src/components/baam/registry.fallback.json
 
+# Same rule again. build-registry.mjs writes the app's copy of the credits
+# byte-for-byte identical to the published landing/credits.json, under the same
+# lock, and `build-registry.mjs --check` compares the two bytes. Prettier would
+# reflow its short arrays and break that comparison. The generator owns this
+# file's formatting.
+src/components/baam/credits.fallback.json
+
 # Generated, not authored. scripts/computer-use-resources.js stages the native
 # Biorouter Copilot helper here (the app, its manifest.json and pin.json), and
 # the repo .gitignore ignores the whole directory. Prettier run from ui/desktop

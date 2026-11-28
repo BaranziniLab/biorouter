@@ -100,6 +100,7 @@
           </a>
         </div>
         <p class="ext-desc">Multimodal access to the UCSF Clinical Data Warehouse through natural language. One-call cohort building across diagnoses, medications, procedures, labs, radiology/imaging, immunizations, allergies, and vitals; clinical-notes/NLP search; read-only queries, schema discovery, and structured results. 28 tools, including durable query jobs for long exports. Requires UCSF network credentials (CAMPUS\username and password).</p>
+        <p class="item-credit">Made by the Baranzini Lab (Wanjun Gu, UCSF).</p>
         <div class="ext-footer">
           <div class="ext-tags"><span class="tag private" data-privacy-badge>Private</span><span class="tag affiliation" data-affiliation-badge="ucsf">UCSF data</span><span class="tag ucsf">UCSF</span><span class="tag mcp">MCP</span><span class="tag">CDW</span><span class="tag">Clinical</span></div>
           <a href="https://github.com/BaranziniLab/CDWAgent/releases/download/v0.7.0/cdwagent.brxt" class="brxt-chip">
@@ -124,6 +125,7 @@
           </a>
         </div>
         <p class="ext-desc">Natural language SQL on the UCSF OMOP de-identified clinical database. Read-only access to standardized EHR data under the OMOP Common Data Model. 11 tools: built-in OMOP/SQL-Server context, concept search, a lab finder, live schema tools, and durable query jobs for long exports. Requires UCSF credentials.</p>
+        <p class="item-credit">Made by the Baranzini Lab (Wanjun Gu, UCSF).</p>
         <div class="ext-footer">
           <div class="ext-tags"><span class="tag private" data-privacy-badge>Private</span><span class="tag affiliation" data-affiliation-badge="ucsf">UCSF data</span><span class="tag ucsf">UCSF</span><span class="tag mcp">MCP</span><span class="tag">OMOP</span><span class="tag">EHR</span></div>
           <a href="https://github.com/BaranziniLab/UCSFOMOPAgent/releases/download/v0.4.0/ucsfomopagent.brxt" class="brxt-chip">
@@ -148,6 +150,7 @@
           </a>
         </div>
         <p class="ext-desc">Browser automation via Microsoft's <code>@playwright/mcp</code> 0.0.86, pinned to a reviewed set of 24 tools. Navigate websites, extract data, fill forms, and run web research workflows using structured accessibility snapshots. No vision model required. Requires Node.js on the host.</p>
+        <p class="item-credit">Runs Playwright MCP 0.0.86 by Microsoft Corporation (Apache-2.0); extension by the Baranzini Lab.</p>
         <div class="ext-footer">
           <div class="ext-tags"><span class="tag public" data-privacy-badge>Public</span><span class="tag mcp">MCP</span><span class="tag">Browser</span><span class="tag">Automation</span></div>
           <a href="https://github.com/BaranziniLab/PlaywrightAgent/releases/download/v0.2.0/playwrightagent.brxt" class="brxt-chip">
@@ -172,6 +175,7 @@
           </a>
         </div>
         <p class="ext-desc">Structure-aware access to the SPOKE biomedical knowledge graph (43M nodes): live schema introspection, entity/identifier resolution with label validation, node profiling, shortest-path finding, and guarded read-only Cypher across diseases, genes, proteins, drugs, and pathways, with query jobs for long queries. 8 tools and a bundled <code>spoke-knowledge-graph</code> skill. Access requires a passcode from UCSF (see <a href="https://wiki.library.ucsf.edu/spaces/~Wanjun.Gu@ucsf.edu/pages/755904655/SPOKEAgent+Credentials" target="_blank" style="color:var(--accent);">credentials page</a>).</p>
+        <p class="item-credit">Made by the Baranzini Lab (Wanjun Gu, UCSF).</p>
         <div class="ext-footer">
           <div class="ext-tags"><span class="tag public" data-privacy-badge>Public</span><span class="tag ucsf">UCSF</span><span class="tag mcp">MCP</span><span class="tag">Knowledge Graph</span></div>
           <a href="https://github.com/BaranziniLab/SPOKEAgent/releases/download/v0.5.0/spokeagent.brxt" class="brxt-chip">
@@ -196,6 +200,7 @@
           </a>
         </div>
         <p class="ext-desc">Code knowledge graph for a project's source: explore, symbol lookup, search and callers from a pre-built index. Runs upstream <a href="https://github.com/colbymchenry/codegraph" target="_blank" style="color:var(--accent);">CodeGraph</a> 1.6.4 (MIT) on about 30 languages, including Python, R, TypeScript, C and C++, Rust, Go and Java. Indexes only the project you name, never your home folder.</p>
+        <p class="item-credit">Runs CodeGraph 1.6.4 by Colby Mchenry (MIT); extension by the Baranzini Lab.</p>
         <div class="ext-footer">
           <div class="ext-tags"><span class="tag public" data-privacy-badge>Public</span><span class="tag mcp">MCP</span><span class="tag">Code Intelligence</span><span class="tag">R</span><span class="tag">Tree-sitter</span></div>
           <a href="https://github.com/Broccolito/CodeGraphAgent/releases/download/v0.2.0/codegraphagent.brxt" class="brxt-chip">
@@ -220,6 +225,7 @@
           </a>
         </div>
         <p class="ext-desc">Create, read, and edit Word (.docx), Excel (.xlsx), and PowerPoint (.pptx) files from chat. Handles headings, tables, charts, and 150+ Excel functions with live formula evaluation. Built on the open-source OfficeCLI engine, so no Microsoft Office install is needed. Ships four bundled skills for the office suite, Word, Excel, and PowerPoint.</p>
+        <p class="item-credit">Runs OfficeCLI 1.0.163 by OfficeCLI (iOfficeAI) (Apache-2.0); extension by the Baranzini Lab.</p>
         <div class="ext-footer">
           <div class="ext-tags"><span class="tag public" data-privacy-badge>Public</span><span class="tag mcp">MCP</span><span class="tag">Office</span><span class="tag">Documents</span><span class="tag">Word</span><span class="tag">Excel</span><span class="tag">PowerPoint</span></div>
           <a href="https://github.com/BaranziniLab/BiorOffice/releases/download/v1.1.2/bioroffice.brxt" class="brxt-chip">
@@ -244,6 +250,7 @@
           </a>
         </div>
         <p class="ext-desc">Work inside an R session you already have open. Biorouter inspects, analyses, plots and fixes objects in memory through <a href="https://github.com/Broccolito/gptr" target="_blank" style="color:var(--accent);">gptr</a>, without reloading data, and every call passes gptr's permission settings. Private: a public model never sees your session. 3 tools and a bundled gptr-live-r skill. Needs R with the gptr package (1.0 or later) and uv.</p>
+        <p class="item-credit">Made by the Baranzini Lab (Wanjun Gu, UCSF).</p>
         <div class="ext-footer">
           <div class="ext-tags"><span class="tag private" data-privacy-badge>Private</span><span class="tag mcp">MCP</span><span class="tag">R</span><span class="tag">Live session</span><span class="tag">gptr</span></div>
           <a href="https://github.com/Broccolito/GptrAgent/releases/download/v0.1.2/gptragent.brxt" class="brxt-chip">
@@ -268,6 +275,7 @@
           </a>
         </div>
         <p class="ext-desc">A fallback for desktop control where the built-in Biorouter Copilot does not work, for example Linux with at-spi2-core older than 2.52 (Ubuntu 22.04, Debian 12, Rocky 9) or an app whose controls Copilot cannot read. Try Copilot first. Built on Open Computer Use 1.1.5 (MIT); asks once per chat before it acts. macOS 14 or later, Windows x64, and Linux on X11. 12 tools. Needs Biorouter 1.94.6 or later.</p>
+        <p class="item-credit">Adapted from Open Computer Use by Leo (MIT) and 2 more.</p>
         <div class="ext-footer">
           <div class="ext-tags"><span class="tag public" data-privacy-badge>Public</span><span class="tag mcp">MCP</span><span class="tag">Desktop</span><span class="tag">Accessibility</span><span class="tag">Linux</span></div>
           <a href="https://github.com/BaranziniLab/OpenComputerUseAgent/releases/download/v0.1.2/opencomputeruseagent.brxt" class="brxt-chip">
@@ -292,6 +300,7 @@
           </a>
         </div>
         <p class="ext-desc">Search NCI Imaging Data Commons through IDC's official hosted MCP server: collections, attributes, clinical tables, cohorts, download URLs, viewer links and SQL over IDC's index. Public data, no key needed. 20 tools.</p>
+        <p class="item-credit">Bridges to IDC MCP server by Imaging Data Commons; extension by the Baranzini Lab.</p>
         <div class="ext-footer">
           <div class="ext-tags"><span class="tag public" data-privacy-badge>Public</span><span class="tag mcp">MCP</span><span class="tag">IDC</span><span class="tag">Cancer Imaging</span><span class="tag">DICOM</span><span class="tag">Apache-2.0</span></div>
           <a href="https://github.com/BaranziniLab/IDCAgent/releases/download/v0.2.0/idcagent.brxt" class="brxt-chip">
@@ -316,6 +325,7 @@
           </a>
         </div>
         <p class="ext-desc">Biorouter rebuild of Folklore MCP 2.0.0: eleven public tools for GRCh38 germline variant classification under ACMG/AMP, gene profiles, ClinGen associations and scientific literature. Use public inputs only; do not send patient or private case data. Results require qualified professional review and are not a diagnosis or treatment recommendation.</p>
+        <p class="item-credit">Runs Folklore MCP 2.0.0 by Helena Bioinformatics (Apache-2.0); extension by the Baranzini Lab.</p>
         <div class="ext-footer">
           <div class="ext-tags"><span class="tag public" data-privacy-badge>Public</span><span class="tag mcp">MCP</span><span class="tag">Variants</span><span class="tag">Literature</span><span class="tag">ACMG/AMP</span><span class="tag">Apache-2.0</span></div>
           <a href="https://github.com/Broccolito/folklore-mcp/releases/download/folklore-biorouter-v2.0.0%2Bbiorouter.1/folklore-clinical-variant-interpretation-mcp.brxt" class="brxt-chip">
@@ -326,7 +336,7 @@
       </div>
 
       <!-- BioMCPAgent -->
-      <div class="ext-card" data-license="Apache-2.0 AND MIT">
+      <div class="ext-card" data-license="Apache-2.0">
         <div class="ext-card-header">
           <div class="icon-tile">
             <svg class="icon" viewBox="0 0 24 24"><path d="M2 15c6.667-6 13.333 0 20-6"/><path d="M9 22c1.798-1.998 2.518-3.995 2.807-5.993"/><path d="M15 2c-1.798 1.998-2.518 3.995-2.807 5.993"/><path d="m17 6-2.5-2.5"/><path d="m14 8-1-1"/><path d="m7 18 2.5 2.5"/><path d="m3.5 14.5.5.5"/><path d="m20 9 .5.5"/><path d="m6.5 12.5 1 1"/><path d="m16.5 10.5 1 1"/><path d="m10 16 1.5 1.5"/></svg>
@@ -340,6 +350,7 @@
           </a>
         </div>
         <p class="ext-desc">Entity-centred biomedical search with <a href="https://github.com/genomoncology/biomcp" target="_blank" style="color:var(--accent);">BioMCP</a> 0.9.3 (MIT): genes, variants, drugs, diseases and trials across PubMed, Europe PMC, PubTator, ClinVar, MyVariant, MyGene, ClinicalTrials.gov, OncoKB, OpenFDA, Reactome and cBioPortal. Each data source's own terms apply, and some restrict commercial or clinical use. Replaces ClinicalVariantAgent. 7 tools.</p>
+        <p class="item-credit">Runs BioMCP 0.9.3 by Ian Maurer (MIT); extension by the Baranzini Lab.</p>
         <div class="ext-footer">
           <div class="ext-tags"><span class="tag public" data-privacy-badge>Public</span><span class="tag mcp">MCP</span><span class="tag">Variants</span><span class="tag">Trials</span><span class="tag">Genes</span></div>
           <a href="https://github.com/BaranziniLab/BioMCPAgent/releases/download/v0.1.0/biomcpagent.brxt" class="brxt-chip">
@@ -364,6 +375,7 @@
           </a>
         </div>
         <p class="ext-desc">Compute molecular descriptors, fingerprint similarity, substructure matches and standardised structures locally with RDKit, and look up compounds in PubChem and ChEMBL. No key needed. 6 tools.</p>
+        <p class="item-credit">Made by the Baranzini Lab (Wanjun Gu, UCSF).</p>
         <div class="ext-footer">
           <div class="ext-tags"><span class="tag public" data-privacy-badge>Public</span><span class="tag mcp">MCP</span><span class="tag">RDKit</span><span class="tag">ChEMBL</span><span class="tag">Molecules</span><span class="tag">Apache-2.0</span></div>
           <a href="https://github.com/BaranziniLab/ChemoinformaticsAgent/releases/download/v0.2.0/chemoinformaticsagent.brxt" class="brxt-chip">
@@ -388,6 +400,7 @@
           </a>
         </div>
         <p class="ext-desc">Simulate Opentrons Flex protocols with the opentrons 10.1.0 package and look up the labware definitions it ships, plus Opentrons shared data on GitHub. A simulation runs the protocol's Python on this computer after a static check, stops after 60 seconds, and Biorouter asks before each run. It never talks to a robot. No key needed. 5 tools.</p>
+        <p class="item-credit">Made by the Baranzini Lab (Wanjun Gu, UCSF).</p>
         <div class="ext-footer">
           <div class="ext-tags"><span class="tag public" data-privacy-badge>Public</span><span class="tag">MCP</span><span class="tag">Opentrons</span><span class="tag">Robotics</span><span class="tag">Protocols</span><span class="tag">Apache-2.0</span></div>
           <a href="https://github.com/BaranziniLab/OpentronsAgent/releases/download/v0.3.0/opentronsagent.brxt" class="brxt-chip">
@@ -412,6 +425,7 @@
           </a>
         </div>
         <p class="ext-desc">Search, filter and describe a LaminDB instance's artifacts, collections, runs, features and labels, with their lineage, through the lamindb 2.12.2 library. Read only: nothing is saved, deleted or moved. Your LaminDB key goes only to Lamin. 6 tools.</p>
+        <p class="item-credit">Made by the Baranzini Lab (Wanjun Gu, UCSF).</p>
         <div class="ext-footer">
           <div class="ext-tags"><span class="tag public" data-privacy-badge>Public</span><span class="tag">MCP</span><span class="tag">LaminDB</span><span class="tag">Data Registry</span><span class="tag">Lineage</span><span class="tag">Apache-2.0</span></div>
           <a href="https://github.com/BaranziniLab/LaminDBAgent/releases/download/v0.3.0/lamindbagent.brxt" class="brxt-chip">
@@ -436,6 +450,7 @@
           </a>
         </div>
         <p class="ext-desc">Query the CELLxGENE Census of single-cell data with the cellxgene-census library: releases, datasets, cell counts, cell metadata and per-group gene expression summaries with size caps, plus the CELLxGENE Discover curation API. Replaces SingleCellOmicsAgent. No key needed.</p>
+        <p class="item-credit">Made by the Baranzini Lab (Wanjun Gu, UCSF).</p>
         <div class="ext-footer">
           <div class="ext-tags"><span class="tag public" data-privacy-badge>Public</span><span class="tag">MCP</span><span class="tag">CELLxGENE</span><span class="tag">Single-cell</span><span class="tag">Atlas</span><span class="tag">Apache-2.0</span></div>
           <a href="https://github.com/BaranziniLab/CellxGeneCensusAgent/releases/download/v0.2.0/cellxgenecensusagent.brxt" class="brxt-chip">
@@ -460,6 +475,7 @@
           </a>
         </div>
         <p class="ext-desc">Download the PrimeKG precision medicine knowledge graph once from Harvard Dataverse (about 1 GB, checksums checked) and query it on this computer: node lookup, neighbours and short paths between drugs, diseases, genes and phenotypes. No key needed.</p>
+        <p class="item-credit">Made by the Baranzini Lab (Wanjun Gu, UCSF).</p>
         <div class="ext-footer">
           <div class="ext-tags"><span class="tag public" data-privacy-badge>Public</span><span class="tag">MCP</span><span class="tag">PrimeKG</span><span class="tag">Knowledge Graph</span><span class="tag">Biomedical</span><span class="tag">Apache-2.0</span></div>
           <a href="https://github.com/BaranziniLab/PrimeKGAgent/releases/download/v0.2.0/primekgagent.brxt" class="brxt-chip">
@@ -484,6 +500,7 @@
           </a>
         </div>
         <p class="ext-desc">Convert files the built-in document tools do not read to Markdown with Microsoft's MarkItDown 0.1.9 (MIT): PowerPoint, EPUB, Outlook .msg, older .xls, notebooks, ZIP archives, image and audio metadata, YouTube transcripts, RSS and Wikipedia pages. One tool.</p>
+        <p class="item-credit">Runs MarkItDown 0.1.9 by Microsoft Corporation (MIT); extension by the Baranzini Lab.</p>
         <div class="ext-footer">
           <div class="ext-tags"><span class="tag public" data-privacy-badge>Public</span><span class="tag">MCP</span><span class="tag">MarkItDown</span><span class="tag">Documents</span><span class="tag">Markdown</span><span class="tag">Apache-2.0 AND MIT</span></div>
           <a href="https://github.com/BaranziniLab/MarkItDownAgent/releases/download/v0.3.1/markitdownagent.brxt" class="brxt-chip">
@@ -508,6 +525,7 @@
           </a>
         </div>
         <p class="ext-desc">Submit Rowan cloud molecular modelling workflows (pKa, conformers, descriptors, solubility, docking and more) for a molecule, poll their status and read their results, through rowan-python 3.3.4. A submission spends Rowan credits, so Biorouter asks before every one. Your Rowan key goes only to api.rowansci.com. 7 tools. Needs Python 3.13 or later.</p>
+        <p class="item-credit">Made by the Baranzini Lab (Wanjun Gu, UCSF).</p>
         <div class="ext-footer">
           <div class="ext-tags"><span class="tag public" data-privacy-badge>Public</span><span class="tag">MCP</span><span class="tag">Rowan</span><span class="tag">Molecular Modeling</span><span class="tag">MedChem</span><span class="tag">Apache-2.0</span></div>
           <a href="https://github.com/BaranziniLab/RowanMolecularModelingAgent/releases/download/v0.3.0/rowanmolecularmodelingagent.brxt" class="brxt-chip">
@@ -532,6 +550,7 @@
           </a>
         </div>
         <p class="ext-desc">Read Benchling projects, registry records, notebook entries and assay metadata, and make writes that Biorouter asks you to approve. Your key goes only to your own tenant. Tools: <code>benchling_status</code>, <code>benchling_get</code>, <code>benchling_write</code>.</p>
+        <p class="item-credit">Made by the Baranzini Lab (Wanjun Gu, UCSF).</p>
         <div class="ext-footer">
           <div class="ext-tags"><span class="tag public" data-privacy-badge>Public</span><span class="tag mcp">MCP</span><span class="tag">Benchling</span><span class="tag">ELN</span><span class="tag">Registry</span><span class="tag">Apache-2.0</span></div>
           <a href="https://github.com/BaranziniLab/BenchlingAgent/releases/download/v0.2.0/benchlingagent.brxt" class="brxt-chip">
@@ -556,6 +575,7 @@
           </a>
         </div>
         <p class="ext-desc">Read DNAnexus projects, files, apps, workflows and job metadata, and make writes that Biorouter asks you to approve. Your token goes only to api.dnanexus.com. Tools: <code>dnanexus_status</code>, <code>dnanexus_get</code>, <code>dnanexus_write</code>.</p>
+        <p class="item-credit">Made by the Baranzini Lab (Wanjun Gu, UCSF).</p>
         <div class="ext-footer">
           <div class="ext-tags"><span class="tag public" data-privacy-badge>Public</span><span class="tag mcp">MCP</span><span class="tag">DNAnexus</span><span class="tag">Cloud</span><span class="tag">Workflows</span><span class="tag">Apache-2.0</span></div>
           <a href="https://github.com/BaranziniLab/DNAnexusAgent/releases/download/v0.2.0/dnanexusagent.brxt" class="brxt-chip">
@@ -580,6 +600,7 @@
           </a>
         </div>
         <p class="ext-desc">Search and read protocols.io protocols for method discovery, citation and reproducible protocol review. Your access token goes only to www.protocols.io. Tools: <code>protocolsio_status</code>, <code>protocolsio_get</code>.</p>
+        <p class="item-credit">Made by the Baranzini Lab (Wanjun Gu, UCSF).</p>
         <div class="ext-footer">
           <div class="ext-tags"><span class="tag public" data-privacy-badge>Public</span><span class="tag mcp">MCP</span><span class="tag">Protocols.io</span><span class="tag">Methods</span><span class="tag">Protocols</span><span class="tag">Apache-2.0</span></div>
           <a href="https://github.com/BaranziniLab/ProtocolsIOAgent/releases/download/v0.2.0/protocolsioagent.brxt" class="brxt-chip">
@@ -604,6 +625,7 @@
           </a>
         </div>
         <p class="ext-desc">Read Adaptyv Foundry targets, sequences, experiments, quotes and results, and make writes that Biorouter asks you to approve. Your token goes only to devs.adaptyvbio.com. Tools: <code>adaptyv_status</code>, <code>adaptyv_get</code>, <code>adaptyv_write</code>.</p>
+        <p class="item-credit">Made by the Baranzini Lab (Wanjun Gu, UCSF).</p>
         <div class="ext-footer">
           <div class="ext-tags"><span class="tag public" data-privacy-badge>Public</span><span class="tag">MCP</span><span class="tag">Adaptyv</span><span class="tag">Protein Engineering</span><span class="tag">Biofoundry</span><span class="tag">Apache-2.0</span></div>
           <a href="https://github.com/BaranziniLab/AdaptyvBioFoundryAgent/releases/download/v0.2.0/adaptyvbiofoundryagent.brxt" class="brxt-chip">
@@ -628,6 +650,7 @@
           </a>
         </div>
         <p class="ext-desc">Read Tamarind Bio tools, jobs, files and results, and make writes that Biorouter asks you to approve. Your key goes only to app.tamarind.bio. Tools: <code>tamarind_status</code>, <code>tamarind_get</code>, <code>tamarind_write</code>.</p>
+        <p class="item-credit">Made by the Baranzini Lab (Wanjun Gu, UCSF).</p>
         <div class="ext-footer">
           <div class="ext-tags"><span class="tag public" data-privacy-badge>Public</span><span class="tag">MCP</span><span class="tag">Tamarind</span><span class="tag">Protein Design</span><span class="tag">Docking</span><span class="tag">Apache-2.0</span></div>
           <a href="https://github.com/BaranziniLab/TamarindBioAgent/releases/download/v0.2.0/tamarindbioagent.brxt" class="brxt-chip">
@@ -652,6 +675,7 @@
           </a>
         </div>
         <p class="ext-desc">Read protein structure and sequence resources from RCSB PDB, AlphaFold DB and UniProt. Read only, no key needed. Tools: <code>proteinstructure_status</code>, <code>proteinstructure_get</code>.</p>
+        <p class="item-credit">Made by the Baranzini Lab (Wanjun Gu, UCSF).</p>
         <div class="ext-footer">
           <div class="ext-tags"><span class="tag public" data-privacy-badge>Public</span><span class="tag mcp">MCP</span><span class="tag">PDB</span><span class="tag">AlphaFold</span><span class="tag">Proteins</span><span class="tag">Apache-2.0</span></div>
           <a href="https://github.com/BaranziniLab/ProteinStructureAgent/releases/download/v0.2.0/proteinstructureagent.brxt" class="brxt-chip">
@@ -676,6 +700,7 @@
           </a>
         </div>
         <p class="ext-desc">Search and read scholarly metadata from OpenAlex, Crossref, PubMed, Semantic Scholar, bioRxiv and medRxiv, and Unpaywall for citation checks and evidence review. Your Semantic Scholar key goes only to Semantic Scholar. Replaces StructuredPaperSearchAgent. Tools: <code>literature_status</code>, <code>literature_get</code>.</p>
+        <p class="item-credit">Made by the Baranzini Lab (Wanjun Gu, UCSF).</p>
         <div class="ext-footer">
           <div class="ext-tags"><span class="tag public" data-privacy-badge>Public</span><span class="tag mcp">MCP</span><span class="tag">Literature</span><span class="tag">PubMed</span><span class="tag">Evidence</span><span class="tag">Apache-2.0</span></div>
           <a href="https://github.com/BaranziniLab/LiteratureAgent/releases/download/v0.2.0/literatureagent.brxt" class="brxt-chip">
@@ -700,6 +725,7 @@
           </a>
         </div>
         <p class="ext-desc">Look up genes, sequences, proteins, variants and drug-gene annotations in NCBI E-utilities and BLAST, UniProt, Ensembl and ClinPGx. Read only, no key needed. Replaces NCBIAgent. Tools: <code>publicdb_status</code>, <code>publicdb_get</code>.</p>
+        <p class="item-credit">Made by the Baranzini Lab (Wanjun Gu, UCSF).</p>
         <div class="ext-footer">
           <div class="ext-tags"><span class="tag public" data-privacy-badge>Public</span><span class="tag">MCP</span><span class="tag">Public Databases</span><span class="tag">Provenance</span><span class="tag">Lookup</span><span class="tag">Apache-2.0</span></div>
           <a href="https://github.com/BaranziniLab/UnifiedPublicDatabaseLookupAgent/releases/download/v0.2.0/unifiedpublicdatabaselookupagent.brxt" class="brxt-chip">
@@ -724,6 +750,7 @@
           </a>
         </div>
         <p class="ext-desc">Read Zotero libraries, collections, items and tags through the Zotero web API, and add items or collections with approval. Your key goes only to api.zotero.org. Tools: <code>zotero_status</code>, <code>zotero_get</code>, <code>zotero_write</code>.</p>
+        <p class="item-credit">Made by the Baranzini Lab (Wanjun Gu, UCSF).</p>
         <div class="ext-footer">
           <div class="ext-tags"><span class="tag public" data-privacy-badge>Public</span><span class="tag">MCP</span><span class="tag">Zotero</span><span class="tag">Citations</span><span class="tag">Library</span><span class="tag">Apache-2.0</span></div>
           <a href="https://github.com/BaranziniLab/ZoteroAgent/releases/download/v0.2.0/zoteroagent.brxt" class="brxt-chip">
@@ -748,6 +775,7 @@
           </a>
         </div>
         <p class="ext-desc">Search the web for scientific sources with Exa and Tavily, with typed search tools. Each key goes only to its own service. Tools: <code>webresearch_status</code>, <code>webresearch_get</code>.</p>
+        <p class="item-credit">Made by the Baranzini Lab (Wanjun Gu, UCSF).</p>
         <div class="ext-footer">
           <div class="ext-tags"><span class="tag public" data-privacy-badge>Public</span><span class="tag">MCP</span><span class="tag">Web Research</span><span class="tag">Search</span><span class="tag">Sources</span><span class="tag">Apache-2.0</span></div>
           <a href="https://github.com/BaranziniLab/ScientificWebResearchAgent/releases/download/v0.2.0/scientificwebresearchagent.brxt" class="brxt-chip">
@@ -759,6 +787,7 @@
 
     </div>
       <div class="no-results" id="extensions-no-results" style="display:none;">No extensions match your search. <a href="https://join.slack.com/t/ucsfbiorouter/shared_invite/zt-41rw0wjnm-0ENbObXPsUJWObnvTp4v6A">Ask for one in Slack</a></div>
+      <p class="shelf-curator">Curated and organized by Wanjun Gu, Baranzini Lab, UCSF.</p>
     </div>
 
     <!-- WORKFLOWS -->
@@ -787,6 +816,7 @@
         </div>
       </div>
       <div class="no-results" id="workflows-no-results" style="display:none;">No workflows match your search. <a href="https://join.slack.com/t/ucsfbiorouter/shared_invite/zt-41rw0wjnm-0ENbObXPsUJWObnvTp4v6A">Ask for one in Slack</a></div>
+      <p class="shelf-curator">Curated and organized by Wanjun Gu, Baranzini Lab, UCSF.</p>
     </div>
 
     <!-- SKILLS -->
@@ -818,6 +848,7 @@
             <div class="skill-meta"><h3>Scientific Research</h3><div class="skill-type">User-invocable · /scientific-research</div></div>
           </div>
           <p class="skill-desc">End-to-end research: scopes the question, reviews real literature, generates hypotheses, plans and verifies the analysis, then writes a cited draft. Delegates biomedical data queries to whichever data extensions are installed. It never fabricates a citation or result.</p>
+          <p class="item-credit">Made by the Baranzini Lab (Wanjun Gu, UCSF).</p>
           <div class="skill-footer">
             <div class="skill-tags"><span class="tag">Research</span><span class="tag">Literature</span><span class="tag">Verified</span></div>
             <a href="https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-scientific-research/scientific-research.zip" class="skill-dl-btn"><svg class="icon icon-sm" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7,10 12,15 17,10"/><line x1="12" y1="15" x2="12" y2="3"/></svg> .zip</a>
@@ -833,6 +864,7 @@
             <div class="skill-meta"><h3>ggplot2 Visualization</h3><div class="skill-type">Auto-applied · R plotting</div></div>
           </div>
           <p class="skill-desc">Applies ggplot2 best-practice style when writing R plotting code.</p>
+          <p class="item-credit">Adapted from llm-r-skills by John Sperger (MIT) and 1 more.</p>
           <div class="skill-footer">
             <div class="skill-tags"><span class="tag">R</span><span class="tag">ggplot2</span></div>
             <a href="https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-ggplot-visualization/ggplot-visualization.zip" class="skill-dl-btn"><svg class="icon icon-sm" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7,10 12,15 17,10"/><line x1="12" y1="15" x2="12" y2="3"/></svg> .zip</a>
@@ -848,6 +880,7 @@
             <div class="skill-meta"><h3>Single-cell</h3><div class="skill-type">15 skills · auto-applied</div></div>
           </div>
           <p class="skill-desc">scRNA-seq clustering, annotation, trajectory, and integration.</p>
+          <p class="item-credit">From bioSkills by GPTomics (MIT), packaged for Biorouter by the Baranzini Lab.</p>
           <div class="skill-footer">
             <div class="skill-tags"><span class="tag">Scanpy</span><span class="tag">Seurat</span><span class="tag">scVI</span></div>
             <a href="https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-single-cell/single-cell.zip" class="skill-dl-btn"><svg class="icon icon-sm" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7,10 12,15 17,10"/><line x1="12" y1="15" x2="12" y2="3"/></svg> .zip</a>
@@ -873,6 +906,7 @@
           <div class="skill-meta"><h3>Scientific Research</h3><div class="skill-type">User-invocable · /scientific-research</div></div>
         </div>
         <p class="skill-desc">End-to-end research: scopes the question, reviews real literature, generates hypotheses, plans and verifies the analysis, then writes a cited draft. Delegates biomedical data queries to whichever data extensions are installed. It never fabricates a citation or result.</p>
+        <p class="item-credit">Made by the Baranzini Lab (Wanjun Gu, UCSF).</p>
         <div class="skill-footer">
           <div class="skill-tags"><span class="tag">Research</span><span class="tag">Literature</span><span class="tag">Verified</span></div>
           <a href="https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-scientific-research/scientific-research.zip" class="skill-dl-btn">
@@ -889,6 +923,7 @@
           <div class="skill-meta"><h3>Empirical Research Router</h3><div class="skill-type">User-invocable · /empirical-research-router</div></div>
         </div>
         <p class="skill-desc">Stage-gated empirical research workflow: design register, data audit, identification, estimation, robustness, replication, and reporting.</p>
+        <p class="item-credit">Made by the Baranzini Lab (Wanjun Gu, UCSF), with ideas from Auto-Empirical Research Skills (Bryce Wang, CoPaper.AI).</p>
         <div class="skill-footer">
           <div class="skill-tags"><span class="tag">Empirical</span><span class="tag">Research</span><span class="tag">Apache-2.0</span></div>
           <a href="https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-empirical-research-router/empirical-research-router.zip" class="skill-dl-btn">
@@ -905,6 +940,7 @@
           <div class="skill-meta"><h3>Causal Identification Gates</h3><div class="skill-type">User-invocable · /causal-identification-gates</div></div>
         </div>
         <p class="skill-desc">Audits whether RCT, observational, IV, RDD, DiD, synthetic-control, matching, DML, or survival designs support causal language.</p>
+        <p class="item-credit">Made by the Baranzini Lab (Wanjun Gu, UCSF), with ideas from Auto-Empirical Research Skills (Bryce Wang, CoPaper.AI).</p>
         <div class="skill-footer">
           <div class="skill-tags"><span class="tag">Causal</span><span class="tag">Methods</span><span class="tag">Apache-2.0</span></div>
           <a href="https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-causal-identification-gates/causal-identification-gates.zip" class="skill-dl-btn">
@@ -921,6 +957,7 @@
           <div class="skill-meta"><h3>Replication Package Audit</h3><div class="skill-type">User-invocable · /replication-package-audit</div></div>
         </div>
         <p class="skill-desc">Checks research packages for clean-run reproducibility, relative paths, environment capture, seeds, logs, and table/figure mapping.</p>
+        <p class="item-credit">Adapted from medsci-skills by Aperivue (MIT) and 9 more.</p>
         <div class="skill-footer">
           <div class="skill-tags"><span class="tag">Reproducibility</span><span class="tag">Audit</span><span class="tag">Apache-2.0 AND MIT AND BSD-3-Clause AND CC-BY-4.0 AND CC0-1.0</span></div>
           <a href="https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-replication-package-audit/replication-package-audit.zip" class="skill-dl-btn">
@@ -937,6 +974,7 @@
           <div class="skill-meta"><h3>Claim Evidence Integrity</h3><div class="skill-type">User-invocable · /claim-evidence-integrity</div></div>
         </div>
         <p class="skill-desc">Verifies that manuscript claims, numbers, citations, figures, and tables are grounded in traceable evidence.</p>
+        <p class="item-credit">Adapted from medsci-skills by Aperivue (MIT).</p>
         <div class="skill-footer">
           <div class="skill-tags"><span class="tag">Claims</span><span class="tag">Evidence</span><span class="tag">Apache-2.0 AND MIT</span></div>
           <a href="https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-claim-evidence-integrity/claim-evidence-integrity.zip" class="skill-dl-btn">
@@ -953,6 +991,7 @@
           <div class="skill-meta"><h3>Empirical Benchmark Harness</h3><div class="skill-type">User-invocable · /empirical-benchmark-harness</div></div>
         </div>
         <p class="skill-desc">Known-answer benchmark patterns for testing whether empirical-analysis agents avoid common causal and reproducibility failures.</p>
+        <p class="item-credit">Made by the Baranzini Lab (Wanjun Gu, UCSF), with ideas from Auto-Empirical Research Skills (Bryce Wang, CoPaper.AI).</p>
         <div class="skill-footer">
           <div class="skill-tags"><span class="tag">Benchmarks</span><span class="tag">Eval</span><span class="tag">Apache-2.0</span></div>
           <a href="https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-empirical-benchmark-harness/empirical-benchmark-harness.zip" class="skill-dl-btn">
@@ -969,6 +1008,7 @@
           <div class="skill-meta"><h3>Scientific Artifacts</h3><div class="skill-type">User-invocable · /scientific-artifacts</div></div>
         </div>
         <p class="skill-desc">Plans and verifies DOCX/PDF/PPTX/XLSX/LaTeX/scientific figure artifacts with source-to-exhibit mapping.</p>
+        <p class="item-credit">Adapted from diagram-design by Cathryn Lavery (MIT) and 6 more.</p>
         <div class="skill-footer">
           <div class="skill-tags"><span class="tag">Documents</span><span class="tag">Slides</span><span class="tag">Apache-2.0 AND MIT AND CC0-1.0</span></div>
           <a href="https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-scientific-artifacts/scientific-artifacts.zip" class="skill-dl-btn">
@@ -985,6 +1025,7 @@
           <div class="skill-meta"><h3>Scientific Data Engineering</h3><div class="skill-type">User-invocable · /scientific-data-engineering</div></div>
         </div>
         <p class="skill-desc">Plans scalable scientific data workflows with Polars, Dask, Zarr, TileDB, Arrow/Parquet, HDF5, and dataset versioning.</p>
+        <p class="item-credit">Adapted from Scientific Agent Skills by K-Dense Inc. (MIT, BSD-3-Clause, Apache-2.0).</p>
         <div class="skill-footer">
           <div class="skill-tags"><span class="tag">Data</span><span class="tag">Pipelines</span><span class="tag">Apache-2.0 AND MIT AND BSD-3-Clause</span></div>
           <a href="https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-scientific-data-engineering/scientific-data-engineering.zip" class="skill-dl-btn">
@@ -1001,6 +1042,7 @@
           <div class="skill-meta"><h3>Statistical Modeling and Bayes</h3><div class="skill-type">User-invocable · /statistical-modeling-bayes</div></div>
         </div>
         <p class="skill-desc">Designs and critiques statistical, Bayesian, survival, hierarchical, power, and uncertainty-reporting workflows.</p>
+        <p class="item-credit">Adapted from Scientific Agent Skills by K-Dense Inc. (MIT, BSD-3-Clause, Apache-2.0) and 1 more.</p>
         <div class="skill-footer">
           <div class="skill-tags"><span class="tag">Statistics</span><span class="tag">Bayes</span><span class="tag">Apache-2.0 AND MIT AND BSD-3-Clause</span></div>
           <a href="https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-statistical-modeling-bayes/statistical-modeling-bayes.zip" class="skill-dl-btn">
@@ -1017,6 +1059,7 @@
           <div class="skill-meta"><h3>Scientific Machine Learning</h3><div class="skill-type">User-invocable · /scientific-machine-learning</div></div>
         </div>
         <p class="skill-desc">Plans scientific ML with leakage checks, transformers, graph neural networks, active learning, SHAP, and reproducibility gates.</p>
+        <p class="item-credit">Adapted from Scientific Agent Skills by K-Dense Inc. (BSD-3-Clause, Apache-2.0, MIT).</p>
         <div class="skill-footer">
           <div class="skill-tags"><span class="tag">ML</span><span class="tag">Explainability</span><span class="tag">Apache-2.0 AND MIT AND BSD-3-Clause</span></div>
           <a href="https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-scientific-machine-learning/scientific-machine-learning.zip" class="skill-dl-btn">
@@ -1033,6 +1076,7 @@
           <div class="skill-meta"><h3>Geospatial Science</h3><div class="skill-type">User-invocable · /geospatial-science</div></div>
         </div>
         <p class="skill-desc">Handles geospatial analysis with CRS checks, spatial joins, rasters/vectors, maps, and spatial statistics.</p>
+        <p class="item-credit">Adapted from Scientific Agent Skills by K-Dense Inc. (MIT).</p>
         <div class="skill-footer">
           <div class="skill-tags"><span class="tag">Geospatial</span><span class="tag">Maps</span><span class="tag">Apache-2.0 AND MIT</span></div>
           <a href="https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-geospatial-science/geospatial-science.zip" class="skill-dl-btn">
@@ -1049,6 +1093,7 @@
           <div class="skill-meta"><h3>Neurophysiology Analysis</h3><div class="skill-type">User-invocable · /neurophysiology-analysis</div></div>
         </div>
         <p class="skill-desc">Plans biosignal and neural-recording analysis: ECG/EDA/PPG, spike sorting, Neuropixels metadata, and peri-event QC.</p>
+        <p class="item-credit">Adapted from Scientific Agent Skills by K-Dense Inc. (MIT).</p>
         <div class="skill-footer">
           <div class="skill-tags"><span class="tag">Signals</span><span class="tag">Neural</span><span class="tag">Apache-2.0 AND MIT</span></div>
           <a href="https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-neurophysiology-analysis/neurophysiology-analysis.zip" class="skill-dl-btn">
@@ -1065,6 +1110,7 @@
           <div class="skill-meta"><h3>Quantum Scientific Computing</h3><div class="skill-type">User-invocable · /quantum-scientific-computing</div></div>
         </div>
         <p class="skill-desc">Routes quantum and scientific simulation work across Qiskit, Cirq, PennyLane, QuTiP, and validation checks.</p>
+        <p class="item-credit">Adapted from Scientific Agent Skills by K-Dense Inc. (Apache-2.0, MIT).</p>
         <div class="skill-footer">
           <div class="skill-tags"><span class="tag">Quantum</span><span class="tag">Simulation</span><span class="tag">Apache-2.0 AND MIT</span></div>
           <a href="https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-quantum-scientific-computing/quantum-scientific-computing.zip" class="skill-dl-btn">
@@ -1081,6 +1127,7 @@
           <div class="skill-meta"><h3>Materials Informatics</h3><div class="skill-type">User-invocable · /materials-informatics</div></div>
         </div>
         <p class="skill-desc">Guides computational materials workflows with structures, crystals, compositions, phase diagrams, and dataset provenance.</p>
+        <p class="item-credit">Adapted from Scientific Agent Skills by K-Dense Inc. (MIT).</p>
         <div class="skill-footer">
           <div class="skill-tags"><span class="tag">Materials</span><span class="tag">Crystals</span><span class="tag">Apache-2.0 AND MIT</span></div>
           <a href="https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-materials-informatics/materials-informatics.zip" class="skill-dl-btn">
@@ -1097,6 +1144,7 @@
           <div class="skill-meta"><h3>Biomedical Imaging and Pathology</h3><div class="skill-type">User-invocable · /biomedical-imaging-pathology</div></div>
         </div>
         <p class="skill-desc">Plans DICOM/pathology/PACS workflows with tiling, metadata, QC, cohort provenance, and privacy-safe reporting.</p>
+        <p class="item-credit">Adapted from Scientific Agent Skills by K-Dense Inc. (MIT, Apache-2.0).</p>
         <div class="skill-footer">
           <div class="skill-tags"><span class="tag">Imaging</span><span class="tag">Pathology</span><span class="tag">Apache-2.0 AND MIT</span></div>
           <a href="https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-biomedical-imaging-pathology/biomedical-imaging-pathology.zip" class="skill-dl-btn">
@@ -1113,6 +1161,7 @@
           <div class="skill-meta"><h3>Citation Library Management</h3><div class="skill-type">User-invocable · /citation-library-management</div></div>
         </div>
         <p class="skill-desc">Builds, cleans, verifies, and deduplicates Zotero/BibTeX/RIS/CSL citation libraries.</p>
+        <p class="item-credit">Adapted from Scientific Agent Skills by K-Dense Inc. (MIT).</p>
         <div class="skill-footer">
           <div class="skill-tags"><span class="tag">Citations</span><span class="tag">Zotero</span><span class="tag">Apache-2.0 AND MIT</span></div>
           <a href="https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-citation-library-management/citation-library-management.zip" class="skill-dl-btn">
@@ -1129,6 +1178,7 @@
           <div class="skill-meta"><h3>Laboratory Automation Planning</h3><div class="skill-type">User-invocable · /laboratory-automation-planning</div></div>
         </div>
         <p class="skill-desc">Plans Opentrons/cloud-lab workflows with plate maps, protocol simulation, sample metadata, and execution gates.</p>
+        <p class="item-credit">Adapted from Scientific Agent Skills by K-Dense Inc. (MIT).</p>
         <div class="skill-footer">
           <div class="skill-tags"><span class="tag">Lab Automation</span><span class="tag">Protocols</span><span class="tag">Apache-2.0 AND MIT</span></div>
           <a href="https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-laboratory-automation-planning/laboratory-automation-planning.zip" class="skill-dl-btn">
@@ -1145,6 +1195,7 @@
           <div class="skill-meta"><h3>Econometrics Toolkit</h3><div class="skill-type">User-invocable · /econometrics-toolkit</div></div>
         </div>
         <p class="skill-desc">Plans applied econometrics in Python, R, or Stata: panel data, IV, DiD, RDD, clustering, and replication tables.</p>
+        <p class="item-credit">Adapted from Scientific Agent Skills by K-Dense Inc. (BSD-3-Clause).</p>
         <div class="skill-footer">
           <div class="skill-tags"><span class="tag">Econometrics</span><span class="tag">Causal</span><span class="tag">Apache-2.0 AND BSD-3-Clause</span></div>
           <a href="https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-econometrics-toolkit/econometrics-toolkit.zip" class="skill-dl-btn">
@@ -1161,6 +1212,7 @@
           <div class="skill-meta"><h3>Systematic Review and PRISMA</h3><div class="skill-type">User-invocable · /systematic-review-prisma</div></div>
         </div>
         <p class="skill-desc">Runs systematic-review workflows: PICO, search strings, screening logs, PRISMA flow, extraction, risk of bias, and synthesis.</p>
+        <p class="item-credit">Adapted from medsci-skills by Aperivue (MIT) and 2 more.</p>
         <div class="skill-footer">
           <div class="skill-tags"><span class="tag">PRISMA</span><span class="tag">Review</span><span class="tag">Apache-2.0 AND MIT</span></div>
           <a href="https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-systematic-review-prisma/systematic-review-prisma.zip" class="skill-dl-btn">
@@ -1177,6 +1229,7 @@
           <div class="skill-meta"><h3>Simulation and Optimization</h3><div class="skill-type">User-invocable · /simulation-optimization</div></div>
         </div>
         <p class="skill-desc">Plans discrete-event simulation, multi-objective optimization, sensitivity analysis, scheduling, and what-if modeling.</p>
+        <p class="item-credit">Adapted from Scientific Agent Skills by K-Dense Inc. (MIT, Apache-2.0).</p>
         <div class="skill-footer">
           <div class="skill-tags"><span class="tag">Simulation</span><span class="tag">Optimization</span><span class="tag">Apache-2.0 AND MIT</span></div>
           <a href="https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-simulation-optimization/simulation-optimization.zip" class="skill-dl-btn">
@@ -1193,6 +1246,7 @@
           <div class="skill-meta"><h3>Physical Science Computing</h3><div class="skill-type">User-invocable · /physical-science-computing</div></div>
         </div>
         <p class="skill-desc">Routes astronomy, physics, units, coordinate systems, spectra, numerical experiments, and physical-science workflows.</p>
+        <p class="item-credit">Adapted from Scientific Agent Skills by K-Dense Inc. (MIT, BSD-3-Clause).</p>
         <div class="skill-footer">
           <div class="skill-tags"><span class="tag">Physics</span><span class="tag">Astronomy</span><span class="tag">Apache-2.0 AND MIT AND BSD-3-Clause</span></div>
           <a href="https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-physical-science-computing/physical-science-computing.zip" class="skill-dl-btn">
@@ -1211,6 +1265,7 @@
           <div class="skill-meta"><h3>Clinical Decision Support Review</h3><div class="skill-type">User-invocable · /clinical-decision-support-review</div></div>
         </div>
         <p class="skill-desc">Reviews clinical decision support, treatment plans, and reports for evidence grounding, safety scope, and no-PHI handling.</p>
+        <p class="item-credit">Adapted from Scientific Agent Skills by K-Dense Inc. (MIT).</p>
         <div class="skill-footer">
           <div class="skill-tags"><span class="tag">Clinical</span><span class="tag">Safety</span><span class="tag">Apache-2.0 AND MIT</span></div>
           <a href="https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-clinical-decision-support-review/clinical-decision-support-review.zip" class="skill-dl-btn">
@@ -1227,6 +1282,7 @@
           <div class="skill-meta"><h3>Grant and Funding Strategy</h3><div class="skill-type">User-invocable · /grant-funding-strategy</div></div>
         </div>
         <p class="skill-desc">Structures research grants, specific aims, milestones, reviewer-risk responses, and funder-fit checks.</p>
+        <p class="item-credit">Adapted from Scientific Agent Skills by K-Dense Inc. (MIT) and 1 more.</p>
         <div class="skill-footer">
           <div class="skill-tags"><span class="tag">Grants</span><span class="tag">Funding</span><span class="tag">Apache-2.0 AND MIT</span></div>
           <a href="https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-grant-funding-strategy/grant-funding-strategy.zip" class="skill-dl-btn">
@@ -1243,6 +1299,7 @@
           <div class="skill-meta"><h3>Regulatory and Quality Systems</h3><div class="skill-type">User-invocable · /regulatory-quality-systems</div></div>
         </div>
         <p class="skill-desc">Reviews scientific software, device, and lab processes against quality, validation, traceability, and design-control gates.</p>
+        <p class="item-credit">Adapted from Scientific Agent Skills by K-Dense Inc. (MIT).</p>
         <div class="skill-footer">
           <div class="skill-tags"><span class="tag">Regulatory</span><span class="tag">QMS</span><span class="tag">Apache-2.0 AND MIT</span></div>
           <a href="https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-regulatory-quality-systems/regulatory-quality-systems.zip" class="skill-dl-btn">
@@ -1259,6 +1316,7 @@
           <div class="skill-meta"><h3>GPU Compute Optimization</h3><div class="skill-type">User-invocable · /gpu-compute-optimization</div></div>
         </div>
         <p class="skill-desc">Plans GPU-bound training/inference, batching, profiling, memory pressure, mixed precision, and reproducible compute.</p>
+        <p class="item-credit">Adapted from Scientific Agent Skills by K-Dense Inc. (MIT).</p>
         <div class="skill-footer">
           <div class="skill-tags"><span class="tag">GPU</span><span class="tag">Performance</span><span class="tag">Apache-2.0 AND MIT</span></div>
           <a href="https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-gpu-compute-optimization/gpu-compute-optimization.zip" class="skill-dl-btn">
@@ -1275,6 +1333,7 @@
           <div class="skill-meta"><h3>Research Evaluation and Venues</h3><div class="skill-type">User-invocable · /research-evaluation-venues</div></div>
         </div>
         <p class="skill-desc">Evaluates papers, scholars, venues, impact claims, reviewer fit, and publication positioning.</p>
+        <p class="item-credit">Adapted from Scientific Agent Skills by K-Dense Inc. (MIT).</p>
         <div class="skill-footer">
           <div class="skill-tags"><span class="tag">Venues</span><span class="tag">Evaluation</span><span class="tag">Apache-2.0 AND MIT</span></div>
           <a href="https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-research-evaluation-venues/research-evaluation-venues.zip" class="skill-dl-btn">
@@ -1291,6 +1350,7 @@
           <div class="skill-meta"><h3>Qualitative Thematic Analysis</h3><div class="skill-type">User-invocable · /qualitative-thematic-analysis</div></div>
         </div>
         <p class="skill-desc">Plans qualitative coding, thematic analysis, codebooks, memoing, inter-rater checks, and audit trails.</p>
+        <p class="item-credit">Made by the Baranzini Lab (Wanjun Gu, UCSF).</p>
         <div class="skill-footer">
           <div class="skill-tags"><span class="tag">Qualitative</span><span class="tag">Codebooks</span><span class="tag">Apache-2.0</span></div>
           <a href="https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-qualitative-thematic-analysis/qualitative-thematic-analysis.zip" class="skill-dl-btn">
@@ -1309,6 +1369,7 @@
           <div class="skill-meta"><h3>Survey Weights and Complex Samples</h3><div class="skill-type">User-invocable · /survey-weights-complex-samples</div></div>
         </div>
         <p class="skill-desc">Handles complex survey designs with strata, PSUs, replicate weights, domain analysis, calibration, and weighted inference.</p>
+        <p class="item-credit">Made by the Baranzini Lab (Wanjun Gu, UCSF).</p>
         <div class="skill-footer">
           <div class="skill-tags"><span class="tag">Surveys</span><span class="tag">Weights</span><span class="tag">Apache-2.0</span></div>
           <a href="https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-survey-weights-complex-samples/survey-weights-complex-samples.zip" class="skill-dl-btn">
@@ -1325,6 +1386,7 @@
           <div class="skill-meta"><h3>Psychometrics, SEM, and Measurement</h3><div class="skill-type">User-invocable · /psychometrics-sem-measurement</div></div>
         </div>
         <p class="skill-desc">Plans reliability, CFA/SEM, mediation/moderation, invariance, item analysis, and APA-style measurement reporting.</p>
+        <p class="item-credit">Made by the Baranzini Lab (Wanjun Gu, UCSF).</p>
         <div class="skill-footer">
           <div class="skill-tags"><span class="tag">SEM</span><span class="tag">Measurement</span><span class="tag">Apache-2.0</span></div>
           <a href="https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-psychometrics-sem-measurement/psychometrics-sem-measurement.zip" class="skill-dl-btn">
@@ -1341,6 +1403,7 @@
           <div class="skill-meta"><h3>Social Science Text as Data</h3><div class="skill-type">User-invocable · /social-science-text-as-data</div></div>
         </div>
         <p class="skill-desc">Plans dictionaries, topic models, embeddings, sentiment, supervised coding, LLM-label validation, and measurement-error checks.</p>
+        <p class="item-credit">Made by the Baranzini Lab (Wanjun Gu, UCSF).</p>
         <div class="skill-footer">
           <div class="skill-tags"><span class="tag">Text as Data</span><span class="tag">NLP</span><span class="tag">Apache-2.0</span></div>
           <a href="https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-social-science-text-as-data/social-science-text-as-data.zip" class="skill-dl-btn">
@@ -1357,6 +1420,7 @@
           <div class="skill-meta"><h3>Empirical Paper Submission and R&R</h3><div class="skill-type">User-invocable · /empirical-paper-submission-rr</div></div>
         </div>
         <p class="skill-desc">Plans journal targeting, referee reports, response letters, revise-and-resubmit execution, and appendix organization.</p>
+        <p class="item-credit">Made by the Baranzini Lab (Wanjun Gu, UCSF).</p>
         <div class="skill-footer">
           <div class="skill-tags"><span class="tag">R&R</span><span class="tag">Submission</span><span class="tag">Apache-2.0</span></div>
           <a href="https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-empirical-paper-submission-rr/empirical-paper-submission-rr.zip" class="skill-dl-btn">
@@ -1373,6 +1437,7 @@
           <div class="skill-meta"><h3>Causal Heterogeneity and Policy Learning</h3><div class="skill-type">User-invocable · /causal-heterogeneity-policy-learning</div></div>
         </div>
         <p class="skill-desc">Plans CATE, causal forests, meta-learners, policy learning, conformal causal inference, fairness, and subgroup reporting.</p>
+        <p class="item-credit">Made by the Baranzini Lab (Wanjun Gu, UCSF).</p>
         <div class="skill-footer">
           <div class="skill-tags"><span class="tag">CATE</span><span class="tag">Policy</span><span class="tag">Apache-2.0</span></div>
           <a href="https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-causal-heterogeneity-policy-learning/causal-heterogeneity-policy-learning.zip" class="skill-dl-btn">
@@ -1389,6 +1454,7 @@
           <div class="skill-meta"><h3>Autoskill Workflow Discovery</h3><div class="skill-type">User-invocable · /autoskill-workflow-discovery</div></div>
         </div>
         <p class="skill-desc">Detects repeated workflows and drafts native Biorouter skills, hooks, checklist updates, or extension plans.</p>
+        <p class="item-credit">Made by the Baranzini Lab (Wanjun Gu, UCSF), with ideas from Scientific Agent Skills (K-Dense Inc.).</p>
         <div class="skill-footer">
           <div class="skill-tags"><span class="tag">Skills</span><span class="tag">Hooks</span><span class="tag">Apache-2.0</span></div>
           <a href="https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-autoskill-workflow-discovery/autoskill-workflow-discovery.zip" class="skill-dl-btn">
@@ -1405,6 +1471,7 @@
           <div class="skill-meta"><h3>Arbor Optimization</h3><div class="skill-type">User-invocable · /arbor-optimization</div></div>
         </div>
         <p class="skill-desc">Runs evaluator-driven branch-and-prune exploration for improving research artifacts, prompts, analyses, and designs.</p>
+        <p class="item-credit">Made by the Baranzini Lab (Wanjun Gu, UCSF), with ideas from Scientific Agent Skills (K-Dense Inc.).</p>
         <div class="skill-footer">
           <div class="skill-tags"><span class="tag">Optimization</span><span class="tag">Rubrics</span><span class="tag">Apache-2.0</span></div>
           <a href="https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-arbor-optimization/arbor-optimization.zip" class="skill-dl-btn">
@@ -1421,6 +1488,7 @@
           <div class="skill-meta"><h3>Hugging Science Resource Discovery</h3><div class="skill-type">User-invocable · /hugging-science-resource-discovery</div></div>
         </div>
         <p class="skill-desc">Finds and evaluates Hugging Face scientific models, datasets, Spaces, and papers with license and provenance checks.</p>
+        <p class="item-credit">Made by the Baranzini Lab (Wanjun Gu, UCSF), with ideas from Scientific Agent Skills (K-Dense Inc.).</p>
         <div class="skill-footer">
           <div class="skill-tags"><span class="tag">Hugging Face</span><span class="tag">Models</span><span class="tag">Apache-2.0</span></div>
           <a href="https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-hugging-science-resource-discovery/hugging-science-resource-discovery.zip" class="skill-dl-btn">
@@ -1437,6 +1505,7 @@
           <div class="skill-meta"><h3>Molecular Dynamics</h3><div class="skill-type">User-invocable · /molecular-dynamics</div></div>
         </div>
         <p class="skill-desc">Plans MD setup and trajectory analysis with OpenMM, GROMACS, AmberTools, MDAnalysis, MDTraj, and reproducibility checks.</p>
+        <p class="item-credit">Made by the Baranzini Lab (Wanjun Gu, UCSF), with ideas from Scientific Agent Skills (K-Dense Inc.).</p>
         <div class="skill-footer">
           <div class="skill-tags"><span class="tag">MD</span><span class="tag">OpenMM</span><span class="tag">Apache-2.0</span></div>
           <a href="https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-molecular-dynamics/molecular-dynamics.zip" class="skill-dl-btn">
@@ -1453,6 +1522,7 @@
           <div class="skill-meta"><h3>General Time-Series Forecasting</h3><div class="skill-type">User-invocable · /general-time-series-forecasting</div></div>
         </div>
         <p class="skill-desc">Plans non-omics forecasting with classical models, ML, foundation models, backtesting, leakage checks, and uncertainty.</p>
+        <p class="item-credit">Made by the Baranzini Lab (Wanjun Gu, UCSF), with ideas from Scientific Agent Skills (K-Dense Inc.).</p>
         <div class="skill-footer">
           <div class="skill-tags"><span class="tag">Forecasting</span><span class="tag">Backtests</span><span class="tag">Apache-2.0</span></div>
           <a href="https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-general-time-series-forecasting/general-time-series-forecasting.zip" class="skill-dl-btn">
@@ -1469,6 +1539,7 @@
           <div class="skill-meta"><h3>BIDS Neuroimaging</h3><div class="skill-type">User-invocable · /bids-neuroimaging</div></div>
         </div>
         <p class="skill-desc">Audits BIDS neuroimaging datasets, derivatives, validation, metadata, and reproducible preprocessing readiness.</p>
+        <p class="item-credit">Made by the Baranzini Lab (Wanjun Gu, UCSF), with ideas from Scientific Agent Skills (K-Dense Inc.).</p>
         <div class="skill-footer">
           <div class="skill-tags"><span class="tag">BIDS</span><span class="tag">Neuroimaging</span><span class="tag">Apache-2.0</span></div>
           <a href="https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-bids-neuroimaging/bids-neuroimaging.zip" class="skill-dl-btn">
@@ -1485,6 +1556,7 @@
           <div class="skill-meta"><h3>Clinical AI Modeling</h3><div class="skill-type">User-invocable · /clinical-ai-modeling</div></div>
         </div>
         <p class="skill-desc">Plans clinical AI modeling workflows with EHR cohorts, validation, bias checks, calibration, safety, and no-PHI handling.</p>
+        <p class="item-credit">Made by the Baranzini Lab (Wanjun Gu, UCSF), with ideas from Scientific Agent Skills (K-Dense Inc.).</p>
         <div class="skill-footer">
           <div class="skill-tags"><span class="tag">Clinical AI</span><span class="tag">Validation</span><span class="tag">Apache-2.0</span></div>
           <a href="https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-clinical-ai-modeling/clinical-ai-modeling.zip" class="skill-dl-btn">
@@ -1501,6 +1573,7 @@
           <div class="skill-meta"><h3>Computational Fluid Dynamics</h3><div class="skill-type">User-invocable · /computational-fluid-dynamics</div></div>
         </div>
         <p class="skill-desc">Plans CFD workflows with meshes, boundary conditions, turbulence models, solver validation, and convergence checks.</p>
+        <p class="item-credit">Made by the Baranzini Lab (Wanjun Gu, UCSF), with ideas from Scientific Agent Skills (K-Dense Inc.).</p>
         <div class="skill-footer">
           <div class="skill-tags"><span class="tag">CFD</span><span class="tag">OpenFOAM</span><span class="tag">Apache-2.0</span></div>
           <a href="https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-computational-fluid-dynamics/computational-fluid-dynamics.zip" class="skill-dl-btn">
@@ -1516,6 +1589,7 @@
           <div class="skill-meta"><h3>Anti-AI Writing</h3><div class="skill-type">User-invocable · /anti-ai-writing</div></div>
         </div>
         <p class="skill-desc">A pass/fail checklist for spotting AI writing patterns before generating prose, articles, or essays.</p>
+        <p class="item-credit">Made by the Baranzini Lab (Wanjun Gu, UCSF).</p>
         <div class="skill-footer">
           <div class="skill-tags"><span class="tag">Writing</span></div>
           <a href="https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-anti-ai-writing/anti-ai-writing.zip" class="skill-dl-btn">
@@ -1532,6 +1606,7 @@
           <div class="skill-meta"><h3>ggplot2 Visualization</h3><div class="skill-type">Auto-applied · R plotting</div></div>
         </div>
         <p class="skill-desc">Applies ggplot2 best-practice style when writing R plotting code.</p>
+        <p class="item-credit">Adapted from llm-r-skills by John Sperger (MIT) and 1 more.</p>
         <div class="skill-footer">
           <div class="skill-tags"><span class="tag">R</span><span class="tag">ggplot2</span></div>
           <a href="https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-ggplot-visualization/ggplot-visualization.zip" class="skill-dl-btn">
@@ -1548,6 +1623,7 @@
           <div class="skill-meta"><h3>R Scripting</h3><div class="skill-type">Auto-applied · R code</div></div>
         </div>
         <p class="skill-desc">Applies tidyverse conventions and documentation standards when writing or reviewing R code.</p>
+        <p class="item-credit">Made by the Baranzini Lab (Wanjun Gu, UCSF).</p>
         <div class="skill-footer">
           <div class="skill-tags"><span class="tag">R</span><span class="tag">Tidyverse</span></div>
           <a href="https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-r-scripting/r-scripting.zip" class="skill-dl-btn">
@@ -1564,6 +1640,7 @@
           <div class="skill-meta"><h3>Python Scripting</h3><div class="skill-type">Auto-applied · Python code</div></div>
         </div>
         <p class="skill-desc">Applies Python naming, typing, error handling, and project structure conventions when writing Python code.</p>
+        <p class="item-credit">Made by the Baranzini Lab (Wanjun Gu, UCSF).</p>
         <div class="skill-footer">
           <div class="skill-tags"><span class="tag">Python</span></div>
           <a href="https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-python-scripting/python-scripting.zip" class="skill-dl-btn">
@@ -1580,6 +1657,7 @@
           <div class="skill-meta"><h3>RALPH</h3><div class="skill-type">User-invocable · /ralph</div></div>
         </div>
         <p class="skill-desc">End-to-end planning for the Ralph autonomous agent loop. Drafts a markdown PRD from a feature idea, then converts it to <code>prd.json</code>. Each story is sized for one hands-off iteration.</p>
+        <p class="item-credit">Adapted from ralph by snarktank (MIT).</p>
         <div class="skill-footer">
           <div class="skill-tags"><span class="tag">Planning</span><span class="tag">Automation</span></div>
           <a href="https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-ralph/ralph.zip" class="skill-dl-btn">
@@ -1596,6 +1674,7 @@
           <div class="skill-meta"><h3>Superpowers Collection</h3><div class="skill-type">13 skills · TDD, debugging, planning, more</div></div>
         </div>
         <p class="skill-desc">Engineering discipline skills: brainstorming, TDD, systematic debugging, parallel agents, plan writing, code review, git worktrees. Workflows tested on long-running engineering tasks.</p>
+        <p class="item-credit">From superpowers by Jesse Vincent (MIT), packaged for Biorouter by the Baranzini Lab.</p>
         <div class="skill-footer">
           <div class="skill-tags"><span class="tag">TDD</span><span class="tag">Debugging</span><span class="tag">Collection</span></div>
           <a href="https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-superpowers/superpowers.zip" class="skill-dl-btn">
@@ -1612,6 +1691,7 @@
           <div class="skill-meta"><h3>UCSF HPC</h3><div class="skill-type">User-invocable · /ucsf-hpc</div></div>
         </div>
         <p class="skill-desc">SSH setup, SLURM job templates (CPU/GPU/H200), file transfer, module management, and common pitfalls for the UCSF CHPC cluster.</p>
+        <p class="item-credit">Made by the Baranzini Lab (Wanjun Gu, UCSF).</p>
         <div class="skill-footer">
           <div class="skill-tags"><span class="tag ucsf">UCSF</span><span class="tag">HPC</span><span class="tag">SLURM</span></div>
           <a href="https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-ucsf-hpc/ucsf-hpc.zip" class="skill-dl-btn">
@@ -1628,6 +1708,7 @@
           <div class="skill-meta"><h3>Exploratory Data Analysis</h3><div class="skill-type">Auto-applied</div></div>
         </div>
         <p class="skill-desc">Explore a new scientific dataset before modelling: bounded local profiles of CSV, TSV and JSON files with redaction, optional NumPy, HDF5, FASTA and FASTQ and image-metadata inspection, missingness and leakage audits, outlier and transformation sensitivity, and a written EDA report.</p>
+        <p class="item-credit">From Scientific Agent Skills by K-Dense Inc. (MIT), packaged for Biorouter by the Baranzini Lab.</p>
         <div class="skill-footer">
           <div class="skill-tags"><span class="tag">Data</span><span class="tag">EDA</span><span class="tag">Profiling</span></div>
           <a href="https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-exploratory-data-analysis/exploratory-data-analysis.zip" class="skill-dl-btn">
@@ -1644,6 +1725,7 @@
           <div class="skill-meta"><h3>Figure QA</h3><div class="skill-type">Auto-applied</div></div>
         </div>
         <p class="skill-desc">Check a rendered scientific figure before submission: size, DPI, embedded fonts and font size, palette and colour-blind safety, clipped or overlapping text, OCR of required labels, a visual review of the rendered PNG, caption and alt-text checks, and a ship, revise or block verdict.</p>
+        <p class="item-credit">Adapted from research-skills by Seyed (Yahya) Shirazi (BSD-3-Clause) and 3 more.</p>
         <div class="skill-footer">
           <div class="skill-tags"><span class="tag">Figures</span><span class="tag">QA</span><span class="tag">Journals</span></div>
           <a href="https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-figure-qa/figure-qa.zip" class="skill-dl-btn">
@@ -1660,6 +1742,7 @@
           <div class="skill-meta"><h3>Interactive Dashboards</h3><div class="skill-type">5 skills · auto-applied</div></div>
         </div>
         <p class="skill-desc">Build interactive data apps and dashboards: Shiny for R with bslib layouts, cards, value boxes and theming, brand.yml branding, and Streamlit apps in Python, with testing, debugging, accessibility and performance guidance.</p>
+        <p class="item-credit">From posit-dev/skills by Posit PBC (MIT) and 2 more, packaged for Biorouter by the Baranzini Lab.</p>
         <div class="skill-footer">
           <div class="skill-tags"><span class="tag">Dashboards</span><span class="tag">Shiny</span><span class="tag">Streamlit</span></div>
           <a href="https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-interactive-dashboards/interactive-dashboards.zip" class="skill-dl-btn">
@@ -1676,6 +1759,7 @@
           <div class="skill-meta"><h3>Manuscript Peer Review</h3><div class="skill-type">Auto-applied</div></div>
         </div>
         <p class="skill-desc">Write evidence-bounded, constructive peer reviews of manuscripts, preprints, protocols and proposals; self-review your own manuscript before submission against a systematic checklist; and plan and voice point-by-point responses to reviewers.</p>
+        <p class="item-credit">From Scientific Agent Skills by K-Dense Inc. (MIT) and 1 more, packaged for Biorouter by the Baranzini Lab.</p>
         <div class="skill-footer">
           <div class="skill-tags"><span class="tag">Peer review</span><span class="tag">Revision</span><span class="tag">Writing</span></div>
           <a href="https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-manuscript-peer-review/manuscript-peer-review.zip" class="skill-dl-btn">
@@ -1692,6 +1776,7 @@
           <div class="skill-meta"><h3>Microscopy Image Analysis</h3><div class="skill-type">Auto-applied</div></div>
         </div>
         <p class="skill-desc">Run reproducible CellProfiler pipelines on fluorescence microscopy images: image and channel manifests, nuclear segmentation, cell counts and per-object intensity measurements, headless batch runs, segmentation overlays and measurement QC.</p>
+        <p class="item-credit">From Scientific Agent Skills by K-Dense Inc. (MIT), packaged for Biorouter by the Baranzini Lab.</p>
         <div class="skill-footer">
           <div class="skill-tags"><span class="tag">Imaging</span><span class="tag">Microscopy</span><span class="tag">CellProfiler</span></div>
           <a href="https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-microscopy-image-analysis/microscopy-image-analysis.zip" class="skill-dl-btn">
@@ -1707,7 +1792,8 @@
           </div>
           <div class="skill-meta"><h3>PHI De-identification</h3><div class="skill-type">Auto-applied</div></div>
         </div>
-        <p class="skill-desc">De-identify a clinical CSV, TSV or Excel table before analysis or sharing: a local script that makes no network calls checks it for the 18 HIPAA Safe Harbor identifiers and replaces, redacts or pseudonymizes what it finds. Text it cannot verify is redacted unless the person keeps the column, and the agent never reads the raw data. A person must spot-check the output before it leaves the institution. Adapted from the MIT-licensed deidentify skill in Aperivue/medsci-skills.</p>
+        <p class="skill-desc">De-identify a clinical CSV, TSV or Excel table before analysis or sharing: a local script that makes no network calls checks it for the 18 HIPAA Safe Harbor identifiers and replaces, redacts or pseudonymizes what it finds. Text it cannot verify is redacted unless the person keeps the column, and the agent never reads the raw data. A person must spot-check the output before it leaves the institution.</p>
+        <p class="item-credit">Adapted from medsci-skills by Aperivue (MIT).</p>
         <div class="skill-footer">
           <div class="skill-tags"><span class="tag">Clinical</span><span class="tag">Privacy</span><span class="tag">HIPAA</span></div>
           <a href="https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-phi-deidentification/phi-deidentification.zip" class="skill-dl-btn">
@@ -1724,6 +1810,7 @@
           <div class="skill-meta"><h3>Python Visualization</h3><div class="skill-type">Auto-applied</div></div>
         </div>
         <p class="skill-desc">Make truthful, accessible, publication-ready scientific figures in Python with matplotlib, seaborn or plotly: figure contract, journal sizes, multi-panel layout, uncertainty and missing data, colour and contrast checks, image metadata, and export.</p>
+        <p class="item-credit">From Scientific Agent Skills by K-Dense Inc. (MIT) and 2 more, packaged for Biorouter by the Baranzini Lab.</p>
         <div class="skill-footer">
           <div class="skill-tags"><span class="tag">Python</span><span class="tag">Figures</span><span class="tag">Matplotlib</span></div>
           <a href="https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-python-visualization/python-visualization.zip" class="skill-dl-btn">
@@ -1740,6 +1827,7 @@
           <div class="skill-meta"><h3>Science Superpowers</h3><div class="skill-type">12 skills · auto-applied</div></div>
         </div>
         <p class="skill-desc">Rigour gates for one scientific question, from framing to archive: frame the question, survey prior work, design and pre-register the analysis, check feasibility, set up a reproducible workspace, execute, root-cause anomalies, verify before claiming, red-team the result, answer critique, and report.</p>
+        <p class="item-credit">From science-superpowers by K-Dense, Inc. (MIT), packaged for Biorouter by the Baranzini Lab.</p>
         <div class="skill-footer">
           <div class="skill-tags"><span class="tag">Research</span><span class="tag">Rigour</span><span class="tag">Pre-registration</span></div>
           <a href="https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-science-superpowers/science-superpowers.zip" class="skill-dl-btn">
@@ -1756,6 +1844,7 @@
           <div class="skill-meta"><h3>Scientific Manuscript Writing</h3><div class="skill-type">Auto-applied</div></div>
         </div>
         <p class="skill-desc">Draft and revise scientific manuscripts with traceable evidence: section structure (IMRaD), reporting-guideline coverage, references and declarations, authorship and AI-use accountability, and local consistency checks; plus a methods write-up that reconstructs how the results were produced.</p>
+        <p class="item-credit">From Scientific Agent Skills by K-Dense Inc. (MIT) and 1 more, packaged for Biorouter by the Baranzini Lab.</p>
         <div class="skill-footer">
           <div class="skill-tags"><span class="tag">Writing</span><span class="tag">Manuscripts</span><span class="tag">Reporting</span></div>
           <a href="https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-scientific-manuscript-writing/scientific-manuscript-writing.zip" class="skill-dl-btn">
@@ -1772,6 +1861,7 @@
           <div class="skill-meta"><h3>Scientific Problem Selection</h3><div class="skill-type">Auto-applied</div></div>
         </div>
         <p class="skill-desc">Choose and shape a research problem with the Fischbach and Walsh framework: intuition pumps for ideas, risk assessment, the optimisation function, parameter strategy, decision trees, adversity planning, problem inversion and synthesis into a go or no-go plan; also for unsticking a stalled project.</p>
+        <p class="item-credit">From knowledge-work-plugins by Anthropic (Apache-2.0), packaged for Biorouter by the Baranzini Lab.</p>
         <div class="skill-footer">
           <div class="skill-tags"><span class="tag">Research</span><span class="tag">Strategy</span><span class="tag">Ideation</span></div>
           <a href="https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-scientific-problem-selection/scientific-problem-selection.zip" class="skill-dl-btn">
@@ -1788,6 +1878,7 @@
           <div class="skill-meta"><h3>Scientific Prose Review</h3><div class="skill-type">Auto-applied</div></div>
         </div>
         <p class="skill-desc">Line-edit scientific and engineering writing for clarity: cut clutter, revive smothered verbs, fix sentence and paragraph structure, and check terms, acronyms and numbers for consistency, from one sentence to a whole manuscript (after Lorena A. Barba's sciwrite and Kristin Sainani's Writing in the Sciences).</p>
+        <p class="item-credit">From sciwrite by Lorena A. Barba (CC-BY-4.0), packaged for Biorouter by the Baranzini Lab.</p>
         <div class="skill-footer">
           <div class="skill-tags"><span class="tag">Writing</span><span class="tag">Editing</span><span class="tag">Clarity</span></div>
           <a href="https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-scientific-prose-review/scientific-prose-review.zip" class="skill-dl-btn">
@@ -1802,7 +1893,7 @@
 
     <!-- Developer & authoring skills subsection -->
     <div class="subsection-title">
-      <h2>Developer and authoring skills</h2> <span class="sub-count" id="count-dev">12 skills</span> <span class="sub-note">Adapted from open-source skill collections</span>
+      <h2>Developer and authoring skills</h2> <span class="sub-count" id="count-dev">12 skills</span>
     </div>
 
     <div class="skill-grid" id="dev-skill-grid" data-cat="developer">
@@ -1815,6 +1906,7 @@
           <div class="skill-meta"><h3>Code Review</h3><div class="skill-type">User-invocable · /code-review</div></div>
         </div>
         <p class="skill-desc">Multi-stage, confidence-scored review of a pull request or local diff. Drops low-confidence findings and posts a formatted PR comment via <code>gh</code>.</p>
+        <p class="item-credit">Adapted from code-review plugin by Anthropic (Apache-2.0) and 1 more.</p>
         <div class="skill-footer">
           <div class="skill-tags"><span class="tag">Review</span><span class="tag">Git</span><span class="tag">PR</span></div>
           <a href="https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-code-review/code-review.zip" class="skill-dl-btn">
@@ -1823,7 +1915,7 @@
         </div>
       </div>
 
-      <div class="skill-card" data-tags="code-simplifier refactor cleanup simplify clarity" data-license="Apache-2.0" data-version="1.1.0">
+      <div class="skill-card" data-tags="code-simplifier refactor cleanup simplify clarity" data-license="Apache-2.0" data-version="1.1.1">
         <div class="skill-card-header">
           <div class="icon-tile icon-tile-sm">
             <svg class="icon" viewBox="0 0 24 24"><polyline points="4 14 10 14 10 20"/><polyline points="20 10 14 10 14 4"/><line x1="14" y1="10" x2="21" y2="3"/><line x1="3" y1="21" x2="10" y2="14"/></svg>
@@ -1831,6 +1923,7 @@
           <div class="skill-meta"><h3>Code Simplifier</h3><div class="skill-type">User-invocable · /code-simplifier</div></div>
         </div>
         <p class="skill-desc">Simplifies recently-changed code for clarity and consistency while preserving exact behavior. Defers language style to the Python and R skills.</p>
+        <p class="item-credit">Adapted from code-simplifier plugin by Anthropic (Apache-2.0).</p>
         <div class="skill-footer">
           <div class="skill-tags"><span class="tag">Refactor</span><span class="tag">Cleanup</span></div>
           <a href="https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-code-simplifier/code-simplifier.zip" class="skill-dl-btn">
@@ -1847,6 +1940,7 @@
           <div class="skill-meta"><h3>Commit Commands</h3><div class="skill-type">User-invocable · /commit-commands</div></div>
         </div>
         <p class="skill-desc">Three git workflows: a clean single commit; commit + push + open a PR; and cleanup of <code>[gone]</code> branches and their worktrees.</p>
+        <p class="item-credit">Adapted from commit-commands plugin by Anthropic (Apache-2.0).</p>
         <div class="skill-footer">
           <div class="skill-tags"><span class="tag">Git</span><span class="tag">Commit</span><span class="tag">PR</span></div>
           <a href="https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-commit-commands/commit-commands.zip" class="skill-dl-btn">
@@ -1865,6 +1959,7 @@
           <div class="skill-meta"><h3>Hookify (Hooks)</h3><div class="skill-type">User-invocable · /hookify</div></div>
         </div>
         <p class="skill-desc">Turns project guardrails (warn/block rules) into real Biorouter hooks in <code>.biorouter/hooks.yaml</code>. A block rule stops the action; a warn rule shows a notice. Requires <code>allow_project_hooks: true</code>.</p>
+        <p class="item-credit">Made by the Baranzini Lab (Wanjun Gu, UCSF), with ideas from the hookify plugin (Anthropic).</p>
         <div class="skill-footer">
           <div class="skill-tags"><span class="tag">Guardrails</span><span class="tag">Safety</span></div>
           <a href="https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-hookify/hookify.zip" class="skill-dl-btn">
@@ -1881,6 +1976,7 @@
           <div class="skill-meta"><h3>Code Modernization</h3><div class="skill-type">User-invocable · /code-modernization</div></div>
         </div>
         <p class="skill-desc">Phased legacy-modernization workflow (preflight, assess, map, extract rules, brief, transform, harden, status) for COBOL, legacy Java/C++, and monoliths.</p>
+        <p class="item-credit">Adapted from code-modernization plugin by Anthropic (Apache-2.0) and 1 more.</p>
         <div class="skill-footer">
           <div class="skill-tags"><span class="tag">Legacy</span><span class="tag">Migration</span></div>
           <a href="https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-code-modernization/code-modernization.zip" class="skill-dl-btn">
@@ -1889,7 +1985,7 @@
         </div>
       </div>
 
-      <div class="skill-card" data-tags="playground interactive html explorer controls preview" data-license="Apache-2.0" data-version="1.1.0">
+      <div class="skill-card" data-tags="playground interactive html explorer controls preview" data-license="Apache-2.0" data-version="1.1.1">
         <div class="skill-card-header">
           <div class="icon-tile icon-tile-sm">
             <svg class="icon" viewBox="0 0 24 24"><line x1="4" y1="21" x2="4" y2="14"/><line x1="4" y1="10" x2="4" y2="3"/><line x1="12" y1="21" x2="12" y2="12"/><line x1="12" y1="8" x2="12" y2="3"/><line x1="20" y1="21" x2="20" y2="16"/><line x1="20" y1="12" x2="20" y2="3"/><line x1="1" y1="14" x2="7" y2="14"/><line x1="9" y1="8" x2="15" y2="8"/><line x1="17" y1="16" x2="23" y2="16"/></svg>
@@ -1897,6 +1993,7 @@
           <div class="skill-meta"><h3>Playground</h3><div class="skill-type">User-invocable · /playground</div></div>
         </div>
         <p class="skill-desc">Generates self-contained single-file interactive HTML playgrounds for configuring something visually, then copying out a ready-to-use prompt.</p>
+        <p class="item-credit">Adapted from playground plugin by Anthropic (Apache-2.0).</p>
         <div class="skill-footer">
           <div class="skill-tags"><span class="tag">HTML</span><span class="tag">Interactive</span></div>
           <a href="https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-playground/playground.zip" class="skill-dl-btn">
@@ -1913,6 +2010,7 @@
           <div class="skill-meta"><h3>Frontend Design</h3><div class="skill-type">Auto-applied · frontend work</div></div>
         </div>
         <p class="skill-desc">Anthropic's anti-slop frontend guidance for distinctive, production-grade UIs. Complements the Taste skill above.</p>
+        <p class="item-credit">Adapted from anthropics/skills by Anthropic (Apache-2.0) and 1 more.</p>
         <div class="skill-footer">
           <div class="skill-tags"><span class="tag">Design</span><span class="tag">Frontend</span></div>
           <a href="https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-frontend-design/frontend-design.zip" class="skill-dl-btn">
@@ -1929,6 +2027,7 @@
           <div class="skill-meta"><h3>High-Performance R</h3><div class="skill-type">Auto-applied</div></div>
         </div>
         <p class="skill-desc">Fast data work in R: data.table, arrow, duckdb, collapse or qs2 when installed, with base-R fallbacks; large CSV and Parquet files, grouping and sorting, parallel work, and large single-cell objects, without copying or losing what is in memory.</p>
+        <p class="item-credit">Made by the Baranzini Lab (Wanjun Gu, UCSF).</p>
         <div class="skill-footer">
           <div class="skill-tags"><span class="tag">R</span><span class="tag">Performance</span><span class="tag">Big data</span></div>
           <a href="https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-high-performance-r/high-performance-r.zip" class="skill-dl-btn">
@@ -1945,6 +2044,7 @@
           <div class="skill-meta"><h3>Julia Development</h3><div class="skill-type">12 skills · auto-applied</div></div>
         </div>
         <p class="skill-desc">Develop and maintain Julia packages: profile slow code headlessly, read docs at the project's exact versions with jldocs, and freshen a package step by step (Aqua, ExplicitImports, API review and its implementation, generic indexing, coverage, docstrings, docs).</p>
+        <p class="item-credit">From claude_config by Tim Holy (MIT) and 1 more, packaged for Biorouter by the Baranzini Lab.</p>
         <div class="skill-footer">
           <div class="skill-tags"><span class="tag">Julia</span><span class="tag">Packages</span><span class="tag">Performance</span></div>
           <a href="https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-julia-development/julia-development.zip" class="skill-dl-btn">
@@ -1961,6 +2061,7 @@
           <div class="skill-meta"><h3>R Package Development</h3><div class="skill-type">8 skills · auto-applied</div></div>
         </div>
         <p class="skill-desc">Build, test, document and release R packages: devtools, roxygen2 and testthat 3 workflow, cli messages, lifecycle deprecations, CRAN's extra checks, mirai for async and parallel code, and rlang tidy evaluation and conditions.</p>
+        <p class="item-credit">From posit-dev/skills by Posit PBC (MIT) and 1 more, packaged for Biorouter by the Baranzini Lab.</p>
         <div class="skill-footer">
           <div class="skill-tags"><span class="tag">R</span><span class="tag">Packages</span><span class="tag">Testing</span></div>
           <a href="https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-r-package-development/r-package-development.zip" class="skill-dl-btn">
@@ -1977,6 +2078,7 @@
           <div class="skill-meta"><h3>Research Code Hardening</h3><div class="skill-type">Auto-applied</div></div>
         </div>
         <p class="skill-desc">Make research code trustworthy before results depend on it: regression tests against known results, numerical stability and tolerance checks, edge cases, determinism and seeds, and input validation, without rewriting the science.</p>
+        <p class="item-credit">From savvy by UW-SSEC, University of Washington (BSD-3-Clause), packaged for Biorouter by the Baranzini Lab.</p>
         <div class="skill-footer">
           <div class="skill-tags"><span class="tag">Testing</span><span class="tag">Reproducibility</span><span class="tag">Numerics</span></div>
           <a href="https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-research-code-hardening/research-code-hardening.zip" class="skill-dl-btn">
@@ -1993,6 +2095,7 @@
           <div class="skill-meta"><h3>Scientific Python Development</h3><div class="skill-type">5 skills · auto-applied</div></div>
         </div>
         <p class="skill-desc">Package, test and document scientific Python projects the Scientific Python way: pyproject.toml and src layout with Hatchling, pytest with numerical assertions and Hypothesis, ruff, mypy and pre-commit, Sphinx or MkDocs docs with NumPy docstrings, and pixi environments.</p>
+        <p class="item-credit">From savvy by UW-SSEC, University of Washington (BSD-3-Clause), packaged for Biorouter by the Baranzini Lab.</p>
         <div class="skill-footer">
           <div class="skill-tags"><span class="tag">Python</span><span class="tag">Packaging</span><span class="tag">Testing</span></div>
           <a href="https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-scientific-python-development/scientific-python-development.zip" class="skill-dl-btn">
@@ -2021,6 +2124,7 @@
           </div>
         </div>
         <p class="skill-desc">Multiple sequence alignment and pairwise alignment.</p>
+        <p class="item-credit">From bioSkills by GPTomics (MIT), packaged for Biorouter by the Baranzini Lab.</p>
         <div class="skill-footer">
           <div class="skill-tags"><span class="tag">MAFFT</span><span class="tag">Biopython</span><span class="tag">Foldseek</span></div>
           <a href="https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-alignment/alignment.zip" download="alignment.zip" class="skill-dl-btn"><svg class="icon icon-sm" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7,10 12,15 17,10"/><line x1="12" y1="15" x2="12" y2="3"/></svg> .zip</a>
@@ -2037,6 +2141,7 @@
           </div>
         </div>
         <p class="skill-desc">SAM/BAM/CRAM manipulation, sorting, indexing, dedup, and stats.</p>
+        <p class="item-credit">From bioSkills by GPTomics (MIT), packaged for Biorouter by the Baranzini Lab.</p>
         <div class="skill-footer">
           <div class="skill-tags"><span class="tag">samtools</span><span class="tag">pysam</span><span class="tag">BAM</span></div>
           <a href="https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-alignment-files/alignment-files.zip" download="alignment-files.zip" class="skill-dl-btn"><svg class="icon icon-sm" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7,10 12,15 17,10"/><line x1="12" y1="15" x2="12" y2="3"/></svg> .zip</a>
@@ -2053,6 +2158,7 @@
           </div>
         </div>
         <p class="skill-desc">RNA isoform and splice-junction analysis from short- and long-read data.</p>
+        <p class="item-credit">From bioSkills by GPTomics (MIT), packaged for Biorouter by the Baranzini Lab.</p>
         <div class="skill-footer">
           <div class="skill-tags"><span class="tag">rMATS</span><span class="tag">SUPPA2</span><span class="tag">isoforms</span></div>
           <a href="https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-alternative-splicing/alternative-splicing.zip" download="alternative-splicing.zip" class="skill-dl-btn"><svg class="icon icon-sm" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7,10 12,15 17,10"/><line x1="12" y1="15" x2="12" y2="3"/></svg> .zip</a>
@@ -2069,6 +2175,7 @@
           </div>
         </div>
         <p class="skill-desc">Chromatin accessibility, peak calling, footprinting, and deep-learning ATAC.</p>
+        <p class="item-credit">From bioSkills by GPTomics (MIT), packaged for Biorouter by the Baranzini Lab.</p>
         <div class="skill-footer">
           <div class="skill-tags"><span class="tag">MACS3</span><span class="tag">TOBIAS</span><span class="tag">chromBPNet</span></div>
           <a href="https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-atac-seq/atac-seq.zip" download="atac-seq.zip" class="skill-dl-btn"><svg class="icon icon-sm" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7,10 12,15 17,10"/><line x1="12" y1="15" x2="12" y2="3"/></svg> .zip</a>
@@ -2085,6 +2192,7 @@
           </div>
         </div>
         <p class="skill-desc">Mendelian randomization, colocalization, fine-mapping, and TWAS.</p>
+        <p class="item-credit">From bioSkills by GPTomics (MIT), packaged for Biorouter by the Baranzini Lab.</p>
         <div class="skill-footer">
           <div class="skill-tags"><span class="tag">MR</span><span class="tag">coloc</span><span class="tag">TWAS</span></div>
           <a href="https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-causal-genomics/causal-genomics.zip" download="causal-genomics.zip" class="skill-dl-btn"><svg class="icon icon-sm" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7,10 12,15 17,10"/><line x1="12" y1="15" x2="12" y2="3"/></svg> .zip</a>
@@ -2101,6 +2209,7 @@
           </div>
         </div>
         <p class="skill-desc">Molecular structure handling, descriptors, and drug-discovery utilities.</p>
+        <p class="item-credit">From bioSkills by GPTomics (MIT), packaged for Biorouter by the Baranzini Lab.</p>
         <div class="skill-footer">
           <div class="skill-tags"><span class="tag">RDKit</span><span class="tag">SMILES</span></div>
           <a href="https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-chemoinformatics/chemoinformatics.zip" download="chemoinformatics.zip" class="skill-dl-btn"><svg class="icon icon-sm" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7,10 12,15 17,10"/><line x1="12" y1="15" x2="12" y2="3"/></svg> .zip</a>
@@ -2117,6 +2226,7 @@
           </div>
         </div>
         <p class="skill-desc">Transcription-factor and histone-mark peak calling and differential binding.</p>
+        <p class="item-credit">From bioSkills by GPTomics (MIT), packaged for Biorouter by the Baranzini Lab.</p>
         <div class="skill-footer">
           <div class="skill-tags"><span class="tag">MACS2</span><span class="tag">ChIPseeker</span></div>
           <a href="https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-chip-seq/chip-seq.zip" download="chip-seq.zip" class="skill-dl-btn"><svg class="icon icon-sm" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7,10 12,15 17,10"/><line x1="12" y1="15" x2="12" y2="3"/></svg> .zip</a>
@@ -2133,6 +2243,7 @@
           </div>
         </div>
         <p class="skill-desc">Survival, mixed models, and clinical-trial statistical analysis.</p>
+        <p class="item-credit">From bioSkills by GPTomics (MIT) and 1 more, packaged for Biorouter by the Baranzini Lab.</p>
         <div class="skill-footer">
           <div class="skill-tags"><span class="tag">survival</span><span class="tag">R</span><span class="tag">lme4</span></div>
           <a href="https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-clinical-biostatistics/clinical-biostatistics.zip" download="clinical-biostatistics.zip" class="skill-dl-btn"><svg class="icon icon-sm" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7,10 12,15 17,10"/><line x1="12" y1="15" x2="12" y2="3"/></svg> .zip</a>
@@ -2149,6 +2260,7 @@
           </div>
         </div>
         <p class="skill-desc">ClinVar, OMIM, COSMIC, gnomAD, and phenotype DB queries.</p>
+        <p class="item-credit">From bioSkills by GPTomics (MIT), packaged for Biorouter by the Baranzini Lab.</p>
         <div class="skill-footer">
           <div class="skill-tags"><span class="tag">ClinVar</span><span class="tag">OMIM</span><span class="tag">gnomAD</span></div>
           <a href="https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-clinical-databases/clinical-databases.zip" download="clinical-databases.zip" class="skill-dl-btn"><svg class="icon icon-sm" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7,10 12,15 17,10"/><line x1="12" y1="15" x2="12" y2="3"/></svg> .zip</a>
@@ -2165,6 +2277,7 @@
           </div>
         </div>
         <p class="skill-desc">Protein-RNA interaction mapping from iCLIP/eCLIP/PAR-CLIP data.</p>
+        <p class="item-credit">From bioSkills by GPTomics (MIT), packaged for Biorouter by the Baranzini Lab.</p>
         <div class="skill-footer">
           <div class="skill-tags"><span class="tag">PureCLIP</span><span class="tag">eCLIP</span></div>
           <a href="https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-clip-seq/clip-seq.zip" download="clip-seq.zip" class="skill-dl-btn"><svg class="icon icon-sm" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7,10 12,15 17,10"/><line x1="12" y1="15" x2="12" y2="3"/></svg> .zip</a>
@@ -2181,6 +2294,7 @@
           </div>
         </div>
         <p class="skill-desc">Cross-species synteny, orthology, and selection scans.</p>
+        <p class="item-credit">From bioSkills by GPTomics (MIT), packaged for Biorouter by the Baranzini Lab.</p>
         <div class="skill-footer">
           <div class="skill-tags"><span class="tag">OrthoFinder</span><span class="tag">synteny</span></div>
           <a href="https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-comparative-genomics/comparative-genomics.zip" download="comparative-genomics.zip" class="skill-dl-btn"><svg class="icon icon-sm" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7,10 12,15 17,10"/><line x1="12" y1="15" x2="12" y2="3"/></svg> .zip</a>
@@ -2197,6 +2311,7 @@
           </div>
         </div>
         <p class="skill-desc">CNV detection, visualization, and segmentation.</p>
+        <p class="item-credit">From bioSkills by GPTomics (MIT), packaged for Biorouter by the Baranzini Lab.</p>
         <div class="skill-footer">
           <div class="skill-tags"><span class="tag">CNVkit</span><span class="tag">GATK CNV</span></div>
           <a href="https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-copy-number/copy-number.zip" download="copy-number.zip" class="skill-dl-btn"><svg class="icon icon-sm" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7,10 12,15 17,10"/><line x1="12" y1="15" x2="12" y2="3"/></svg> .zip</a>
@@ -2213,6 +2328,7 @@
           </div>
         </div>
         <p class="skill-desc">Pooled screen counting, MAGeCK analysis, and hit prioritization.</p>
+        <p class="item-credit">From bioSkills by GPTomics (MIT), packaged for Biorouter by the Baranzini Lab.</p>
         <div class="skill-footer">
           <div class="skill-tags"><span class="tag">MAGeCK</span><span class="tag">screens</span></div>
           <a href="https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-crispr-screens/crispr-screens.zip" download="crispr-screens.zip" class="skill-dl-btn"><svg class="icon icon-sm" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7,10 12,15 17,10"/><line x1="12" y1="15" x2="12" y2="3"/></svg> .zip</a>
@@ -2229,6 +2345,7 @@
           </div>
         </div>
         <p class="skill-desc">Publication-quality plots: heatmaps, volcano, Manhattan, dimplots.</p>
+        <p class="item-credit">From bioSkills by GPTomics (MIT), packaged for Biorouter by the Baranzini Lab.</p>
         <div class="skill-footer">
           <div class="skill-tags"><span class="tag">ggplot2</span><span class="tag">matplotlib</span><span class="tag">ComplexHeatmap</span></div>
           <a href="https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-data-visualization/data-visualization.zip" download="data-visualization.zip" class="skill-dl-btn"><svg class="icon icon-sm" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7,10 12,15 17,10"/><line x1="12" y1="15" x2="12" y2="3"/></svg> .zip</a>
@@ -2245,6 +2362,7 @@
           </div>
         </div>
         <p class="skill-desc">NCBI, UniProt, Ensembl, and biological database APIs.</p>
+        <p class="item-credit">From bioSkills by GPTomics (MIT) and 1 more, packaged for Biorouter by the Baranzini Lab.</p>
         <div class="skill-footer">
           <div class="skill-tags"><span class="tag">Entrez</span><span class="tag">UniProt</span><span class="tag">Ensembl</span></div>
           <a href="https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-database-access/database-access.zip" download="database-access.zip" class="skill-dl-btn"><svg class="icon icon-sm" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7,10 12,15 17,10"/><line x1="12" y1="15" x2="12" y2="3"/></svg> .zip</a>
@@ -2261,6 +2379,7 @@
           </div>
         </div>
         <p class="skill-desc">RNA-seq DE testing with DESeq2, edgeR, and limma-voom.</p>
+        <p class="item-credit">From bioSkills by GPTomics (MIT), packaged for Biorouter by the Baranzini Lab.</p>
         <div class="skill-footer">
           <div class="skill-tags"><span class="tag">DESeq2</span><span class="tag">edgeR</span><span class="tag">limma</span></div>
           <a href="https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-differential-expression/differential-expression.zip" download="differential-expression.zip" class="skill-dl-btn"><svg class="icon icon-sm" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7,10 12,15 17,10"/><line x1="12" y1="15" x2="12" y2="3"/></svg> .zip</a>
@@ -2277,6 +2396,7 @@
           </div>
         </div>
         <p class="skill-desc">Environmental DNA, ecological population genomics, and biodiversity.</p>
+        <p class="item-credit">From bioSkills by GPTomics (MIT), packaged for Biorouter by the Baranzini Lab.</p>
         <div class="skill-footer">
           <div class="skill-tags"><span class="tag">eDNA</span><span class="tag">popgen</span></div>
           <a href="https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-ecological-genomics/ecological-genomics.zip" download="ecological-genomics.zip" class="skill-dl-btn"><svg class="icon icon-sm" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7,10 12,15 17,10"/><line x1="12" y1="15" x2="12" y2="3"/></svg> .zip</a>
@@ -2293,6 +2413,7 @@
           </div>
         </div>
         <p class="skill-desc">Pathogen typing, outbreak phylogeography, and surveillance.</p>
+        <p class="item-credit">From bioSkills by GPTomics (MIT), packaged for Biorouter by the Baranzini Lab.</p>
         <div class="skill-footer">
           <div class="skill-tags"><span class="tag">Nextstrain</span><span class="tag">pathogens</span></div>
           <a href="https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-epidemiological-genomics/epidemiological-genomics.zip" download="epidemiological-genomics.zip" class="skill-dl-btn"><svg class="icon icon-sm" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7,10 12,15 17,10"/><line x1="12" y1="15" x2="12" y2="3"/></svg> .zip</a>
@@ -2309,6 +2430,7 @@
           </div>
         </div>
         <p class="skill-desc">m6A and other RNA modification detection from sequencing.</p>
+        <p class="item-credit">From bioSkills by GPTomics (MIT), packaged for Biorouter by the Baranzini Lab.</p>
         <div class="skill-footer">
           <div class="skill-tags"><span class="tag">m6A</span><span class="tag">RNA mods</span></div>
           <a href="https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-epitranscriptomics/epitranscriptomics.zip" download="epitranscriptomics.zip" class="skill-dl-btn"><svg class="icon icon-sm" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7,10 12,15 17,10"/><line x1="12" y1="15" x2="12" y2="3"/></svg> .zip</a>
@@ -2325,6 +2447,7 @@
           </div>
         </div>
         <p class="skill-desc">Power analysis and sample-size calculation for omics studies.</p>
+        <p class="item-credit">From bioSkills by GPTomics (MIT), packaged for Biorouter by the Baranzini Lab.</p>
         <div class="skill-footer">
           <div class="skill-tags"><span class="tag">power</span><span class="tag">design</span></div>
           <a href="https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-experimental-design/experimental-design.zip" download="experimental-design.zip" class="skill-dl-btn"><svg class="icon icon-sm" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7,10 12,15 17,10"/><line x1="12" y1="15" x2="12" y2="3"/></svg> .zip</a>
@@ -2341,6 +2464,7 @@
           </div>
         </div>
         <p class="skill-desc">Count normalization, gene ID mapping, and matrix QC.</p>
+        <p class="item-credit">From bioSkills by GPTomics (MIT), packaged for Biorouter by the Baranzini Lab.</p>
         <div class="skill-footer">
           <div class="skill-tags"><span class="tag">TPM</span><span class="tag">mygene</span></div>
           <a href="https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-expression-matrix/expression-matrix.zip" download="expression-matrix.zip" class="skill-dl-btn"><svg class="icon icon-sm" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7,10 12,15 17,10"/><line x1="12" y1="15" x2="12" y2="3"/></svg> .zip</a>
@@ -2357,6 +2481,7 @@
           </div>
         </div>
         <p class="skill-desc">FCS parsing, gating, and high-dimensional cytometry analysis.</p>
+        <p class="item-credit">From bioSkills by GPTomics (MIT), packaged for Biorouter by the Baranzini Lab.</p>
         <div class="skill-footer">
           <div class="skill-tags"><span class="tag">flowCore</span><span class="tag">FlowSOM</span></div>
           <a href="https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-flow-cytometry/flow-cytometry.zip" download="flow-cytometry.zip" class="skill-dl-btn"><svg class="icon icon-sm" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7,10 12,15 17,10"/><line x1="12" y1="15" x2="12" y2="3"/></svg> .zip</a>
@@ -2373,6 +2498,7 @@
           </div>
         </div>
         <p class="skill-desc">TF-target network inference from expression and chromatin data.</p>
+        <p class="item-credit">From bioSkills by GPTomics (MIT), packaged for Biorouter by the Baranzini Lab.</p>
         <div class="skill-footer">
           <div class="skill-tags"><span class="tag">SCENIC</span><span class="tag">GRNBoost2</span></div>
           <a href="https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-gene-regulatory-networks/gene-regulatory-networks.zip" download="gene-regulatory-networks.zip" class="skill-dl-btn"><svg class="icon icon-sm" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7,10 12,15 17,10"/><line x1="12" y1="15" x2="12" y2="3"/></svg> .zip</a>
@@ -2389,6 +2515,7 @@
           </div>
         </div>
         <p class="skill-desc">Gene prediction, repeat masking, and functional annotation.</p>
+        <p class="item-credit">From bioSkills by GPTomics (MIT), packaged for Biorouter by the Baranzini Lab.</p>
         <div class="skill-footer">
           <div class="skill-tags"><span class="tag">AUGUSTUS</span><span class="tag">InterProScan</span></div>
           <a href="https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-genome-annotation/genome-annotation.zip" download="genome-annotation.zip" class="skill-dl-btn"><svg class="icon icon-sm" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7,10 12,15 17,10"/><line x1="12" y1="15" x2="12" y2="3"/></svg> .zip</a>
@@ -2405,6 +2532,7 @@
           </div>
         </div>
         <p class="skill-desc">De novo assembly, polishing, and assembly QC.</p>
+        <p class="item-credit">From bioSkills by GPTomics (MIT), packaged for Biorouter by the Baranzini Lab.</p>
         <div class="skill-footer">
           <div class="skill-tags"><span class="tag">Flye</span><span class="tag">hifiasm</span><span class="tag">QUAST</span></div>
           <a href="https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-genome-assembly/genome-assembly.zip" download="genome-assembly.zip" class="skill-dl-btn"><svg class="icon icon-sm" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7,10 12,15 17,10"/><line x1="12" y1="15" x2="12" y2="3"/></svg> .zip</a>
@@ -2421,6 +2549,7 @@
           </div>
         </div>
         <p class="skill-desc">CRISPR guide design, off-target prediction, and editing analysis.</p>
+        <p class="item-credit">From bioSkills by GPTomics (MIT), packaged for Biorouter by the Baranzini Lab.</p>
         <div class="skill-footer">
           <div class="skill-tags"><span class="tag">CRISPOR</span><span class="tag">Cas9</span></div>
           <a href="https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-genome-engineering/genome-engineering.zip" download="genome-engineering.zip" class="skill-dl-btn"><svg class="icon icon-sm" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7,10 12,15 17,10"/><line x1="12" y1="15" x2="12" y2="3"/></svg> .zip</a>
@@ -2437,6 +2566,7 @@
           </div>
         </div>
         <p class="skill-desc">BED/GTF arithmetic, overlap, and feature manipulation.</p>
+        <p class="item-credit">From bioSkills by GPTomics (MIT), packaged for Biorouter by the Baranzini Lab.</p>
         <div class="skill-footer">
           <div class="skill-tags"><span class="tag">bedtools</span><span class="tag">pybedtools</span></div>
           <a href="https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-genome-intervals/genome-intervals.zip" download="genome-intervals.zip" class="skill-dl-btn"><svg class="icon icon-sm" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7,10 12,15 17,10"/><line x1="12" y1="15" x2="12" y2="3"/></svg> .zip</a>
@@ -2453,6 +2583,7 @@
           </div>
         </div>
         <p class="skill-desc">3D chromatin contacts, TAD calling, and loop detection.</p>
+        <p class="item-credit">From bioSkills by GPTomics (MIT), packaged for Biorouter by the Baranzini Lab.</p>
         <div class="skill-footer">
           <div class="skill-tags"><span class="tag">cooler</span><span class="tag">HiC-Pro</span></div>
           <a href="https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-hi-c-analysis/hi-c-analysis.zip" download="hi-c-analysis.zip" class="skill-dl-btn"><svg class="icon icon-sm" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7,10 12,15 17,10"/><line x1="12" y1="15" x2="12" y2="3"/></svg> .zip</a>
@@ -2469,6 +2600,7 @@
           </div>
         </div>
         <p class="skill-desc">Single-cell spatial proteomics from IMC and MIBI data.</p>
+        <p class="item-credit">From bioSkills by GPTomics (MIT), packaged for Biorouter by the Baranzini Lab.</p>
         <div class="skill-footer">
           <div class="skill-tags"><span class="tag">IMC</span><span class="tag">Steinbock</span></div>
           <a href="https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-imaging-mass-cytometry/imaging-mass-cytometry.zip" download="imaging-mass-cytometry.zip" class="skill-dl-btn"><svg class="icon icon-sm" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7,10 12,15 17,10"/><line x1="12" y1="15" x2="12" y2="3"/></svg> .zip</a>
@@ -2485,6 +2617,7 @@
           </div>
         </div>
         <p class="skill-desc">MHC binding, neoantigen prediction, and HLA typing.</p>
+        <p class="item-credit">From bioSkills by GPTomics (MIT), packaged for Biorouter by the Baranzini Lab.</p>
         <div class="skill-footer">
           <div class="skill-tags"><span class="tag">NetMHC</span><span class="tag">HLA</span></div>
           <a href="https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-immunoinformatics/immunoinformatics.zip" download="immunoinformatics.zip" class="skill-dl-btn"><svg class="icon icon-sm" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7,10 12,15 17,10"/><line x1="12" y1="15" x2="12" y2="3"/></svg> .zip</a>
@@ -2501,6 +2634,7 @@
           </div>
         </div>
         <p class="skill-desc">Cell-free DNA fragmentomics, tumor fraction, and methylation cfDNA.</p>
+        <p class="item-credit">From bioSkills by GPTomics (MIT), packaged for Biorouter by the Baranzini Lab.</p>
         <div class="skill-footer">
           <div class="skill-tags"><span class="tag">cfDNA</span><span class="tag">ichorCNA</span></div>
           <a href="https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-liquid-biopsy/liquid-biopsy.zip" download="liquid-biopsy.zip" class="skill-dl-btn"><svg class="icon icon-sm" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7,10 12,15 17,10"/><line x1="12" y1="15" x2="12" y2="3"/></svg> .zip</a>
@@ -2517,6 +2651,7 @@
           </div>
         </div>
         <p class="skill-desc">ONT and PacBio basecalling, alignment, and structural-variant workflows.</p>
+        <p class="item-credit">From bioSkills by GPTomics (MIT), packaged for Biorouter by the Baranzini Lab.</p>
         <div class="skill-footer">
           <div class="skill-tags"><span class="tag">Nanopore</span><span class="tag">PacBio</span><span class="tag">minimap2</span></div>
           <a href="https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-long-read-sequencing/long-read-sequencing.zip" download="long-read-sequencing.zip" class="skill-dl-btn"><svg class="icon icon-sm" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7,10 12,15 17,10"/><line x1="12" y1="15" x2="12" y2="3"/></svg> .zip</a>
@@ -2533,6 +2668,7 @@
           </div>
         </div>
         <p class="skill-desc">Biomarker discovery, model training, and cross-validation pipelines.</p>
+        <p class="item-credit">From bioSkills by GPTomics (MIT), packaged for Biorouter by the Baranzini Lab.</p>
         <div class="skill-footer">
           <div class="skill-tags"><span class="tag">scikit-learn</span><span class="tag">ML</span></div>
           <a href="https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-machine-learning/machine-learning.zip" download="machine-learning.zip" class="skill-dl-btn"><svg class="icon icon-sm" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7,10 12,15 17,10"/><line x1="12" y1="15" x2="12" y2="3"/></svg> .zip</a>
@@ -2549,6 +2685,7 @@
           </div>
         </div>
         <p class="skill-desc">Mass-spec metabolite identification, alignment, and quantification.</p>
+        <p class="item-credit">From bioSkills by GPTomics (MIT), packaged for Biorouter by the Baranzini Lab.</p>
         <div class="skill-footer">
           <div class="skill-tags"><span class="tag">XCMS</span><span class="tag">MetaboAnalyst</span></div>
           <a href="https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-metabolomics/metabolomics.zip" download="metabolomics.zip" class="skill-dl-btn"><svg class="icon icon-sm" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7,10 12,15 17,10"/><line x1="12" y1="15" x2="12" y2="3"/></svg> .zip</a>
@@ -2565,6 +2702,7 @@
           </div>
         </div>
         <p class="skill-desc">Shotgun microbial profiling, assembly, and binning.</p>
+        <p class="item-credit">From bioSkills by GPTomics (MIT), packaged for Biorouter by the Baranzini Lab.</p>
         <div class="skill-footer">
           <div class="skill-tags"><span class="tag">Kraken2</span><span class="tag">MetaPhlAn</span></div>
           <a href="https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-metagenomics/metagenomics.zip" download="metagenomics.zip" class="skill-dl-btn"><svg class="icon icon-sm" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7,10 12,15 17,10"/><line x1="12" y1="15" x2="12" y2="3"/></svg> .zip</a>
@@ -2581,6 +2719,7 @@
           </div>
         </div>
         <p class="skill-desc">Bisulfite alignment and differential methylation testing.</p>
+        <p class="item-credit">From bioSkills by GPTomics (MIT), packaged for Biorouter by the Baranzini Lab.</p>
         <div class="skill-footer">
           <div class="skill-tags"><span class="tag">Bismark</span><span class="tag">methylKit</span></div>
           <a href="https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-methylation-analysis/methylation-analysis.zip" download="methylation-analysis.zip" class="skill-dl-btn"><svg class="icon icon-sm" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7,10 12,15 17,10"/><line x1="12" y1="15" x2="12" y2="3"/></svg> .zip</a>
@@ -2597,6 +2736,7 @@
           </div>
         </div>
         <p class="skill-desc">16S rRNA amplicon and microbiota community profiling.</p>
+        <p class="item-credit">From bioSkills by GPTomics (MIT), packaged for Biorouter by the Baranzini Lab.</p>
         <div class="skill-footer">
           <div class="skill-tags"><span class="tag">QIIME2</span><span class="tag">DADA2</span></div>
           <a href="https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-microbiome/microbiome.zip" download="microbiome.zip" class="skill-dl-btn"><svg class="icon icon-sm" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7,10 12,15 17,10"/><line x1="12" y1="15" x2="12" y2="3"/></svg> .zip</a>
@@ -2613,6 +2753,7 @@
           </div>
         </div>
         <p class="skill-desc">Cross-modality fusion: MOFA, DIABLO, WNN, totalVI.</p>
+        <p class="item-credit">From bioSkills by GPTomics (MIT), packaged for Biorouter by the Baranzini Lab.</p>
         <div class="skill-footer">
           <div class="skill-tags"><span class="tag">MOFA</span><span class="tag">DIABLO</span></div>
           <a href="https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-multi-omics-integration/multi-omics-integration.zip" download="multi-omics-integration.zip" class="skill-dl-btn"><svg class="icon icon-sm" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7,10 12,15 17,10"/><line x1="12" y1="15" x2="12" y2="3"/></svg> .zip</a>
@@ -2629,6 +2770,7 @@
           </div>
         </div>
         <p class="skill-desc">GO, KEGG, Reactome, and GSEA enrichment testing.</p>
+        <p class="item-credit">From bioSkills by GPTomics (MIT), packaged for Biorouter by the Baranzini Lab.</p>
         <div class="skill-footer">
           <div class="skill-tags"><span class="tag">clusterProfiler</span><span class="tag">GSEA</span></div>
           <a href="https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-pathway-analysis/pathway-analysis.zip" download="pathway-analysis.zip" class="skill-dl-btn"><svg class="icon icon-sm" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7,10 12,15 17,10"/><line x1="12" y1="15" x2="12" y2="3"/></svg> .zip</a>
@@ -2645,6 +2787,7 @@
           </div>
         </div>
         <p class="skill-desc">Haplotype phasing and genotype imputation with SHAPEIT and Beagle.</p>
+        <p class="item-credit">From bioSkills by GPTomics (MIT), packaged for Biorouter by the Baranzini Lab.</p>
         <div class="skill-footer">
           <div class="skill-tags"><span class="tag">SHAPEIT</span><span class="tag">Beagle</span></div>
           <a href="https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-phasing-imputation/phasing-imputation.zip" download="phasing-imputation.zip" class="skill-dl-btn"><svg class="icon icon-sm" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7,10 12,15 17,10"/><line x1="12" y1="15" x2="12" y2="3"/></svg> .zip</a>
@@ -2661,6 +2804,7 @@
           </div>
         </div>
         <p class="skill-desc">Tree construction with IQ-TREE, RAxML, BEAST, and ancestral state.</p>
+        <p class="item-credit">From bioSkills by GPTomics (MIT), packaged for Biorouter by the Baranzini Lab.</p>
         <div class="skill-footer">
           <div class="skill-tags"><span class="tag">IQ-TREE</span><span class="tag">BEAST</span></div>
           <a href="https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-phylogenetics/phylogenetics.zip" download="phylogenetics.zip" class="skill-dl-btn"><svg class="icon icon-sm" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7,10 12,15 17,10"/><line x1="12" y1="15" x2="12" y2="3"/></svg> .zip</a>
@@ -2677,6 +2821,7 @@
           </div>
         </div>
         <p class="skill-desc">GWAS, population structure, LD, and selection scans.</p>
+        <p class="item-credit">From bioSkills by GPTomics (MIT), packaged for Biorouter by the Baranzini Lab.</p>
         <div class="skill-footer">
           <div class="skill-tags"><span class="tag">PLINK</span><span class="tag">GWAS</span></div>
           <a href="https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-population-genetics/population-genetics.zip" download="population-genetics.zip" class="skill-dl-btn"><svg class="icon icon-sm" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7,10 12,15 17,10"/><line x1="12" y1="15" x2="12" y2="3"/></svg> .zip</a>
@@ -2693,6 +2838,7 @@
           </div>
         </div>
         <p class="skill-desc">PCR and qPCR primer generation with Primer3 and primerBLAST.</p>
+        <p class="item-credit">From bioSkills by GPTomics (MIT), packaged for Biorouter by the Baranzini Lab.</p>
         <div class="skill-footer">
           <div class="skill-tags"><span class="tag">Primer3</span><span class="tag">qPCR</span></div>
           <a href="https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-primer-design/primer-design.zip" download="primer-design.zip" class="skill-dl-btn"><svg class="icon icon-sm" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7,10 12,15 17,10"/><line x1="12" y1="15" x2="12" y2="3"/></svg> .zip</a>
@@ -2709,6 +2855,7 @@
           </div>
         </div>
         <p class="skill-desc">Mass-spec quantification and protein abundance pipelines.</p>
+        <p class="item-credit">From bioSkills by GPTomics (MIT), packaged for Biorouter by the Baranzini Lab.</p>
         <div class="skill-footer">
           <div class="skill-tags"><span class="tag">MaxQuant</span><span class="tag">FragPipe</span></div>
           <a href="https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-proteomics/proteomics.zip" download="proteomics.zip" class="skill-dl-btn"><svg class="icon icon-sm" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7,10 12,15 17,10"/><line x1="12" y1="15" x2="12" y2="3"/></svg> .zip</a>
@@ -2725,6 +2872,7 @@
           </div>
         </div>
         <p class="skill-desc">Short-read mapping with BWA-MEM2, Bowtie2, STAR, HISAT2.</p>
+        <p class="item-credit">From bioSkills by GPTomics (MIT), packaged for Biorouter by the Baranzini Lab.</p>
         <div class="skill-footer">
           <div class="skill-tags"><span class="tag">BWA-MEM2</span><span class="tag">STAR</span></div>
           <a href="https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-read-alignment/read-alignment.zip" download="read-alignment.zip" class="skill-dl-btn"><svg class="icon icon-sm" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7,10 12,15 17,10"/><line x1="12" y1="15" x2="12" y2="3"/></svg> .zip</a>
@@ -2741,6 +2889,7 @@
           </div>
         </div>
         <p class="skill-desc">FastQC, fastp, trimming, and contamination screening.</p>
+        <p class="item-credit">From bioSkills by GPTomics (MIT), packaged for Biorouter by the Baranzini Lab.</p>
         <div class="skill-footer">
           <div class="skill-tags"><span class="tag">FastQC</span><span class="tag">fastp</span><span class="tag">Kraken2</span></div>
           <a href="https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-read-qc/read-qc.zip" download="read-qc.zip" class="skill-dl-btn"><svg class="icon icon-sm" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7,10 12,15 17,10"/><line x1="12" y1="15" x2="12" y2="3"/></svg> .zip</a>
@@ -2757,6 +2906,7 @@
           </div>
         </div>
         <p class="skill-desc">Reproducible HTML, Quarto, and R Markdown reports.</p>
+        <p class="item-credit">From bioSkills by GPTomics (MIT) and 3 more, packaged for Biorouter by the Baranzini Lab.</p>
         <div class="skill-footer">
           <div class="skill-tags"><span class="tag">Quarto</span><span class="tag">RMarkdown</span></div>
           <a href="https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-reporting/reporting.zip" download="reporting.zip" class="skill-dl-btn"><svg class="icon icon-sm" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7,10 12,15 17,10"/><line x1="12" y1="15" x2="12" y2="3"/></svg> .zip</a>
@@ -2773,6 +2923,7 @@
           </div>
         </div>
         <p class="skill-desc">Restriction-enzyme mapping and digestion prediction.</p>
+        <p class="item-credit">From bioSkills by GPTomics (MIT), packaged for Biorouter by the Baranzini Lab.</p>
         <div class="skill-footer">
           <div class="skill-tags"><span class="tag">REBASE</span><span class="tag">digestion</span></div>
           <a href="https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-restriction-analysis/restriction-analysis.zip" download="restriction-analysis.zip" class="skill-dl-btn"><svg class="icon icon-sm" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7,10 12,15 17,10"/><line x1="12" y1="15" x2="12" y2="3"/></svg> .zip</a>
@@ -2789,6 +2940,7 @@
           </div>
         </div>
         <p class="skill-desc">Ribosome profiling and translation-efficiency analysis.</p>
+        <p class="item-credit">From bioSkills by GPTomics (MIT), packaged for Biorouter by the Baranzini Lab.</p>
         <div class="skill-footer">
           <div class="skill-tags"><span class="tag">riboWaltz</span><span class="tag">Ribo-TISH</span></div>
           <a href="https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-ribo-seq/ribo-seq.zip" download="ribo-seq.zip" class="skill-dl-btn"><svg class="icon icon-sm" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7,10 12,15 17,10"/><line x1="12" y1="15" x2="12" y2="3"/></svg> .zip</a>
@@ -2805,6 +2957,7 @@
           </div>
         </div>
         <p class="skill-desc">Gene and transcript abundance with Salmon, kallisto, RSEM.</p>
+        <p class="item-credit">From bioSkills by GPTomics (MIT), packaged for Biorouter by the Baranzini Lab.</p>
         <div class="skill-footer">
           <div class="skill-tags"><span class="tag">Salmon</span><span class="tag">kallisto</span></div>
           <a href="https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-rna-quantification/rna-quantification.zip" download="rna-quantification.zip" class="skill-dl-btn"><svg class="icon icon-sm" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7,10 12,15 17,10"/><line x1="12" y1="15" x2="12" y2="3"/></svg> .zip</a>
@@ -2821,6 +2974,7 @@
           </div>
         </div>
         <p class="skill-desc">Secondary-structure prediction with RNAfold, IPknot.</p>
+        <p class="item-credit">From bioSkills by GPTomics (MIT), packaged for Biorouter by the Baranzini Lab.</p>
         <div class="skill-footer">
           <div class="skill-tags"><span class="tag">RNAfold</span><span class="tag">ViennaRNA</span></div>
           <a href="https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-rna-structure/rna-structure.zip" download="rna-structure.zip" class="skill-dl-btn"><svg class="icon icon-sm" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7,10 12,15 17,10"/><line x1="12" y1="15" x2="12" y2="3"/></svg> .zip</a>
@@ -2837,6 +2991,7 @@
           </div>
         </div>
         <p class="skill-desc">FASTA/FASTQ parsing, conversion, and indexing.</p>
+        <p class="item-credit">From bioSkills by GPTomics (MIT), packaged for Biorouter by the Baranzini Lab.</p>
         <div class="skill-footer">
           <div class="skill-tags"><span class="tag">Biopython</span><span class="tag">seqkit</span></div>
           <a href="https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-sequence-io/sequence-io.zip" download="sequence-io.zip" class="skill-dl-btn"><svg class="icon icon-sm" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7,10 12,15 17,10"/><line x1="12" y1="15" x2="12" y2="3"/></svg> .zip</a>
@@ -2853,6 +3008,7 @@
           </div>
         </div>
         <p class="skill-desc">Transcription, translation, ORF finding, and motif search.</p>
+        <p class="item-credit">From bioSkills by GPTomics (MIT), packaged for Biorouter by the Baranzini Lab.</p>
         <div class="skill-footer">
           <div class="skill-tags"><span class="tag">Biopython</span><span class="tag">EMBOSS</span></div>
           <a href="https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-sequence-manipulation/sequence-manipulation.zip" download="sequence-manipulation.zip" class="skill-dl-btn"><svg class="icon icon-sm" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7,10 12,15 17,10"/><line x1="12" y1="15" x2="12" y2="3"/></svg> .zip</a>
@@ -2869,6 +3025,7 @@
           </div>
         </div>
         <p class="skill-desc">scRNA-seq clustering, annotation, trajectory, and integration.</p>
+        <p class="item-credit">From bioSkills by GPTomics (MIT), packaged for Biorouter by the Baranzini Lab.</p>
         <div class="skill-footer">
           <div class="skill-tags"><span class="tag">Scanpy</span><span class="tag">Seurat</span><span class="tag">scVI</span></div>
           <a href="https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-single-cell/single-cell.zip" download="single-cell.zip" class="skill-dl-btn"><svg class="icon icon-sm" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7,10 12,15 17,10"/><line x1="12" y1="15" x2="12" y2="3"/></svg> .zip</a>
@@ -2885,6 +3042,7 @@
           </div>
         </div>
         <p class="skill-desc">miRNA, piRNA, and small-RNA quantification.</p>
+        <p class="item-credit">From bioSkills by GPTomics (MIT), packaged for Biorouter by the Baranzini Lab.</p>
         <div class="skill-footer">
           <div class="skill-tags"><span class="tag">miRDeep2</span><span class="tag">isomiRs</span></div>
           <a href="https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-small-rna-seq/small-rna-seq.zip" download="small-rna-seq.zip" class="skill-dl-btn"><svg class="icon icon-sm" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7,10 12,15 17,10"/><line x1="12" y1="15" x2="12" y2="3"/></svg> .zip</a>
@@ -2901,6 +3059,7 @@
           </div>
         </div>
         <p class="skill-desc">Visium, Slide-seq, and high-resolution tissue expression.</p>
+        <p class="item-credit">From bioSkills by GPTomics (MIT), packaged for Biorouter by the Baranzini Lab.</p>
         <div class="skill-footer">
           <div class="skill-tags"><span class="tag">Visium</span><span class="tag">Squidpy</span></div>
           <a href="https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-spatial-transcriptomics/spatial-transcriptomics.zip" download="spatial-transcriptomics.zip" class="skill-dl-btn"><svg class="icon icon-sm" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7,10 12,15 17,10"/><line x1="12" y1="15" x2="12" y2="3"/></svg> .zip</a>
@@ -2917,6 +3076,7 @@
           </div>
         </div>
         <p class="skill-desc">PDB parsing, AlphaFold, ESMFold, and structure analysis.</p>
+        <p class="item-credit">From bioSkills by GPTomics (MIT), packaged for Biorouter by the Baranzini Lab.</p>
         <div class="skill-footer">
           <div class="skill-tags"><span class="tag">AlphaFold</span><span class="tag">PyMOL</span></div>
           <a href="https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-structural-biology/structural-biology.zip" download="structural-biology.zip" class="skill-dl-btn"><svg class="icon icon-sm" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7,10 12,15 17,10"/><line x1="12" y1="15" x2="12" y2="3"/></svg> .zip</a>
@@ -2933,6 +3093,7 @@
           </div>
         </div>
         <p class="skill-desc">Metabolic flux balance, kinetic modelling, network analysis.</p>
+        <p class="item-credit">From bioSkills by GPTomics (MIT), packaged for Biorouter by the Baranzini Lab.</p>
         <div class="skill-footer">
           <div class="skill-tags"><span class="tag">COBRApy</span><span class="tag">FBA</span></div>
           <a href="https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-systems-biology/systems-biology.zip" download="systems-biology.zip" class="skill-dl-btn"><svg class="icon icon-sm" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7,10 12,15 17,10"/><line x1="12" y1="15" x2="12" y2="3"/></svg> .zip</a>
@@ -2949,6 +3110,7 @@
           </div>
         </div>
         <p class="skill-desc">Immune-receptor repertoire profiling and clonal-family analysis.</p>
+        <p class="item-credit">From bioSkills by GPTomics (MIT), packaged for Biorouter by the Baranzini Lab.</p>
         <div class="skill-footer">
           <div class="skill-tags"><span class="tag">MiXCR</span><span class="tag">scirpy</span></div>
           <a href="https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-tcr-bcr-analysis/tcr-bcr-analysis.zip" download="tcr-bcr-analysis.zip" class="skill-dl-btn"><svg class="icon icon-sm" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7,10 12,15 17,10"/><line x1="12" y1="15" x2="12" y2="3"/></svg> .zip</a>
@@ -2965,6 +3127,7 @@
           </div>
         </div>
         <p class="skill-desc">Time-series and circadian expression analysis.</p>
+        <p class="item-credit">From bioSkills by GPTomics (MIT), packaged for Biorouter by the Baranzini Lab.</p>
         <div class="skill-footer">
           <div class="skill-tags"><span class="tag">MetaCycle</span><span class="tag">JTK_CYCLE</span></div>
           <a href="https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-temporal-genomics/temporal-genomics.zip" download="temporal-genomics.zip" class="skill-dl-btn"><svg class="icon icon-sm" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7,10 12,15 17,10"/><line x1="12" y1="15" x2="12" y2="3"/></svg> .zip</a>
@@ -2981,6 +3144,7 @@
           </div>
         </div>
         <p class="skill-desc">SNPs, indels, SVs with GATK, DeepVariant, Manta, Delly.</p>
+        <p class="item-credit">From bioSkills by GPTomics (MIT), packaged for Biorouter by the Baranzini Lab.</p>
         <div class="skill-footer">
           <div class="skill-tags"><span class="tag">GATK</span><span class="tag">DeepVariant</span><span class="tag">Manta</span></div>
           <a href="https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-variant-calling/variant-calling.zip" download="variant-calling.zip" class="skill-dl-btn"><svg class="icon icon-sm" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7,10 12,15 17,10"/><line x1="12" y1="15" x2="12" y2="3"/></svg> .zip</a>
@@ -2997,6 +3161,7 @@
           </div>
         </div>
         <p class="skill-desc">Snakemake, Nextflow, CWL, WDL pipeline scaffolding.</p>
+        <p class="item-credit">From bioSkills by GPTomics (MIT) and 1 more, packaged for Biorouter by the Baranzini Lab.</p>
         <div class="skill-footer">
           <div class="skill-tags"><span class="tag">Snakemake</span><span class="tag">Nextflow</span></div>
           <a href="https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-workflow-management/workflow-management.zip" download="workflow-management.zip" class="skill-dl-btn"><svg class="icon icon-sm" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7,10 12,15 17,10"/><line x1="12" y1="15" x2="12" y2="3"/></svg> .zip</a>
@@ -3013,6 +3178,7 @@
           </div>
         </div>
         <p class="skill-desc">Ready-to-run analysis pipelines combining multiple skills.</p>
+        <p class="item-credit">From bioSkills by GPTomics (MIT), packaged for Biorouter by the Baranzini Lab.</p>
         <div class="skill-footer">
           <div class="skill-tags"><span class="tag">Pipelines</span><span class="tag">End-to-end</span></div>
           <a href="https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-workflows/workflows.zip" download="workflows.zip" class="skill-dl-btn"><svg class="icon icon-sm" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7,10 12,15 17,10"/><line x1="12" y1="15" x2="12" y2="3"/></svg> .zip</a>
@@ -3024,6 +3190,7 @@
     <button class="show-all-btn" type="button" data-target="bio-skill-grid"><span class="lbl">Show all 63</span><svg class="chev" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg></button>
 
       <div class="no-results" id="skills-no-results" style="display:none;">No skills match your search. <a href="https://join.slack.com/t/ucsfbiorouter/shared_invite/zt-41rw0wjnm-0ENbObXPsUJWObnvTp4v6A">Ask for one in Slack</a></div>
+      <p class="shelf-curator">Curated and organized by Wanjun Gu, Baranzini Lab, UCSF.</p>
     </div>
 
     <details class="baam-moved" id="baam-moved">
@@ -3089,6 +3256,7 @@
     <div class="foot-brand">
       <a class="brand" href="./"><img src="icon-transparent.svg" alt="" width="26" height="26"><span class="word">Biorouter</span></a>
       <span>A research environment for biomedical AI, from the Baranzini Lab at UCSF.</span>
+      <span class="foot-curator">Curated and organized by Wanjun Gu, Baranzini Lab, UCSF.</span>
     </div>
     <div><h3>Product</h3><ul><li><a href="download.html">Download</a></li><li><a href="docs.html">Docs</a></li><li><a href="baam.html">BAAM</a></li><li><a href="https://github.com/BaranziniLab/biorouter/releases">Release notes</a></li></ul></div>
     <div><h3>Community</h3><ul><li><a href="about.html">About</a></li><li><a href="about.html#updates">Updates</a></li><li><a href="https://join.slack.com/t/ucsfbiorouter/shared_invite/zt-41rw0wjnm-0ENbObXPsUJWObnvTp4v6A">Slack</a></li><li><a href="https://github.com/BaranziniLab/biorouter">GitHub</a></li></ul></div>

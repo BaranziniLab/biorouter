@@ -8,27 +8,37 @@
 //
 //   node scripts/build-registry.mjs
 //
-// Re-run this whenever baam.html's cards change.
+// Re-run this whenever baam.html's cards or the catalogs in landing/catalog/
+// change, after `node landing/scripts/write-credits.mjs` (which writes the
+// cards' credit lines and the skill cards' versions and licences this reads).
 //
-// A real run writes THREE files from one source, so the privacy annotations on
-// the cards cannot drift from what the app enforces:
+// A real run writes FIVE files, so the privacy annotations on the cards cannot
+// drift from what the app enforces, and the credits cannot drift from the
+// catalogs they are built from:
 //
-//   landing/registry.json                                  — the published catalog
-//   ui/desktop/src/components/baam/registry.fallback.json  — the bundled snapshot
-//   crates/biorouter/src/privacy/registry_private.rs       — the compiled-in set
+//   landing/registry.json                                  the published catalog
+//   ui/desktop/src/components/baam/registry.fallback.json  the bundled snapshot
+//   crates/biorouter/src/privacy/registry_private.rs       the compiled-in set
+//   landing/credits.json                                   the published credits
+//   ui/desktop/src/components/baam/credits.fallback.json   the app's copy of them
 //
-// They are written together, staged and renamed into place under a lock, so a
-// reader never sees a half-written catalog and two generators cannot interleave.
+// The first three come from baam.html's cards. The two credits files come from
+// the BAAM catalogs in landing/catalog/ (landing/scripts/lib/credits.mjs, the
+// same bytes in both), built only after the catalog check below has passed.
+// All five are written together, staged and renamed into place under a lock,
+// so a reader never sees a half-written catalog and two generators cannot
+// interleave.
 //
 //   node scripts/build-registry.mjs --check
 //
-// regenerates all three in memory and fails if any committed copy differs,
+// regenerates all five in memory and fails if any committed copy differs,
 // which is how CI and `just check-everything` establish that they agree.
 //
 // Flags exist so the validations below can be exercised against the fixtures in
 // scripts/fixtures/ without touching any of that. `--out` is mandatory
 // alongside `--input`, and no run but the full one may write a published
-// artifact — under any spelling of its path:
+// artifact (any of the five), under any spelling of its path. A fixture run
+// never builds credits at all:
 //
 //   node scripts/build-registry.mjs --input scripts/fixtures/happy.html \
 //                                   --out /tmp/happy-registry.json \
@@ -42,11 +52,13 @@
 // the BAAM catalogs in landing/catalog/ (landing/scripts/check-catalog.mjs), so
 // the outputs are never regenerated while a catalog disagrees with the page. A
 // fixture run skips that unless it passes `--catalog <dir>`, the same opt-in
-// shape as `--assert-private-set`.
+// shape as `--assert-private-set`; a real run refuses `--catalog`, because the
+// credits it publishes are built from the catalogs it checked.
 
 import { closeSync, openSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { basename, dirname, join, resolve } from 'node:path';
+import { CREDITS_PATHS, buildCredits, serializeCredits } from './lib/credits.mjs';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const REPO = join(ROOT, '..');
@@ -98,21 +110,24 @@ const DEFAULT_INPUT = join(ROOT, 'baam.html');
 const DEFAULT_OUTPUT = join(ROOT, 'registry.json');
 const FALLBACK_OUTPUT = join(REPO, 'ui/desktop/src/components/baam/registry.fallback.json');
 const RUST_OUTPUT = join(REPO, 'crates/biorouter/src/privacy/registry_private.rs');
-// The three files a real run publishes. Nothing else may write any of them.
-const PUBLISHED = [DEFAULT_OUTPUT, FALLBACK_OUTPUT, RUST_OUTPUT];
+// The published credits and the app's copy of them, the same bytes.
+const CREDITS_OUTPUTS = CREDITS_PATHS.map((p) => join(REPO, p));
+// The five files a real run publishes. Nothing else may write any of them.
+const PUBLISHED = [DEFAULT_OUTPUT, FALLBACK_OUTPUT, RUST_OUTPUT, ...CREDITS_OUTPUTS];
 const isPublished = (p) => PUBLISHED.some((q) => samePath(p, q));
 
 const INPUT = flag('--input', DEFAULT_INPUT);
 const OUTPUT = flag('--out', DEFAULT_OUTPUT);
-// A real run is the full one: the real page in, all three artifacts out. Its
-// two sibling outputs belong to it alone — a two-card fixture must never leave
-// the compiled-in private set holding two invented names.
+// A real run is the full one: the real page in, all five artifacts out. Its
+// four sibling outputs belong to it alone: a two-card fixture must never leave
+// the compiled-in private set holding two invented names, or a credits file
+// built from anything but the real catalogs.
 const IS_REAL_RUN = samePath(INPUT, DEFAULT_INPUT) && samePath(OUTPUT, DEFAULT_OUTPUT);
 
 if (isPublished(OUTPUT) && !IS_REAL_RUN) {
   console.error(
     `registry: --input requires an --out of its own — "${OUTPUT}" resolves to ` +
-      `${canonical(OUTPUT)}, which is one of the three published artifacts, and only a ` +
+      `${canonical(OUTPUT)}, which is one of the five published artifacts, and only a ` +
       `full run from ${DEFAULT_INPUT} may write those`
   );
   process.exit(1);
@@ -132,7 +147,7 @@ if (EMIT_RUST !== null && IS_REAL_RUN) {
 if (EMIT_RUST !== null && isPublished(EMIT_RUST)) {
   console.error(
     `registry: --emit-rust may not target "${EMIT_RUST}" — it resolves to ` +
-      `${canonical(EMIT_RUST)}, one of the three published artifacts`
+      `${canonical(EMIT_RUST)}, one of the five published artifacts`
   );
   process.exit(1);
 }
@@ -154,16 +169,27 @@ if (ASSERT_PRIVATE_SET && IS_REAL_RUN) {
 }
 
 // `--check` regenerates in memory and compares, writing nothing. It is what
-// makes "these three files agree with baam.html" a fact CI can establish rather
-// than a claim the generated header used to make on its own behalf.
+// makes "these five files agree with baam.html and the catalogs" a fact CI can
+// establish rather than a claim the generated header used to make on its own
+// behalf.
 const CHECK = argv.includes('--check');
 if (CHECK && !IS_REAL_RUN) {
-  console.error('registry: --check reads the real baam.html and the three real outputs; it takes no --input/--out');
+  console.error('registry: --check reads the real baam.html and the five real outputs; it takes no --input/--out');
+  process.exit(1);
+}
+
+// `--catalog <dir>` points a FIXTURE run's catalog check at another catalog
+// directory. A real run always checks landing/catalog/ and builds the published
+// credits from it, so a real run with another directory would publish credits
+// built from catalogs nobody committed.
+const CATALOG = flag('--catalog', null);
+if (CATALOG !== null && IS_REAL_RUN) {
+  console.error('registry: --catalog is for fixture runs; a real run always checks landing/catalog/ and builds credits.json from it');
   process.exit(1);
 }
 
 // Two generators that read baam.html at different moments can interleave their
-// writes and leave the three outputs from two different generations. Held only
+// writes and leave the five outputs from two different generations. Held only
 // for the writes of a real run.
 const LOCK = join(ROOT, '.registry-build.lock');
 function withGenerationLock(body) {
@@ -1323,17 +1349,39 @@ const registry = {
 
 // ---- The BAAM catalogs agree with what this run built ---------------------
 // Before anything is written or compared: a catalog that disagrees with the
-// page stops the run, so the three outputs cannot be regenerated around it.
-const CATALOG = flag('--catalog', null);
+// page stops the run, so the five outputs cannot be regenerated around it.
+//
+// The credits are built from the very catalogs the check read (a copy taken
+// before the check, so nothing the check does to its input can reach them), and
+// only on a real run: a fixture run never builds credits, so it can never
+// produce a credits file to write anywhere. No credits text is passed to the
+// check (its `creditsTexts`): this run writes both files itself, and `--check`
+// below compares them.
+let creditsText = null;
 if (IS_REAL_RUN || CATALOG !== null) {
   const { checkCatalogs, loadCatalogs, readBuiltins } = await import('./check-catalog.mjs');
+  const catalogs = loadCatalogs(CATALOG ?? undefined);
+  const creditsInput = IS_REAL_RUN
+    ? structuredClone({ extensions: catalogs.extensions, skills: catalogs.skills })
+    : null;
   const res = checkCatalogs({
     registry,
     html,
-    catalogs: loadCatalogs(CATALOG ?? undefined),
+    catalogs,
     builtins: readBuiltins(REPO),
   });
   for (const e of res.errors) fail(`catalog [${e.rule}]: ${e.message}`);
+  if (IS_REAL_RUN && res.errors.length === 0) {
+    try {
+      creditsText = serializeCredits(buildCredits(creditsInput));
+    } catch (err) {
+      fail(`credits.json could not be built from landing/catalog/: ${err.message}`);
+    }
+  }
+}
+// A real run never writes four of its five outputs: no credits, nothing at all.
+if (IS_REAL_RUN && violations.length === 0 && creditsText === null) {
+  fail('credits.json was not built, so nothing is written');
 }
 
 if (violations.length) {
@@ -1342,42 +1390,51 @@ if (violations.length) {
   process.exit(1);
 }
 
-// Render EVERYTHING before writing anything. The three outputs are one catalog
-// in three forms, and a failure between them leaves a published registry the
-// app does not enforce.
+// Render EVERYTHING before writing anything. The first three outputs are one
+// catalog in three forms, and a failure between them leaves a published
+// registry the app does not enforce; the credits were rendered above.
 const out = JSON.stringify(registry, null, 2) + '\n';
 const rustSource = renderPrivateSet(extensions);
+let creditsTally = '';
+if (creditsText !== null) {
+  const credits = JSON.parse(creditsText);
+  creditsTally =
+    `; credits for ${Object.keys(credits.extensions).length} extension rows ` +
+    `and ${Object.keys(credits.skills).length} skill rows`;
+}
 const tally =
   `${extensions.length} extensions, ${skills.length} skills ` +
   `(${skills.filter((s) => s.category === 'Core').length} core, ` +
   `${skills.filter((s) => s.category === 'Developer').length} developer, ` +
-  `${skills.filter((s) => s.category === 'Biomedical').length} biomedical)`;
+  `${skills.filter((s) => s.category === 'Biomedical').length} biomedical)` +
+  creditsTally;
 
-// ---- --check: are the three committed outputs what baam.html generates? ----
+// ---- --check: are the five committed outputs what this run generates? ------
 // "Written by one command from one source" is not the same as "in sync": an
 // interrupted run, a hand edit, or a rebase that took one side of a conflict
 // all leave a published catalog the app does not enforce, and until this mode
 // existed nothing could tell.
 if (CHECK) {
   const drift = [];
-  const compare = (path, want) => {
+  const compare = (path, want, from) => {
     let have = null;
     try {
       have = readFileSync(path, 'utf8');
     } catch {
       /* absent counts as drift */
     }
-    if (have !== want) drift.push(path);
+    if (have !== want) drift.push([path, from]);
   };
-  compare(DEFAULT_OUTPUT, out);
-  compare(FALLBACK_OUTPUT, out);
-  compare(RUST_OUTPUT, rustSource);
+  compare(DEFAULT_OUTPUT, out, 'baam.html');
+  compare(FALLBACK_OUTPUT, out, 'baam.html');
+  compare(RUST_OUTPUT, rustSource, 'baam.html');
+  for (const path of CREDITS_OUTPUTS) compare(path, creditsText, 'the BAAM catalogs');
   if (drift.length) {
-    for (const d of drift) console.error(`registry: ${d} is not what baam.html generates`);
+    for (const [d, from] of drift) console.error(`registry: ${d} is not what ${from} generates`);
     console.error('registry: run `node landing/scripts/build-registry.mjs` to regenerate');
     process.exit(1);
   }
-  console.log(`registry: all three outputs are current (${tally})`);
+  console.log(`registry: all five outputs are current (${tally})`);
   process.exit(0);
 }
 
@@ -1390,14 +1447,14 @@ if (!IS_REAL_RUN) {
     writeFileSync(EMIT_RUST, rustSource);
   }
 } else {
-  // Stage all three beside their destinations, then rename them into place.
+  // Stage all five beside their destinations, then rename them into place.
   // A rename is atomic, so no reader ever sees a half-written catalog, and a
-  // failure while writing (a full disk, a permission fault) leaves all three
+  // failure while writing (a full disk, a permission fault) leaves all five
   // real files untouched instead of one of them replaced.
   //
   // The lock closes the remaining window: two generators that read baam.html at
   // different moments could otherwise interleave their renames and leave the
-  // three outputs from two different generations.
+  // five outputs from two different generations.
   withGenerationLock(() => {
     const staged = [
       // The published catalog.
@@ -1410,6 +1467,10 @@ if (!IS_REAL_RUN) {
       // the CLI and the daemon can read at all — there is no network path to
       // the registry from Rust.
       [RUST_OUTPUT, rustSource],
+      // The credits, published beside registry.json and keyed by the same ids,
+      // and the desktop app's copy of them, the same bytes (nothing in the app
+      // reads it yet; it ships so the app's first reader has an offline copy).
+      ...CREDITS_OUTPUTS.map((path) => [path, creditsText]),
     ].map(([path, contents]) => {
       const tmp = `${path}.tmp-${process.pid}`;
       writeFileSync(tmp, contents);

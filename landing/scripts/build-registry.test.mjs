@@ -22,18 +22,71 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import {
+  cpSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-const SCRIPTS = dirname(fileURLToPath(import.meta.url));
-const LANDING = resolve(SCRIPTS, '..');
-const REPO = resolve(LANDING, '..');
+const REAL_REPO = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
+
+/**
+ * Every run in this file uses a copy of the tree, never the worktree itself.
+ *
+ * ⚠ **A copy because many tests here mutate the real inputs and outputs.** A real
+ * run is defined by the generator's own location (every path it reads or writes
+ * hangs off `import.meta.url`), so the rules that only a real run applies can
+ * only be driven by editing baam.html and the five published files and putting
+ * them back. Done in the worktree, two overlapping runs of this file (or one
+ * killed mid-test, where no `finally` runs) left a mutated credits copy behind,
+ * and every other test and generator reading the tree failed until someone
+ * repaired it by hand. The copy holds the generator and its libraries, the
+ * catalogs, the page, the five outputs and the four files the catalog check reads
+ * for Biorouter's built-in names; a file a later generator needs and this list
+ * lacks fails loudly with ENOENT, never quietly against the worktree.
+ *
+ * It is resolved with realpath so the paths a test writes in a message match the
+ * paths the generator prints (macOS reports /var/folders as /private/var/folders).
+ */
+const TREE_FILES = [
+  'landing/scripts',
+  'landing/catalog',
+  'landing/baam.html',
+  'landing/registry.json',
+  'landing/credits.json',
+  'ui/desktop/src/components/baam/registry.fallback.json',
+  'ui/desktop/src/components/baam/credits.fallback.json',
+  'crates/biorouter/src/privacy/registry_private.rs',
+  'crates/biorouter/src/agents/skills_extension.rs',
+  'crates/biorouter/src/agents/builtin_skills',
+  'crates/biorouter/src/knowledge/soul.rs',
+  'ui/desktop/src/utils/toolGlyph.ts',
+];
+const REPO = realpathSync(mkdtempSync(join(tmpdir(), 'registry-tree-')));
+process.on('exit', () => rmSync(REPO, { recursive: true, force: true }));
+for (const rel of TREE_FILES) {
+  mkdirSync(dirname(join(REPO, rel)), { recursive: true });
+  // A generator copy a killed run left beside the original is not part of the tree.
+  cpSync(join(REAL_REPO, rel), join(REPO, rel), {
+    recursive: true,
+    filter: (src) => !/[\\/]\.build-registry\.[^\\/]*$/.test(src) && !/[\\/]node_modules$/.test(src),
+  });
+}
+const LANDING = join(REPO, 'landing');
+const SCRIPTS = join(LANDING, 'scripts');
 const GENERATOR = join(SCRIPTS, 'build-registry.mjs');
 const FIXTURES = join(SCRIPTS, 'fixtures');
-// The compiled-in security artifact, named up here because two tests read it
-// and one of them runs before the PROTECTED map below is evaluated.
+// The compiled-in security artifact in the copy, named up here because the
+// PROTECTED map below and the tests before it read it.
 const PROTECTED_PRIVATE_SET = join(REPO, 'crates/biorouter/src/privacy/registry_private.rs');
 
 let tmpSeq = 0;
@@ -68,11 +121,11 @@ process.on('exit', () => {
  * copy exercises the rules without adding a knob anybody could reach in
  * production.
  *
- * ⚠ **The copy sits beside the original.** Every path the generator resolves —
- * the fixtures, the three protected artifacts, the lock — hangs off
- * `import.meta.url`, so a copy in /tmp would resolve none of them. Its output is
- * byte-identical to the original's for identical input: nothing rendered embeds
- * the running script's filename.
+ * ⚠ **The copy sits beside the generator in the test tree (REPO).** Every path
+ * the generator resolves — the fixtures, the five protected artifacts, the lock
+ * — hangs off `import.meta.url`, so a copy anywhere else would resolve none of
+ * them. Its output is byte-identical to the original's for identical input:
+ * nothing rendered embeds the running script's filename.
  */
 function withInstitutions(literal, body) {
   const src = readFileSync(GENERATOR, 'utf8');
@@ -296,7 +349,7 @@ test('the closed private set is exactly the three extensions the operator named'
   // gptragent is the third (owner decision 1 of the November 2026 BAAM
   // refresh): private, with no affiliation row, because no institution's
   // agreements cover a person's own R session.
-  const rust = readFileSync(PROTECTED_PRIVATE_SET, 'utf8');
+  const rust = readFileSync(join(REAL_REPO, 'crates/biorouter/src/privacy/registry_private.rs'), 'utf8');
   assert.match(rust, /PRIVATE_EXTENSIONS: &\[&str\] =\s*&\["cdwagent", "gptragent", "ucsfomopagent"\];/);
   assert.match(
     rust,
@@ -308,7 +361,7 @@ test('--assert-private-set is refused on a real run, which always asserts it', (
   // The flag is a fixture affordance, exactly like --emit-rust. Accepting it on
   // a real run would suggest the real run needs asking. Wrapped in
   // protectingArtifacts because a REGRESSION here is a real run: the guard is
-  // what stops this test from rewriting the three published files.
+  // what stops this test from rewriting the five published files.
   protectingArtifacts(() => {
     const r = run({ args: ['--assert-private-set'] });
     assert.equal(r.code, 1, r.both);
@@ -472,7 +525,7 @@ test('the rewritten generator is otherwise the generator, so the refusals above 
   withInstitutions("[{ id: 'ucsf', name: 'UCSF' }]", (script) => {
     const r = run({ args: ['--check'], script });
     assert.equal(r.code, 0, r.both);
-    assert.match(r.stdout, /all three outputs are current/);
+    assert.match(r.stdout, /all five outputs are current/);
   });
 });
 
@@ -610,7 +663,7 @@ test('the compiled-in snapshot carries affiliation and the institution names', (
  * one; the golden shape beside it always runs.
  */
 function findRustfmt() {
-  for (const candidate of [join(REPO, 'bin', 'rustfmt'), 'rustfmt']) {
+  for (const candidate of [join(REAL_REPO, 'bin', 'rustfmt'), 'rustfmt']) {
     const probe = spawnSync(candidate, ['--version'], { encoding: 'utf8' });
     if (!probe.error && probe.status === 0) return candidate;
   }
@@ -692,11 +745,16 @@ test('--input without --out is refused rather than defaulted', () => {
   assert.match(r.stderr, /--input requires an --out/);
 });
 
-// ---- The three published artifacts are unwritable by a fixture run ---------
+// ---- The five published artifacts are unwritable by a fixture run ----------
 // The guard compared raw path STRINGS, so any second spelling of a protected
-// file slipped past it while resolving to the same inode. Each test below
-// snapshots the real file and restores it in a `finally`, so a regression makes
-// the test red without also rewriting the tracked catalog.
+// file slipped past it while resolving to the same inode. The protected files
+// here are the test tree's copies (REPO, above), and each test below snapshots
+// its file and restores it in a `finally`, so a regression makes the test red
+// without also changing what the next test reads.
+//
+// The two credits files are built from the BAAM catalogs, never from a page, so
+// a fixture run has nothing to put in them: one that wrote either would publish
+// a fixture registry under the credits' name.
 const PROTECTED = {
   'the published registry': join(LANDING, 'registry.json'),
   'the desktop fallback snapshot': join(
@@ -704,7 +762,16 @@ const PROTECTED = {
     'ui/desktop/src/components/baam/registry.fallback.json'
   ),
   'the compiled-in private set': PROTECTED_PRIVATE_SET,
+  'the published credits': join(LANDING, 'credits.json'),
+  "the desktop app's copy of the credits": join(
+    REPO,
+    'ui/desktop/src/components/baam/credits.fallback.json'
+  ),
 };
+const CREDITS_FILES = [
+  PROTECTED['the published credits'],
+  PROTECTED["the desktop app's copy of the credits"],
+];
 
 /** Run `body`, and put every protected artifact back byte-for-byte afterwards. */
 function protectingArtifacts(body) {
@@ -763,21 +830,96 @@ test('--emit-rust pointing at the compiled-in private set is refused', () => {
   });
 });
 
+for (const credits of CREDITS_FILES) {
+  const rel = credits.slice(REPO.length + 1);
+  test(`--emit-rust pointing at ${rel} is refused`, () => {
+    protectingArtifacts(() => {
+      const before = readFileSync(credits);
+      const r = run({ input: fixture('happy'), out: outPath(), args: ['--emit-rust', credits] });
+      assert.equal(r.code, 1, r.both);
+      assert.match(r.stderr, /one of the five published artifacts/);
+      assert.deepEqual(readFileSync(credits), before);
+    });
+  });
+
+  test(`a relative --out spelling of ${rel} is refused`, () => {
+    protectingArtifacts(() => {
+      const before = readFileSync(credits);
+      // Textually different from the absolute path the generator holds, same file.
+      const r = run({ input: fixture('happy'), out: rel, cwd: REPO });
+      assert.equal(r.code, 1, r.both);
+      assert.match(r.stderr, /--input requires an --out/);
+      assert.deepEqual(readFileSync(credits), before);
+    });
+  });
+
+  test(`a symlink to ${rel} is refused`, () => {
+    protectingArtifacts(() => {
+      const before = readFileSync(credits);
+      const alias = join(scratch, `credits-alias-${tmpSeq++}.json`);
+      symlinkSync(credits, alias);
+      const r = run({ input: fixture('happy'), out: alias });
+      assert.equal(r.code, 1, r.both);
+      assert.match(r.stderr, /--input requires an --out/);
+      assert.deepEqual(readFileSync(credits), before);
+    });
+  });
+}
+
+test('a fixture run never builds credits, even when it checks a catalog', () => {
+  // `--catalog` opts a fixture run into the catalog check. It must not opt it
+  // into the credits: those are built from landing/catalog/ on a real run and
+  // nowhere else. The run is expected to fail (the fixture's two cards are not
+  // the catalogs' rows); what it must not do is touch either credits file.
+  protectingArtifacts(() => {
+    const before = CREDITS_FILES.map((p) => readFileSync(p));
+    const out = outPath();
+    const r = run({ input: fixture('happy'), out, args: ['--catalog', join(LANDING, 'catalog')] });
+    assert.equal(r.code, 1, r.both);
+    assert.match(r.stderr, /catalog \[/);
+    assert.equal(existsSync(out), false, 'a refused fixture run writes nothing');
+    CREDITS_FILES.forEach((p, i) => assert.deepEqual(readFileSync(p), before[i], `${p} must not change`));
+  });
+});
+
+test('--catalog is refused on a real run, whose credits come from landing/catalog/', () => {
+  // A real run with another catalog directory would check one set of catalogs
+  // and publish credits.json for whatever that directory holds.
+  protectingArtifacts(() => {
+    for (const args of [['--catalog', join(LANDING, 'catalog')], ['--check', '--catalog', scratch]]) {
+      const r = run({ args });
+      assert.equal(r.code, 1, r.both);
+      assert.match(r.stderr, /--catalog is for fixture runs/);
+    }
+  });
+});
+
 test('a flag with no value is refused by name, not by a stack trace', () => {
   const r = run({ input: fixture('happy'), args: ['--out'] });
   assert.equal(r.code, 1, r.both);
   assert.match(r.stderr, /^registry: --out needs a value/m);
 });
 
-// ---- Drift between the three outputs is detectable ------------------------
-// They are written by one command from one source, which is not the same as
+// ---- Drift between the five outputs is detectable -------------------------
+// They are written by one command from two sources, which is not the same as
 // being in sync: an interrupted run, a hand edit or a rebase that took one side
 // of a conflict all leave a published catalog the app does not enforce. Nothing
 // could tell before `--check`.
 test('--check passes on the committed tree', () => {
   const r = run({ args: ['--check'] });
   assert.equal(r.code, 0, r.both);
-  assert.match(r.stdout, /all three outputs are current/);
+  assert.match(r.stdout, /all five outputs are current/);
+  assert.match(r.stdout, /credits for \d+ extension rows and \d+ skill rows/);
+});
+
+test('the two credits files are the same bytes', () => {
+  // The app's copy is the published file, not a second rendering of it. Read
+  // off the worktree, since this is a statement about what is committed.
+  const [published, fallback] = CREDITS_FILES.map((p) => readFileSync(join(REAL_REPO, p.slice(REPO.length + 1))));
+  assert.ok(published.length > 0);
+  assert.deepEqual(fallback, published);
+  const parsed = JSON.parse(published.toString('utf8'));
+  assert.equal(parsed.version, 1);
 });
 
 for (const [what, path] of Object.entries(PROTECTED)) {
@@ -787,6 +929,26 @@ for (const [what, path] of Object.entries(PROTECTED)) {
       const r = run({ args: ['--check'] });
       assert.equal(r.code, 1, r.both);
       assert.match(r.stderr, new RegExp(path.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+    });
+  });
+}
+
+for (const path of CREDITS_FILES) {
+  const rel = path.slice(REPO.length + 1);
+  test(`--check notices ${rel} missing, and a one-value edit to it`, () => {
+    protectingArtifacts(() => {
+      const text = readFileSync(path, 'utf8');
+      rmSync(path);
+      let r = run({ args: ['--check'] });
+      assert.equal(r.code, 1, r.both);
+      assert.match(r.stderr, /is not what the BAAM catalogs generate/);
+      // Valid JSON, one line changed: the comparison is of bytes, not of shape.
+      const edited = text.replace(/"line": "Made by the Baranzini Lab \(Wanjun Gu, UCSF\)\."/, '"line": "Made by someone else."');
+      assert.notEqual(edited, text, 'the edit must apply, or this proves nothing');
+      writeFileSync(path, edited);
+      r = run({ args: ['--check'] });
+      assert.equal(r.code, 1, r.both);
+      assert.match(r.stderr, new RegExp(rel.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
     });
   });
 }

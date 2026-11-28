@@ -9,7 +9,14 @@
    Pinned by landing/scripts/baam-privacy-facet.test.mjs and
    baam-search.test.mjs. Filtering is synchronous on the input event, cards are
    hidden with inline display:none, and the privacy facet matches the card's own
-   data-privacy, never its prose. */
+   data-privacy, never its prose.
+
+   Credits come from credits.json (landing/scripts/lib/credits.mjs builds it
+   beside registry.json, keyed by the same ids): the line under each rendered
+   extension card and the "Provenance and credits" row of an opened panel.
+   Every credit value reaches the page as text (textContent, or an href that
+   starts with http: or https:), never through innerHTML. Pinned by
+   landing/scripts/baam-credits.browser.test.mjs. */
 
   function escapeHtml(value) {
     return String(value == null ? '' : value).replace(/[&<>"']/g, ch => ({
@@ -473,6 +480,9 @@
   }
 
   function renderExtensions(extensions, institutions) {
+    // The static cards' credit lines, read before the static grid is emptied:
+    // the line a rendered card shows when credits.json has none for it.
+    harvestCredits();
     const featured = [], primary = [], adapters = [];
     extensions.forEach(e => {
       if (featIndex(e.id) !== -1) featured.push(e);
@@ -495,6 +505,7 @@
 
     const staticGrid = document.getElementById('extensions-grid');
     if (staticGrid) staticGrid.innerHTML = '';
+    fillCardCredits(document.getElementById('extensions-section'));
 
     buildExtChips(extensions);
     updateCounts();
@@ -549,10 +560,11 @@
     const licenseWords = wordsOf(card.dataset.license);
     // The row's own text, without the detail panel an open row carries: the
     // tag facets answer from what a row says, not from how far a visitor has
-    // opened it.
+    // opened it. Nor the credit line: a facet answers exactly as it did before
+    // the line existed (who made a row is not a subject it is filed under).
     let text = '';
     card.childNodes.forEach(n => {
-      if (n.nodeType === 1 && n.classList.contains('row-detail')) return;
+      if (n.nodeType === 1 && (n.classList.contains('row-detail') || n.classList.contains('item-credit'))) return;
       text += ' ' + n.textContent;
     });
     // A chip is part of the text, so a licence chip is removed from that
@@ -633,6 +645,11 @@
       // already destroyed the fallback it would need to fall back to.
       if (!readableTiers(registry.extensions)) return;
       if (!readableAffiliations(registry.extensions, registry.institutions)) return;
+      // The card lines come from credits.json, fetched beside the registry.
+      // creditsReady never rejects: a missing or unreadable file resolves to
+      // null, the line harvested from the static card stands in, and the shelf
+      // renders all the same.
+      await creditsReady;
       renderExtensions(registry.extensions, registry.institutions || {});
       if (activeShelf === 'extensions') runFilter();
     } catch (e) { /* keep the static no-JS fallback rows */ }
@@ -709,8 +726,13 @@
       let grid = title.nextElementSibling;
       while (grid && !(grid.classList && grid.classList.contains('skill-grid'))) grid = grid.nextElementSibling;
       if (!grid) return;
-      let btn = grid.nextElementSibling;
-      while (btn && !(btn.classList && btn.classList.contains('show-all-btn'))) btn = btn.nextElementSibling;
+      // The group's own Show all button, by the grid it names. A sibling walk
+      // ran on past a group that has none (Developer) and took the next
+      // group's: it folded the Developer grid to eight rows that no button
+      // could show again.
+      const btn = grid.id
+        ? document.querySelector('#skills-section .show-all-btn[data-target="' + grid.id + '"]')
+        : null;
       const anyVisible = Array.prototype.some.call(grid.querySelectorAll('.skill-card'), c => c.style.display !== 'none');
       title.style.display = anyVisible ? '' : 'none';
       grid.style.display = anyVisible ? '' : 'none';
@@ -773,8 +795,11 @@
     return dl ? slugOf(dl.getAttribute('href')) : '';
   }
 
-  function row(label, html) {
-    return `<div class="detail-row"><dt>${label}</dt><dd>${html}</dd></div>`;
+  // `key` names the row for code (data-row): the credits row is placed before
+  // the row named "install". Labels and keys are constants of this file.
+  function row(label, html, key) {
+    const attr = key ? ` data-row="${key}"` : '';
+    return `<div class="detail-row"${attr}><dt>${label}</dt><dd>${html}</dd></div>`;
   }
   function list(items, cls) {
     return `<ul class="${cls}">${items.map(t => `<li>${escapeHtml(t)}</li>`).join('')}</ul>`;
@@ -818,7 +843,7 @@
       <li><span class="k">In the app</span><span>Open Extensions, choose Add, then Browse marketplace, then Add beside ${name}.</span></li>
       <li><span class="k">From a file</span><span>Download <a href="${escapeHtml(href)}">${file}</a>. In Extensions, choose Add, then Install from file (.brxt), and drop the file in.</span></li>
       <li><span class="k">At a terminal</span><span><code>biorouter extension install ./${file}</code></span></li>
-    </ul>${needsSecret(d) ? SECRET_NOTE : ''}`));
+    </ul>${needsSecret(d) ? SECRET_NOTE : ''}`, 'install'));
     const links = [];
     if (gh) links.push(`<a class="text-link" href="${escapeHtml(gh.getAttribute('href'))}" target="_blank" rel="noopener">Source on GitHub <span aria-hidden="true">↗</span></a>`);
     ((d && d.links) || []).forEach(l => links.push(`<a class="text-link" href="${escapeHtml(l.href)}" target="_blank" rel="noopener">${escapeHtml(l.label)} <span aria-hidden="true">↗</span></a>`));
@@ -850,7 +875,7 @@
     return `<dl class="detail-list">${type ? row('How it runs', type) : ''}${row('Install', `<ul class="how">
       <li><span class="k">In the app</span><span>Open Skills, choose Add, then Browse marketplace, select ${name} and choose Install.</span></li>
       <li><span class="k">From a file</span><span>Download <a href="${escapeHtml(href)}">${file}</a>. In Skills, choose Add, then From a repository or .zip…, and drop the file in.</span></li>
-    </ul>`)}</dl>`;
+    </ul>`, 'install')}</dl>`;
   }
 
   function setOpen(card, open) {
@@ -861,6 +886,7 @@
       panel.className = 'row-detail';
       panel.id = 'detail-' + Math.random().toString(36).slice(2, 9);
       panel.innerHTML = card.classList.contains('skill-card') ? skillDetailHtml(card) : extDetailHtml(card);
+      insertCreditsRow(card, panel);
       card.appendChild(panel);
     }
     if (panel) {
@@ -958,6 +984,304 @@
     document.querySelectorAll(CLAMP_SEL).forEach(clampDesc);
   }
 
+  /* ── Provenance and credits ─────────────────────────────────
+     credits.json is version 1 of the contract in
+     landing/scripts/lib/credits.mjs: { version, curated_by, extensions: { id:
+     Entry }, skills: { id: Entry } }, every Entry carrying its card `line`,
+     its `summary` sentence, its sources, ideas, data and services, people,
+     earlier versions and two links. It is fetched at runtime from a server
+     this page cannot re-run the generator against, so every value is treated
+     as untrusted text: it reaches the page through textContent and
+     createTextNode only, and a link is drawn only for a URL that starts with
+     http: or https:. Nothing here writes innerHTML.
+
+     The static cards carry their lines in the HTML (write-credits.mjs writes
+     them), so the no-JS view, the static fallback shelf and the skills shelf
+     need nothing from this file. A rendered extension card gets its line
+     from credits.json, else from the static card it replaced. */
+  const CREDITS_VERSION = 1;
+  /* The same two constants as credits.mjs's PANEL_ROW_LABEL and PANEL_SOURCES_SHOWN. */
+  const CREDITS_LABEL = 'Provenance and credits';
+  const CREDITS_SHOWN = 3;
+  let CREDITS = null;
+  let creditsReady = Promise.resolve(null);
+  const harvestedCredits = Object.create(null);
+
+  const isRecord = x => !!x && typeof x === 'object' && !Array.isArray(x);
+  const textOf = x => (typeof x === 'string' && x.trim() ? x.trim() : '');
+  const records = x => (Array.isArray(x) ? x.filter(isRecord) : []);
+  const strings = x => (Array.isArray(x) ? x.map(textOf).filter(Boolean) : []);
+  // A value with its trailing spaces and full stops trimmed, for a sentence
+  // that goes on after it.
+  const trimEnd = x => textOf(x).replace(/[\s.]+$/, '');
+  // Only a link the browser will treat as a web page: never javascript:,
+  // data: or anything else a record could name.
+  const webUrl = x => (typeof x === 'string' && /^https?:\/\//i.test(x) ? x : null);
+
+  function loadCredits() {
+    let request;
+    try {
+      request = fetch('credits.json', { cache: 'no-store' });
+    } catch (e) {
+      return Promise.resolve(null);
+    }
+    return request
+      .then(res => (res.ok ? res.json() : null))
+      .then(data => (isRecord(data) && data.version === CREDITS_VERSION && isRecord(data.extensions) && isRecord(data.skills) ? data : null))
+      .catch(() => null)
+      .then(data => {
+        CREDITS = data;
+        // A panel opened before the file arrived showed the card's line; it
+        // now shows the whole row.
+        if (data) refreshCreditRows();
+        return data;
+      });
+  }
+
+  function creditEntry(kind, id) {
+    const map = CREDITS && CREDITS[kind];
+    if (!isRecord(map) || !id || !Object.prototype.hasOwnProperty.call(map, id)) return null;
+    return isRecord(map[id]) ? map[id] : null;
+  }
+
+  function skillIdOf(card) {
+    const dl = card.querySelector('.skill-dl-btn');
+    return dl ? slugOf(dl.getAttribute('href')) : '';
+  }
+
+  function harvestCredits() {
+    document.querySelectorAll('#extensions-grid .ext-card').forEach(card => {
+      const line = card.querySelector(':scope > .item-credit');
+      const id = extIdOf(card);
+      if (id && line && textOf(line.textContent)) harvestedCredits[id] = textOf(line.textContent);
+    });
+  }
+
+  /* One p.item-credit, the next element after the description, on every
+     extension card in `scope` that has none: the credits.json line, else the
+     line the static card carried, else nothing. */
+  function fillCardCredits(scope) {
+    (scope || document).querySelectorAll('.ext-card').forEach(card => {
+      if (card.querySelector(':scope > .item-credit')) return;
+      const desc = card.querySelector(':scope > .ext-desc');
+      const id = extIdOf(card);
+      const entry = creditEntry('extensions', id);
+      const line = (entry && textOf(entry.line)) || harvestedCredits[id] || '';
+      if (!desc || !line) return;
+      const p = document.createElement('p');
+      p.className = 'item-credit';
+      p.textContent = line;
+      desc.after(p);
+    });
+  }
+
+  function el(tag, className, text) {
+    const node = document.createElement(tag);
+    if (className) node.className = className;
+    if (text != null) node.textContent = text;
+    return node;
+  }
+
+  // The name of a source, idea or data entry: a link when it has a web URL.
+  function nameNode(name, url) {
+    const href = webUrl(url);
+    if (!href) return document.createTextNode(name);
+    const a = el('a', 'credit-src', name);
+    a.setAttribute('href', href);
+    a.setAttribute('target', '_blank');
+    a.setAttribute('rel', 'noopener');
+    return a;
+  }
+
+  // `rest` closed with one full stop, or none when the name already ends one.
+  function closed(name, rest) {
+    const r = rest.replace(/[\s.]+$/, '');
+    return r + (/\.$/.test(r || name) ? '' : '.');
+  }
+
+  function itemLi(before, name, url, rest) {
+    const li = el('li');
+    if (before) li.appendChild(document.createTextNode(before));
+    li.appendChild(nameNode(name, url));
+    if (rest) li.appendChild(document.createTextNode(rest));
+    return li;
+  }
+
+  function sourceLi(s) {
+    const name = textOf(s.name) || 'An unnamed source';
+    let rest = '';
+    if (textOf(s.pin)) rest += ', ' + textOf(s.pin);
+    if (textOf(s.licence)) rest += ', ' + textOf(s.licence);
+    if (trimEnd(s.what)) rest += ': ' + trimEnd(s.what);
+    if (textOf(s.credit)) rest += '. Credit: ' + textOf(s.credit);
+    const people = strings(s.people);
+    if (people.length) rest += ' (' + people.join(', ') + ')';
+    return itemLi('', name, s.url, closed(name, rest));
+  }
+
+  function ideaLi(i, before) {
+    const name = textOf(i.name) || 'An unnamed source';
+    let rest = '';
+    if (textOf(i.credit) && textOf(i.credit) !== name) rest += ' (' + textOf(i.credit) + ')';
+    if (trimEnd(i.what)) rest += ': ' + trimEnd(i.what);
+    return itemLi(before || '', name, i.url, closed(name, rest));
+  }
+
+  function dataLi(d) {
+    const name = textOf(d.name) || 'An unnamed source';
+    let rest = '';
+    if (textOf(d.credit)) rest += ', ' + textOf(d.credit);
+    if (trimEnd(d.terms)) rest += '. Terms: ' + trimEnd(d.terms);
+    rest = closed(name, rest);
+    if (trimEnd(d.cite)) rest += ' Cite: ' + trimEnd(d.cite) + '.';
+    return itemLi('', name, d.url, rest);
+  }
+
+  const EARLIER_WORDS = {
+    'in-house': 'made by the Baranzini Lab',
+    'ideas-derived': 'written by the Baranzini Lab, with ideas from other work',
+    'adapted': 'adapted from outside work',
+    'third-party': 'outside work packaged for Biorouter'
+  };
+  function earlierLi(x) {
+    if (x.kind === 'idea') return ideaLi(x, 'Ideas from ');
+    const word = EARLIER_WORDS[x.origin] || 'recorded without an origin';
+    let text = 'Version ' + (textOf(x.version) || 'unknown') + ': ' + word;
+    if (textOf(x.licence)) text += ' (' + textOf(x.licence) + ')';
+    return el('li', null, text + '.');
+  }
+
+  // A list that shows its first few items and folds the rest into "Show all N".
+  function foldedList(items, noun) {
+    const frag = document.createDocumentFragment();
+    const ul = el('ul', 'credit-list');
+    items.slice(0, CREDITS_SHOWN).forEach(li => ul.appendChild(li));
+    frag.appendChild(ul);
+    if (items.length > CREDITS_SHOWN) {
+      const more = el('details', 'credit-more');
+      more.appendChild(el('summary', null, 'Show all ' + items.length + ' ' + noun));
+      const rest = el('ul', 'credit-list');
+      items.slice(CREDITS_SHOWN).forEach(li => rest.appendChild(li));
+      more.appendChild(rest);
+      frag.appendChild(more);
+    }
+    return frag;
+  }
+
+  function collapsed(label, items) {
+    const more = el('details', 'credit-more');
+    more.appendChild(el('summary', null, label + ' (' + items.length + ')'));
+    const ul = el('ul', 'credit-list');
+    items.forEach(li => ul.appendChild(li));
+    more.appendChild(ul);
+    return more;
+  }
+
+  function webLink(label, url) {
+    const href = webUrl(url);
+    if (!href) return null;
+    const a = el('a', 'text-link', label + ' ');
+    a.setAttribute('href', href);
+    a.setAttribute('target', '_blank');
+    a.setAttribute('rel', 'noopener');
+    const arrow = el('span', null, '↗');
+    arrow.setAttribute('aria-hidden', 'true');
+    a.appendChild(arrow);
+    return a;
+  }
+
+  function curatorText() {
+    if (CREDITS && textOf(CREDITS.curated_by)) return textOf(CREDITS.curated_by);
+    const shelf = document.querySelector('.shelf-curator');
+    return shelf ? textOf(shelf.textContent) : '';
+  }
+
+  function fillEntry(dd, entry) {
+    const origin = entry.origin;
+    const sources = records(entry.sources);
+    const ideas = records(entry.ideas);
+    if (textOf(entry.summary)) dd.appendChild(el('p', 'credit-summary', textOf(entry.summary)));
+    // The main list is what the origin rests on: the copied or packaged
+    // sources, or for an ideas-derived item its ideas. The other list follows
+    // under its own label.
+    const ownWork = origin === 'in-house' || origin === 'ideas-derived';
+    const main = origin === 'ideas-derived' ? ideas : origin === 'in-house' ? [] : sources;
+    if (main.length) {
+      dd.appendChild(foldedList(main.map(origin === 'ideas-derived' ? (i => ideaLi(i)) : sourceLi), origin === 'ideas-derived' ? 'ideas' : 'sources'));
+    }
+    if (ownWork && sources.length) {
+      dd.appendChild(el('p', 'fine credit-k', 'Builds on'));
+      dd.appendChild(foldedList(sources.map(sourceLi), 'sources'));
+    } else if (!ownWork && ideas.length) {
+      dd.appendChild(el('p', 'fine credit-k', 'Ideas from'));
+      dd.appendChild(foldedList(ideas.map(i => ideaLi(i)), 'ideas'));
+    }
+    const written = strings(entry.written_for_biorouter);
+    if (written.length) dd.appendChild(el('p', 'fine credit-written', 'Written for Biorouter: ' + written.join(', ') + '.'));
+    const data = records(entry.data_and_services);
+    if (data.length) dd.appendChild(collapsed('Data and services', data.map(dataLi)));
+    const earlier = records(entry.earlier);
+    if (earlier.length) dd.appendChild(collapsed('Earlier versions', earlier.map(earlierLi)));
+    const people = records(entry.people)
+      .filter(p => textOf(p.name))
+      .map(p => textOf(p.name) + (textOf(p.affiliation) ? ', ' + textOf(p.affiliation) : '') + (textOf(p.role) ? ' (' + textOf(p.role) + ')' : ''));
+    if (people.length) dd.appendChild(el('p', 'fine credit-people', closed('', 'People: ' + people.join('; '))));
+    const curator = curatorText();
+    if (curator) dd.appendChild(el('p', 'fine credit-curator', curator));
+    const links = [webLink('Licence files', entry.licence_files), webLink('Full record', entry.record)].filter(Boolean);
+    if (links.length) {
+      const p = el('p', 'credit-links');
+      links.forEach(a => p.appendChild(a));
+      dd.appendChild(p);
+    }
+  }
+
+  // Before credits.json arrives, or when it cannot be read: the card's own
+  // line and the curator line.
+  function fillFallback(dd, card) {
+    const line = card.querySelector(':scope > .item-credit');
+    if (line && textOf(line.textContent)) dd.appendChild(el('p', null, textOf(line.textContent)));
+    const curator = curatorText();
+    if (curator) dd.appendChild(el('p', 'fine credit-curator', curator));
+  }
+
+  /* The panel's "Provenance and credits" row, built from DOM nodes only. */
+  function creditsRowNode(kind, id, card) {
+    const dd = el('dd');
+    const entry = creditEntry(kind, id);
+    if (entry) fillEntry(dd, entry);
+    else fillFallback(dd, card);
+    if (!dd.firstChild) return null;
+    const rowNode = el('div', 'detail-row');
+    rowNode.setAttribute('data-row', 'credits');
+    rowNode.appendChild(el('dt', null, CREDITS_LABEL));
+    rowNode.appendChild(dd);
+    return rowNode;
+  }
+
+  /* The credits row in `panel`, before its Install row (or last), written
+     afresh when the panel already has one. Extension and skill rows only. */
+  function insertCreditsRow(card, panel) {
+    const kind = card.classList.contains('skill-card') ? 'skills' : card.classList.contains('ext-card') ? 'extensions' : null;
+    const list = panel && panel.querySelector('.detail-list');
+    if (!kind || !list) return;
+    const node = creditsRowNode(kind, kind === 'skills' ? skillIdOf(card) : extIdOf(card), card);
+    const old = list.querySelector(':scope > .detail-row[data-row="credits"]');
+    if (old) {
+      if (node) old.replaceWith(node);
+      else old.remove();
+      return;
+    }
+    if (!node) return;
+    list.insertBefore(node, list.querySelector(':scope > .detail-row[data-row="install"]'));
+  }
+
+  function refreshCreditRows() {
+    document.querySelectorAll('.ext-card > .row-detail, .skill-card > .row-detail').forEach(panel => {
+      insertCreditsRow(panel.parentElement, panel);
+    });
+  }
+
   /* ── Counts driven from actual rendered cards ──────────────── */
   function setText(id, txt) { const el = document.getElementById(id); if (el) el.textContent = txt; }
   // A shelf's quiet count note, hidden while it has nothing to say.
@@ -985,6 +1309,8 @@
 
   /* ── Init ──────────────────────────────────────────────────── */
   (function init() {
+    // Started first, so it is in flight beside registry.json.
+    creditsReady = loadCredits();
     initSkills();
     ensureToggles();
     document.addEventListener('click', onRowClick);
