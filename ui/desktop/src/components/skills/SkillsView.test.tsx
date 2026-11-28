@@ -795,3 +795,38 @@ describe('SkillsView search', () => {
     expect((await openRowMenu('r-plotting')).items).not.toContain(SKILLS_COPY.delete);
   });
 });
+
+/**
+ * J-P06: a machine-wide choice saved under a merged skill's old name now
+ * decides its replacement, and Settings says so in one line.
+ */
+describe('SkillsView superseded names', () => {
+  it('says in one line when a saved choice under an old name was carried', async () => {
+    serve({
+      skills: [
+        skill('frontend-design'),
+        skill('taste-skill', {
+          supersededBy: 'frontend-design',
+          replacement: 'frontend-design',
+          carried: ['machineDisabled'],
+        }),
+      ],
+    });
+    render(<SkillsView />);
+    expect(await screen.findByTestId('skills-moved-notice')).toHaveTextContent(
+      SKILLS_COPY.movedChoices([['taste-skill', 'frontend-design']])
+    );
+  });
+
+  it('shows no notice when no choice was carried', async () => {
+    serve({
+      skills: [
+        skill('frontend-design'),
+        skill('taste-skill', { supersededBy: 'frontend-design', replacement: 'frontend-design' }),
+      ],
+    });
+    render(<SkillsView />);
+    await screen.findByText('frontend-design');
+    expect(screen.queryByTestId('skills-moved-notice')).toBeNull();
+  });
+});

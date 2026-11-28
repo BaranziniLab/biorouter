@@ -28,6 +28,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use anyhow::{anyhow, bail, Context, Result};
+use biorouter::agents::skill_redirects::{Redirect, Redirects, Replacement, ReplacementKind};
 use biorouter::agents::skills_extension::{
     skills_root as biorouter_skills_root, Skill, SkillsClient,
 };
@@ -224,6 +225,16 @@ struct InstalledSkill {
     bundle: Option<String>,
     /// The skills root directory this skill was discovered under.
     source_root: PathBuf,
+    /// When this skill is a redirect stub whose replacement is installed: the
+    /// installed skill or bundle it resolves to (J-P06). Its row then shows the
+    /// replacement's state, and a switch naming it is saved under the
+    /// replacement.
+    replacement: Option<Replacement>,
+    /// The library's one sentence about this stub, when it is one.
+    moved_notice: Option<String>,
+    /// The stub's redirect as the library resolved it, so the machine-wide
+    /// rule is the library's own (`Redirects::expand_disabled`).
+    redirect: Option<Redirect>,
 }
 
 /// Discover skills with the backend's own routine over the backend's own
@@ -264,9 +275,11 @@ fn slug_from_relative_path(relative: &Path) -> String {
 /// Map the backend's discovery result into rows for listing/resolution,
 /// sorted by (source root, slug) for stable grouped output.
 fn installed_from_backend(skills: HashMap<String, Skill>) -> Vec<InstalledSkill> {
+    let redirects = Redirects::from_skills(&skills);
     let mut out: Vec<InstalledSkill> = skills
         .into_values()
         .map(|skill| {
+            let redirect = redirects.get(&skill.metadata.name);
             let slug = slug_from_relative_path(
                 skill
                     .directory
@@ -279,6 +292,9 @@ fn installed_from_backend(skills: HashMap<String, Skill>) -> Vec<InstalledSkill>
                 description: skill.metadata.description,
                 bundle: skill.bundle_name,
                 source_root: skill.source_root,
+                replacement: redirect.and_then(|redirect| redirect.replacement.clone()),
+                moved_notice: redirect.map(|redirect| redirect.notice()),
+                redirect: redirect.cloned(),
             }
         })
         .collect();
@@ -414,15 +430,87 @@ fn disabled_set(config: &serde_json::Value) -> HashSet<String> {
         .unwrap_or_default()
 }
 
-/// The exact enabled test the backend applies (`skills_extension::is_skill_enabled`):
-/// a skill is disabled when its frontmatter name or its bundle name is listed.
+/// The exact machine-wide test the backend applies (`skill_catalog::Composition`):
+/// a skill is disabled when its frontmatter name or its bundle name is listed,
+/// after an old name listed there is carried to its replacement
+/// ([`carried_disabled`]), and a redirect stub answers for its replacement.
 fn is_enabled(skill: &InstalledSkill, disabled: &HashSet<String>) -> bool {
-    let name_disabled = disabled.contains(&skill.name);
-    let bundle_disabled = skill
-        .bundle
-        .as_deref()
-        .is_some_and(|b| disabled.contains(b));
+    let (name, bundle) = match &skill.replacement {
+        Some(replacement) => (replacement.name.as_str(), replacement.bundle.as_deref()),
+        None => (skill.name.as_str(), skill.bundle.as_deref()),
+    };
+    let name_disabled = disabled.contains(name);
+    let bundle_disabled = bundle.is_some_and(|b| disabled.contains(b));
     !(name_disabled || bundle_disabled)
+}
+
+/// `disabled` with every old name it lists, and every other bundle an old name
+/// sat in, also switching the installed replacement off: the library's
+/// `Redirects::expand_disabled`, over the rows this command holds (J-P06).
+fn carried_disabled(skills: &[InstalledSkill], disabled: &HashSet<String>) -> HashSet<String> {
+    redirects_of(skills).expand_disabled(disabled)
+}
+
+fn redirects_of(skills: &[InstalledSkill]) -> Redirects {
+    Redirects::from_redirects(skills.iter().filter_map(|skill| skill.redirect.clone()))
+}
+
+/// The line `enable` prints when an old bundle still keeps `name` off.
+fn kept_off_by_old_bundle(name: &str, bundle: &str, mark: &str) -> String {
+    format!(
+        "  {mark} {name} stays off while the bundle {bundle} is disabled: a skill that moved \
+         into {name} was in that bundle, and the choice to switch it off carries. Run \
+         `biorouter skill enable {bundle}`, or switch {name} on in a chat"
+    )
+}
+
+/// What `skill list` prints after a moved row's name: where its content went.
+fn moved_note(skill: &InstalledSkill) -> Option<String> {
+    match (&skill.replacement, &skill.moved_notice) {
+        (Some(replacement), _) => Some(format!(
+            "moved into {}, whose state it shows",
+            replacement.name
+        )),
+        (None, Some(notice)) => Some(notice.clone()),
+        (None, None) => None,
+    }
+}
+
+/// The target a switch is saved under: a redirect stub's installed
+/// replacement, with the notice to print, or the target itself.
+fn switch_target(
+    skills: &[InstalledSkill],
+    target: ResolvedTarget,
+) -> (ResolvedTarget, Option<String>) {
+    let ResolvedTarget::Skill { name, .. } = &target else {
+        return (target, None);
+    };
+    let Some(stub) = skills.iter().find(|skill| &skill.name == name) else {
+        return (target, None);
+    };
+    let notice = stub.moved_notice.clone();
+    let Some(replacement) = &stub.replacement else {
+        return (target, notice);
+    };
+    let redirected = match replacement.kind {
+        ReplacementKind::Bundle => ResolvedTarget::Bundle {
+            name: replacement.name.clone(),
+            skills: skills
+                .iter()
+                .filter(|skill| skill.bundle.as_deref() == Some(replacement.name.as_str()))
+                .count(),
+        },
+        ReplacementKind::Skill => ResolvedTarget::Skill {
+            name: replacement.name.clone(),
+            slug: skills
+                .iter()
+                .find(|skill| skill.name == replacement.name)
+                .map_or_else(|| replacement.name.clone(), |skill| skill.slug.clone()),
+            bundle: replacement.bundle.clone(),
+            via_slug: false,
+        },
+    };
+    (redirected, notice)
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -650,13 +738,14 @@ fn slug_mapping_note(target: &ResolvedTarget) -> Option<String> {
 
 /// One rendered row of `skill list`: (slug, display name, enabled).
 fn list_rows(skills: &[InstalledSkill], disabled: &HashSet<String>) -> Vec<(String, String, bool)> {
+    let disabled = carried_disabled(skills, disabled);
     skills
         .iter()
         .map(|skill| {
             (
                 skill.slug.clone(),
                 skill.name.clone(),
-                is_enabled(skill, disabled),
+                is_enabled(skill, &disabled),
             )
         })
         .collect()
@@ -715,13 +804,15 @@ pub async fn handle_list() -> Result<()> {
         } else {
             style(format!("{name:<name_width$}")).dim().to_string()
         };
-        println!(
-            "    {} {}  {}  {}",
-            dot,
-            slug_cell,
-            name_cell,
-            style(&skill.description).dim()
-        );
+        let description = match moved_note(skill) {
+            Some(note) => format!(
+                "{} {}",
+                style(format!("→ {note}")).yellow(),
+                style(&skill.description).dim()
+            ),
+            None => style(&skill.description).dim().to_string(),
+        };
+        println!("    {} {}  {}  {}", dot, slug_cell, name_cell, description);
     }
     Ok(())
 }
@@ -732,13 +823,23 @@ pub async fn handle_list() -> Result<()> {
 
 pub async fn handle_disable(query: String) -> Result<()> {
     let skills = collect_installed_skills();
-    let target = resolve_identifier(&skills, &query).map_err(ResolveError::into_inner)?;
+    disable_with(&skills, &skills_config_path(), &query)
+}
+
+/// The whole disable flow over already-discovered skills and an explicit
+/// config path, split from `handle_disable` for the same reason as
+/// [`enable_with`].
+fn disable_with(skills: &[InstalledSkill], path: &Path, query: &str) -> Result<()> {
+    let target = resolve_identifier(skills, query).map_err(ResolveError::into_inner)?;
     if let Some(note) = slug_mapping_note(&target) {
         println!("{note}");
     }
+    let (target, moved) = switch_target(skills, target);
+    if let Some(moved) = moved {
+        println!("  {} {moved}", style("·").dim());
+    }
 
-    let path = skills_config_path();
-    let (changed, _) = mutate_skills_config(&path, |config| {
+    let (changed, _) = mutate_skills_config(path, |config| {
         set_disabled_state(config, target_identifier(&target), true)
     })?;
     if changed {
@@ -792,9 +893,30 @@ fn enable_with(skills: &[InstalledSkill], path: &Path, query: &str) -> Result<()
     if let Some(note) = slug_mapping_note(&target) {
         println!("{note}");
     }
+    let (target, moved) = switch_target(skills, target);
+    if let Some(moved) = moved {
+        println!("  {} {moved}", style("·").dim());
+    }
 
+    // J-P06: an old name still listed would keep its replacement off, so
+    // enabling the replacement clears every old name that resolves to it.
+    let identifier = target_identifier(&target).to_string();
+    let old_names: Vec<String> = skills
+        .iter()
+        .filter(|skill| {
+            skill
+                .replacement
+                .as_ref()
+                .is_some_and(|replacement| replacement.name == identifier)
+        })
+        .map(|skill| skill.name.clone())
+        .collect();
     let (changed, config) = mutate_skills_config(path, |config| {
-        set_disabled_state(config, target_identifier(&target), false)
+        let mut changed = set_disabled_state(config, &identifier, false)?;
+        for old in &old_names {
+            changed |= set_disabled_state(config, old, false)?;
+        }
+        Ok(changed)
     })?;
     if changed {
         println!("  {} enabled {}", style("✓").green(), target_label(&target));
@@ -803,6 +925,15 @@ fn enable_with(skills: &[InstalledSkill], path: &Path, query: &str) -> Result<()
             "  {} {} is already enabled",
             style("·").dim(),
             target_label(&target)
+        );
+    }
+
+    // J-P06: a component that moved out of a bundle stays off while that
+    // bundle is, and clearing the bundle here would switch the rest of it on.
+    for bundle in redirects_of(skills).bundles_keeping_off(&identifier, &disabled_set(&config)) {
+        println!(
+            "{}",
+            kept_off_by_old_bundle(&identifier, &bundle, &style("!").yellow().to_string())
         );
     }
 
@@ -833,8 +964,21 @@ fn enable_with(skills: &[InstalledSkill], path: &Path, query: &str) -> Result<()
 /// Goes through the shared remover, which renames the directory aside before
 /// deleting it — so it leaves the catalog's view in one step rather than
 /// emptying out underneath a scan in flight.
+///
+/// A redirect stub's saved choices are pinned onto its replacement first, in
+/// every chat and machine-wide (`skill_package::remove_keeping_choices`), so
+/// removing a stub switches nothing back on.
 pub async fn handle_remove(slug: String) -> Result<()> {
-    let removed = biorouter::agents::skill_package::remove(&slug, &skills_root()).map_err(|e| {
+    let before = biorouter::agents::skill_catalog::current().skills();
+    let sessions = biorouter::session::SessionManager::instance();
+    let removed = biorouter::agents::skill_package::remove_keeping_choices(
+        &slug,
+        &skills_root(),
+        &before,
+        &sessions,
+    )
+    .await
+    .map_err(|e| {
         // ⚠ Only add the separator when the message does not already end a
         // sentence. Some of these are one clause ("no package named `x` is
         // installed") and some are several sentences of advice; appending
@@ -847,12 +991,41 @@ pub async fn handle_remove(slug: String) -> Result<()> {
         };
         anyhow!("{message}{separator} Run `biorouter skill list`.")
     })?;
+    let (removed, kept) = removed;
     println!(
         "  {} removed {}",
         style("✓").green(),
         style(&removed.display_name).bold()
     );
+    if let Some(line) = kept_choices_line(&kept) {
+        println!("  {} {line}", style("·").dim());
+    }
     Ok(())
+}
+
+/// What `remove` says when it pinned choices a removed stub was carrying.
+fn kept_choices_line(kept: &biorouter::agents::skill_redirects::KeptChoices) -> Option<String> {
+    let mut parts = Vec::new();
+    if kept.sessions > 0 {
+        parts.push(format!(
+            "kept the skill choices of {} chat{} that named a removed old name",
+            kept.sessions,
+            if kept.sessions == 1 { "" } else { "s" }
+        ));
+    }
+    if !kept.machine_disabled.is_empty() {
+        parts.push(format!(
+            "kept {} switched off machine-wide",
+            kept.machine_disabled.join(", ")
+        ));
+    }
+    if !kept.problems.is_empty() {
+        parts.push(format!(
+            "could not keep every saved choice: {}",
+            kept.problems.join("; ")
+        ));
+    }
+    (!parts.is_empty()).then(|| parts.join("; "))
 }
 
 #[cfg(test)]
@@ -1455,6 +1628,109 @@ mod tests {
         );
 
         assert!(by_slug("pack-a/tool").2, "untouched skill stays enabled");
+    }
+
+    // ── J-P06: superseded names ──────────────────────────────────────────────
+
+    /// `viz-old-tracks` merged into `viz-new-tracks`, its folder holding the
+    /// redirect stub biorouter-skills generates.
+    fn merged_tree() -> (TempDir, Vec<InstalledSkill>) {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path();
+        write_skill(root, "viz/new-tracks", "viz-new-tracks", "Tracks");
+        let stub = root.join("viz/old-tracks");
+        fs::create_dir_all(&stub).unwrap();
+        fs::write(
+            stub.join("SKILL.md"),
+            "---\nname: viz-old-tracks\ndescription: \"Moved: now part of viz-new-tracks.\"\n\
+             metadata:\n  status: \"superseded_by:viz/viz-new-tracks\"\n---\n\npointer\n",
+        )
+        .unwrap();
+        let skills = installed_at(&[root.to_path_buf()]);
+        (tmp, skills)
+    }
+
+    fn disabled_on_disk(path: &Path) -> serde_json::Value {
+        serde_json::from_str::<serde_json::Value>(&fs::read_to_string(path).unwrap()).unwrap()
+            ["disabled"]
+            .clone()
+    }
+
+    #[test]
+    fn a_machine_wide_entry_under_a_superseded_name_lists_its_replacement_as_off() {
+        let (_tmp, skills) = merged_tree();
+        let disabled: HashSet<String> = ["viz-old-tracks".to_string()].into_iter().collect();
+        let rows = list_rows(&skills, &disabled);
+        let replacement = rows.iter().find(|(_, n, _)| n == "viz-new-tracks").unwrap();
+        assert!(
+            !replacement.2,
+            "skill list must show what the agent will do: the old name's entry switches its replacement off"
+        );
+    }
+
+    #[test]
+    fn disabling_a_superseded_name_writes_its_replacement() {
+        let (_tmp, skills) = merged_tree();
+        let cfg = TempDir::new().unwrap();
+        let path = cfg.path().join("skills-config.json");
+
+        disable_with(&skills, &path, "viz-old-tracks").unwrap();
+        assert_eq!(disabled_on_disk(&path), json!(["viz-new-tracks"]));
+    }
+
+    #[test]
+    fn enabling_a_replacement_clears_the_old_names_that_keep_it_off() {
+        let (_tmp, skills) = merged_tree();
+        let cfg = TempDir::new().unwrap();
+        let path = cfg.path().join("skills-config.json");
+        fs::write(&path, r#"{"disabled":["viz-old-tracks","other"]}"#).unwrap();
+
+        enable_with(&skills, &path, "viz-new-tracks").unwrap();
+        assert_eq!(disabled_on_disk(&path), json!(["other"]));
+    }
+
+    /// `skill list` marks a moved row, so a switch on it that changes another
+    /// row is not a surprise.
+    #[test]
+    fn skill_list_marks_a_moved_row() {
+        let (_tmp, skills) = merged_tree();
+        let stub = skills.iter().find(|s| s.name == "viz-old-tracks").unwrap();
+        assert_eq!(
+            moved_note(stub).as_deref(),
+            Some("moved into viz-new-tracks, whose state it shows")
+        );
+        let live = skills.iter().find(|s| s.name == "viz-new-tracks").unwrap();
+        assert_eq!(moved_note(live), None);
+    }
+
+    /// A component that moved into another bundle stays off while the bundle
+    /// it sat in is off, and `enable` says so instead of claiming it is on.
+    #[test]
+    fn a_disabled_old_bundle_keeps_a_component_that_moved_out_off() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path();
+        write_skill(root, "single/cells", "single-cells", "Cells");
+        write_skill(root, "crispr/perturb", "crispr-perturb", "Perturb");
+        let stub = root.join("single/perturb");
+        fs::create_dir_all(&stub).unwrap();
+        fs::write(
+            stub.join("SKILL.md"),
+            "---\nname: single-perturb\ndescription: \"Moved\"\nmetadata:\n  status: \
+             \"superseded_by:crispr/crispr-perturb\"\n---\n\npointer\n",
+        )
+        .unwrap();
+        let skills = installed_at(&[root.to_path_buf()]);
+        let disabled: HashSet<String> = ["single".to_string()].into_iter().collect();
+
+        let rows = list_rows(&skills, &disabled);
+        let perturb = rows.iter().find(|(_, n, _)| n == "crispr-perturb").unwrap();
+        assert!(!perturb.2, "skill list shows what the agent will do");
+        assert_eq!(
+            redirects_of(&skills).bundles_keeping_off("crispr-perturb", &disabled),
+            ["single"]
+        );
+        assert!(kept_off_by_old_bundle("crispr-perturb", "single", "!")
+            .contains("Run `biorouter skill enable single`"));
     }
 
     #[test]

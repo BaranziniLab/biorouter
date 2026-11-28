@@ -3,6 +3,7 @@ import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { SkillsPanel, useSkillPicker } from './BottomMenuSkillSelection';
 import { SKILLS_COPY, TOOLS_COPY } from './copy';
+import { SKILLS_COPY as SKILLS_VIEW_COPY } from '../skills/copy';
 import type { CatalogBundle, CatalogSkill, CatalogView } from '../../api';
 import { CATALOG_CHANGED_EVENT } from '../../utils/catalogSubscription';
 
@@ -866,5 +867,112 @@ describe('BottomMenuSkillSelection built-in contexts', () => {
     expect(await screen.findByRole('option', { name: 'Word documents' })).toBeInTheDocument();
     expect(screen.queryByText(SKILLS_COPY.noMatch)).toBeNull();
     expect(screen.queryByRole('option', { name: /^example-skill/ })).toBeNull();
+  });
+});
+
+/**
+ * J-P06: `taste-skill` was merged into `frontend-design`, and its folder holds
+ * the redirect stub. The daemon reports the stub's `replacement`, mirrors the
+ * replacement's state onto it, and lists the saved choices it carried.
+ */
+describe('BottomMenuSkillSelection superseded names', () => {
+  const off = {
+    machineEnabled: false,
+    session: 'default' as const,
+    sessionViaBundle: false,
+    hiddenContext: false,
+    effective: false,
+  };
+
+  beforeEach(() => {
+    mocks.overrides.clear();
+    vi.clearAllMocks();
+  });
+
+  it('says in one line that a choice saved under the old name now decides the replacement', async () => {
+    serve(
+      view({
+        skills: [
+          skill('frontend-design'),
+          skill('taste-skill', {
+            supersededBy: 'frontend-design',
+            replacement: 'frontend-design',
+            carried: ['sessionRemoved'],
+          }),
+        ],
+      })
+    );
+    render(<BottomMenuSkillSelection sessionId="20261128_1" />);
+    await openMenu();
+    expect(screen.getByTestId('tools-skills-moved-notice')).toHaveTextContent(
+      SKILLS_VIEW_COPY.movedChoices([['taste-skill', 'frontend-design']])
+    );
+  });
+
+  it('shows no notice when nothing was carried', async () => {
+    serve(
+      view({
+        skills: [
+          skill('frontend-design'),
+          skill('taste-skill', { supersededBy: 'frontend-design', replacement: 'frontend-design' }),
+        ],
+      })
+    );
+    render(<BottomMenuSkillSelection sessionId="20261128_1" />);
+    await openMenu();
+    expect(screen.queryByTestId('tools-skills-moved-notice')).toBeNull();
+  });
+
+  /**
+   * The machine-wide trap: `disabled[]` still lists the old name, which the
+   * daemon carries to the replacement, so switching the replacement on must
+   * clear the old name too or the switch moves and nothing changes.
+   */
+  it('on Home, switching the replacement on clears the old name that kept it off', async () => {
+    serve(
+      view({
+        skills: [
+          skill('frontend-design', { state: off }),
+          skill('taste-skill', {
+            supersededBy: 'frontend-design',
+            replacement: 'frontend-design',
+            carried: ['machineDisabled'],
+            state: off,
+          }),
+        ],
+      })
+    );
+    mocks.overrides.set('taste-skill', false);
+    render(<BottomMenuSkillSelection sessionId={null} />);
+    const [replacement] = await openMenu();
+    fireEvent.click(replacement);
+
+    await waitFor(() => expect(mocks.saveSkillOverrides).toHaveBeenCalledTimes(1));
+    expect(mocks.overrides.get('frontend-design')).toBe(true);
+    expect(mocks.overrides.get('taste-skill')).toBe(true);
+  });
+
+  it('in a chat, a switch on the old row is saved under the replacement', async () => {
+    serve(
+      view({
+        skills: [
+          skill('frontend-design'),
+          skill('taste-skill', { supersededBy: 'frontend-design', replacement: 'frontend-design' }),
+        ],
+      })
+    );
+    mocks.setSessionSkills.mockResolvedValue({
+      data: { catalog: view(), sessionAdd: [], sessionRemove: ['frontend-design'] },
+    });
+    render(<BottomMenuSkillSelection sessionId="20261128_1" />);
+    const options = await openMenu();
+    fireEvent.click(options[1]);
+
+    await waitFor(() => expect(mocks.setSessionSkills).toHaveBeenCalledTimes(1));
+    expect(mocks.setSessionSkills.mock.calls[0][0].body).toEqual({
+      sessionId: '20261128_1',
+      add: [],
+      remove: ['frontend-design'],
+    });
   });
 });

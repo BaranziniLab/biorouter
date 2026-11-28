@@ -1,7 +1,7 @@
 # The skill catalog
 
 > **What this is.** How BioRouter decides which skills exist, which of them are on, and how a per-chat choice differs from a machine-wide one. Reference for the daemon-served catalog introduced by issue #113.
-> **Status:** Current. The catalog, the `/skills/*` routes and the composer's per-chat toggles are shipped.
+> **Status:** Current. The catalog, the `/skills/*` routes and the composer's per-chat toggles are shipped. Superseded names resolve to their replacement since 2026-11-28 (J-P06).
 > **Audience:** contributors, and anyone debugging a skill that is installed but not usable.
 
 ## The one-sentence version
@@ -35,7 +35,8 @@ fetches.
 |---|---|
 | The root list, with provenance | `crates/biorouter/src/agents/skill_catalog.rs` — `roots()` |
 | Discovery and bundle derivation | `SkillCatalog::scan` |
-| The enablement rule | `skill_catalog::compose_state` |
+| The enablement rule | `skill_catalog::compose_state`, asked through `skill_catalog::Composition` |
+| Superseded names | `crates/biorouter/src/agents/skill_redirects.rs` |
 | Machine-wide preference | `~/.config/biorouter/skills-config.json`, `disabled[]` |
 | Per-chat deviation | the session row, `extension_data` key `workspace_skills/v1` |
 | HTTP surface | `crates/biorouter-server/src/routes/skills.rs` |
@@ -107,6 +108,157 @@ switched off.
 ⚠ Steps 3 and 4 are why a per-chat bundle toggle persists the **bundle's** name
 rather than expanding its members at click time: a bundle that later gains a
 skill stays covered, where an expanded list would silently stop covering it.
+
+## Superseded and retired names
+
+The BAAM catalog never reuses a name. When a skill or a bundle component is
+merged into another, its row keeps the old name with the status
+`superseded_by:<target>`, and its folder holds a generated **redirect stub**: a
+`SKILL.md` that keeps the old `name:` and carries the status in its frontmatter.
+A retired skill's folder holds the same kind of stub with `status: "retired"`.
+
+```yaml
+name: taste-skill
+description: "Moved: this skill is now part of Frontend Design (frontend-design). Use frontend-design instead."
+metadata:
+  version: "1.1.0"
+  status: "superseded_by:frontend-design"
+```
+
+The target is a skill or bundle id (`frontend-design`, `systems-biology`), a
+component as `<bundle>/<component name>` (`data-visualization/data-visualization-genome-tracks`),
+or a shipped skill as `builtin:<name>`. A target outside that id grammar (word
+characters, `-`, `/`, `:` and `.`, at most 200 characters) makes the file an
+ordinary skill, so no package can put prose into a notice. A plain id that names
+both a bundle and a member of the same name means the bundle. That frontmatter
+is the only place the app learns a redirect; it reads no network and no registry
+field. A merge of a merge is followed to the last replacement, and a cycle, or a
+chain that ends at a retired stub, resolves to nothing.
+
+### Where the replacement is installed, the old name is the replacement
+
+One module, `skill_redirects`, decides it, and every surface asks it.
+
+**Saved choices carry, most specific first.** For a replacement `R` in bundle
+`B`, a chat's choices decide in this order, and the first level that says
+anything wins:
+
+1. an entry naming `R` itself;
+2. an entry naming an old name that resolves to `R`;
+3. an entry naming `B`;
+4. an entry naming the bundle an old name sat in, when the component moved to
+   another bundle (W63 and W77 move perturb-seq, atlas-mapping and others this
+   way).
+
+Within level 2 or level 4 a removal beats an add, because the choices come from
+different names and failing closed keeps content the person switched off from
+coming back under the new name. A carried bundle choice applies to the moved
+component only, never to the rest of `B`. Machine-wide, `disabled[]` can only
+switch things off, so an entry naming an old name, or the other bundle it sat
+in, switches `R` off. A chat can still switch `R` on; machine-wide, turning the
+old bundle on is the only way, and `biorouter skill enable` says so rather than
+reporting `R` as on.
+
+| Path | What happens |
+|---|---|
+| A chat's `add` or `remove`, and `skills-config.json`'s `disabled[]` | Carried as above. |
+| The old name's row | Shows the replacement's `state`, so either switch moves both. It also carries `supersededBy`, `replacement`, and `carried`, the saved choices made before the move that now decide the replacement. |
+| A new choice naming the old name: `setSkillEnabled`, `POST /skills/session`, `workspace_set_tools`, a spawn's `add_skills` and `remove_skills`, `biorouter skill enable/disable`, the desktop's switches | Saved under the replacement. Turning the replacement on machine-wide also clears the old names in `disabled[]` that would keep it off. `POST /skills/session` returns the notice in `notices`. |
+| `loadSkill` | Loads the replacement's instructions behind one line naming the move, and the replacement's own switch decides. For a whole-bundle replacement it returns the stub's pointer, and the line names the bundle's skills, because `loadSkill` loads skills. |
+| A workflow's `skills:` naming the old name | Inlines the replacement's instructions; a replacement that is switched off refuses the run with the move named. |
+| A workflow's `skills:` naming a bundle that holds a stub | A component merged into another member of the same bundle is dropped, since its replacement is inlined as a member. A component moved to another bundle is replaced by what it moved into, judged by that skill's own switch. A component whose replacement is not installed refuses the run, naming where to get it. A retired component is left out with a notice. |
+| The chat's skill inventory | Lists the old name once, under moved names, rather than as a second skill. |
+| `biorouter skill list` | Marks a moved row with an arrow and the name it moved into. |
+
+### Where the replacement is not installed
+
+The stub is an ordinary pointer with a switch of its own, and nothing is
+carried. A workflow naming it, or naming a bundle that holds it, is refused
+with the replacement named and where to add it, and `loadSkill` and
+`setSkillEnabled` say the same in one line. When the chain passes through other
+stubs, the line names the last target, the one that is missing.
+
+### Retired names
+
+A retired stub never resolves, because a retired skill moved no content
+anywhere. A choice saved under it decides only its own pointer, whose text names
+an alternative, and `loadSkill` returns that text behind a line saying it is
+retired. A workflow that names a retired skill is refused, quoting the stub's
+own description. A workflow that names a bundle holding a retired component
+runs without it and says so: its publisher removed the content, which is what
+deleting the folder would have done, and there is nothing to install that would
+bring it back.
+
+### One sentence, shown on every surface
+
+`Redirect::notice` writes it, for example
+`'taste-skill' has moved into 'frontend-design', so 'frontend-design' is used in its place.`
+It appears in tool results, the rendered workflow skill block (which asks the
+model to mention it to the person once, so the workflow can be updated), the
+refusals, the target tab's change notice from `workspace_set_tools`, and the
+terminal. Settings › Skills and the composer's Skills list show one muted line
+when a saved choice was carried.
+
+### Removing a stub keeps what it carried
+
+A carried choice lives as long as the stub that carries it. So every removal
+through Biorouter (Settings, `biorouter skill remove`, `removeSkillPackage`)
+goes through `skill_package::remove_keeping_choices`, which first writes each
+choice the stub was carrying under the replacement's own name: in every chat
+that saved one, inside the housekeeping scope so no chat moves under Last
+activity, and in `skills-config.json`. Removing a bundle that held a moved
+component, or a stub in the middle of a chain, is handled the same way. A stub
+deleted by hand ends its redirect with nothing pinned, because nothing runs to
+do it, and so does a stub inside an extension's skills folder when the
+extension is uninstalled; the catalog's stubs install into the skills folder,
+not an extension's.
+
+### One name, one meaning
+
+A live skill always beats a stub of the same name, whatever the root order, so
+a stub can never redirect a name that has live content. The importer refuses to
+install a live skill under a name an installed stub carries, unless the install
+replaces the very package that holds the stub (an update or a reinstall), and
+names the stub's location so the person can rename the new skill or remove the
+stub first.
+
+### Why the stub, and why components carry no aliases
+
+A name with no stub cannot be resolved: a folder deleted from a bundle leaves a
+saved choice that names nothing, which is how a chat silently lost a skill
+before this. So a superseded component keeps its folder, holding the generated
+stub, and its name is never reused. The importer keeps component folders and
+drops other files at a bundle's root, so the stub survives a marketplace
+install.
+
+Components carry no `aliases` (B1 rule 10), and this holds for W53, W63 and
+W77. The redirect lives on the old row, never on the replacement, for three
+reasons:
+
+1. The old bundle is the only thing the person is sure to have installed. A
+   component that moved to another bundle cannot be found through an alias on
+   a target in a bundle that is not installed.
+2. A stub folder survives the importer; a redirect file at a bundle's root
+   would not.
+3. One format serves top-level items and components, and a name keeps exactly
+   one owner.
+
+So W77's "old names as aliases" for the prefixed generic names and the
+single-bundle pipelines becomes the same thing: each old component name is a
+superseded row with a stub, never an alias on the new row. Top-level items keep
+`aliases` for BAAM search, which the app does not read.
+
+An old full copy installed before its stub was released keeps loading its old
+text until it is reinstalled, because the registry cannot tell the app that an
+id moved.
+
+A stub whose name is also an installed bundle's name is not a redirect, because
+a choice naming that word has always meant the bundle.
+
+A redirect is honoured from any installed `SKILL.md`, so it is as trustworthy
+as the package that installed the stub, whose text already tells the model to
+load its target. It grants nothing the model could not already do with
+`setSkillEnabled` in its own chat, and every carried choice is shown.
 
 ## Hot-loading: a skill installed mid-conversation
 
@@ -307,7 +459,15 @@ and is asked for by `skills/SkillsView.tsx` alone.
    so no surface offers a Delete, and `skill_package::remove` **and `install`**
    both refuse that name under Biorouter's own skills root. It is restored on
    every start; disable it instead.
-6. ⚠ **A knowledge skill disabled machine-wide before it became a bundle member
+6. `replacement` on a row means the skill is a redirect stub and its state is
+   its replacement's. `carried` names the saved choice made before the move
+   that decides it: `sessionAdded` and `sessionRemoved` are this chat's choice
+   for the old name, `sessionBundleAdded` and `sessionBundleRemoved` its choice
+   for the bundle the old name sat in, and `machineDisabled` and
+   `machineBundleDisabled` the same two in `skills-config.json`. Turn the
+   replacement, or its own bundle, on or off directly in a chat; a direct
+   choice wins.
+7. ⚠ **A knowledge skill disabled machine-wide before it became a bundle member
    is honoured but no longer reachable from the interface.** Those four were
    ordinary picker rows once, so `skills-config.json` may name one directly.
    Nothing writes that entry any more and no surface renders the member, so the

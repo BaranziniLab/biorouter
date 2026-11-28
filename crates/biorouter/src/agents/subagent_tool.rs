@@ -3841,13 +3841,17 @@ async fn resolve_child_skills(
 /// Every name a skill or Context answers to in `add_skills` and
 /// `remove_skills`, lowercased, mapped to the name the override stores: each
 /// skill's own name, each bundle's directory name, and a bundle's display
-/// name.
+/// name. A superseded name maps to its installed replacement, as every other
+/// writer of a skill choice saves it (J-P06, `skill_redirects`).
 fn known_skill_names(view: &crate::agents::skill_catalog::CatalogView) -> BTreeMap<String, String> {
     let mut known = BTreeMap::new();
     for skill in &view.skills {
-        known
-            .entry(skill.name.to_lowercase())
-            .or_insert_with(|| skill.name.clone());
+        known.entry(skill.name.to_lowercase()).or_insert_with(|| {
+            skill
+                .replacement
+                .clone()
+                .unwrap_or_else(|| skill.name.clone())
+        });
     }
     for bundle in &view.bundles {
         for spelling in [&bundle.name, &bundle.display_name] {
@@ -11531,6 +11535,48 @@ decision_settings:
                 refused.contains("about-biorouter, knowledge-bases, office-pdf"),
                 "{refused}"
             );
+        }
+
+        /// J-P06: a spawn naming a superseded skill saves its replacement, as
+        /// every other writer of a skill choice does.
+        #[test]
+        fn a_spawn_naming_a_superseded_skill_saves_its_replacement() {
+            let temp = tempfile::TempDir::new().unwrap();
+            let root = temp.path().join("skills");
+            for (dir, body) in [
+                (
+                    "viz/new-tracks",
+                    "---\nname: viz-new-tracks\ndescription: tracks\n---\n\nbody\n".to_string(),
+                ),
+                (
+                    "viz/old-tracks",
+                    "---\nname: viz-old-tracks\ndescription: \"Moved\"\nmetadata:\n  status: \
+                     \"superseded_by:viz/viz-new-tracks\"\n---\n\npointer\n"
+                        .to_string(),
+                ),
+            ] {
+                std::fs::create_dir_all(root.join(dir)).unwrap();
+                std::fs::write(root.join(dir).join("SKILL.md"), body).unwrap();
+            }
+            let catalog = crate::agents::skill_catalog::SkillCatalog::scan(
+                vec![crate::agents::skill_catalog::SkillRoot {
+                    path: root.clone(),
+                    source: crate::agents::skill_catalog::SkillSource::new(
+                        crate::agents::skill_catalog::SkillSourceKind::Biorouter,
+                        None,
+                    ),
+                }],
+                1,
+            );
+            let view = catalog.view(&SessionSkillOverride::default());
+
+            let child = child_skill_override(
+                SessionSkillOverride::default(),
+                &params(json!({ "instructions": "x", "add_skills": ["viz-old-tracks"] })),
+                &known_skill_names(&view),
+            )
+            .unwrap();
+            assert_eq!(child.add, ["viz-new-tracks"]);
         }
 
         /// End to end through the spawn tool: the chat's own skill and Context

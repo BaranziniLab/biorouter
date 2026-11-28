@@ -140,10 +140,23 @@ pub(super) fn install_in(
     let destination = root.join(&plan.id);
 
     // Anything from here to the swap cleans up after itself.
-    let staged = stage(plan, &staging);
-    if let Err(error) = staged {
+    let components = match stage(plan, &staging) {
+        Ok(components) => components,
+        Err(error) => {
+            let _ = std::fs::remove_dir_all(&staging);
+            return Err(error);
+        }
+    };
+    // J-P06: a live skill under a name an installed redirect stub carries
+    // would give that name two meanings, and change what every choice saved
+    // for it decides. Updating the package that holds the stub is not this.
+    if let Some(refusal) = crate::agents::skill_redirects::stub_collision(
+        &components,
+        &skill_catalog::current().skills(),
+        &destination,
+    ) {
         let _ = std::fs::remove_dir_all(&staging);
-        return Err(error);
+        bail!(refusal);
     }
 
     let replaced = destination.exists();
@@ -184,8 +197,9 @@ pub(super) fn install_in(
     })
 }
 
-/// Write the package into `staging` and verify what landed.
-fn stage(plan: &ImportPlan, staging: &Path) -> Result<()> {
+/// Write the package into `staging` and verify what landed. Returns each
+/// component's name and whether it is a stub (`skill_redirects`).
+fn stage(plan: &ImportPlan, staging: &Path) -> Result<Vec<(String, bool)>> {
     std::fs::create_dir_all(staging).with_context(|| format!("creating {}", staging.display()))?;
 
     if plan.kind == ImportKind::Bundle {
@@ -216,6 +230,7 @@ fn stage(plan: &ImportPlan, staging: &Path) -> Result<()> {
     // Verify from DISK, not from the plan. What matters is that the tree the
     // catalog will scan actually holds a loadable skill at every path the
     // package claims.
+    let mut staged = Vec::with_capacity(plan.components.len());
     for component in &plan.components {
         let skill_md = if plan.kind == ImportKind::Single {
             staging.join("SKILL.md")
@@ -238,6 +253,8 @@ fn stage(plan: &ImportPlan, staging: &Path) -> Result<()> {
                 metadata.name
             );
         }
+        let is_stub = metadata.superseded_by.is_some() || metadata.retired;
+        staged.push((metadata.name, is_stub));
     }
 
     if plan.kind == ImportKind::Bundle {
@@ -269,7 +286,7 @@ fn stage(plan: &ImportPlan, staging: &Path) -> Result<()> {
         .context("writing the package record")?;
     }
 
-    Ok(())
+    Ok(staged)
 }
 
 fn common_component_root(components: &[super::PlannedSkill]) -> Option<String> {
@@ -291,6 +308,49 @@ fn common_component_root(components: &[super::PlannedSkill]) -> Option<String> {
 /// catalog's view in one step rather than emptying out under a scan in flight.
 pub fn remove(id: &str, root: &Path) -> Result<PackageSummary> {
     remove_in(&install_root(), id, root)
+}
+
+/// [`remove`], first pinning every saved choice a redirect stub inside the
+/// package was carrying onto the replacement it decided (J-P06,
+/// `skill_redirects::keep_choices_through_removal`), in every chat and in
+/// `skills-config.json`. `before` is the catalog as the caller sees it now.
+///
+/// Every door that removes a package goes through this: Settings, the CLI and
+/// `removeSkillPackage`. A stub's redirect is the only record that a choice
+/// saved for the old name decides its replacement, so deleting the stub
+/// without this would switch back on what a chat had switched off.
+///
+/// The pins are written before the package is removed, so a removal that then
+/// fails leaves them in place, where they decide what the redirect already
+/// decided.
+pub async fn remove_keeping_choices(
+    id: &str,
+    root: &Path,
+    before: &std::collections::HashMap<String, crate::agents::skills_extension::Skill>,
+    session_manager: &crate::session::SessionManager,
+) -> Result<(PackageSummary, crate::agents::skill_redirects::KeptChoices)> {
+    let sanitized = super::sanitize_package_id(id)
+        .ok_or_else(|| anyhow::anyhow!("`{id}` is not a valid package name"))?;
+    let directory = root.join(&sanitized);
+    let kept = if directory.is_dir() && refuse_shipped(&install_root(), root, &sanitized).is_none()
+    {
+        let after = crate::agents::skill_redirects::without_directory(before, &directory);
+        crate::agents::skill_redirects::keep_choices_through_removal(
+            session_manager,
+            before,
+            &after,
+        )
+        .await
+    } else {
+        Default::default()
+    };
+    if !kept.problems.is_empty() {
+        tracing::warn!(
+            "removing `{sanitized}`: some saved skill choices could not be kept: {:?}",
+            kept.problems
+        );
+    }
+    Ok((remove(&sanitized, root)?, kept))
 }
 
 /// [`remove`] against an explicit seeded root. See [`install_in`].

@@ -75,6 +75,7 @@ Add the card, then the row (for a skill, in biorouter-skills, then sync). Give i
 
 1. Cut its final release (a sunset that still works and names its replacement, or a tombstone with one status tool), a minor version bump.
 2. Set its row's `status` to `superseded_by:<id>` or `retired` (with `retired.reason` and `retired.use_instead`). For a merge, add the old id, old display name and old bundled skill names to the target's `aliases`, and say "Replaces <old name>" on the target card (for a skill, add the old id to the target card's `data-tags`).
+   A merged **bundle component** carries no `aliases` and its row is never removed: it keeps `superseded_by:<bundle>/<component name>` (or a whole item), and its folder keeps the generated redirect stub rather than being deleted. The stub is what the app reads to carry a choice saved under the old name to its replacement ([the skill catalog](skill-catalog.md#superseded-and-retired-names)).
 3. Remove its card and its `baam-details.js` entry, and add one `<li data-moved-id data-moved-kind data-moved-to data-moved-name data-moved-to-name>` line to the Moved and retired list. A search for the old id or name then shows where it went.
 4. Never delete its releases: installed copies and older app builds still resolve them.
 

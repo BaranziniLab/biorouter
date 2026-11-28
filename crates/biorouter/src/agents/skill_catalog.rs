@@ -61,6 +61,7 @@ use std::time::SystemTime;
 use serde::{Deserialize, Serialize};
 
 use super::session_skills::{OverrideMatch, SessionSkillOverride};
+use super::skill_redirects::{CarriedChoice, Expanded, Redirects};
 use super::skills_extension::{self, Skill};
 use crate::config::paths::Paths;
 
@@ -278,6 +279,19 @@ pub struct CatalogSkill {
     /// Shipped with Biorouter, so the interface offers no Delete for it.
     pub builtin: bool,
     pub state: SkillState,
+    /// This skill is a redirect stub: its `metadata.status` says
+    /// `superseded_by:<target>`, and this is the target as written.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub superseded_by: Option<String>,
+    /// The installed skill or bundle the stub resolves to here. While it is
+    /// set, `state` is that replacement's, so the two rows move together, and
+    /// every write naming this skill is saved under the replacement.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub replacement: Option<String>,
+    /// Choices saved under this old name that now decide `replacement`: what
+    /// the interface's one-line "moved" notice reports.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub carried: Vec<CarriedChoice>,
 }
 
 /// A directory of skills installed and removed as one unit.
@@ -568,21 +582,19 @@ impl SkillCatalog {
     /// (`workspace_skills/v1`); pass [`SessionSkillOverride::default`] for the
     /// machine-wide view.
     pub fn view(&self, over: &SessionSkillOverride) -> CatalogView {
-        let machine_disabled = skills_extension::disabled_skill_names();
-        let hidden_contexts = skills_extension::hidden_context_names();
+        let composition = Composition::new(
+            &self.skills,
+            &skills_extension::disabled_skill_names(),
+            skills_extension::hidden_context_names(),
+            over,
+        );
 
         let mut skills: Vec<CatalogSkill> = self
             .skills
             .values()
             .map(|skill| {
                 let name = &skill.metadata.name;
-                let state = compose_state(
-                    name,
-                    skill.bundle_name.as_deref(),
-                    &machine_disabled,
-                    &hidden_contexts,
-                    over,
-                );
+                let state = composition.state(name, skill.bundle_name.as_deref());
                 CatalogSkill {
                     name: name.clone(),
                     description: skill.metadata.description.clone(),
@@ -593,6 +605,12 @@ impl SkillCatalog {
                     bundle: skill.bundle_name.clone(),
                     builtin: skills_extension::is_builtin_skill_name(name),
                     state,
+                    superseded_by: skill.metadata.superseded_by.clone(),
+                    replacement: composition
+                        .redirects()
+                        .replacement_of(name)
+                        .map(|replacement| replacement.name.clone()),
+                    carried: composition.carried(name),
                 }
             })
             .collect();
@@ -602,7 +620,7 @@ impl SkillCatalog {
             .bundles
             .iter()
             .map(|((_, name), record)| {
-                let state = compose_state(name, None, &machine_disabled, &hidden_contexts, over);
+                let state = composition.state(name, None);
                 CatalogBundle {
                     name: name.clone(),
                     display_name: record
@@ -635,6 +653,70 @@ impl SkillCatalog {
             bundles,
         }
     }
+
+    /// The names a new skill choice is saved under: an old name becomes its
+    /// installed replacement, with one notice per old name (J-P06). Every
+    /// writer of a choice asks this, so a switch named by its old name lands
+    /// where its content now is.
+    pub fn names_for_write(&self, names: &[String]) -> (Vec<String>, Vec<String>) {
+        Redirects::from_skills(&self.skills).names_for_write(names)
+    }
+}
+
+/// The inputs of [`compose_state`] for one view of a set of skills, with every
+/// saved choice under a superseded name carried to its replacement
+/// (`skill_redirects`).
+///
+/// ⚠ **The only way to ask "is this skill on?"**: the catalog view, the
+/// model's list and the load test all compose through [`Composition::state`].
+/// Calling [`compose_state`] directly with the raw inputs skips the carry, and
+/// a chat that switched an old name off would see its replacement on.
+pub struct Composition {
+    redirects: Redirects,
+    expanded: Expanded,
+    hidden_contexts: HashSet<String>,
+}
+
+impl Composition {
+    pub fn new(
+        skills: &HashMap<String, Skill>,
+        machine_disabled: &HashSet<String>,
+        hidden_contexts: HashSet<String>,
+        over: &SessionSkillOverride,
+    ) -> Self {
+        let redirects = Redirects::from_skills(skills);
+        Self {
+            expanded: redirects.expand(over, machine_disabled),
+            hidden_contexts,
+            redirects,
+        }
+    }
+
+    pub fn redirects(&self) -> &Redirects {
+        &self.redirects
+    }
+
+    /// The composed state of the skill `name` (in `bundle`). A redirect stub
+    /// whose replacement is installed reports the replacement's state.
+    pub fn state(&self, name: &str, bundle: Option<&str>) -> SkillState {
+        let (name, bundle) = match self.redirects.replacement_of(name) {
+            Some(replacement) => (replacement.name.as_str(), replacement.bundle.as_deref()),
+            None => (name, bundle),
+        };
+        compose_state(
+            name,
+            bundle,
+            &self.expanded.disabled,
+            &self.hidden_contexts,
+            &self.expanded.over,
+        )
+    }
+
+    /// The saved choices under the old name `from` that decide its
+    /// replacement ([`Redirects::expand`]).
+    pub fn carried(&self, from: &str) -> Vec<CarriedChoice> {
+        self.expanded.carried(from)
+    }
 }
 
 /// The serialisable catalog: what `GET /skills/catalog` returns and what the
@@ -650,7 +732,8 @@ pub struct CatalogView {
 }
 
 /// The one composition rule, shared by the model-facing filter and the
-/// interface's switches.
+/// interface's switches. Callers reach it through [`Composition::state`],
+/// which first carries saved choices under superseded names.
 ///
 /// ⚠ **`skills_extension` calls this too** — its
 /// `SkillsClient::is_skill_enabled_for_session` is a thin wrapper over
@@ -1400,5 +1483,383 @@ mod tests {
             catalog.is_stale(&wider),
             "installing an extension adds a root, and that alone is staleness"
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // J-P06: superseded and retired names.
+    // -----------------------------------------------------------------------
+
+    /// A redirect stub exactly as biorouter-skills' `scripts/lib/stub.mjs`
+    /// writes one: the old name, a `Moved:` description, and the catalog
+    /// row's status under `metadata`.
+    fn write_stub(root: &Path, relative: &str, name: &str, status: &str) {
+        let dir = root.join(relative);
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(
+            dir.join("SKILL.md"),
+            format!(
+                "---\nname: {name}\ndescription: \"Moved: {name} is now part of another skill.\"\n\
+                 license: Apache-2.0\nuser-invocable: true\nmetadata:\n  version: \"1.1.0\"\n  \
+                 status: \"{status}\"\n---\n\n# {name} has moved\n\nPOINTER-BODY\n"
+            ),
+        )
+        .unwrap();
+    }
+
+    /// A bundle whose component `viz-old-tracks` was merged into
+    /// `viz-new-tracks`, as W63 merges biomedical components.
+    fn merged_bundle(root: &Path) {
+        write_skill(root, "viz/new-tracks", "viz-new-tracks", "Genome tracks");
+        write_stub(
+            root,
+            "viz/old-tracks",
+            "viz-old-tracks",
+            "superseded_by:viz/viz-new-tracks",
+        );
+    }
+
+    fn row<'a>(view: &'a CatalogView, name: &str) -> &'a CatalogSkill {
+        view.skills
+            .iter()
+            .find(|s| s.name == name)
+            .unwrap_or_else(|| panic!("{name} is in the catalog"))
+    }
+
+    fn over(add: &[&str], remove: &[&str]) -> SessionSkillOverride {
+        SessionSkillOverride {
+            add: add.iter().map(|s| s.to_string()).collect(),
+            remove: remove.iter().map(|s| s.to_string()).collect(),
+        }
+    }
+
+    /// What the interface's one-line notice reads: the stub row names its
+    /// replacement and the saved choice that now decides it.
+    #[test]
+    fn a_stub_row_reports_its_replacement_and_the_choice_it_carries() {
+        let temp = TempDir::new().unwrap();
+        let root = temp.path().join("skills");
+        merged_bundle(&root);
+        let catalog = SkillCatalog::scan(vec![root_at(&root, biorouter_root())], 1);
+
+        let view = catalog.view(&over(&[], &["viz-old-tracks"]));
+        let stub = row(&view, "viz-old-tracks");
+        assert_eq!(stub.superseded_by.as_deref(), Some("viz/viz-new-tracks"));
+        assert_eq!(stub.replacement.as_deref(), Some("viz-new-tracks"));
+        assert_eq!(stub.carried, [CarriedChoice::SessionRemoved]);
+        let live = row(&view, "viz-new-tracks");
+        assert_eq!(live.superseded_by, None);
+        assert!(live.carried.is_empty());
+
+        // Serialized, the three fields are absent on an ordinary row, so the
+        // wire shape of every other skill is unchanged.
+        let json = serde_json::to_value(live).unwrap();
+        for field in ["supersededBy", "replacement", "carried"] {
+            assert!(json.get(field).is_none(), "{field} on an ordinary row");
+        }
+        let json = serde_json::to_value(stub).unwrap();
+        assert_eq!(json["replacement"], "viz-new-tracks");
+        assert_eq!(json["carried"], serde_json::json!(["sessionRemoved"]));
+
+        let (stored, notices) = catalog.names_for_write(&["viz-old-tracks".to_string()]);
+        assert_eq!(stored, ["viz-new-tracks"]);
+        assert_eq!(notices.len(), 1);
+    }
+
+    /// A chat that switched the old component off must not get its content
+    /// back under the new name: dropping a removal fails open.
+    #[test]
+    fn a_chats_removal_of_a_superseded_component_switches_its_replacement_off() {
+        let temp = TempDir::new().unwrap();
+        let root = temp.path().join("skills");
+        merged_bundle(&root);
+        let catalog = SkillCatalog::scan(vec![root_at(&root, biorouter_root())], 1);
+
+        let view = catalog.view(&over(&[], &["viz-old-tracks"]));
+        let replacement = row(&view, "viz-new-tracks");
+        assert_eq!(replacement.state.session, SessionState::Removed);
+        assert!(
+            !replacement.state.effective,
+            "the chat's choice for the old name now decides its replacement"
+        );
+    }
+
+    /// The old name's row shows its replacement's state, so either switch
+    /// moves both rows.
+    #[test]
+    fn a_superseded_stub_row_mirrors_its_replacement() {
+        let temp = TempDir::new().unwrap();
+        let root = temp.path().join("skills");
+        merged_bundle(&root);
+        let catalog = SkillCatalog::scan(vec![root_at(&root, biorouter_root())], 1);
+
+        let view = catalog.view(&over(&[], &["viz-new-tracks"]));
+        assert!(
+            !row(&view, "viz-old-tracks").state.effective,
+            "switching the replacement off switches the old name off with it"
+        );
+    }
+
+    /// A choice the chat made for the replacement itself is more specific
+    /// than one it made under the old name, as a skill's own entry beats its
+    /// bundle's.
+    #[test]
+    fn a_direct_choice_for_the_replacement_beats_one_carried_from_the_old_name() {
+        let temp = TempDir::new().unwrap();
+        let root = temp.path().join("skills");
+        merged_bundle(&root);
+        let catalog = SkillCatalog::scan(vec![root_at(&root, biorouter_root())], 1);
+
+        let view = catalog.view(&over(&["viz-new-tracks"], &["viz-old-tracks"]));
+        assert!(row(&view, "viz-new-tracks").state.effective);
+        assert_eq!(
+            row(&view, "viz-new-tracks").state.session,
+            SessionState::Added
+        );
+    }
+
+    /// `superseded_by:<bundle>` (metabolic-modeling-cobrapy into
+    /// systems-biology): the old name stands for the whole bundle.
+    #[test]
+    fn a_name_superseded_by_a_whole_bundle_carries_to_every_member() {
+        let temp = TempDir::new().unwrap();
+        let root = temp.path().join("skills");
+        write_skill(&root, "systems/flux", "systems-flux", "Flux balance");
+        write_skill(&root, "systems/networks", "systems-networks", "Networks");
+        write_stub(&root, "cobra-old", "cobra-old", "superseded_by:systems");
+        let catalog = SkillCatalog::scan(vec![root_at(&root, biorouter_root())], 1);
+
+        let view = catalog.view(&over(&[], &["cobra-old"]));
+        for member in ["systems-flux", "systems-networks"] {
+            assert!(
+                !row(&view, member).state.effective,
+                "{member} is off with the old name"
+            );
+            assert!(row(&view, member).state.session_via_bundle);
+        }
+    }
+
+    /// `superseded_by:builtin:<name>` (skill-creator into the shipped
+    /// develop-biorouter-skill).
+    #[test]
+    fn a_name_superseded_by_a_builtin_skill_carries_to_it() {
+        let temp = TempDir::new().unwrap();
+        let root = temp.path().join("skills");
+        write_stub(
+            &root,
+            "creator-old",
+            "creator-old",
+            "superseded_by:builtin:develop-biorouter-skill",
+        );
+        let catalog = SkillCatalog::scan(vec![root_at(&root, biorouter_root())], 1);
+
+        let view = catalog.view(&over(&[], &["creator-old"]));
+        assert!(!row(&view, "develop-biorouter-skill").state.effective);
+    }
+
+    /// A merge of a merge: `a` into `b`, then `b` into `c`.
+    #[test]
+    fn a_chain_of_merges_resolves_to_the_last_replacement() {
+        let temp = TempDir::new().unwrap();
+        let root = temp.path().join("skills");
+        write_stub(&root, "a", "chain-a", "superseded_by:chain-b");
+        write_stub(&root, "b", "chain-b", "superseded_by:chain-c");
+        write_skill(&root, "c", "chain-c", "Current");
+        let catalog = SkillCatalog::scan(vec![root_at(&root, biorouter_root())], 1);
+
+        let view = catalog.view(&over(&[], &["chain-a"]));
+        assert!(!row(&view, "chain-c").state.effective);
+    }
+
+    /// Two stubs that point at each other resolve to nothing and change
+    /// nothing else.
+    #[test]
+    fn a_cycle_of_redirects_resolves_to_nothing() {
+        let temp = TempDir::new().unwrap();
+        let root = temp.path().join("skills");
+        write_stub(&root, "a", "loop-a", "superseded_by:loop-b");
+        write_stub(&root, "b", "loop-b", "superseded_by:loop-a");
+        write_skill(&root, "c", "bystander", "Unrelated");
+        let catalog = SkillCatalog::scan(vec![root_at(&root, biorouter_root())], 1);
+
+        let view = catalog.view(&over(&[], &["loop-a"]));
+        assert!(!row(&view, "loop-a").state.effective);
+        assert!(row(&view, "loop-b").state.effective);
+        assert!(row(&view, "bystander").state.effective);
+    }
+
+    /// A retired name moved no content, so a choice saved under it decides
+    /// nothing but its own pointer.
+    #[test]
+    fn a_retired_name_never_resolves_to_another_skill() {
+        let temp = TempDir::new().unwrap();
+        let root = temp.path().join("skills");
+        write_stub(&root, "theory-old", "theory-old", "retired");
+        write_skill(&root, "econometrics", "econometrics", "Alternative");
+        let catalog = SkillCatalog::scan(vec![root_at(&root, biorouter_root())], 1);
+
+        let view = catalog.view(&over(&[], &["theory-old"]));
+        assert!(!row(&view, "theory-old").state.effective);
+        assert!(row(&view, "econometrics").state.effective);
+    }
+
+    /// When the replacement is not installed, the stub is an ordinary
+    /// pointer with a switch of its own.
+    #[test]
+    fn a_stub_whose_replacement_is_missing_keeps_its_own_switch() {
+        let temp = TempDir::new().unwrap();
+        let root = temp.path().join("skills");
+        write_stub(
+            &root,
+            "single/perturb",
+            "single-perturb",
+            "superseded_by:crispr/crispr-perturb",
+        );
+        write_skill(&root, "single/cells", "single-cells", "Cells");
+        let catalog = SkillCatalog::scan(vec![root_at(&root, biorouter_root())], 1);
+
+        let on = catalog.view(&SessionSkillOverride::default());
+        assert!(row(&on, "single-perturb").state.effective);
+        let off = catalog.view(&over(&[], &["single-perturb"]));
+        assert!(!row(&off, "single-perturb").state.effective);
+        assert!(row(&off, "single-cells").state.effective);
+    }
+
+    /// A component that moved to another bundle, as W63 and W77 move
+    /// perturb-seq and atlas-mapping.
+    fn moved_out(root: &Path) {
+        write_skill(root, "single/cells", "single-cells", "Cells");
+        write_stub(
+            root,
+            "single/perturb",
+            "single-perturb",
+            "superseded_by:crispr/crispr-perturb",
+        );
+        write_skill(root, "crispr/perturb", "crispr-perturb", "Perturb-seq");
+        write_skill(root, "crispr/screens", "crispr-screens", "Screens");
+    }
+
+    /// Probes P2c and P7: a chat's choice for the bundle a component sat in
+    /// decides the component where it moved, and the stub row says so.
+    #[test]
+    fn a_chats_choice_for_the_old_bundle_carries_to_a_component_that_moved_out() {
+        let temp = TempDir::new().unwrap();
+        let root = temp.path().join("skills");
+        moved_out(&root);
+        let catalog = SkillCatalog::scan(vec![root_at(&root, biorouter_root())], 1);
+
+        let off = catalog.view(&over(&[], &["single"]));
+        assert!(
+            !row(&off, "crispr-perturb").state.effective,
+            "switching the old bundle off switches its moved content off"
+        );
+        assert!(
+            !row(&off, "single-perturb").state.effective,
+            "the stub mirrors its replacement"
+        );
+        assert!(row(&off, "crispr-screens").state.effective);
+        assert_eq!(
+            row(&off, "single-perturb").carried,
+            [CarriedChoice::SessionBundleRemoved]
+        );
+
+        let on = catalog.view(&over(&["single"], &["crispr"]));
+        assert!(
+            !row(&on, "crispr-perturb").state.effective,
+            "a choice for the replacement's own bundle is more specific"
+        );
+        assert!(row(&on, "single-perturb").carried.is_empty());
+    }
+
+    /// Probe P4: two old names merged into one, switched on and off in one
+    /// chat. The removal wins.
+    #[test]
+    fn a_carried_removal_beats_a_carried_add_in_the_catalog() {
+        let temp = TempDir::new().unwrap();
+        let root = temp.path().join("skills");
+        write_skill(&root, "matrix", "expression-matrix", "Expression matrix");
+        write_stub(
+            &root,
+            "tximport",
+            "tximport",
+            "superseded_by:expression-matrix",
+        );
+        write_stub(
+            &root,
+            "count-qc",
+            "count-qc",
+            "superseded_by:expression-matrix",
+        );
+        let catalog = SkillCatalog::scan(vec![root_at(&root, biorouter_root())], 1);
+
+        let view = catalog.view(&over(&["tximport"], &["count-qc"]));
+        assert!(!row(&view, "expression-matrix").state.effective);
+        assert_eq!(
+            row(&view, "count-qc").carried,
+            [CarriedChoice::SessionRemoved]
+        );
+        assert!(row(&view, "tximport").carried.is_empty());
+    }
+
+    /// The machine-wide list, in a process of its own because it writes
+    /// `skills-config.json` under the sandbox root: an old name it lists
+    /// switches its replacement off machine-wide, and a chat that granted the
+    /// old name gets the replacement back.
+    #[test]
+    fn a_machine_wide_choice_under_a_superseded_name_carries_to_its_replacement() {
+        if !crate::test_sandbox::in_a_process_of_its_own() {
+            return;
+        }
+        let temp = TempDir::new().unwrap();
+        let _env = crate::test_sandbox::relocate_path_root(temp.path().to_str().unwrap());
+        let root = temp.path().join("skills-here");
+        merged_bundle(&root);
+        let catalog = SkillCatalog::scan(vec![root_at(&root, biorouter_root())], 1);
+        let config = Paths::config_dir();
+        fs::create_dir_all(&config).unwrap();
+
+        fs::write(
+            config.join("skills-config.json"),
+            r#"{"disabled":["viz-old-tracks"]}"#,
+        )
+        .unwrap();
+        let view = catalog.view(&SessionSkillOverride::default());
+        assert!(
+            !row(&view, "viz-new-tracks").state.machine_enabled,
+            "the old name's machine-wide entry now switches its replacement off"
+        );
+
+        // The chat silently lost the skill: it had granted the old name while
+        // the replacement was switched off machine-wide.
+        fs::write(
+            config.join("skills-config.json"),
+            r#"{"disabled":["viz-new-tracks"]}"#,
+        )
+        .unwrap();
+        let view = catalog.view(&over(&["viz-old-tracks"], &[]));
+        assert!(
+            row(&view, "viz-new-tracks").state.effective,
+            "the chat's grant of the old name carries to its replacement"
+        );
+
+        // The bundle a component sat in, switched off machine-wide, switches
+        // the component off where it moved; the rest of its new bundle stays.
+        let other = temp.path().join("moved-here");
+        moved_out(&other);
+        let catalog = SkillCatalog::scan(vec![root_at(&other, biorouter_root())], 2);
+        fs::write(
+            config.join("skills-config.json"),
+            r#"{"disabled":["single"]}"#,
+        )
+        .unwrap();
+        let view = catalog.view(&SessionSkillOverride::default());
+        assert!(!row(&view, "crispr-perturb").state.machine_enabled);
+        assert!(row(&view, "crispr-screens").state.machine_enabled);
+        assert_eq!(
+            row(&view, "single-perturb").carried,
+            [CarriedChoice::MachineBundleDisabled]
+        );
+        // A chat can still switch the moved component on.
+        let view = catalog.view(&over(&["crispr-perturb"], &[]));
+        assert!(row(&view, "crispr-perturb").state.effective);
     }
 }

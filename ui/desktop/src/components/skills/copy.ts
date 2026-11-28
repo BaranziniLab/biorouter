@@ -27,6 +27,14 @@ export const SKILLS_COPY = {
     matches: 'Matches',
   },
 
+  /**
+   * One line when choices saved before a move (for a skill's old name, or for
+   * the bundle it sat in) now decide the skill that replaced it. `moves` pairs
+   * each old name with its replacement.
+   */
+  movedChoices: (moves: Array<[string, string]>) =>
+    `Moved: ${moves.map(([from, to]) => `${from} is now ${to}`).join('; ')}. Choices saved before the move apply there.`,
+
   /** The `⋯` button's name: every row has one, so each says whose it is. */
   moreActionsNamed: (name: string) => `More actions for ${name}`,
   openFolder: 'Open folder',

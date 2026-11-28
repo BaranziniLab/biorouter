@@ -89,6 +89,7 @@ pub mod session_extensions;
 pub mod session_skills;
 pub mod skill_catalog;
 pub mod skill_package;
+pub mod skill_redirects;
 // Item 7: what a turn the user stopped leaves in the transcript — the prose it
 // had streamed and a durable "Stopped." notice.
 pub mod stopped_turn;

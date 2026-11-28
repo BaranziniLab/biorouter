@@ -14809,6 +14809,15 @@
           }
         }
       },
+      "CarriedChoice": {
+        "type": "string",
+        "description": "A saved choice under an old name that now decides its replacement.",
+        "enum": [
+          "sessionAdded",
+          "sessionRemoved",
+          "machineDisabled"
+        ]
+      },
       "CarriedPage": {
         "type": "object",
         "required": [
@@ -15036,6 +15045,13 @@
             "description": "The bundle directory this skill sits in, when it is a bundle member.",
             "nullable": true
           },
+          "carried": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CarriedChoice"
+            },
+            "description": "Choices saved under this old name that now decide `replacement`: what\nthe interface's one-line \"moved\" notice reports."
+          },
           "description": {
             "type": "string"
           },
@@ -15045,6 +15061,11 @@
           "name": {
             "type": "string",
             "description": "Frontmatter `name` — the identifier every enablement surface keys on."
+          },
+          "replacement": {
+            "type": "string",
+            "description": "The installed skill or bundle the stub resolves to here. While it is\nset, `state` is that replacement's, so the two rows move together, and\nevery write naming this skill is saved under the replacement.",
+            "nullable": true
           },
           "slug": {
             "type": "string",
@@ -15058,6 +15079,11 @@
           },
           "state": {
             "$ref": "#/components/schemas/SkillState"
+          },
+          "supersededBy": {
+            "type": "string",
+            "description": "This skill is a redirect stub: its `metadata.status` says\n`superseded_by:<target>`, and this is the target as written.",
+            "nullable": true
           }
         }
       },

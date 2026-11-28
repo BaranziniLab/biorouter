@@ -62,6 +62,7 @@ import {
   saveSkillOverrides,
   setSkillOverride,
 } from '../../store/skillOverrides';
+import { SKILLS_COPY } from './copy';
 
 /** What one mutation did, with the daemon's own words when it refused. */
 export type SkillMutationResult = { ok: true } | { ok: false; error: string };
@@ -207,6 +208,51 @@ export async function fetchSkillCatalog(sessionId?: string | null): Promise<Cata
   return response.data;
 }
 
+/**
+ * The names a switch is saved under, and the old names it also clears.
+ *
+ * A redirect stub (a skill the catalog merged into another; the daemon reports
+ * its installed `replacement`) IS its replacement: its row shows the
+ * replacement's state, so a switch on either row is saved under the
+ * replacement. The daemon does the same for a per-chat write; this is the
+ * machine-wide half, which the renderer writes itself.
+ *
+ * ⚠ **`cleared` is not optional.** `skills-config.json` may still list the old
+ * name, and the daemon carries that entry to the replacement, so switching the
+ * replacement on without clearing it would move the switch and change nothing.
+ */
+export function resolveSkillKeys(
+  view: CatalogView,
+  keys: string[],
+  enabled: boolean
+): { keys: string[]; cleared: string[] } {
+  const replacementOf = new Map(
+    view.skills
+      .filter((skill) => skill.replacement)
+      .map((skill) => [skill.name, skill.replacement as string])
+  );
+  const resolved = [...new Set(keys.map((key) => replacementOf.get(key) ?? key))];
+  const cleared = enabled
+    ? view.skills
+        .filter((skill) => skill.replacement && resolved.includes(skill.replacement))
+        .map((skill) => skill.name)
+    : [];
+  return { keys: resolved, cleared };
+}
+
+/**
+ * The one line saying choices saved under an old name now decide its
+ * replacement, or `null` when nothing was carried. The stub's own row already
+ * says it moved (its description begins "Moved:"); this covers the choice the
+ * person made before the move, which no row would otherwise show.
+ */
+export function movedChoicesNotice(view: Pick<CatalogView, 'skills'>): string | null {
+  const moves = view.skills
+    .filter((skill) => skill.replacement && (skill.carried?.length ?? 0) > 0)
+    .map((skill): [string, string] => [skill.name, skill.replacement as string]);
+  return moves.length > 0 ? SKILLS_COPY.movedChoices(moves) : null;
+}
+
 /** Standalone skills — bundle members are reached through their bundle. */
 export function standaloneSkills(view: CatalogView): CatalogSkill[] {
   return view.skills.filter((skill) => !skill.bundle && isPickerSkill(skill));
@@ -288,9 +334,15 @@ export function useSkillCatalog(sessionId: string | null): SkillCatalogState {
 
       const run = async (): Promise<SkillMutationResult> => {
         const previous = committed.current;
+        // A switch named by a superseded name is saved under its replacement
+        // (`resolveSkillKeys`), and the rows that mirror it move with it.
+        const { keys: saved, cleared } = resolveSkillKeys(previous, keys, enabled);
+        const mirrors = previous.skills
+          .filter((skill) => skill.replacement && saved.includes(skill.replacement))
+          .map((skill) => skill.name);
         // Optimistic, so the switch does not lag the click — and reverted below
         // if the write is refused.
-        commit(applyOptimistically(previous, keys, enabled, sessionId !== null));
+        commit(applyOptimistically(previous, [...saved, ...mirrors], enabled, sessionId !== null));
 
         try {
           if (sessionId) {
@@ -299,15 +351,16 @@ export function useSkillCatalog(sessionId: string | null): SkillCatalogState {
             const response = await setSessionSkills<true>({
               body: {
                 sessionId,
-                add: enabled ? keys : [],
-                remove: enabled ? [] : keys,
+                add: enabled ? saved : [],
+                remove: enabled ? [] : saved,
               },
               headers: await userActionHeaders(),
               throwOnError: true,
             });
             commit(response.data.catalog);
           } else {
-            keys.forEach((key) => setSkillOverride(key, enabled));
+            saved.forEach((key) => setSkillOverride(key, enabled));
+            cleared.forEach((key) => setSkillOverride(key, true));
             await saveSkillOverrides();
             // `skills-config.json` is read fresh on every catalog view, so a
             // plain refetch already reflects the write — no rescan needed.

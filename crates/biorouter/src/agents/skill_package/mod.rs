@@ -57,7 +57,7 @@ pub mod source;
 #[cfg(test)]
 mod tests;
 
-pub use install::{install, remove, InstalledPackage};
+pub use install::{install, remove, remove_keeping_choices, InstalledPackage};
 pub use plan::plan_from_entries;
 pub use source::{fetch, ImportSource};
 

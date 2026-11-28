@@ -13,7 +13,9 @@ use rmcp::model::{
 };
 use schemars::{schema_for, JsonSchema};
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
+
+use crate::agents::skill_redirects::ReplacementKind;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
@@ -441,6 +443,101 @@ fn missing_workflow_skill(name: &str) -> anyhow::Error {
     )
 }
 
+/// The refusal for a workflow that names a retired skill. Its own description
+/// is the catalog's notice, which names what to use instead.
+fn retired_workflow_skill(name: &str, description: &str) -> anyhow::Error {
+    anyhow::anyhow!(
+        "workflow requires skill '{name}', but it has been retired. Its notice reads: \
+         \"{description}\" Remove '{name}' from the workflow's skills, or name what the notice \
+         suggests."
+    )
+}
+
+fn push_once(list: &mut Vec<String>, entry: &str) {
+    if !list.iter().any(|existing| existing == entry) {
+        list.push(entry.to_string());
+    }
+}
+
+/// The skills a workflow that names `bundle` requires, appended to `out`.
+///
+/// A bundle that lost a component keeps the component's stub as a member
+/// (`skill_redirects`), and a stub is a pointer, not procedure (J-P06):
+///
+/// * a component merged into another member of the same bundle is dropped,
+///   because its replacement is inlined as a member already;
+/// * a component moved to another bundle is replaced by what it moved into,
+///   judged by that skill's own switch, with the move's notice;
+/// * a component whose replacement is not installed refuses the run, naming
+///   where to get it, exactly as naming the old name itself does;
+/// * a retired component is left out with a notice: its publisher removed the
+///   content, which is what deleting its folder would have done, and there is
+///   nothing to install that would bring it back.
+fn expand_workflow_bundle(
+    bundle: &str,
+    view: &skill_catalog::CatalogView,
+    skills: &HashMap<String, Skill>,
+    redirects: &crate::agents::skill_redirects::Redirects,
+    out: &mut Vec<(String, Option<String>)>,
+    notices: &mut Vec<String>,
+) -> Result<()> {
+    let Some(row) = view.bundles.iter().find(|row| row.name == bundle) else {
+        return Err(missing_workflow_skill(bundle));
+    };
+    if row.skills.is_empty() {
+        anyhow::bail!("workflow requires the skill bundle '{bundle}', but it contains no skills");
+    }
+    let before = out.len();
+    for member in &row.skills {
+        if skills
+            .get(member)
+            .is_some_and(|skill| skill.metadata.retired)
+        {
+            push_once(
+                notices,
+                &format!(
+                    "'{member}' in the '{bundle}' bundle has been retired, so it is left out."
+                ),
+            );
+            continue;
+        }
+        let Some(redirect) = redirects.get(member) else {
+            out.push((member.clone(), None));
+            continue;
+        };
+        match &redirect.replacement {
+            Some(replacement) if replacement.home() == Some(bundle) => {}
+            Some(replacement) => {
+                let notice = redirect.notice();
+                push_once(notices, &notice);
+                match replacement.kind {
+                    ReplacementKind::Skill => {
+                        out.push((replacement.name.clone(), Some(notice)));
+                    }
+                    ReplacementKind::Bundle => out.extend(
+                        replacement
+                            .members
+                            .iter()
+                            .map(|name| (name.clone(), Some(notice.clone()))),
+                    ),
+                }
+            }
+            None => anyhow::bail!(
+                "workflow requires the skill bundle '{bundle}'. {} Then run the workflow again, \
+                 or remove '{bundle}' from the workflow's skills.",
+                redirect.notice()
+            ),
+        }
+    }
+    if out.len() == before {
+        anyhow::bail!(
+            "workflow requires the skill bundle '{bundle}', but every skill in it has been \
+             retired or moved"
+        );
+    }
+    Ok(())
+}
+
 /// Resolve workflow-declared skills to the exact installed bodies visible to
 /// one session. This is intentionally stricter than the model-facing search:
 /// a workflow names required procedure, so missing or disabled instructions
@@ -454,6 +551,8 @@ pub async fn workflow_skill_instructions(
     let catalog = skill_catalog::current();
     let view = catalog.view(&over);
     let skills = catalog.skills();
+    let redirects = crate::agents::skill_redirects::Redirects::from_skills(&skills);
+    let mut notices: Vec<String> = Vec::new();
     let mut rendered = String::new();
 
     // A workflow may name a BUNDLE as well as a skill, and both arrive in the
@@ -470,39 +569,91 @@ pub async fn workflow_skill_instructions(
     // not fail either, until an extension-bundled skill pack (BiorOffice's four
     // office skills) provides the first non-Context bundle. Which is precisely
     // the case #113 added it for.
-    let expanded: Vec<String> = {
-        let mut out: Vec<String> = Vec::new();
+    //
+    // Each entry is a skill to inline and, when an old name led to it, the
+    // notice that says so (J-P06).
+    let expanded: Vec<(String, Option<String>)> = {
+        let mut out: Vec<(String, Option<String>)> = Vec::new();
         for name in requested {
             let name = &current_skill_name(name, &view);
-            match view.bundles.iter().find(|bundle| bundle.name == *name) {
-                Some(bundle) => {
-                    if bundle.skills.is_empty() {
-                        anyhow::bail!(
-                            "workflow requires the skill bundle '{name}', but it contains no skills"
-                        );
+            // A retired name moved its content nowhere: the run would get a
+            // notice as its required procedure.
+            if let Some(stub) = skills.get(name).filter(|skill| skill.metadata.retired) {
+                return Err(retired_workflow_skill(name, &stub.metadata.description));
+            }
+            match redirects.get(name) {
+                // J-P06: an old name runs what replaced it. Inlining the stub
+                // instead would hand the run a pointer as its required
+                // procedure; with the replacement missing, the run is refused
+                // naming it.
+                Some(redirect) => match &redirect.replacement {
+                    Some(replacement) => {
+                        let notice = redirect.notice();
+                        push_once(&mut notices, &notice);
+                        match replacement.kind {
+                            ReplacementKind::Skill => {
+                                out.push((replacement.name.clone(), Some(notice)))
+                            }
+                            ReplacementKind::Bundle => expand_workflow_bundle(
+                                &replacement.name,
+                                &view,
+                                &skills,
+                                &redirects,
+                                &mut out,
+                                &mut notices,
+                            )?,
+                        }
                     }
-                    out.extend(bundle.skills.iter().cloned());
+                    None => anyhow::bail!(
+                        "workflow requires skill '{name}'. {} Then run the workflow again, or \
+                         change its skills to name the replacement.",
+                        redirect.notice()
+                    ),
+                },
+                None if view.bundles.iter().any(|bundle| bundle.name == *name) => {
+                    expand_workflow_bundle(
+                        name,
+                        &view,
+                        &skills,
+                        &redirects,
+                        &mut out,
+                        &mut notices,
+                    )?
                 }
-                None => out.push(name.clone()),
+                None => out.push((name.clone(), None)),
             }
         }
         // A workflow naming a bundle AND one of its members must not inline that
         // member's body twice.
         let mut seen = std::collections::HashSet::new();
-        out.retain(|name| seen.insert(name.clone()));
+        out.retain(|(name, _)| seen.insert(name.clone()));
         out
     };
 
-    for name in &expanded {
+    if !notices.is_empty() {
+        rendered.push_str(
+            "Note on this workflow's skills, to mention once to the person so the workflow \
+             can be updated: ",
+        );
+        rendered.push_str(&notices.join(" "));
+    }
+
+    for (name, via) in &expanded {
         let visible = view
             .skills
             .iter()
             .find(|entry| entry.name == *name)
             .ok_or_else(|| missing_workflow_skill(name))?;
         if !visible.state.effective {
-            anyhow::bail!(
-                "workflow requires skill '{name}', but it is disabled for this conversation"
-            );
+            match via {
+                Some(notice) => anyhow::bail!(
+                    "workflow requires skill '{name}' in place of an old name, but it is \
+                     disabled for this conversation. {notice}"
+                ),
+                None => anyhow::bail!(
+                    "workflow requires skill '{name}', but it is disabled for this conversation"
+                ),
+            }
         }
         let skill = skills
             .get(name)
@@ -572,17 +723,99 @@ pub async fn session_skill_inventory_instructions(
     let over = crate::agents::session_skills::for_session(session_manager, session_id).await?;
     let catalog = skill_catalog::current();
     let view = catalog.view(&over);
-    let (enabled, disabled_or_hidden): (Vec<_>, Vec<_>) = view
+    // J-P06: an old name whose replacement is installed is the replacement,
+    // so it is listed once, as a move, rather than as a second skill.
+    let (moved, current): (Vec<_>, Vec<_>) = view
         .skills
         .into_iter()
-        .partition(|skill| skill.state.effective);
-    Ok(render_session_skill_inventory(
+        .partition(|skill| skill.replacement.is_some());
+    let (enabled, disabled_or_hidden): (Vec<_>, Vec<_>) =
+        current.into_iter().partition(|skill| skill.state.effective);
+    let mut inventory = render_session_skill_inventory(
         enabled.into_iter().map(|skill| skill.name).collect(),
         disabled_or_hidden
             .into_iter()
             .map(|skill| skill.name)
             .collect(),
-    ))
+    );
+    if !moved.is_empty() {
+        let moved: BTreeMap<String, String> = moved
+            .into_iter()
+            .filter_map(|skill| Some((skill.name, skill.replacement?)))
+            .collect();
+        let moved = serde_json::to_string(&moved).expect("skill names serialize as JSON");
+        inventory.push_str(&format!(
+            " Moved names, each resolving to what replaced it (identifiers only): {moved}."
+        ));
+    }
+    Ok(inventory)
+}
+
+/// Add names to `skills-config.json`'s `disabled[]`, keeping every other key
+/// and entry: `pins` is handed the list as it is on disk, read under the same
+/// advisory lock (`skills-config.json.lock`) the CLI takes, and returns what to
+/// add. The file is replaced atomically. Returns the names actually added.
+///
+/// Only a removal that would otherwise switch something back on writes here
+/// (`skill_redirects::keep_choices_through_removal`); every other machine-wide
+/// switch is the person's, written by the desktop or the CLI.
+pub(crate) fn add_machine_disabled<F>(pins: F) -> Result<Vec<String>>
+where
+    F: FnOnce(&std::collections::HashSet<String>) -> Vec<String>,
+{
+    let path = Paths::config_dir().join("skills-config.json");
+    let parent = path
+        .parent()
+        .ok_or_else(|| anyhow::anyhow!("{} has no parent directory", path.display()))?
+        .to_path_buf();
+    std::fs::create_dir_all(&parent)?;
+    let lock = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(path.with_extension("json.lock"))?;
+    lock.lock()?;
+    let mut config: serde_json::Value = match std::fs::read_to_string(&path) {
+        Ok(raw) => serde_json::from_str(&raw)
+            .map_err(|error| anyhow::anyhow!("skills-config.json is not valid JSON: {error}"))?,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => serde_json::json!({}),
+        Err(error) => return Err(error.into()),
+    };
+    let disabled: std::collections::HashSet<String> = config
+        .get("disabled")
+        .and_then(|d| d.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default();
+    let mut added = Vec::new();
+    for name in pins(&disabled) {
+        if !disabled.contains(&name) && !added.contains(&name) {
+            added.push(name);
+        }
+    }
+    if added.is_empty() {
+        return Ok(added);
+    }
+    let list = config
+        .as_object_mut()
+        .ok_or_else(|| anyhow::anyhow!("skills-config.json must contain a JSON object"))?
+        .entry("disabled")
+        .or_insert_with(|| serde_json::Value::Array(Vec::new()))
+        .as_array_mut()
+        .ok_or_else(|| anyhow::anyhow!("skills-config.json's 'disabled' must be an array"))?;
+    list.extend(added.iter().cloned().map(serde_json::Value::String));
+    let mut staged = tempfile::NamedTempFile::new_in(&parent)?;
+    std::io::Write::write_all(
+        &mut staged,
+        serde_json::to_string_pretty(&config)?.as_bytes(),
+    )?;
+    staged
+        .persist(&path)
+        .map_err(|error| anyhow::anyhow!("replacing {}: {}", path.display(), error.error))?;
+    Ok(added)
 }
 
 pub fn reset_to_builtin_skills() -> Result<usize> {
@@ -746,6 +979,18 @@ enum ImportPlanSelection {
 pub struct SkillMetadata {
     pub name: String,
     pub description: String,
+    /// A redirect stub's target: `metadata.status: "superseded_by:<target>"`
+    /// with the prefix stripped (J-P06, `skill_redirects`). Filled in by
+    /// [`SkillsClient::parse_frontmatter`] from the frontmatter's `metadata`
+    /// block rather than deserialized here, so a `metadata` block of any other
+    /// shape can never make a skill unparseable.
+    #[serde(skip)]
+    pub superseded_by: Option<String>,
+    /// A retired skill's stub: `metadata.status: "retired"`. Its body is a
+    /// notice naming what to use instead, and it never resolves to another
+    /// skill. Filled in the same way as `superseded_by`.
+    #[serde(skip)]
+    pub retired: bool,
 }
 
 /// A discovered skill. Pub (with pub fields) because the CLI's
@@ -762,6 +1007,14 @@ pub struct Skill {
     /// [`SkillsClient::get_default_skill_directories`]). Lets callers show
     /// where a skill comes from and derive its root-relative slug.
     pub source_root: PathBuf,
+}
+
+impl Skill {
+    /// A redirect stub or a retired skill's stub (`skill_redirects`): a
+    /// pointer the catalog generated, not content of its own.
+    pub fn is_stub(&self) -> bool {
+        self.metadata.superseded_by.is_some() || self.metadata.retired
+    }
 }
 
 /// One row of the `searchSkills` page.
@@ -1177,8 +1430,15 @@ impl SkillsClient {
         }
 
         let yaml_content = parts[1].trim();
-        let metadata: SkillMetadata = serde_yaml::from_str(yaml_content)
+        let mut metadata: SkillMetadata = serde_yaml::from_str(yaml_content)
             .or_else(|_| Self::parse_frontmatter_metadata_fallback(yaml_content))?;
+        match crate::agents::skill_redirects::stub_status_in_frontmatter(yaml_content) {
+            Some(crate::agents::skill_redirects::StubStatus::SupersededBy(target)) => {
+                metadata.superseded_by = Some(target);
+            }
+            Some(crate::agents::skill_redirects::StubStatus::Retired) => metadata.retired = true,
+            None => {}
+        }
 
         let body = parts[2..].join("---").trim().to_string();
 
@@ -1199,9 +1459,12 @@ impl SkillsClient {
         }
 
         match (name, description) {
-            (Some(name), Some(description)) if !name.is_empty() => {
-                Ok(SkillMetadata { name, description })
-            }
+            (Some(name), Some(description)) if !name.is_empty() => Ok(SkillMetadata {
+                name,
+                description,
+                superseded_by: None,
+                retired: false,
+            }),
             _ => Err(anyhow::anyhow!("Invalid frontmatter format")),
         }
     }
@@ -1267,6 +1530,28 @@ impl SkillsClient {
     /// an earlier one's. Files whose frontmatter fails to parse are skipped
     /// (never loaded), while a modern package fails closed as a unit.
     /// Pub so the CLI lists exactly what this extension will load.
+    /// Add one discovered skill, keyed by its frontmatter name.
+    ///
+    /// A later root still overrides an earlier one, except that a live skill
+    /// is never replaced by a stub of the same name (`skill_redirects`), and a
+    /// stub always gives way to a live skill: otherwise which one served the
+    /// name, and so what every choice saved for it meant, was decided by
+    /// `read_dir` order (J-P06).
+    fn insert_discovered(skills: &mut HashMap<String, Skill>, skill: Skill) {
+        if let Some(existing) = skills.get(&skill.metadata.name) {
+            if !existing.is_stub() && skill.is_stub() {
+                tracing::warn!(
+                    "skill '{}' at {} is a redirect stub, and a skill of that name is also                      installed at {}; the stub is ignored",
+                    skill.metadata.name,
+                    skill.directory.display(),
+                    existing.directory.display()
+                );
+                return;
+            }
+        }
+        skills.insert(skill.metadata.name.clone(), skill);
+    }
+
     pub fn discover_skills_in_directories(directories: &[PathBuf]) -> HashMap<String, Skill> {
         let mut skills = HashMap::new();
 
@@ -1287,7 +1572,7 @@ impl SkillsClient {
                             Self::recorded_package_skills(&path, bundle_name, dir)
                         {
                             for skill in package_skills {
-                                skills.insert(skill.metadata.name.clone(), skill);
+                                Self::insert_discovered(&mut skills, skill);
                             }
                             continue;
                         }
@@ -1299,7 +1584,7 @@ impl SkillsClient {
                         // point. A modern record above is authoritative even
                         // when an undeclared root SKILL.md also exists.
                         if let Ok(skill) = Self::parse_skill_file(&skill_file, None, dir) {
-                            skills.insert(skill.metadata.name.clone(), skill);
+                            Self::insert_discovered(&mut skills, skill);
                         }
                     } else {
                         // Hand-assembled bundles keep the legacy exact
@@ -1319,7 +1604,7 @@ impl SkillsClient {
                                         Some(bundle_name.clone()),
                                         dir,
                                     ) {
-                                        skills.insert(skill.metadata.name.clone(), skill);
+                                        Self::insert_discovered(&mut skills, skill);
                                     }
                                 }
                             }
@@ -1348,61 +1633,58 @@ impl SkillsClient {
         instructions_for_operations(&all)
     }
 
-    /// The composed disabled test for the session this client serves: the
-    /// machine-wide file (`skills-config.json`, which contains skill names AND
-    /// bundle names) composed with the session override (`workspace_skills`).
-    /// Never writes anything.
+    /// Is this skill on, under `composition`?
     ///
-    /// ⚠ **Delegates to [`skill_catalog::compose_state`]** rather than
+    /// ⚠ **Delegates to [`skill_catalog::Composition::state`]** rather than
     /// restating the precedence. This function used to hold its own copy, and
     /// that copy knew only about skill names — so a per-chat toggle of a
     /// *bundle* wrote a name this test never matched, and changed nothing.
-    /// One rule, two readers.
+    /// One rule, two readers, and the composition also carries choices saved
+    /// under a superseded name to its replacement (J-P06).
     ///
-    /// `hidden_contexts` is passed empty here, because this is the LOAD test: a
-    /// Context switched off in Settings stays loadable by exact name (see
-    /// [`hidden_contexts_in`]). The list the model browses is
-    /// [`Self::is_listed_for_session`], which passes the hidden set.
+    /// Which question it answers is decided by how `composition` was built:
+    /// [`Self::load_composition`] passes no hidden Contexts, because a Context
+    /// switched off in Settings stays loadable by exact name (see
+    /// [`hidden_contexts_in`]); [`Self::list_composition`] passes them, for the
+    /// list the model browses. That rule tests a skill's BUNDLE as well as its
+    /// own name, because a Context row may stand for a whole bundle (see
+    /// [`context_ids`]) and a member carries its own `name:`.
     fn is_skill_enabled_for_session(
         name: &str,
         skill: &Skill,
-        machine_disabled: &std::collections::HashSet<String>,
-        over: &crate::agents::session_skills::SessionSkillOverride,
+        composition: &skill_catalog::Composition,
     ) -> bool {
-        skill_catalog::compose_state(
-            name,
-            skill.bundle_name.as_deref(),
-            machine_disabled,
-            &std::collections::HashSet::new(),
-            over,
-        )
-        .effective
+        composition
+            .state(name, skill.bundle_name.as_deref())
+            .effective
     }
 
-    /// Is this skill in the list the model browses, in this session?
-    ///
-    /// [`skill_catalog::compose_state`] with the Contexts switched off in
-    /// Settings, so this list and the interface's switches read one rule: a
-    /// per-chat choice first (a per-chat `add` puts back a Context switched off
-    /// in Settings, owner ruling 2026-11-13), then the machine-wide answer.
-    /// That rule tests a skill's BUNDLE as well as its own name, because a
-    /// Context row may stand for a whole bundle (see [`context_ids`]) and a
-    /// member carries its own `name:`.
-    fn is_listed_for_session(
-        name: &str,
-        skill: &Skill,
-        machine_disabled: &std::collections::HashSet<String>,
-        hidden_contexts: &std::collections::HashSet<String>,
+    /// The composition the LOAD test reads: no hidden Contexts.
+    fn load_composition(
+        skills: &HashMap<String, Skill>,
         over: &crate::agents::session_skills::SessionSkillOverride,
-    ) -> bool {
-        skill_catalog::compose_state(
-            name,
-            skill.bundle_name.as_deref(),
-            machine_disabled,
-            hidden_contexts,
+    ) -> skill_catalog::Composition {
+        skill_catalog::Composition::new(
+            skills,
+            &Self::get_disabled_skills(),
+            std::collections::HashSet::new(),
             over,
         )
-        .effective
+    }
+
+    /// The composition the model's list reads: the Contexts switched off in
+    /// Settings are hidden (a per-chat `add` still puts one back, owner ruling
+    /// 2026-11-13).
+    fn list_composition(
+        skills: &HashMap<String, Skill>,
+        over: &crate::agents::session_skills::SessionSkillOverride,
+    ) -> skill_catalog::Composition {
+        skill_catalog::Composition::new(
+            skills,
+            &Self::get_disabled_skills(),
+            hidden_contexts(),
+            over,
+        )
     }
 
     /// The catalog as one session sees it. `over` is always the caller's — read
@@ -1421,13 +1703,10 @@ impl SkillsClient {
         skills: &'a HashMap<String, Skill>,
         over: &crate::agents::session_skills::SessionSkillOverride,
     ) -> Vec<(&'a String, &'a Skill)> {
-        let disabled = Self::get_disabled_skills();
-        let hidden_contexts = hidden_contexts();
+        let composition = Self::list_composition(skills, over);
         let mut skill_list: Vec<_> = skills
             .iter()
-            .filter(|(name, skill)| {
-                Self::is_listed_for_session(name, skill, &disabled, &hidden_contexts, over)
-            })
+            .filter(|(name, skill)| Self::is_skill_enabled_for_session(name, skill, &composition))
             .collect();
         skill_list.sort_by_key(|(name, _)| *name);
         skill_list
@@ -2251,26 +2530,60 @@ impl SkillsClient {
         // read from the live catalog here, so a package installed earlier in
         // THIS conversation is loadable in it (#113 root cause 3).
         let skills = self.skills.skills();
-        let disabled = Self::get_disabled_skills();
+        let composition = Self::load_composition(&skills, over);
+
+        // J-P06: an old name loads what replaced it, behind one line saying
+        // so, and the replacement's own switch decides. A stub whose
+        // replacement is a whole bundle (whose skills the line names, since
+        // this loads skills), or is not installed, is loaded as the pointer it
+        // is, with the same line naming where its content went. A retired
+        // stub is loaded as the notice it is, behind a line saying so.
+        let (requested, notice) = match composition.redirects().get(skill_name) {
+            Some(redirect) => {
+                let loads = match &redirect.replacement {
+                    Some(replacement) if replacement.kind == ReplacementKind::Skill => {
+                        replacement.name.clone()
+                    }
+                    _ => skill_name.to_string(),
+                };
+                (loads, Some(redirect.notice()))
+            }
+            None if skills
+                .get(skill_name)
+                .is_some_and(|skill| skill.metadata.retired) =>
+            {
+                (
+                    skill_name.to_string(),
+                    Some(crate::agents::skill_redirects::retired_notice(skill_name)),
+                )
+            }
+            None => (skill_name.to_string(), None),
+        };
+        let skill_name = requested.as_str();
+        let lead = notice
+            .as_deref()
+            .map(|notice| format!("{notice} "))
+            .unwrap_or_default();
+
         if let Some(skill) = skills.get(skill_name) {
-            if !Self::is_skill_enabled_for_session(skill_name, skill, &disabled, over) {
+            if !Self::is_skill_enabled_for_session(skill_name, skill, &composition) {
                 // ⚠ Name the control that can actually clear this. The block
                 // may be a per-chat revocation in `workspace_skills/v1`, which
                 // Skills settings cannot see — sending the model there produced
                 // a loop: told the skill was usable, refused, then routed to a
                 // switch that would not move.
-                let session_scoped = !matches!(
-                    over.resolve(skill_name, skill.bundle_name.as_deref()),
-                    crate::agents::session_skills::OverrideMatch::None
-                );
+                let session_scoped = composition
+                    .state(skill_name, skill.bundle_name.as_deref())
+                    .session
+                    != skill_catalog::SessionState::Default;
                 return Err(if session_scoped {
                     format!(
-                        "Skill '{skill_name}' is switched off for this conversation. \
+                        "{lead}Skill '{skill_name}' is switched off for this conversation. \
                          Turn it back on with setSkillEnabled {{ \"name\": \"{skill_name}\", \"enabled\": true }}."
                     )
                 } else {
                     format!(
-                        "Skill '{skill_name}' is disabled machine-wide. Turn it on for this \
+                        "{lead}Skill '{skill_name}' is disabled machine-wide. Turn it on for this \
                          conversation with setSkillEnabled {{ \"name\": \"{skill_name}\", \"enabled\": true }}, \
                          or for every conversation in Biorouter's Skills settings."
                     )
@@ -2282,7 +2595,11 @@ impl SkillsClient {
             .get(skill_name)
             .ok_or_else(|| format!("Skill '{}' not found", skill_name))?;
 
-        let mut response = format!("# Skill: {}\n\n{}\n\n", skill.metadata.name, skill.body);
+        let mut response = format!("# Skill: {}\n\n", skill.metadata.name);
+        if let Some(notice) = &notice {
+            response.push_str(&format!("{notice}\n\n"));
+        }
+        response.push_str(&format!("{}\n\n", skill.body));
 
         if let Some(bundle) = skill.bundle_name.as_deref() {
             let package_root = skill.source_root.join(bundle);
@@ -2692,18 +3009,33 @@ impl SkillsClient {
         // of them.
         let mut deleted_names: Vec<String> = Vec::new();
         for (target, skills) in planned {
-            match crate::agents::skill_package::remove(&target, &root) {
-                Ok(package) => {
+            // J-P06: a redirect stub in the package is the only record that a
+            // choice saved for its old name decides the replacement, so that
+            // choice is pinned onto the replacement first, in every chat.
+            let before = self.skills.skills();
+            match crate::agents::skill_package::remove_keeping_choices(
+                &target,
+                &root,
+                &before,
+                &self.context.session_manager,
+            )
+            .await
+            {
+                Ok((package, kept)) => {
                     deleted_names.push(target.clone());
                     deleted_names.extend(skills.iter().cloned());
                     CatalogEvents::global()
                         .publish_skill_package_removed(&skills, Some(session_id.to_string()));
-                    results.push(serde_json::json!({
+                    let mut result = serde_json::json!({
                         "name": target,
                         "status": "removed",
                         "package": package,
                         "skills": skills,
-                    }));
+                    });
+                    if kept != Default::default() {
+                        result["keptChoices"] = serde_json::json!(kept);
+                    }
+                    results.push(result);
                 }
                 Err(error) => {
                     all_removed = false;
@@ -2790,13 +3122,25 @@ impl SkillsClient {
         };
         let params: SessionSkillParams = Self::parse_tool_args(arguments)?;
         let enable = params.enabled;
-        let name = params.name.trim();
-        if name.is_empty() {
+        let requested = params.name.trim();
+        if requested.is_empty() {
             return Err("Missing required parameter: name".to_string());
         }
-        let members = self
+        // J-P06: a switch named by an old name is saved under its installed
+        // replacement, which is where its content now is.
+        let redirects =
+            crate::agents::skill_redirects::Redirects::from_skills(&self.skills.skills());
+        let (stored, notice) = redirects.name_for_write(requested);
+        let name = stored.as_str();
+        let mut members = self
             .session_target_members(name)
             .ok_or_else(|| format!("Skill or bundle '{name}' is not installed"))?;
+        // The old names that resolve here move with it.
+        for source in redirects.sources_of(name) {
+            if !members.iter().any(|member| member == source) {
+                members.push(source.to_string());
+            }
+        }
 
         // A per-chat grant DOES lift a Context switched off in Settings now
         // (`skill_catalog::compose_state`, owner ruling 2026-11-13): this chat's
@@ -2844,16 +3188,18 @@ impl SkillsClient {
             );
         }
 
-        Ok(vec![Content::text(
-            serde_json::json!({
-                "status": if enable { "loaded" } else { "unloaded" },
-                "target": name,
-                "affectedSkills": members,
-                "sessionId": session_id,
-                "override": after,
-            })
-            .to_string(),
-        )])
+        let mut answer = serde_json::json!({
+            "status": if enable { "loaded" } else { "unloaded" },
+            "target": name,
+            "affectedSkills": members,
+            "sessionId": session_id,
+            "override": after,
+        });
+        if let Some(notice) = notice {
+            answer["requested"] = serde_json::json!(requested);
+            answer["notice"] = serde_json::json!(notice);
+        }
+        Ok(vec![Content::text(answer.to_string())])
     }
 
     fn tool_input_schema<T: JsonSchema>() -> JsonObject {
@@ -3229,7 +3575,13 @@ impl McpClientTrait for SkillsClient {
         let view = skill_catalog::current().view(&over);
         let mut on = Vec::new();
         let mut off = Vec::new();
-        for skill in view.skills {
+        // An old name whose replacement is installed shows that replacement's
+        // state, so it would only repeat it.
+        for skill in view
+            .skills
+            .into_iter()
+            .filter(|skill| skill.replacement.is_none())
+        {
             match skill.state.session {
                 skill_catalog::SessionState::Added if skill.state.effective => on.push(skill.name),
                 skill_catalog::SessionState::Removed => off.push(skill.name),
@@ -4838,6 +5190,8 @@ Working dir biorouter content
             metadata: SkillMetadata {
                 name: name.to_string(),
                 description: format!("{name} fixture"),
+                superseded_by: None,
+                retired: false,
             },
             body: String::new(),
             directory: root.join(name),
@@ -5691,6 +6045,8 @@ Working dir biorouter content
             metadata: SkillMetadata {
                 name: "gamma".to_string(),
                 description: "bundled fixture".to_string(),
+                superseded_by: None,
+                retired: false,
             },
             body: String::new(),
             directory: temp.path().join("gamma"),
@@ -5703,10 +6059,21 @@ Working dir biorouter content
         let mut machine = std::collections::HashSet::new();
         machine.insert("bundle-x".to_string());
 
+        let skills = HashMap::from([("gamma".to_string(), bundled.clone())]);
+        let enabled = |over: &SessionSkillOverride| {
+            let composition = skill_catalog::Composition::new(
+                &skills,
+                &machine,
+                std::collections::HashSet::new(),
+                over,
+            );
+            SkillsClient::is_skill_enabled_for_session("gamma", &bundled, &composition)
+        };
+
         // Baseline: no override at all.
         let none = SessionSkillOverride::default();
         assert!(
-            !SkillsClient::is_skill_enabled_for_session("gamma", &bundled, &machine, &none),
+            !enabled(&none),
             "baseline: a machine-disabled bundle hides its skills"
         );
 
@@ -5716,7 +6083,7 @@ Working dir biorouter content
             remove: Vec::new(),
         };
         assert!(
-            !SkillsClient::is_skill_enabled_for_session("gamma", &bundled, &machine, &unrelated),
+            !enabled(&unrelated),
             "a session grant for another skill must not re-enable a machine-disabled BUNDLE"
         );
 
@@ -5727,7 +6094,7 @@ Working dir biorouter content
             remove: Vec::new(),
         };
         assert!(
-            SkillsClient::is_skill_enabled_for_session("gamma", &bundled, &machine, &explicit),
+            enabled(&explicit),
             "an explicit session grant of this skill is the documented escape hatch"
         );
     }
@@ -5992,7 +6359,7 @@ Working dir biorouter content
     /// ⚠ Without the bundle arm in `compose_state` this fails in the most
     /// misleading way available: the switch moves, the value is stored, and all
     /// five skills stay in the catalog the model is told about. Asked through
-    /// [`SkillsClient::is_listed_for_session`], the filter
+    /// [`SkillsClient::list_composition`]'s question, the filter
     /// `enabled_skill_entries` applies, rather than a copy of its test.
     #[test]
     fn hiding_the_knowledge_bundle_hides_every_member() {
@@ -6005,13 +6372,11 @@ Working dir biorouter content
             ..fixture_skill(name, temp.path())
         };
         let listed = |name: &str, bundle: Option<&str>| {
-            SkillsClient::is_listed_for_session(
-                name,
-                &in_bundle(name, bundle),
-                &machine,
-                &hidden,
-                &none,
-            )
+            let skill = in_bundle(name, bundle);
+            let skills = HashMap::from([(name.to_string(), skill.clone())]);
+            let composition =
+                skill_catalog::Composition::new(&skills, &machine, hidden.clone(), &none);
+            SkillsClient::is_skill_enabled_for_session(name, &skill, &composition)
         };
         for (name, _) in KNOWLEDGE_SKILLS {
             assert!(
@@ -6355,6 +6720,549 @@ Working dir biorouter content
                 .unwrap_err();
         assert!(error.to_string().contains("disabled"), "{error:#}");
 
+        skill_catalog::invalidate();
+    }
+
+    // -----------------------------------------------------------------------
+    // J-P06: a superseded name resolves to what replaced it.
+    // -----------------------------------------------------------------------
+
+    /// A redirect stub as biorouter-skills writes one (`scripts/lib/stub.mjs`).
+    fn write_redirect_stub(root: &std::path::Path, relative: &str, name: &str, status: &str) {
+        let dir = root.join(relative);
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(
+            dir.join("SKILL.md"),
+            format!(
+                "---\nname: {name}\ndescription: \"Moved: {name} is now part of another skill.\"\n\
+                 license: Apache-2.0\nuser-invocable: true\nmetadata:\n  version: \"1.1.0\"\n  \
+                 status: \"{status}\"\n---\n\n# {name} has moved\n\nPOINTER-BODY\n"
+            ),
+        )
+        .unwrap();
+    }
+
+    fn write_plain_skill(root: &std::path::Path, relative: &str, name: &str, body: &str) {
+        let dir = root.join(relative);
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(
+            dir.join("SKILL.md"),
+            format!("---\nname: {name}\ndescription: {name} fixture\n---\n\n{body}\n"),
+        )
+        .unwrap();
+    }
+
+    /// `viz-old-tracks` merged into `viz-new-tracks`, both in bundle `viz`.
+    fn merged_component_tree(root: &std::path::Path) {
+        write_plain_skill(root, "viz/new-tracks", "viz-new-tracks", "REPLACEMENT-BODY");
+        write_redirect_stub(
+            root,
+            "viz/old-tracks",
+            "viz-old-tracks",
+            "superseded_by:viz/viz-new-tracks",
+        );
+    }
+
+    fn client_over_tree(root: &std::path::Path, sm: Arc<SessionManager>) -> SkillsClient {
+        let mut client = SkillsClient::new(PlatformExtensionContext {
+            extension_manager: None,
+            session_manager: sm,
+        })
+        .unwrap();
+        client.skills = SkillsClient::discover_skills_in_directories(&[root.to_path_buf()]).into();
+        client
+    }
+
+    fn content_text(contents: &[Content]) -> String {
+        contents
+            .iter()
+            .filter_map(|c| c.as_text().map(|t| t.text.clone()))
+            .collect()
+    }
+
+    /// Loading the old name returns the replacement's instructions, behind
+    /// one line that names the move, instead of a pointer the model has to
+    /// follow with a second call.
+    #[tokio::test(flavor = "current_thread")]
+    async fn loading_a_superseded_name_loads_its_replacement_with_a_notice() {
+        let temp = TempDir::new().unwrap();
+        let root = temp.path().join("skills");
+        merged_component_tree(&root);
+        let client = client_over_tree(&root, test_context().session_manager);
+
+        let loaded = client
+            .handle_load_skill(
+                serde_json::json!({"name": "viz-old-tracks"})
+                    .as_object()
+                    .cloned(),
+                &crate::agents::session_skills::SessionSkillOverride::default(),
+            )
+            .await
+            .unwrap();
+        let text = content_text(&loaded);
+        assert!(text.contains("REPLACEMENT-BODY"), "{text}");
+        assert!(!text.contains("POINTER-BODY"), "{text}");
+        assert!(
+            text.contains("'viz-old-tracks' has moved into 'viz-new-tracks'"),
+            "{text}"
+        );
+    }
+
+    /// The replacement's own switch decides: a chat that switched the
+    /// replacement off is refused under the old name too.
+    #[tokio::test(flavor = "current_thread")]
+    async fn loading_a_superseded_name_obeys_the_replacements_switch() {
+        let temp = TempDir::new().unwrap();
+        let root = temp.path().join("skills");
+        merged_component_tree(&root);
+        let client = client_over_tree(&root, test_context().session_manager);
+        let over = crate::agents::session_skills::SessionSkillOverride {
+            add: Vec::new(),
+            remove: vec!["viz-new-tracks".to_string()],
+        };
+
+        let refused = client
+            .handle_load_skill(
+                serde_json::json!({"name": "viz-old-tracks"})
+                    .as_object()
+                    .cloned(),
+                &over,
+            )
+            .await
+            .unwrap_err();
+        assert!(refused.contains("viz-new-tracks"), "{refused}");
+        assert!(refused.contains("switched off"), "{refused}");
+    }
+
+    /// `setSkillEnabled` naming the old name saves the replacement, and says so.
+    #[tokio::test(flavor = "current_thread")]
+    async fn switching_a_superseded_name_saves_its_replacement() {
+        let temp = TempDir::new().unwrap();
+        let root = temp.path().join("skills");
+        merged_component_tree(&root);
+        let sm = Arc::new(SessionManager::new(temp.path().join("sessions")));
+        let session = sm
+            .create_session(
+                temp.path().to_path_buf(),
+                "superseded switch".into(),
+                crate::session::SessionType::User,
+            )
+            .await
+            .unwrap();
+        let client = client_over_tree(&root, sm.clone());
+
+        let answer = client
+            .handle_session_skill_toggle(
+                serde_json::json!({"name": "viz-old-tracks", "enabled": false})
+                    .as_object()
+                    .cloned(),
+                &session.id,
+                &crate::agents::session_skills::SessionSkillOverride::default(),
+                None,
+            )
+            .await
+            .unwrap();
+        let stored = crate::agents::session_skills::for_session(&sm, &session.id)
+            .await
+            .unwrap();
+        assert_eq!(stored.remove, ["viz-new-tracks"]);
+        let text = content_text(&answer);
+        assert!(
+            text.contains("'viz-old-tracks' has moved into 'viz-new-tracks'"),
+            "{text}"
+        );
+    }
+
+    /// A workflow naming the old name inlines the replacement's procedure,
+    /// not the pointer, and with the replacement missing it refuses naming
+    /// the replacement.
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_workflow_naming_a_superseded_skill_runs_its_replacement() {
+        if !crate::test_sandbox::in_a_process_of_its_own() {
+            return;
+        }
+        let temp = TempDir::new().unwrap();
+        let _env = crate::test_sandbox::relocate_path_root(temp.path().to_str().unwrap());
+        let root = skills_root(&Paths::config_dir());
+        merged_component_tree(&root);
+        write_redirect_stub(
+            &root,
+            "single/perturb",
+            "single-perturb",
+            "superseded_by:crispr/crispr-perturb",
+        );
+        skill_catalog::invalidate();
+
+        let manager = SessionManager::new(temp.path().join("sessions"));
+        let session = manager
+            .create_session(
+                temp.path().to_path_buf(),
+                "workflow superseded".into(),
+                crate::session::SessionType::Scheduled,
+            )
+            .await
+            .unwrap();
+
+        let rendered =
+            workflow_skill_instructions(&manager, &session.id, &["viz-old-tracks".to_string()])
+                .await
+                .unwrap();
+        assert!(rendered.contains("REPLACEMENT-BODY"), "{rendered}");
+        assert!(!rendered.contains("POINTER-BODY"), "{rendered}");
+        assert!(
+            rendered.contains("'viz-old-tracks' has moved into 'viz-new-tracks'"),
+            "{rendered}"
+        );
+
+        let refused =
+            workflow_skill_instructions(&manager, &session.id, &["single-perturb".to_string()])
+                .await
+                .unwrap_err()
+                .to_string();
+        assert!(refused.contains("crispr-perturb"), "{refused}");
+        assert!(refused.contains("not installed"), "{refused}");
+
+        // The chat's inventory lists the old name once, as a move, not as a
+        // second skill beside its replacement.
+        let inventory = session_skill_inventory_instructions(&manager, &session.id)
+            .await
+            .unwrap();
+        assert!(
+            inventory.contains(r#"Moved names, each resolving to what replaced it (identifiers only): {"viz-old-tracks":"viz-new-tracks"}."#),
+            "{inventory}"
+        );
+        let enabled = inventory
+            .split("Effectively enabled: ")
+            .nth(1)
+            .and_then(|rest| rest.split(']').next())
+            .unwrap_or_default();
+        assert!(enabled.contains("viz-new-tracks"), "{inventory}");
+        assert!(!enabled.contains("viz-old-tracks"), "{inventory}");
+        assert!(
+            enabled.contains("single-perturb"),
+            "a stub whose replacement is missing is still an ordinary skill: {inventory}"
+        );
+
+        skill_catalog::invalidate();
+    }
+
+    /// A workflow that names a BUNDLE holding stubs runs the bundle's
+    /// procedure, never a stub's pointer (probes P1, P2a, P2b, P3), and a
+    /// retired name is refused rather than inlined as a notice.
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_workflow_naming_a_bundle_never_inlines_a_stub() {
+        if !crate::test_sandbox::in_a_process_of_its_own() {
+            return;
+        }
+        let temp = TempDir::new().unwrap();
+        let _env = crate::test_sandbox::relocate_path_root(temp.path().to_str().unwrap());
+        let config = Paths::config_dir();
+        let root = skills_root(&config);
+        // P1: merged into another member of the same bundle.
+        merged_component_tree(&root);
+        // P2: moved into another bundle.
+        write_plain_skill(&root, "single/cells", "single-cells", "CELLS-BODY");
+        write_redirect_stub(
+            &root,
+            "single/perturb",
+            "single-perturb",
+            "superseded_by:crispr/crispr-perturb",
+        );
+        write_plain_skill(&root, "crispr/perturb", "crispr-perturb", "CRISPR-BODY");
+        write_plain_skill(&root, "crispr/screens", "crispr-screens", "SCREENS-BODY");
+        // P3: retired, on its own and inside a bundle.
+        write_redirect_stub(&root, "theory-old", "theory-old", "retired");
+        write_plain_skill(&root, "lab/live", "lab-live", "LAB-BODY");
+        write_redirect_stub(&root, "lab/gone", "lab-gone", "retired");
+        skill_catalog::invalidate();
+
+        let manager = SessionManager::new(temp.path().join("sessions"));
+        let session = manager
+            .create_session(
+                temp.path().to_path_buf(),
+                "workflow bundles".into(),
+                crate::session::SessionType::Scheduled,
+            )
+            .await
+            .unwrap();
+        let run = |names: &[&str]| {
+            let names: Vec<String> = names.iter().map(|n| n.to_string()).collect();
+            let manager = &manager;
+            let id = session.id.clone();
+            async move { workflow_skill_instructions(manager, &id, &names).await }
+        };
+
+        let p1 = run(&["viz"]).await.unwrap();
+        assert!(p1.contains("REPLACEMENT-BODY"), "{p1}");
+        assert!(
+            !p1.contains("POINTER-BODY"),
+            "the stub is not procedure: {p1}"
+        );
+        assert!(
+            !p1.contains("Required workflow skill: viz-old-tracks"),
+            "{p1}"
+        );
+
+        let p2b = run(&["single"]).await.unwrap();
+        assert!(p2b.contains("CELLS-BODY"), "{p2b}");
+        assert!(p2b.contains("CRISPR-BODY"), "the moved content runs: {p2b}");
+        assert!(!p2b.contains("POINTER-BODY"), "{p2b}");
+        assert!(
+            !p2b.contains("SCREENS-BODY"),
+            "only the moved component, not its new bundle: {p2b}"
+        );
+        assert!(
+            p2b.contains("'single-perturb' has moved into 'crispr-perturb'"),
+            "{p2b}"
+        );
+
+        // P2a: the moved content is switched off machine-wide. The refusal
+        // names the skill that is off and why it is required.
+        fs::write(
+            config.join("skills-config.json"),
+            r#"{"disabled":["crispr"]}"#,
+        )
+        .unwrap();
+        let p2a = run(&["single"]).await.unwrap_err().to_string();
+        assert!(
+            p2a.contains("'crispr-perturb' in place of an old name"),
+            "{p2a}"
+        );
+        assert!(
+            p2a.contains("'single-perturb' has moved into 'crispr-perturb'"),
+            "{p2a}"
+        );
+        // The same refusal names the move for an old name named directly.
+        fs::write(
+            config.join("skills-config.json"),
+            r#"{"disabled":["viz-new-tracks"]}"#,
+        )
+        .unwrap();
+        let direct = run(&["viz-old-tracks"]).await.unwrap_err().to_string();
+        assert!(
+            direct.contains("'viz-old-tracks' has moved into 'viz-new-tracks'"),
+            "{direct}"
+        );
+        fs::remove_file(config.join("skills-config.json")).unwrap();
+
+        let p3 = run(&["theory-old"]).await.unwrap_err().to_string();
+        assert!(p3.contains("has been retired"), "{p3}");
+        assert!(
+            p3.contains("Moved: theory-old is now part of another skill."),
+            "the refusal quotes the stub's own notice: {p3}"
+        );
+
+        let lab = run(&["lab"]).await.unwrap();
+        assert!(lab.contains("LAB-BODY"), "{lab}");
+        assert!(!lab.contains("POINTER-BODY"), "{lab}");
+        assert!(
+            lab.contains("'lab-gone' in the 'lab' bundle has been retired, so it is left out."),
+            "{lab}"
+        );
+
+        skill_catalog::invalidate();
+    }
+
+    /// A component moved to a bundle that is not installed: a workflow naming
+    /// the old bundle is refused naming the bundle to add, exactly as one
+    /// naming the old component is.
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_workflow_naming_a_bundle_whose_component_moved_away_names_where_it_went() {
+        if !crate::test_sandbox::in_a_process_of_its_own() {
+            return;
+        }
+        let temp = TempDir::new().unwrap();
+        let _env = crate::test_sandbox::relocate_path_root(temp.path().to_str().unwrap());
+        let root = skills_root(&Paths::config_dir());
+        write_plain_skill(&root, "single/cells", "single-cells", "CELLS-BODY");
+        write_redirect_stub(
+            &root,
+            "single/perturb",
+            "single-perturb",
+            "superseded_by:crispr/crispr-perturb",
+        );
+        skill_catalog::invalidate();
+        let manager = SessionManager::new(temp.path().join("sessions"));
+        let session = manager
+            .create_session(
+                temp.path().to_path_buf(),
+                "workflow missing".into(),
+                crate::session::SessionType::Scheduled,
+            )
+            .await
+            .unwrap();
+
+        let refused = workflow_skill_instructions(&manager, &session.id, &["single".to_string()])
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(refused.contains("skill bundle 'single'"), "{refused}");
+        assert!(refused.contains("add the 'crispr' bundle"), "{refused}");
+        skill_catalog::invalidate();
+    }
+
+    /// A whole-bundle target: `loadSkill` loads skills, so it hands back the
+    /// pointer and names the bundle's skills rather than claiming the bundle
+    /// was loaded; a retired stub says it is retired.
+    #[tokio::test(flavor = "current_thread")]
+    async fn loading_a_name_moved_into_a_bundle_names_its_skills() {
+        let temp = TempDir::new().unwrap();
+        let root = temp.path().join("skills");
+        write_plain_skill(&root, "systems/flux", "systems-flux", "FLUX");
+        write_plain_skill(&root, "systems/net", "systems-net", "NET");
+        write_redirect_stub(&root, "cobra-old", "cobra-old", "superseded_by:systems");
+        write_redirect_stub(&root, "theory-old", "theory-old", "retired");
+        let client = client_over_tree(&root, test_context().session_manager);
+        let none = crate::agents::session_skills::SessionSkillOverride::default();
+        let load = |name: &str| {
+            client.handle_load_skill(
+                serde_json::json!({ "name": name }).as_object().cloned(),
+                &none,
+            )
+        };
+
+        let text = content_text(&load("cobra-old").await.unwrap());
+        assert!(
+            text.contains("whose skills are used in its place: 'systems-flux', 'systems-net'."),
+            "{text}"
+        );
+        let text = content_text(&load("theory-old").await.unwrap());
+        assert!(text.contains("'theory-old' has been retired"), "{text}");
+        assert!(text.contains("POINTER-BODY"), "{text}");
+    }
+
+    /// A live skill and a stub of the same name: the live one serves the name
+    /// in either root order, so the stub can never redirect a name that has
+    /// live content.
+    #[test]
+    fn a_live_skill_beats_a_stub_of_the_same_name_in_either_order() {
+        let temp = TempDir::new().unwrap();
+        let live = temp.path().join("live");
+        let stubs = temp.path().join("stubs");
+        write_plain_skill(&live, "taste-skill", "taste-skill", "LIVE-BODY");
+        write_plain_skill(&live, "frontend-design", "frontend-design", "FRONTEND");
+        write_redirect_stub(
+            &stubs,
+            "taste-skill",
+            "taste-skill",
+            "superseded_by:frontend-design",
+        );
+        for roots in [
+            vec![live.clone(), stubs.clone()],
+            vec![stubs.clone(), live.clone()],
+        ] {
+            let skills = SkillsClient::discover_skills_in_directories(&roots);
+            let skill = &skills["taste-skill"];
+            assert_eq!(skill.body, "LIVE-BODY", "{roots:?}");
+            assert!(
+                crate::agents::skill_redirects::Redirects::from_skills(&skills)
+                    .get("taste-skill")
+                    .is_none(),
+                "{roots:?}"
+            );
+        }
+    }
+
+    /// Probe P5 at the shared door every removal uses: removing a stub pins
+    /// what it carried in every chat and machine-wide.
+    #[tokio::test(flavor = "current_thread")]
+    async fn removing_a_stub_keeps_every_chats_choice_for_its_old_name() {
+        if !crate::test_sandbox::in_a_process_of_its_own() {
+            return;
+        }
+        let temp = TempDir::new().unwrap();
+        let _env = crate::test_sandbox::relocate_path_root(temp.path().to_str().unwrap());
+        let config = Paths::config_dir();
+        let root = skills_root(&config);
+        write_plain_skill(&root, "frontend-design", "frontend-design", "FRONTEND");
+        write_redirect_stub(
+            &root,
+            "taste-skill",
+            "taste-skill",
+            "superseded_by:frontend-design",
+        );
+        fs::create_dir_all(&config).unwrap();
+        fs::write(
+            config.join("skills-config.json"),
+            r#"{"disabled":["taste-skill"],"other":1}"#,
+        )
+        .unwrap();
+        skill_catalog::invalidate();
+
+        let manager = SessionManager::new(temp.path().join("sessions"));
+        let mut chats = Vec::new();
+        for (add, remove) in [(vec![], vec!["taste-skill"]), (vec!["taste-skill"], vec![])] {
+            let session = manager
+                .create_session(
+                    temp.path().to_path_buf(),
+                    "stub removal".into(),
+                    crate::session::SessionType::User,
+                )
+                .await
+                .unwrap();
+            let add: Vec<String> = add.into_iter().map(str::to_string).collect();
+            let remove: Vec<String> = remove.into_iter().map(str::to_string).collect();
+            crate::agents::session_skills::apply(&manager, &session.id, &add, &remove)
+                .await
+                .unwrap();
+            chats.push(session.id);
+        }
+        let untouched = manager
+            .create_session(
+                temp.path().to_path_buf(),
+                "no opinion".into(),
+                crate::session::SessionType::User,
+            )
+            .await
+            .unwrap();
+
+        let before = skill_catalog::current().skills();
+        let (_, kept) = crate::agents::skill_package::remove_keeping_choices(
+            "taste-skill",
+            &root,
+            &before,
+            &manager,
+        )
+        .await
+        .unwrap();
+        assert!(!root.join("taste-skill").exists());
+        assert_eq!(kept.sessions, 2, "{kept:?}");
+        assert_eq!(kept.machine_disabled, ["frontend-design"]);
+
+        let off = crate::agents::session_skills::for_session(&manager, &chats[0])
+            .await
+            .unwrap();
+        assert!(
+            off.remove.contains(&"frontend-design".to_string()),
+            "{off:?}"
+        );
+        let on = crate::agents::session_skills::for_session(&manager, &chats[1])
+            .await
+            .unwrap();
+        assert!(on.add.contains(&"frontend-design".to_string()), "{on:?}");
+        assert_eq!(
+            crate::agents::session_skills::for_session(&manager, &untouched.id)
+                .await
+                .unwrap(),
+            Default::default()
+        );
+        let config_now: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(config.join("skills-config.json")).unwrap())
+                .unwrap();
+        assert_eq!(
+            config_now,
+            serde_json::json!({"disabled": ["taste-skill", "frontend-design"], "other": 1})
+        );
+
+        // And the composed answer is what it was before the stub went.
+        let catalog = skill_catalog::current();
+        let view = catalog.view(&off);
+        let row = view
+            .skills
+            .iter()
+            .find(|skill| skill.name == "frontend-design")
+            .unwrap();
+        assert!(!row.state.effective);
         skill_catalog::invalidate();
     }
 
@@ -7061,6 +7969,9 @@ mod installed_usability_tests {
             bundle: bundle.map(str::to_string),
             builtin: false,
             state,
+            superseded_by: None,
+            replacement: None,
+            carried: Vec::new(),
         }
     }
 

@@ -3939,10 +3939,18 @@ impl WorkspaceClient {
             );
         }
 
-        applied.extend(
-            self.apply_session_skills(&args.session_id, &args.add_skills, &args.remove_skills)
-                .await?,
-        );
+        let (skill_changes, skill_notices) = self
+            .apply_session_skills(&args.session_id, &args.add_skills, &args.remove_skills)
+            .await?;
+        applied.extend(skill_changes);
+        // Whole sentences, so they follow the comma-joined list rather than
+        // being joined into it.
+        let (skill_notices, toast_skill_notices) = if skill_notices.is_empty() {
+            (String::new(), String::new())
+        } else {
+            let joined = skill_notices.join(" ");
+            (format!(" {joined}"), format!(". {joined}"))
+        };
 
         // Model/provider — mirrors /agent/update_provider, which also persists
         // provider_name + model_config onto the session row.
@@ -3975,7 +3983,7 @@ impl WorkspaceClient {
         self.notify_target(
             &args.session_id,
             format!(
-                "Tools changed by another agent ({caller_session_id}): {}",
+                "Tools changed by another agent ({caller_session_id}): {}{toast_skill_notices}",
                 applied.join(", ")
             ),
         )
@@ -3999,7 +4007,7 @@ impl WorkspaceClient {
             ""
         };
         Ok(vec![Content::text(format!(
-            "Applied to session {}: {}.{next_turn_note}",
+            "Applied to session {}: {}.{skill_notices}{next_turn_note}",
             args.session_id,
             applied.join(", ")
         ))])
@@ -4741,31 +4749,44 @@ impl WorkspaceClient {
     }
 
     /// Skills — SESSION-SCOPED (Task 11). Never the machine-wide file. Returns
-    /// the `applied` labels for the skills that changed.
+    /// the `applied` labels for the skills that changed, and one sentence per
+    /// old name the call used (J-P06), which the caller adds after the list.
     async fn apply_session_skills(
         &self,
         session_id: &str,
         add_skills: &[String],
         remove_skills: &[String],
-    ) -> Result<Vec<String>, String> {
+    ) -> Result<(Vec<String>, Vec<String>), String> {
         let mut applied = Vec::new();
+        let mut notices = Vec::new();
         if !add_skills.is_empty() || !remove_skills.is_empty() {
+            // J-P06: a superseded name is saved under its installed
+            // replacement, and the notice says so, which is what the target
+            // tab's toast shows the person.
+            let catalog = crate::agents::skill_catalog::current();
+            let (add, add_notices) = catalog.names_for_write(add_skills);
+            let (remove, remove_notices) = catalog.names_for_write(remove_skills);
             crate::agents::session_skills::apply(
                 &self.context.session_manager,
                 session_id,
-                add_skills,
-                remove_skills,
+                &add,
+                &remove,
             )
             .await
             .map_err(|e| format!("failed to scope skills: {e}"))?;
-            for name in add_skills {
+            for name in &add {
                 applied.push(format!("+skill:{name}"));
             }
-            for name in remove_skills {
+            for name in &remove {
                 applied.push(format!("-skill:{name}"));
             }
+            for notice in add_notices.into_iter().chain(remove_notices) {
+                if !notices.contains(&notice) {
+                    notices.push(notice);
+                }
+            }
         }
-        Ok(applied)
+        Ok((applied, notices))
     }
 
     /// Knowledge bases (plural — issue #45), with their write target. Returns
@@ -14690,6 +14711,79 @@ pub(crate) mod tests {
         .await;
         let text = text_of(&result);
         assert!(text.contains("+skill:single-cell"), "got: {text}");
+    }
+
+    /// J-P06: an old skill name is saved under its installed replacement, and
+    /// the move is said, after the change list, both in the result and in the
+    /// toast the target tab shows.
+    #[tokio::test]
+    #[serial_test::serial(workspace_services)]
+    async fn set_tools_saves_a_superseded_skill_under_its_replacement_and_says_so() {
+        if !crate::test_sandbox::in_a_process_of_its_own() {
+            return;
+        }
+        let temp = tempfile::TempDir::new().unwrap();
+        let _env = crate::test_sandbox::relocate_path_root(temp.path().to_str().unwrap());
+        let root = crate::agents::skills_extension::skills_root(
+            &crate::config::paths::Paths::config_dir(),
+        );
+        for (dir, text) in [
+            (
+                "viz/new-tracks",
+                "---\nname: viz-new-tracks\ndescription: tracks\n---\n\nbody\n",
+            ),
+            (
+                "viz/old-tracks",
+                "---\nname: viz-old-tracks\ndescription: \"Moved\"\nmetadata:\n  status: \
+                 \"superseded_by:viz/viz-new-tracks\"\n---\n\npointer\n",
+            ),
+        ] {
+            std::fs::create_dir_all(root.join(dir)).unwrap();
+            std::fs::write(root.join(dir).join("SKILL.md"), text).unwrap();
+        }
+        crate::agents::skill_catalog::invalidate();
+        let services = FakeServices::with_gui(true).install();
+
+        let c = client();
+        let sm = c.context.session_manager.clone();
+        let target = sm
+            .create_session(
+                std::env::temp_dir(),
+                "moved".into(),
+                crate::session::session_manager::SessionType::User,
+            )
+            .await
+            .unwrap();
+        let result = set_tools(
+            &c,
+            serde_json::json!({ "session_id": target.id, "remove_skills": ["viz-old-tracks"] }),
+        )
+        .await;
+        crate::workspace_services::clear_test_override();
+        let text = text_of(&result);
+        let notice = "'viz-old-tracks' has moved into 'viz-new-tracks', so 'viz-new-tracks' is \
+                      used in its place.";
+        assert_eq!(
+            text,
+            format!(
+                "Applied to session {}: -skill:viz-new-tracks. {notice}",
+                target.id
+            )
+        );
+        let stored = crate::agents::session_skills::for_session(&sm, &target.id)
+            .await
+            .unwrap();
+        assert_eq!(stored.remove, ["viz-new-tracks"]);
+        let toast = services.notify_frames();
+        assert_eq!(toast.len(), 1, "{toast:?}");
+        assert!(
+            toast[0]["message"]
+                .as_str()
+                .unwrap()
+                .ends_with(&format!(": -skill:viz-new-tracks. {notice}")),
+            "{toast:?}"
+        );
+        crate::agents::skill_catalog::invalidate();
     }
 
     // ---- Task 16: workspace_close --------------------------------------

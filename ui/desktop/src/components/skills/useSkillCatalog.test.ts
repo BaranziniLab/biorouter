@@ -3,10 +3,13 @@ import {
   applyOptimistically,
   bundleCatalogEntryKey,
   CATALOG_CHANGED_EVENT,
+  movedChoicesNotice,
   pickerBundles,
+  resolveSkillKeys,
   skillCatalogToggleKey,
   standaloneSkills,
 } from './useSkillCatalog';
+import { SKILLS_COPY } from './copy';
 import type { CatalogBundle, CatalogSkill, CatalogView } from '../../api';
 
 const state = (effective: boolean, machineEnabled = true) => ({
@@ -192,5 +195,48 @@ describe('Context bundles are not picker rows', () => {
       bundles: [],
     };
     expect(standaloneSkills(stray).map((s) => s.name)).toEqual(['solo', 'knowledge-lint']);
+  });
+});
+
+/**
+ * J-P06: `viz-old-tracks` was merged into `viz-new-tracks`; its folder holds a
+ * redirect stub the daemon reports with `replacement`.
+ */
+describe('superseded skill names', () => {
+  const stub = (carried: CatalogSkill['carried'] = []): CatalogSkill => ({
+    ...skill('viz-old-tracks', 'viz'),
+    supersededBy: 'viz/viz-new-tracks',
+    replacement: 'viz-new-tracks',
+    carried,
+  });
+  const moved = (carried?: CatalogSkill['carried']): CatalogView => ({
+    ...view,
+    skills: [...view.skills, skill('viz-new-tracks', 'viz'), stub(carried)],
+  });
+
+  it('saves a switch named by the old name under its replacement', () => {
+    expect(resolveSkillKeys(moved(), ['viz-old-tracks'], false)).toEqual({
+      keys: ['viz-new-tracks'],
+      cleared: [],
+    });
+  });
+
+  /**
+   * The machine-wide trap: `disabled[]` still listing the old name would keep
+   * the replacement off after its own switch was turned on.
+   */
+  it('clears the old names when the replacement is switched on machine-wide', () => {
+    expect(resolveSkillKeys(moved(), ['viz-new-tracks'], true)).toEqual({
+      keys: ['viz-new-tracks'],
+      cleared: ['viz-old-tracks'],
+    });
+    expect(resolveSkillKeys(moved(), ['solo'], true)).toEqual({ keys: ['solo'], cleared: [] });
+  });
+
+  it('says in one line when a saved choice was carried, and only then', () => {
+    expect(movedChoicesNotice(moved())).toBeNull();
+    expect(movedChoicesNotice(moved(['sessionRemoved']))).toBe(
+      SKILLS_COPY.movedChoices([['viz-old-tracks', 'viz-new-tracks']])
+    );
   });
 });

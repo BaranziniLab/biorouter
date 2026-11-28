@@ -1136,6 +1136,7 @@ impl utoipa::Modify for ApiKeySecurity {
         biorouter::agents::skill_catalog::SkillSourceKind,
         biorouter::agents::skill_catalog::SkillState,
         biorouter::agents::skill_catalog::SessionState,
+        biorouter::agents::skill_redirects::CarriedChoice,
         biorouter::agents::types::RetryConfig,
         biorouter::agents::types::SuccessCheck,
         super::routes::agent::UpdateProviderRequest,

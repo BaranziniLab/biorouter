@@ -110,6 +110,11 @@ pub struct SessionSkillsResponse {
     /// per-chat deviation from a machine-wide default without re-deriving it.
     pub session_add: Vec<String>,
     pub session_remove: Vec<String>,
+    /// One sentence per old name the request used: it was saved under what
+    /// replaced it, or its replacement is not installed (J-P06,
+    /// `skill_redirects::Redirect::notice`). Absent when there is none.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub notices: Vec<String>,
 }
 
 async fn override_for(
@@ -202,24 +207,29 @@ pub async fn set_session_skills(
         ));
     }
 
-    let over = session_skills::apply(
-        state.session_manager(),
-        &request.session_id,
-        &request.add,
-        &request.remove,
-    )
-    .await
-    .map_err(|e| {
-        // `apply` reports a missing session as an error rather than a silent
-        // grant, and that case is the caller's mistake, not the daemon's.
-        let missing = format!("{e:#}").contains("not found");
-        let status = if missing {
-            StatusCode::NOT_FOUND
-        } else {
-            StatusCode::INTERNAL_SERVER_ERROR
-        };
-        (status, format!("{e:#}"))
-    })?;
+    // J-P06: a switch named by a superseded name is saved under its installed
+    // replacement, so the old row and the new one move together.
+    let names = skill_catalog::current();
+    let (add, mut notices) = names.names_for_write(&request.add);
+    let (remove, remove_notices) = names.names_for_write(&request.remove);
+    for notice in remove_notices {
+        if !notices.contains(&notice) {
+            notices.push(notice);
+        }
+    }
+    let over = session_skills::apply(state.session_manager(), &request.session_id, &add, &remove)
+        .await
+        .map_err(|e| {
+            // `apply` reports a missing session as an error rather than a silent
+            // grant, and that case is the caller's mistake, not the daemon's.
+            let missing = format!("{e:#}").contains("not found");
+            let status = if missing {
+                StatusCode::NOT_FOUND
+            } else {
+                StatusCode::INTERNAL_SERVER_ERROR
+            };
+            (status, format!("{e:#}"))
+        })?;
 
     // Read the catalog only after the write committed, so what comes back is
     // confirmed state rather than the optimistic answer the caller already has.
@@ -228,6 +238,7 @@ pub async fn set_session_skills(
         catalog: catalog.view(&over),
         session_add: over.add,
         session_remove: over.remove,
+        notices,
     }))
 }
 
@@ -319,7 +330,7 @@ mod tests {
         let src = include_str!("skills.rs");
         let body = crate::routes::body_of(
             src,
-            "pub async fn remove_skill_package(\n    Json(request): Json<RemovePackageRequest>,",
+            "pub async fn remove_skill_package(\n    State(state): State<Arc<AppState>>,",
         );
         assert!(
             body.contains("skill_catalog::roots()"),
@@ -421,18 +432,115 @@ mod tests {
         );
 
         let before = events.revision();
-        let axum::Json(removed) =
-            super::remove_skill_package(axum::Json(super::RemovePackageRequest {
+        let axum::Json(removed) = super::remove_skill_package(
+            axum::extract::State(crate::state::AppState::new().await.unwrap()),
+            axum::Json(super::RemovePackageRequest {
                 id: name.to_string(),
                 source_root: None,
-            }))
-            .await
-            .expect("the removal lands");
+            }),
+        )
+        .await
+        .expect("the removal lands");
         assert_eq!(removed.id, name);
         assert_eq!(
             published_since(before),
             vec![(CatalogChangeReason::Uninstall, CatalogEntryChange::Removed)]
         );
+    }
+
+    /// J-P06 at the HTTP doors: a per-chat switch naming an old skill name is
+    /// saved under its installed replacement and the response says so; and
+    /// removing the stub keeps the choice it was carrying.
+    #[tokio::test]
+    async fn the_routes_save_and_keep_a_superseded_names_choices_under_its_replacement() {
+        if !crate::test_sandbox::in_a_process_of_its_own() {
+            return;
+        }
+        let sandbox = tempfile::tempdir().unwrap();
+        let _env = crate::test_sandbox::relocate_path_root(sandbox.path());
+        let root = biorouter::agents::skill_package::install::install_root();
+        for (dir, text) in [
+            (
+                "frontend-design",
+                "---\nname: frontend-design\ndescription: design\n---\n\nbody\n",
+            ),
+            (
+                "taste-skill",
+                "---\nname: taste-skill\ndescription: \"Moved\"\nmetadata:\n  status: \
+                 \"superseded_by:frontend-design\"\n---\n\npointer\n",
+            ),
+        ] {
+            std::fs::create_dir_all(root.join(dir)).unwrap();
+            std::fs::write(root.join(dir).join("SKILL.md"), text).unwrap();
+        }
+        biorouter::agents::skill_catalog::invalidate();
+
+        let state = crate::state::AppState::new().await.unwrap();
+        let session = state
+            .session_manager()
+            .create_session(
+                sandbox.path().to_path_buf(),
+                "moved".into(),
+                biorouter::session::SessionType::User,
+            )
+            .await
+            .unwrap();
+        let axum::Json(answer) = super::set_session_skills(
+            axum::extract::State(state.clone()),
+            axum::http::HeaderMap::new(),
+            axum::Json(super::SessionSkillsRequest {
+                session_id: session.id.clone(),
+                add: Vec::new(),
+                remove: vec!["taste-skill".to_string()],
+            }),
+        )
+        .await
+        .expect("the switch lands");
+        assert_eq!(answer.session_remove, ["frontend-design"]);
+        assert_eq!(
+            answer.notices,
+            [
+                "'taste-skill' has moved into 'frontend-design', so 'frontend-design' is used in \
+              its place."
+            ]
+        );
+
+        // A choice saved under the old name before the move, then the stub
+        // removed through the route: the replacement stays off.
+        biorouter::agents::session_skills::apply(
+            state.session_manager(),
+            &session.id,
+            &[],
+            &["taste-skill".to_string()],
+        )
+        .await
+        .unwrap();
+        biorouter::agents::session_skills::forget(
+            state.session_manager(),
+            &session.id,
+            &["frontend-design".to_string()],
+        )
+        .await
+        .unwrap();
+        let axum::Json(removed) = super::remove_skill_package(
+            axum::extract::State(state.clone()),
+            axum::Json(super::RemovePackageRequest {
+                id: "taste-skill".to_string(),
+                source_root: None,
+            }),
+        )
+        .await
+        .expect("the removal lands");
+        assert_eq!(removed.id, "taste-skill");
+        let over =
+            biorouter::agents::session_skills::for_session(state.session_manager(), &session.id)
+                .await
+                .unwrap();
+        assert!(
+            over.remove.contains(&"frontend-design".to_string()),
+            "removing the stub switched its replacement back on: {over:?}"
+        );
+        biorouter::agents::skill_catalog::invalidate();
     }
 
     /// `refresh` rescans; `catalog` may reuse the cached snapshot. Swapping
@@ -681,6 +789,7 @@ pub async fn install_skill_package(
     tag = "skills",
 )]
 pub async fn remove_skill_package(
+    State(state): State<Arc<AppState>>,
     Json(request): Json<RemovePackageRequest>,
 ) -> Result<Json<PackageSummary>, (StatusCode, String)> {
     let root = match request.source_root.as_deref() {
@@ -696,8 +805,13 @@ pub async fn remove_skill_package(
                 )
             })?,
     };
-    let removed = skill_package::remove(&request.id, &root)
-        .map_err(|e| (StatusCode::NOT_FOUND, format!("{e:#}")))?;
+    // J-P06: a redirect stub in the package carries choices saved for its old
+    // name; they are pinned onto the replacement before it goes.
+    let before = skill_catalog::current().skills();
+    let (removed, _kept) =
+        skill_package::remove_keeping_choices(&request.id, &root, &before, state.session_manager())
+            .await
+            .map_err(|e| (StatusCode::NOT_FOUND, format!("{e:#}")))?;
     // The package id stands in for its components: consumers refetch on the
     // revision and read nothing else from the event.
     CatalogEvents::global().publish_skill_package_removed(std::slice::from_ref(&removed.id), None);

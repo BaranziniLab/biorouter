@@ -1,6 +1,7 @@
 import * as React from 'react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
+  movedChoicesNotice,
   skillCatalogToggleKey,
   useSkillCatalog,
   type SkillCatalogEntry,
@@ -38,6 +39,12 @@ export interface SkillPicker {
    * section is not drawn (in a chat, until its catalog has answered).
    */
   contexts?: BuiltInContexts;
+  /**
+   * One line when choices saved under a skill's old name now decide the skill
+   * that replaced it (`movedChoicesNotice`). Optional, like `contexts`, so a
+   * picker built by hand need not describe it.
+   */
+  movedNotice?: string | null;
 }
 
 /** The "Built-in contexts" section of the list (owner, 2026-11-13). */
@@ -300,6 +307,7 @@ export function useSkillPicker(sessionId: string | null, { open }: { open: boole
           }
         : null,
     emptyText,
+    movedNotice: movedChoicesNotice(catalog),
     // In a chat, not before its catalog has answered: until then every row
     // would read as missing.
     contexts:
@@ -342,27 +350,39 @@ export function SkillsPanel({
       emptyText={onlyContextsMatch ? null : picker.emptyText}
       inputRef={inputRef}
       trailing={
-        showContexts ? (
-          <PickerDisclosure
-            data-testid="tools-builtin-contexts"
-            label={SKILLS_COPY.contextsLabel}
-            summary={SKILLS_COPY.contextsSummary(contexts.onCount)}
-            open={contexts.expanded}
-            onOpenChange={contexts.setExpanded}
-          >
-            {contexts.rows.map((row) => (
-              <PickerRow
-                key={row.context.id}
-                name={row.context.label}
-                checked={row.checked}
-                disabled={row.unavailable}
-                busy={row.busy}
-                onToggle={() => contexts.toggle(row)}
-                note={row.unavailable ? SKILLS_COPY.contextUnavailable : undefined}
-                description={row.context.description}
-              />
-            ))}
-          </PickerDisclosure>
+        showContexts || picker.movedNotice ? (
+          <>
+            {picker.movedNotice && (
+              <p
+                data-testid="tools-skills-moved-notice"
+                className="px-2 py-1 text-xs text-text-muted"
+              >
+                {picker.movedNotice}
+              </p>
+            )}
+            {showContexts && (
+              <PickerDisclosure
+                data-testid="tools-builtin-contexts"
+                label={SKILLS_COPY.contextsLabel}
+                summary={SKILLS_COPY.contextsSummary(contexts.onCount)}
+                open={contexts.expanded}
+                onOpenChange={contexts.setExpanded}
+              >
+                {contexts.rows.map((row) => (
+                  <PickerRow
+                    key={row.context.id}
+                    name={row.context.label}
+                    checked={row.checked}
+                    disabled={row.unavailable}
+                    busy={row.busy}
+                    onToggle={() => contexts.toggle(row)}
+                    note={row.unavailable ? SKILLS_COPY.contextUnavailable : undefined}
+                    description={row.context.description}
+                  />
+                ))}
+              </PickerDisclosure>
+            )}
+          </>
         ) : undefined
       }
     >

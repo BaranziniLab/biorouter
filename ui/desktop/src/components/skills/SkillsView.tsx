@@ -27,7 +27,12 @@ import BrowseSkillsModal from '../baam/BrowseSkillsModal';
 import { toastSuccess, toastError } from '../../toasts';
 import { removeSkillPackage } from '../../api';
 import type { CatalogBundle, CatalogSkill } from '../../api';
-import { skillCatalogToggleKey, useSkillCatalog, type SkillCatalogEntry } from './useSkillCatalog';
+import {
+  movedChoicesNotice,
+  skillCatalogToggleKey,
+  useSkillCatalog,
+  type SkillCatalogEntry,
+} from './useSkillCatalog';
 import { isBrowseQuery, rankCatalogEntries } from './searchCatalog';
 import { withoutStagingNonce } from './skillUtils';
 import { extensionDisplayName } from '../settings/extensions/extensionDisplayName';
@@ -55,6 +60,7 @@ type Group = {
 
 export default function SkillsView() {
   const catalog = useSkillCatalog(null);
+  const movedNotice = movedChoicesNotice(catalog);
   const { entries, reload, setEnabled } = catalog;
 
   const [isAddModalOpen, setIsAddModalOpen] = useState(false);
@@ -253,6 +259,11 @@ export default function SkillsView() {
               {catalog.error && (
                 <Note tone="danger" role="alert" className="mb-4">
                   {catalog.error}
+                </Note>
+              )}
+              {movedNotice && (
+                <Note tone="neutral" className="mb-4" testId="skills-moved-notice">
+                  {movedNotice}
                 </Note>
               )}
 

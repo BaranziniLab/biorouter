@@ -585,6 +585,11 @@ export type CancelTurnResponse = {
     turn_id?: string | null;
 };
 
+/**
+ * A saved choice under an old name that now decides its replacement.
+ */
+export type CarriedChoice = 'sessionAdded' | 'sessionRemoved' | 'machineDisabled';
+
 export type CarriedPage = {
     destination_path: string;
     /**
@@ -711,12 +716,23 @@ export type CatalogSkill = {
      * The bundle directory this skill sits in, when it is a bundle member.
      */
     bundle?: string | null;
+    /**
+     * Choices saved under this old name that now decide `replacement`: what
+     * the interface's one-line "moved" notice reports.
+     */
+    carried?: Array<CarriedChoice>;
     description: string;
     directory: string;
     /**
      * Frontmatter `name` — the identifier every enablement surface keys on.
      */
     name: string;
+    /**
+     * The installed skill or bundle the stub resolves to here. While it is
+     * set, `state` is that replacement's, so the two rows move together, and
+     * every write naming this skill is saved under the replacement.
+     */
+    replacement?: string | null;
     /**
      * Root-relative logical path, `/`-separated on every platform
      * (`superpowers/brainstorming`). What `biorouter skill list` prints.
@@ -725,6 +741,11 @@ export type CatalogSkill = {
     source: SkillSource;
     sourceRoot: string;
     state: SkillState;
+    /**
+     * This skill is a redirect stub: its `metadata.status` says
+     * `superseded_by:<target>`, and this is the target as written.
+     */
+    supersededBy?: string | null;
 };
 
 export type CatalogSkillChange = {
