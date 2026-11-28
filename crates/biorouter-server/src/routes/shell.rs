@@ -2277,13 +2277,24 @@ fn require_manifest_fields(manifest: &serde_json::Value) -> Result<(), String> {
     Ok(())
 }
 
-async fn install_brxt_bundle(file_path: &Path, extension_name: &str) -> anyhow::Result<PathBuf> {
+/// The folder a bundle the request names `extension_name` installs into. A
+/// renamed extension id installs under the id it has now (`gptragent` as
+/// `gptr`, `biorouter::config::extension_renames`), and every other name keeps
+/// its exact spelling.
+fn install_dir_for(extension_name: &str) -> anyhow::Result<PathBuf> {
     validate_extension_name(extension_name)?;
+    let installed = biorouter::extension_rename::installed_name(extension_name);
+    validate_extension_name(&installed)?;
     let base = extensions_dir();
-    let install_dir = base.join(extension_name);
+    let install_dir = base.join(&installed);
     if !install_dir.starts_with(&base) {
         return Err(anyhow::anyhow!("Invalid extension name."));
     }
+    Ok(install_dir)
+}
+
+async fn install_brxt_bundle(file_path: &Path, extension_name: &str) -> anyhow::Result<PathBuf> {
+    let install_dir = install_dir_for(extension_name)?;
     tokio::fs::create_dir_all(&install_dir).await?;
     let entries = read_archive(file_path).map_err(|e| anyhow::anyhow!(e))?;
     for entry in entries {
@@ -3563,6 +3574,27 @@ mod tests {
                 validate_extension_name(bad).is_err(),
                 "{bad} must be rejected"
             );
+        }
+    }
+
+    /// A bundle under a renamed extension id installs under the id it has now,
+    /// so the folder, and the config entry the page writes beside it, carry
+    /// the current name. Every other name keeps its exact spelling.
+    #[test]
+    fn a_renamed_extension_installs_under_its_current_name() {
+        for requested in ["gptragent", "GptrAgent", "gptr"] {
+            assert_eq!(
+                install_dir_for(requested).unwrap(),
+                extensions_dir().join("gptr"),
+                "{requested}"
+            );
+        }
+        assert_eq!(
+            install_dir_for("CDWAgent").unwrap(),
+            extensions_dir().join("CDWAgent")
+        );
+        for bad in ["", "..", "a/b", "a\\b"] {
+            assert!(install_dir_for(bad).is_err(), "{bad} must be rejected");
         }
     }
 

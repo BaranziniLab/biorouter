@@ -59,6 +59,13 @@ fn compiled(pattern: &str, source: &str) -> Option<Arc<Regex>> {
 
 /// Returns true when `matcher` matches `key`.
 ///
+/// A tool name is matched under every spelling a rule may use for it
+/// ([`crate::config::extension_renames::tool_name_aliases`]): a hook or a
+/// managed rule written for `gptragent__r` before the extension was renamed
+/// still matches `gptr__r`, so a managed deny cannot be lost by the rename. A
+/// key with no renamed prefix (any other tool, or a non-tool key) has one
+/// spelling and is matched exactly as before.
+///
 /// Invalid regex patterns are logged and treated as non-matching.
 pub fn matcher_matches(matcher: Option<&str>, key: &str) -> bool {
     let Some(pattern) = matcher else {
@@ -68,6 +75,14 @@ pub fn matcher_matches(matcher: Option<&str>, key: &str) -> bool {
     if pattern.is_empty() || pattern == "*" {
         return true;
     }
+    crate::config::extension_renames::tool_name_aliases(key)
+        .iter()
+        .any(|spelling| matches_one(pattern, spelling))
+}
+
+/// [`matcher_matches`] for one spelling of the key: exact string equality,
+/// then the anchored regex.
+fn matches_one(pattern: &str, key: &str) -> bool {
     if pattern == key {
         return true;
     }
@@ -282,6 +297,31 @@ mod tests {
         assert!(m.matches(Some(&json!({"command": "anything at all"}))));
         // Still requires the field to exist.
         assert!(!m.matches(Some(&json!({"other": "x"}))));
+    }
+
+    /// I4 of the gptr rename: a hook or managed matcher written for an old
+    /// tool name still matches the renamed tool, exactly or as a pattern, and a
+    /// managed deny written for the old name denies the new one.
+    #[test]
+    fn a_matcher_written_for_an_old_tool_name_matches_the_renamed_tool() {
+        assert!(matcher_matches(Some("gptragent__r"), "gptr__r"));
+        assert!(matcher_matches(Some("gptragent__.*"), "gptr__inspect"));
+        assert!(matcher_matches(
+            Some("developer__shell|gptragent__r"),
+            "gptr__r"
+        ));
+        assert!(matcher_matches(Some("gptr__r"), "gptragent__r"));
+        assert!(!matcher_matches(Some("gptragent__r"), "gptr__inspect"));
+        assert!(!matcher_matches(Some("gptragent__r"), "developer__shell"));
+        assert!(!matcher_matches(Some("gptragent"), "gptr"));
+
+        let policy: crate::managed::settings::ManagedPolicyFile =
+            serde_yaml::from_str("permissions:\n  deny: [gptragent__r]\n  allow: [gptr__r]\n")
+                .unwrap();
+        assert_eq!(
+            policy.permission_for("gptr__r"),
+            Some(crate::managed::settings::ManagedVerdict::Deny)
+        );
     }
 
     #[test]

@@ -615,6 +615,32 @@ async fn trusted_marketplace_extension(
     resolve_marketplace_extension(&loaded.catalog, registry_id, caller)
 }
 
+/// The install a marketplace row starts: the row's bundle, from the row's
+/// address, held to the extension the row names.
+///
+/// ⚠ **Only when the registry STATED the name** (`advertises_name`). Without
+/// one, `extension_name` is the registry id by fallback, which is not the
+/// extension's name (SPOKEAgent's row: `spokeagent-0.4.1`, installed as
+/// `spokeagent`), and expecting it would refuse a correct bundle. Every id the
+/// extension has had counts (`extension_rename::is_same_extension`), so a row
+/// that still says `gptragent` accepts the renamed bundle.
+fn marketplace_install_transaction(
+    descriptor: &crate::marketplace::MarketplaceExtensionDescriptor,
+    enable: bool,
+) -> crate::extension_install::ExtensionInstallTransaction {
+    use crate::extension_install::{ExtensionInstallTransaction, InstallSource};
+    let transaction = ExtensionInstallTransaction::new(InstallSource::Marketplace {
+        registry_id: descriptor.registry_id.clone(),
+        url: descriptor.download_url.as_str().to_owned(),
+    })
+    .enabled(enable);
+    if descriptor.advertises_name {
+        transaction.expect_extension(descriptor.extension_name.clone())
+    } else {
+        transaction
+    }
+}
+
 fn resolve_marketplace_extension(
     catalog: &crate::marketplace::MarketplaceCatalog,
     registry_id: &str,
@@ -853,12 +879,12 @@ fn validated_marketplace_package_at(
         });
     }
 
-    let entry = configured
-        .into_iter()
-        .find(|entry| entry.config.key() == provenance.config_key)
-        .ok_or_else(|| ExtensionManagerToolError::OperationFailed {
-            message: "Marketplace package no longer has a matching extension configuration"
-                .to_owned(),
+    let entry =
+        configured_entry_of_record(configured, &provenance.config_key).ok_or_else(|| {
+            ExtensionManagerToolError::OperationFailed {
+                message: "Marketplace package no longer has a matching extension configuration"
+                    .to_owned(),
+            }
         })?;
     let references_recorded_dir = match &entry.config {
         ExtensionConfig::Stdio { args, .. } => args
@@ -881,6 +907,33 @@ fn validated_marketplace_package_at(
         install_dir: canonical_install,
         extensions_root: canonical_root,
     })
+}
+
+/// The configured entry a provenance record keyed `recorded_key` belongs to.
+///
+/// The entry of that exact key first. Failing that, for a renamed extension,
+/// the entry of its current id: until the daemon moves an install (and never,
+/// on a machine that runs only the command line tool), its record and folder
+/// keep the old id (`gptragent`) while every reader loads the entry as the
+/// current one (`gptr`, `config::extension_renames`). When both ids are
+/// configured (a conflict the move leaves alone) the exact arm answers, so a
+/// record never reaches the other id's entry.
+fn configured_entry_of_record(
+    configured: Vec<ExtensionEntry>,
+    recorded_key: &str,
+) -> Option<ExtensionEntry> {
+    let current = crate::config::extension_renames::current_key(recorded_key);
+    let mut renamed = None;
+    for entry in configured {
+        let key = entry.config.key();
+        if key == recorded_key {
+            return Some(entry);
+        }
+        if current != recorded_key && key == current && renamed.is_none() {
+            renamed = Some(entry);
+        }
+    }
+    renamed
 }
 
 /// Unload the extension from THIS chat's live manager before its files move,
@@ -1289,6 +1342,7 @@ async fn delete_one_marketplace_package(
                         session_manager,
                         &plan.package.extension_name,
                         &plan.package.provenance.config_key,
+                        &configured_extension_keys(),
                     )
                     .await;
                     return (
@@ -1518,7 +1572,15 @@ fn validated_extension_removal(
             crate::agents::extension_manager::capability_management_error(name),
         ));
     }
-    let key = crate::config::extensions::name_to_key(name);
+    // An old id of a renamed extension names it under its current id, as every
+    // other lookup does (`config::extension_renames`), unless an entry of the
+    // old id is configured itself.
+    let named = crate::config::extensions::name_to_key(name);
+    let key = if configured.iter().any(|entry| entry.config.key() == named) {
+        named
+    } else {
+        crate::config::extension_renames::current_key(&named).to_owned()
+    };
     let entry = configured
         .iter()
         .find(|entry| entry.config.key() == key)
@@ -1557,18 +1619,17 @@ fn validated_extension_removal(
         });
     };
 
-    let install_dir = removal_install_dir(&key, &entry.config, canonical_root)?;
+    let install_dir = removal_install_dir(&key, &entry.config, canonical_root, configured)?;
     let bundled_skills = install_dir
         .as_deref()
         .map(bundled_skill_slugs)
         .unwrap_or_default();
-    let provenance = match crate::privacy::provenance::extension_provenance_for_key(&key) {
-        Some(record) => ProvenanceTarget::Record {
-            key: key.clone(),
-            record,
-        },
-        None => ProvenanceTarget::Nothing,
-    };
+    let provenance = removal_provenance(
+        &key,
+        install_dir.as_deref(),
+        configured,
+        crate::privacy::provenance::extension_provenance_for_key,
+    );
 
     Ok(ValidatedExtensionRemoval {
         extension_name: entry.config.name(),
@@ -1579,6 +1640,57 @@ fn validated_extension_removal(
         bundled_skills,
         provenance,
     })
+}
+
+/// The provenance record one removal drops: the one keyed by the entry's key,
+/// or, for a renamed extension the daemon has not moved, the record still keyed
+/// by an old id (`gptragent`) that names the folder being removed.
+///
+/// ⚠ **Without the second arm the removal orphans a marketplace record.** The
+/// folder and config entry go, the record keyed `gptragent` (with its
+/// `source_url`) stays, and a reinstall, which records under `gptr`, leaves two
+/// records for one registry id, so `delete_extension_package` refuses that
+/// package as ambiguous from then on. An old id's record is only this
+/// removal's while no entry of that old id is configured (then it is that
+/// entry's) and while it names this folder. Of the candidates, a marketplace
+/// record (one with a `source_url`) wins: an identity record a config write
+/// left under the current id only raises a tier and is harmless to leave, and
+/// a reinstall replaces it.
+fn removal_provenance(
+    key: &str,
+    install_dir: Option<&std::path::Path>,
+    configured: &[ExtensionEntry],
+    lookup: impl Fn(&str) -> Option<crate::privacy::provenance::ExtensionProvenance>,
+) -> ProvenanceTarget {
+    let mut candidates: Vec<(String, crate::privacy::provenance::ExtensionProvenance)> =
+        lookup(key)
+            .map(|record| (key.to_owned(), record))
+            .into_iter()
+            .collect();
+    if let Some(install_dir) = install_dir {
+        let names_this_folder = |recorded: &str| {
+            std::path::Path::new(recorded) == install_dir
+                || std::fs::canonicalize(recorded).is_ok_and(|real| real == install_dir)
+        };
+        for old in crate::config::extension_renames::old_keys(key) {
+            if configured.iter().any(|entry| entry.config.key() == old) {
+                continue;
+            }
+            if let Some(record) = lookup(old) {
+                if record.install_dir.as_deref().is_some_and(names_this_folder) {
+                    candidates.push((old.to_owned(), record));
+                }
+            }
+        }
+    }
+    let chosen = candidates
+        .iter()
+        .position(|(_, record)| record.source_url.is_some())
+        .unwrap_or(0);
+    match candidates.into_iter().nth(chosen) {
+        Some((key, record)) => ProvenanceTarget::Record { key, record },
+        None => ProvenanceTarget::Nothing,
+    }
 }
 
 /// The package directory this configuration owns, or `None` when it owns none.
@@ -1601,9 +1713,19 @@ fn removal_install_dir(
     config_key: &str,
     config: &ExtensionConfig,
     canonical_root: Option<&std::path::Path>,
+    configured: &[ExtensionEntry],
 ) -> Result<Option<PathBuf>, ExtensionManagerToolError> {
     let Some(canonical_root) = canonical_root else {
         return Ok(None);
+    };
+    // A folder named after an id this extension was renamed FROM is its own
+    // until the daemon moves it (`extension_rename`), unless an entry of that
+    // old id is configured too: then the folder is that entry's.
+    let renamed_from = |folder_key: &str| {
+        crate::config::extension_renames::old_keys(config_key).any(|old| old == folder_key)
+            && !configured
+                .iter()
+                .any(|entry| entry.config.key() == folder_key)
     };
     let owns = |candidate: &std::path::Path| {
         candidate.is_dir()
@@ -1612,8 +1734,7 @@ fn removal_install_dir(
                 .file_name()
                 .and_then(|name| name.to_str())
                 .map(crate::config::extensions::name_to_key)
-                .as_deref()
-                == Some(config_key)
+                .is_some_and(|folder_key| folder_key == config_key || renamed_from(&folder_key))
     };
 
     let mut referenced = None;
@@ -1746,16 +1867,54 @@ async fn prune_extension_from_sessions(
     session_manager: &Arc<crate::session::SessionManager>,
     extension_name: &str,
     config_key: &str,
+    still_configured: &[String],
 ) -> (usize, Vec<String>) {
+    use crate::config::extension_renames::current_key;
     use crate::session::extension_data::{EnabledExtensionsState, ExtensionState};
 
-    let candidates = match session_manager
-        .sessions_mentioning_extension(extension_name)
-        .await
-    {
-        Ok(candidates) => candidates,
-        Err(error) => return (0, vec![format!("could not scan sessions: {error}")]),
+    // A roster saved before the extension was renamed names it by its old id,
+    // and is read raw here (the rewrite below keeps every other entry exactly
+    // as stored), so each side is compared by its current id. Unless another
+    // id of the extension is still configured: both ids installed is a
+    // conflict the rename move leaves alone, and removing one of them must
+    // leave the other in every saved chat, so each side is compared exactly.
+    let removed_key = config_key;
+    let config_key = current_key(config_key);
+    let other_id_configured = crate::config::extension_renames::all_keys(config_key)
+        .into_iter()
+        .any(|id| id != removed_key && still_configured.iter().any(|key| key == id));
+    let names_it = |config: &ExtensionConfig| {
+        if other_id_configured {
+            config.key() == removed_key
+        } else {
+            current_key(&config.key()) == config_key
+        }
     };
+    // For a renamed extension the prefilter looks for each id it has had,
+    // since a roster may spell any of them. Any other extension has one id and
+    // is looked for by its name, exactly as before.
+    let mut needles = vec![extension_name.to_owned()];
+    let ids = crate::config::extension_renames::all_keys(config_key);
+    if ids.len() > 1 {
+        for id in ids {
+            if !needles.iter().any(|needle| needle == id) {
+                needles.push(id.to_owned());
+            }
+        }
+    }
+    let mut candidates: Vec<String> = Vec::new();
+    for needle in &needles {
+        match session_manager.sessions_mentioning_extension(needle).await {
+            Ok(found) => {
+                for session_id in found {
+                    if !candidates.contains(&session_id) {
+                        candidates.push(session_id);
+                    }
+                }
+            }
+            Err(error) => return (0, vec![format!("could not scan sessions: {error}")]),
+        }
+    }
 
     let mut updated = 0_usize;
     let mut problems = Vec::new();
@@ -1770,12 +1929,7 @@ async fn prune_extension_from_sessions(
             .ok()
             .flatten()
             .and_then(|value| serde_json::from_value::<EnabledExtensionsState>(value).ok())
-            .is_some_and(|state| {
-                state
-                    .extensions
-                    .iter()
-                    .any(|config| config.key() == config_key)
-            });
+            .is_some_and(|state| state.extensions.iter().any(names_it));
         // The `LIKE` is a prefilter over one JSON column shared by every
         // per-session extension, so most candidates hold no roster entry at
         // all. Skipping them keeps the sweep from rewriting rows it has no
@@ -1796,7 +1950,7 @@ async fn prune_extension_from_sessions(
                         })
                         .transpose()?
                         .unwrap_or_else(|| EnabledExtensionsState::new(Vec::new()));
-                    state.extensions.retain(|config| config.key() != config_key);
+                    state.extensions.retain(|config| !names_it(config));
                     state.to_value()
                 },
             ))
@@ -1810,6 +1964,14 @@ async fn prune_extension_from_sessions(
         }
     }
     (updated, problems)
+}
+
+/// The keys of every extension configured now, as every reader loads them.
+fn configured_extension_keys() -> Vec<String> {
+    get_all_extensions()
+        .into_iter()
+        .map(|entry| entry.config.key())
+        .collect()
 }
 
 /// Announce the skills that vanished with the package directory.
@@ -1922,9 +2084,13 @@ async fn remove_staged_extension(
         Some(quarantine) => delete_quarantined_package(quarantine, &plan.extension_name),
         None => (None, None),
     };
-    let (sessions_updated, session_problems) =
-        prune_extension_from_sessions(session_manager, &plan.extension_name, &plan.config_key)
-            .await;
+    let (sessions_updated, session_problems) = prune_extension_from_sessions(
+        session_manager,
+        &plan.extension_name,
+        &plan.config_key,
+        &configured_extension_keys(),
+    )
+    .await;
     announce_removed_skills(plan);
 
     Ok(serde_json::json!({
@@ -2545,10 +2711,7 @@ impl ExtensionManagerClient {
         cap: crate::privacy::CallCapability,
         cancel: CancellationToken,
     ) -> Result<Vec<Content>, ExtensionManagerToolError> {
-        use crate::extension_install::{
-            CredentialPolicy, ExtensionInstallTransaction, InstallSource, InstallState,
-            DEFAULT_CREDENTIAL_TTL,
-        };
+        use crate::extension_install::{CredentialPolicy, InstallState, DEFAULT_CREDENTIAL_TTL};
 
         let arguments = arguments.ok_or(ExtensionManagerToolError::MissingParameter {
             param_name: "arguments".to_string(),
@@ -2581,11 +2744,7 @@ impl ExtensionManagerClient {
             false,
         )
         .map(|error| error.message.to_string());
-        let mut transaction = ExtensionInstallTransaction::new(InstallSource::Marketplace {
-            registry_id: current.registry_id.clone(),
-            url: current.download_url.as_str().to_owned(),
-        })
-        .enabled(params.enable);
+        let mut transaction = marketplace_install_transaction(&current, params.enable);
         if attach_refusal.is_none() {
             if let Some(weak) = &self.context.extension_manager {
                 transaction = transaction.attach_to(weak.clone());
@@ -2849,7 +3008,9 @@ impl ExtensionManagerClient {
             extension_manager
                 .assert_extension_manageable(&extension_name, cap)
                 .await?;
-            let extension_key = crate::config::extensions::name_to_key(&extension_name);
+            // The key the gate judged and `remove_extension` removes: for an
+            // extension id renamed since, the current id it is loaded under.
+            let extension_key = extension_manager.loaded_key_for(&extension_name).await;
             let mut removed_tools = extension_manager
                 .get_prefixed_tools_for_extension_and_capability(&extension_key, cap)
                 .await
@@ -3663,6 +3824,32 @@ mod tests {
             ProviderTier::Private,
         )
         .unwrap()
+    }
+
+    /// A marketplace install refuses a bundle that is another extension than
+    /// the one its row names (the refusal itself is
+    /// `a_marketplace_row_refuses_a_bundle_of_another_extension` in
+    /// `tests/extension_rename_migration.rs`). Only a name the registry STATED
+    /// counts: without one the descriptor's name is the registry id by
+    /// fallback, which SPOKEAgent's row showed is not the extension's name
+    /// (`spokeagent-0.4.1` installed as `spokeagent`).
+    #[test]
+    fn a_marketplace_install_is_held_to_the_extension_its_row_names() {
+        let mut named = marketplace_descriptor();
+        named.extension_name = "gptragent".to_owned();
+        named.advertises_name = true;
+        assert_eq!(
+            marketplace_install_transaction(&named, true).expected_extension(),
+            Some("gptragent")
+        );
+
+        let mut unnamed = named.clone();
+        unnamed.advertises_name = false;
+        unnamed.extension_name = unnamed.registry_id.clone();
+        assert_eq!(
+            marketplace_install_transaction(&unnamed, true).expected_extension(),
+            None
+        );
     }
 
     /// The extension half of finding F5, at the tool's output: a phrase is
@@ -4882,6 +5069,123 @@ mod tests {
         .unwrap()
     }
 
+    /// The gptr rename: uninstalling gptr Agent prunes it from a saved chat
+    /// that still names it by its old id, so that chat does not try to start
+    /// an extension whose files are gone.
+    #[tokio::test]
+    async fn pruning_an_uninstalled_extension_reaches_a_roster_naming_its_old_id() {
+        use crate::session::extension_data::{EnabledExtensionsState, ExtensionState};
+        use crate::session::session_manager::SessionType;
+
+        let dir = tempfile::TempDir::new().unwrap();
+        let session_manager = Arc::new(crate::session::SessionManager::new(
+            dir.path().to_path_buf(),
+        ));
+        let session = session_manager
+            .create_session(
+                PathBuf::from("/tmp/rename-prune"),
+                "holds gptragent".to_owned(),
+                SessionType::User,
+            )
+            .await
+            .unwrap();
+        let kept = ExtensionConfig::Platform {
+            name: "todo".to_owned(),
+            description: String::new(),
+            bundled: None,
+            available_tools: Vec::new(),
+        };
+        let stored = EnabledExtensionsState::new(vec![
+            ExtensionConfig::stdio("gptragent", "uv", "gptr Agent", 30_u64),
+            kept,
+        ])
+        .to_value()
+        .unwrap();
+        session_manager
+            .update_extension_state(
+                &session.id,
+                EnabledExtensionsState::EXTENSION_NAME,
+                EnabledExtensionsState::VERSION,
+                |_| Ok(stored),
+            )
+            .await
+            .unwrap();
+
+        let (updated, problems) =
+            prune_extension_from_sessions(&session_manager, "gptr", "gptr", &[]).await;
+        assert_eq!(updated, 1, "{problems:?}");
+        let roster = session_manager
+            .get_extension_state(
+                &session.id,
+                EnabledExtensionsState::EXTENSION_NAME,
+                EnabledExtensionsState::VERSION,
+            )
+            .await
+            .unwrap()
+            .and_then(|value| serde_json::from_value::<EnabledExtensionsState>(value).ok())
+            .unwrap();
+        let keys: Vec<String> = roster.extensions.iter().map(ExtensionConfig::key).collect();
+        assert_eq!(keys, vec!["todo".to_string()]);
+    }
+
+    /// Both ids configured is a conflict the rename move leaves alone, with
+    /// both entries loaded. Removing one of them prunes it from saved chats and
+    /// leaves the other, which is still installed, in place.
+    #[tokio::test]
+    async fn pruning_one_of_two_configured_ids_keeps_the_other_in_saved_rosters() {
+        use crate::session::extension_data::{EnabledExtensionsState, ExtensionState};
+        use crate::session::session_manager::SessionType;
+
+        let dir = tempfile::TempDir::new().unwrap();
+        let session_manager = Arc::new(crate::session::SessionManager::new(
+            dir.path().to_path_buf(),
+        ));
+        let session = session_manager
+            .create_session(
+                PathBuf::from("/tmp/rename-prune-both"),
+                "holds both ids".to_owned(),
+                SessionType::User,
+            )
+            .await
+            .unwrap();
+        let stored = EnabledExtensionsState::new(vec![
+            ExtensionConfig::stdio("gptragent", "uv", "gptr Agent", 30_u64),
+            ExtensionConfig::stdio("gptr", "uv", "gptr Agent", 30_u64),
+        ])
+        .to_value()
+        .unwrap();
+        session_manager
+            .update_extension_state(
+                &session.id,
+                EnabledExtensionsState::EXTENSION_NAME,
+                EnabledExtensionsState::VERSION,
+                |_| Ok(stored),
+            )
+            .await
+            .unwrap();
+
+        let (updated, problems) = prune_extension_from_sessions(
+            &session_manager,
+            "gptragent",
+            "gptragent",
+            &["gptr".to_owned()],
+        )
+        .await;
+        assert_eq!(updated, 1, "{problems:?}");
+        let roster = session_manager
+            .get_extension_state(
+                &session.id,
+                EnabledExtensionsState::EXTENSION_NAME,
+                EnabledExtensionsState::VERSION,
+            )
+            .await
+            .unwrap()
+            .and_then(|value| serde_json::from_value::<EnabledExtensionsState>(value).ok())
+            .unwrap();
+        let keys: Vec<String> = roster.extensions.iter().map(ExtensionConfig::key).collect();
+        assert_eq!(keys, vec!["gptr".to_string()]);
+    }
+
     /// R-30, ruling 16: the prune sweeps every chat that held the extension,
     /// and none of them moves under "Last activity". Two chats hold it and a
     /// third only quotes its name (the `LIKE` prefilter's false positive); all
@@ -4976,7 +5280,8 @@ mod tests {
         );
 
         let (updated, problems) =
-            prune_extension_from_sessions(&session_manager, "r30prunedext", &pruned.key()).await;
+            prune_extension_from_sessions(&session_manager, "r30prunedext", &pruned.key(), &[])
+                .await;
 
         assert_eq!(updated, 2, "{problems:?}");
         assert!(problems.is_empty(), "{problems:?}");
@@ -5417,7 +5722,7 @@ mod tests {
 
         let owns_its_own = package_entry("Alpha", &root_path.join("Alpha"));
         assert_eq!(
-            removal_install_dir("alpha", &owns_its_own.config, Some(&root_path)).unwrap(),
+            removal_install_dir("alpha", &owns_its_own.config, Some(&root_path), &[]).unwrap(),
             Some(root_path.join("Alpha"))
         );
 
@@ -5439,7 +5744,7 @@ mod tests {
             },
         };
         assert_eq!(
-            removal_install_dir("gamma", &hand_configured.config, Some(&root_path)).unwrap(),
+            removal_install_dir("gamma", &hand_configured.config, Some(&root_path), &[]).unwrap(),
             None
         );
 
@@ -5449,7 +5754,7 @@ mod tests {
             config: ExtensionConfig::stdio("Delta", "delta-server", "named only", 30_u64),
         };
         assert_eq!(
-            removal_install_dir("delta", &named_only.config, Some(&root_path)).unwrap(),
+            removal_install_dir("delta", &named_only.config, Some(&root_path), &[]).unwrap(),
             Some(root_path.join("Delta"))
         );
 
@@ -5457,7 +5762,7 @@ mod tests {
         // resolved to nothing: silently removing only the config row orphans a
         // tree, and removing the tree breaks the package that owns it.
         let squatter = package_entry("Alpha", &root_path.join("Beta"));
-        let refusal = removal_install_dir("alpha", &squatter.config, Some(&root_path))
+        let refusal = removal_install_dir("alpha", &squatter.config, Some(&root_path), &[])
             .expect_err("an entry pointed at another package's directory is refused");
         assert!(
             refusal.to_string().contains("different installed package"),
@@ -5467,8 +5772,231 @@ mod tests {
         // A machine that never installed a `.brxt` has no extensions root at
         // all, and that is not an error — nothing owns a directory.
         assert_eq!(
-            removal_install_dir("alpha", &owns_its_own.config, None).unwrap(),
+            removal_install_dir("alpha", &owns_its_own.config, None, &[]).unwrap(),
             None
+        );
+    }
+
+    /// Until the daemon moves it (and never, on a machine that only runs the
+    /// command line tool), an install of a renamed extension loads as `gptr`
+    /// while it runs from `extensions/gptragent`. That folder is this entry's:
+    /// refusing it as "another package" would leave gptr Agent impossible to
+    /// remove by name. It stays another package's while an entry of the old id
+    /// is configured beside it, and an old-id entry never owns the current
+    /// id's folder.
+    #[test]
+    fn an_install_not_yet_moved_to_its_current_id_is_removable_with_its_folder() {
+        let root = tempfile::tempdir().unwrap();
+        let root_path = std::fs::canonicalize(root.path()).unwrap();
+        std::fs::create_dir_all(root_path.join("gptragent")).unwrap();
+
+        let unmoved = package_entry("gptr", &root_path.join("gptragent"));
+        assert_eq!(
+            removal_install_dir(
+                "gptr",
+                &unmoved.config,
+                Some(&root_path),
+                std::slice::from_ref(&unmoved)
+            )
+            .unwrap(),
+            Some(root_path.join("gptragent"))
+        );
+
+        let old_entry = package_entry("gptragent", &root_path.join("gptragent"));
+        let both = [unmoved.clone(), old_entry];
+        let refusal = removal_install_dir("gptr", &unmoved.config, Some(&root_path), &both)
+            .expect_err("the folder is the configured gptragent entry's");
+        assert!(
+            refusal.to_string().contains("different installed package"),
+            "{refusal}"
+        );
+
+        std::fs::create_dir_all(root_path.join("gptr")).unwrap();
+        let backwards = package_entry("gptragent", &root_path.join("gptr"));
+        assert!(removal_install_dir(
+            "gptragent",
+            &backwards.config,
+            Some(&root_path),
+            std::slice::from_ref(&backwards)
+        )
+        .is_err());
+    }
+
+    /// A removal that names the old id finds the extension under its current
+    /// id, as every other name lookup does.
+    #[test]
+    fn a_removal_by_the_old_id_finds_the_current_entry() {
+        let root = tempfile::tempdir().unwrap();
+        let root_path = std::fs::canonicalize(root.path()).unwrap();
+        std::fs::create_dir_all(root_path.join("gptr")).unwrap();
+        let current = package_entry("gptr", &root_path.join("gptr"));
+        let private = CallCapability::for_test(ProviderTier::Private, true);
+        let plan = validated_extension_removal(
+            "gptragent",
+            private,
+            Some(&root_path),
+            std::slice::from_ref(&current),
+        )
+        .expect("the old id names the installed gptr Agent");
+        assert_eq!(plan.config_key, "gptr");
+        assert_eq!(plan.install_dir, Some(root_path.join("gptr")));
+    }
+
+    /// Until the daemon moves it (and never, on a machine that runs only the
+    /// command line tool), a marketplace install of a renamed extension keeps
+    /// its record and folder under the old id while every reader loads its
+    /// entry as the current one. Deleting the package by its registry id must
+    /// find that entry; with both ids configured, the record's own id's entry
+    /// answers and never the other.
+    #[test]
+    fn package_deletion_finds_an_install_not_yet_moved_to_its_current_id() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("extensions");
+        std::fs::create_dir_all(root.join("gptragent")).unwrap();
+        let root = std::fs::canonicalize(root).unwrap();
+        let install_dir = root.join("gptragent");
+        let descriptor = marketplace_descriptor();
+        let provenance = package_provenance(&descriptor.registry_id, "gptragent", &install_dir);
+        // As `get_all_extensions` loads the unmoved entry: projected to `gptr`,
+        // still running from the old folder, which still exists.
+        let unmoved = package_entry("gptr", &install_dir);
+
+        let validated = validated_marketplace_package_at(
+            &descriptor,
+            vec![provenance.clone()],
+            root.clone(),
+            vec![unmoved.clone()],
+        )
+        .expect("the unmoved gptr Agent is the recorded package");
+        assert_eq!(validated.extension_name, "gptr");
+        assert_eq!(validated.install_dir, install_dir);
+        assert_eq!(validated.config, unmoved.config);
+
+        let old = package_entry("gptragent", &install_dir);
+        let elsewhere = package_entry("gptr", &root.join("gptr"));
+        let validated = validated_marketplace_package_at(
+            &descriptor,
+            vec![provenance],
+            root,
+            vec![elsewhere, old.clone()],
+        )
+        .expect("the record's own id answers when both ids are configured");
+        assert_eq!(validated.config, old.config);
+    }
+
+    fn provenance_record(
+        registry_id: &str,
+        install_dir: &std::path::Path,
+        source_url: Option<&str>,
+    ) -> crate::privacy::provenance::ExtensionProvenance {
+        crate::privacy::provenance::ExtensionProvenance {
+            install_id: Some(format!("test-{registry_id}")),
+            registry_id: registry_id.to_owned(),
+            install_dir: Some(install_dir.display().to_string()),
+            source_url: source_url.map(str::to_owned),
+            bundle_sha256: None,
+            recorded_at: None,
+        }
+    }
+
+    /// Removing an unmoved install by name takes its marketplace record, still
+    /// keyed by the old id, with it. Leaving that record behind made a later
+    /// reinstall (recorded under `gptr`) two records for one registry id, which
+    /// `delete_extension_package` refuses as ambiguous.
+    #[test]
+    fn removing_an_unmoved_install_takes_the_record_still_keyed_by_its_old_id() {
+        let root = tempfile::tempdir().unwrap();
+        let root_path = std::fs::canonicalize(root.path()).unwrap();
+        let old_dir = root_path.join("gptragent");
+        std::fs::create_dir_all(&old_dir).unwrap();
+        let unmoved = package_entry("gptr", &old_dir);
+        let configured = std::slice::from_ref(&unmoved);
+        let marketplace = provenance_record(
+            "gptragent",
+            &old_dir,
+            Some("https://github.com/Broccolito/GptrAgent/releases/download/v0.1.2/gptragent.brxt"),
+        );
+        let records = |stored: Vec<(
+            &'static str,
+            crate::privacy::provenance::ExtensionProvenance,
+        )>| {
+            move |key: &str| {
+                stored
+                    .iter()
+                    .find(|(stored_key, _)| *stored_key == key)
+                    .map(|(_, record)| record.clone())
+            }
+        };
+
+        assert_eq!(
+            removal_provenance(
+                "gptr",
+                Some(&old_dir),
+                configured,
+                records(vec![("gptragent", marketplace.clone())])
+            ),
+            ProvenanceTarget::Record {
+                key: "gptragent".to_owned(),
+                record: marketplace.clone(),
+            }
+        );
+
+        // An identity record a config write left under `gptr` does not hide
+        // the marketplace record: that one is what a later deletion counts.
+        let identity = provenance_record("gptragent", &old_dir, None);
+        assert_eq!(
+            removal_provenance(
+                "gptr",
+                Some(&old_dir),
+                configured,
+                records(vec![
+                    ("gptr", identity.clone()),
+                    ("gptragent", marketplace.clone())
+                ])
+            ),
+            ProvenanceTarget::Record {
+                key: "gptragent".to_owned(),
+                record: marketplace.clone(),
+            }
+        );
+        assert_eq!(
+            removal_provenance(
+                "gptr",
+                Some(&old_dir),
+                configured,
+                records(vec![("gptr", identity.clone())])
+            ),
+            ProvenanceTarget::Record {
+                key: "gptr".to_owned(),
+                record: identity,
+            }
+        );
+
+        // Not this removal's: another folder, or an entry of the old id is
+        // configured (the record is that entry's).
+        let elsewhere = provenance_record(
+            "gptragent",
+            &root_path.join("other"),
+            Some("https://x/y.brxt"),
+        );
+        assert_eq!(
+            removal_provenance(
+                "gptr",
+                Some(&old_dir),
+                configured,
+                records(vec![("gptragent", elsewhere)])
+            ),
+            ProvenanceTarget::Nothing
+        );
+        let both = [unmoved.clone(), package_entry("gptragent", &old_dir)];
+        assert_eq!(
+            removal_provenance(
+                "gptr",
+                Some(&old_dir),
+                &both,
+                records(vec![("gptragent", marketplace)])
+            ),
+            ProvenanceTarget::Nothing
         );
     }
 
@@ -6498,6 +7026,53 @@ mod tests {
             !roster.contains(&key),
             "the row still names {key} after a detach: {roster:?}"
         );
+    }
+
+    /// The gptr rename: `manage_extensions {disable}` naming gptr Agent by its
+    /// old id detaches the extension loaded under its current id, asked through
+    /// the same key by the gate and its executor.
+    #[tokio::test]
+    async fn a_disable_by_an_old_extension_id_detaches_the_current_one() {
+        let (_dir, em, client, session_id) = a_live_tool_client().await;
+        let context = PlatformExtensionContext {
+            extension_manager: Some(std::sync::Arc::downgrade(&em)),
+            session_manager: em.get_context().session_manager.clone(),
+        };
+        em.add_client(
+            "gptr".to_owned(),
+            ExtensionConfig::stdio("gptr", "unused-fixture-command", "gptr Agent", 30_u64),
+            std::sync::Arc::new(
+                ExtensionManagerClient::new(context).expect("fixture client builds"),
+            ),
+            None,
+            None,
+        )
+        .await;
+        crate::agents::session_extensions::record(
+            &em.get_context().session_manager,
+            em.as_ref(),
+            &session_id,
+        )
+        .await
+        .expect("the fixture roster is recordable");
+
+        let content = client
+            .manage_extensions_impl(
+                ManageExtensionAction::Disable,
+                "gptragent".to_owned(),
+                CallCapability::for_test(ProviderTier::Private, true),
+                false,
+                &session_id,
+            )
+            .await
+            .expect("a private caller detaches gptr Agent by either id");
+        let text = content[0].as_text().expect("JSON text response");
+        let payload: serde_json::Value = serde_json::from_str(&text.text).unwrap();
+        assert_eq!(payload["sessionState"], "detached");
+        assert!(!em.is_extension_enabled("gptr").await);
+        assert!(!session_roster(&em, &session_id)
+            .await
+            .contains(&"gptr".to_owned()));
     }
 
     async fn disable(

@@ -26,10 +26,16 @@ const HTML = readFileSync(join(LANDING, 'baam.html'), 'utf8');
 const REGISTRY = JSON.parse(readFileSync(join(LANDING, 'registry.json'), 'utf8'));
 const CATALOGS = loadCatalogs();
 const BUILTINS = readBuiltins();
+// The extension id rename map, read here straight from the file the Rust
+// crate compiles in, so the tests do not depend on the loader they test.
+const RENAMES = JSON.parse(
+  readFileSync(join(LANDING, '..', 'crates/biorouter/src/config/extension_renames.json'), 'utf8')
+).renames.map(({ from, to }) => ({ from, to }));
 const clone = (v) => structuredClone(v);
 
-function check({ registry = REGISTRY, html = HTML, catalogs = CATALOGS } = {}) {
-  return checkCatalogs({ registry, html, catalogs, builtins: BUILTINS });
+// `renames` left undefined means "the committed map", which checkCatalogs reads itself.
+function check({ registry = REGISTRY, html = HTML, catalogs = CATALOGS, renames } = {}) {
+  return checkCatalogs({ registry, html, catalogs, builtins: BUILTINS, renames });
 }
 const ext = (catalogs, id) => catalogs.extensions.items.find((r) => r.id === id);
 const fails = (res, rule, subject) =>
@@ -212,6 +218,88 @@ test('mutant caught: jobs.json and the rules library disagree about the threshol
   const c = clone(CATALOGS);
   c.jobs.similarity_threshold = 0.4;
   assert.ok(fails(check({ catalogs: c }), 'jobs', 'rules-drift'));
+});
+
+// ---- The local id rename map (crates/biorouter/src/config/extension_renames.json)
+// A row whose id or manifest_name the map renames records the new id in
+// renamed_locally_to and in aliases, and no row records a rename the map lacks.
+
+test('the gptragent row records the rename the map holds, and changes nothing else', () => {
+  assert.ok(RENAMES.some((r) => r.from === 'gptragent' && r.to === 'gptr'), 'the map renames gptragent to gptr');
+  const row = ext(CATALOGS, 'gptragent');
+  assert.equal(row.renamed_locally_to, 'gptr');
+  assert.deepEqual(row.aliases, ['gptr']);
+  // The BAAM id, status and release stay: registry v2 cannot say which app
+  // version can read a gptr bundle, so BAAM keeps serving gptragent.brxt.
+  assert.equal(row.status, 'active');
+  assert.equal(row.manifest_name, 'gptragent');
+  assert.deepEqual(row.release, {
+    tag: 'v0.1.2',
+    asset: 'gptragent.brxt',
+    sha256: '6de59047c1e87eed76fb9e67fbb75c9ac7c404eac7cbd75ed144091087fb1ea0',
+  });
+  assert.equal(CATALOGS.extensions.items.filter((r) => r.renamed_locally_to !== undefined).length, 1);
+  assert.equal(CATALOGS.extensions.items.some((r) => r.id === 'gptr'), false, 'no gptr row before the turn-on pull request');
+  assert.equal(REGISTRY.extensions.some((e) => e.id === 'gptr' || e.extension_name === 'gptr'), false);
+});
+
+test('mutant caught: a renamed row without renamed_locally_to', () => {
+  const c = clone(CATALOGS);
+  delete ext(c, 'gptragent').renamed_locally_to;
+  assert.ok(fails(check({ catalogs: c }), 'rename', 'renamed-to:gptragent'));
+});
+
+test('mutant caught: a renamed row whose renamed_locally_to is not the map\'s new id', () => {
+  const c = clone(CATALOGS);
+  ext(c, 'gptragent').renamed_locally_to = 'gptr-agent';
+  const res = check({ catalogs: c });
+  assert.ok(fails(res, 'rename', 'renamed-to:gptragent'));
+  // Claiming a rename the map does not hold is the second, separate failure.
+  assert.ok(fails(res, 'rename', 'unmapped:gptragent'));
+});
+
+test('mutant caught: a renamed row without the new id in aliases', () => {
+  const c = clone(CATALOGS);
+  ext(c, 'gptragent').aliases = [];
+  const res = check({ catalogs: c });
+  assert.ok(fails(res, 'rename', 'alias:gptragent'));
+  assert.equal(fails(res, 'rename', 'renamed-to:gptragent'), false, 'only the alias is missing');
+});
+
+test('mutant caught: a row that claims a rename the map lacks', () => {
+  const c = clone(CATALOGS);
+  ext(c, 'cdwagent').renamed_locally_to = 'cdw';
+  ext(c, 'cdwagent').aliases.push('cdw');
+  const res = check({ catalogs: c });
+  assert.ok(fails(res, 'rename', 'unmapped:cdwagent'));
+  assert.equal(fails(res, 'rename', 'renamed-to:cdwagent'), false);
+});
+
+test('mutant caught: the map renames a row the catalog does not record (the map gains a row)', () => {
+  const res = check({ renames: [...RENAMES, { from: 'spokeagent', to: 'spoke' }] });
+  assert.ok(fails(res, 'rename', 'renamed-to:spokeagent'));
+  assert.ok(fails(res, 'rename', 'alias:spokeagent'));
+});
+
+test('a rename whose old id is a row\'s manifest_name, not its id, is held to the row too', () => {
+  const renames = [...RENAMES, { from: 'spokekg', to: 'spoke' }];
+  const c = clone(CATALOGS);
+  ext(c, 'spokeagent').manifest_name = 'spokekg';
+  const res = check({ catalogs: c, renames });
+  assert.ok(fails(res, 'rename', 'renamed-to:spokeagent'));
+  assert.ok(fails(res, 'rename', 'alias:spokeagent'));
+  // Recorded on the row, the same rename passes.
+  ext(c, 'spokeagent').renamed_locally_to = 'spoke';
+  ext(c, 'spokeagent').aliases.push('spoke');
+  assert.deepEqual(check({ catalogs: c, renames }).errors.filter((e) => e.rule === 'rename'), []);
+});
+
+test('the rename rule holds a superseded row too, so the turn-on keeps the record', () => {
+  const c = clone(CATALOGS);
+  const old = ext(c, 'gptragent');
+  old.status = 'superseded_by:gptr';
+  delete old.renamed_locally_to;
+  assert.ok(fails(check({ catalogs: c }), 'rename', 'renamed-to:gptragent'));
 });
 
 test('the mirror is catalog.json plus one source_commit line', () => {

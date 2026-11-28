@@ -3,6 +3,7 @@ pub mod biorouter_mode;
 pub mod declarative_providers;
 mod experiments;
 pub mod extension_credentials;
+pub mod extension_renames;
 pub mod extensions;
 pub mod paths;
 pub mod permission;

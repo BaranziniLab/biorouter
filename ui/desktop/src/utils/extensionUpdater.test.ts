@@ -27,10 +27,11 @@
  */
 import { describe, it, expect, vi, beforeEach, afterEach, beforeAll } from 'vitest';
 import * as fs from 'fs/promises';
-import { readFileSync, existsSync } from 'fs';
+import { readFileSync, existsSync, writeFileSync } from 'fs';
 import * as path from 'path';
 import { setImmediate as nextEventLoopTurn } from 'node:timers/promises';
 import AdmZip from 'adm-zip';
+import { createHash } from 'node:crypto';
 import { runProbe } from './dependencyChecker';
 
 const immediateFilesystem = vi.hoisted(() => ({ enabled: false }));
@@ -82,6 +83,24 @@ vi.mock('electron', () => ({
 vi.mock('./logger', () => ({
   default: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
 }));
+
+/**
+ * The catalog bundled with the app, which the updater reads when no live one
+ * was registered (or the live one could not be read). Replaced so a test states
+ * exactly which BAAM rows exist; empty unless a test adds one.
+ */
+const bundledRegistry = vi.hoisted(() => ({
+  version: 2,
+  source: 'test',
+  extensions: [] as unknown[],
+  skills: [] as unknown[],
+}));
+vi.mock('../components/baam/registry.fallback.json', () => ({ default: bundledRegistry }));
+
+/** `sha256:<hex>`, the shape GitHub publishes as a release asset's `digest`. */
+function digestOf(bytes: Buffer | Uint8Array): string {
+  return `sha256:${createHash('sha256').update(bytes).digest('hex')}`;
+}
 
 // Mocked, not spied: `./dependencyChecker` pulls in `../biorouterd`, i.e. the
 // whole Electron main-process graph. Nothing here should reach it anyway — the
@@ -160,6 +179,7 @@ function restoreEnv(name: string, value: string | undefined) {
 beforeEach(async () => {
   immediateFilesystem.enabled = false;
   sentEvents.length = 0;
+  bundledRegistry.extensions.length = 0;
   vi.mocked(runProbe).mockReset().mockRejectedValue(new Error('unexpected dependency probe'));
   delete process.env.BIOROUTER_PATH_ROOT;
   // The platform reading is `$XDG_CONFIG_HOME/biorouter` when that variable is
@@ -248,6 +268,7 @@ describe('extension update commit reporting and rollback', () => {
                   name: `${pkg.name}.brxt`,
                   browser_download_url: `https://downloads.example.invalid/${pkg.name}/fixture.brxt`,
                   size: downloads.get(pkg.name)!.length,
+                  digest: digestOf(downloads.get(pkg.name)!),
                 },
               ],
             }),
@@ -401,6 +422,7 @@ describe('extension update commit reporting and rollback', () => {
                   name: `${pkg.name}.brxt`,
                   browser_download_url: `https://downloads.example.invalid/${pkg.name}/${latestVersion}.brxt`,
                   size: bundles.get(latestVersion)!.length,
+                  digest: digestOf(bundles.get(latestVersion)!),
                 },
               ],
             }),
@@ -481,6 +503,620 @@ describe('extension update commit reporting and rollback', () => {
       finishFirstProbe.resolve(failedProbe);
       await Promise.allSettled([firstCheck, ...(secondCheck ? [secondCheck] : [])]);
     }
+  });
+});
+
+/**
+ * Which bundle the updater installs, and what it checks before it touches the
+ * install (the gptr rename, B3). It used to take the FIRST asset ending in
+ * `.brxt` from `releases/latest`, with no name, digest or manifest check, and
+ * GitHub lists assets in case-insensitive NAME order: `gptr.brxt` and
+ * `gptr-1.4.0.brxt` come before `gptragent.brxt`, so a `gptragent` install
+ * would have been overwritten by a bundle whose entry point its configuration
+ * does not run.
+ */
+describe('which release the updater installs, and what it checks first', () => {
+  const successfulProbe = {
+    ok: true,
+    code: 0,
+    stdout: '',
+    stderr: '',
+    timedOut: false,
+    error: null,
+  };
+
+  interface Installed {
+    dir: string;
+    manifest: Record<string, unknown>;
+  }
+
+  /** An installed extension in `<root>/config/extensions/<folder>`, at version 1.3.0. */
+  async function installedAt(
+    folder: string,
+    manifest: Record<string, unknown>
+  ): Promise<Installed> {
+    process.env.BIOROUTER_PATH_ROOT = redirectRoot;
+    const dir = path.join(redirectRoot, 'config', 'extensions', folder);
+    await fs.mkdir(path.join(dir, '.venv', 'bin'), { recursive: true });
+    const full = {
+      display_name: String(manifest.name),
+      description: '',
+      version: '1.3.0',
+      ...manifest,
+    };
+    await fs.writeFile(path.join(dir, 'manifest.json'), JSON.stringify(full));
+    await fs.writeFile(path.join(dir, 'main.py'), 'working version 1\n');
+    await fs.writeFile(path.join(dir, '.venv', 'bin', 'fixture'), 'working runtime 1\n');
+    return { dir, manifest: full };
+  }
+
+  function bundleOf(manifest: Record<string, unknown>, label: string): Buffer {
+    const zip = new AdmZip();
+    zip.addFile('manifest.json', Buffer.from(JSON.stringify(manifest)));
+    zip.addFile('main.py', Buffer.from(`replacement from ${label}\n`));
+    return zip.toBuffer();
+  }
+
+  /**
+   * A fake GitHub: `api` answers JSON by exact URL, `files` answers bytes by
+   * exact URL, and any other request fails the test. Every requested URL is
+   * recorded, so a test can say what was NOT asked.
+   */
+  function github(api: Record<string, unknown>, files: Record<string, Buffer>) {
+    const requested: string[] = [];
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: string | URL | Request) => {
+        const url = String(input);
+        requested.push(url);
+        if (url in api) return new Response(JSON.stringify(api[url]), { status: 200 });
+        if (url in files) {
+          return new Response(new Uint8Array(files[url]), {
+            status: 200,
+            headers: { 'content-length': String(files[url].length) },
+          });
+        }
+        throw new Error(`unexpected fixture request: ${url}`);
+      })
+    );
+    return requested;
+  }
+
+  async function packageFiles(dir: string) {
+    return {
+      manifest: await fs.readFile(path.join(dir, 'manifest.json'), 'utf8'),
+      main: await fs.readFile(path.join(dir, 'main.py'), 'utf8'),
+    };
+  }
+
+  const GPTRAGENT = {
+    name: 'gptragent',
+    display_name: 'gptr Agent',
+    entry_point: 'gptragent',
+    repository: 'https://github.com/Broccolito/gptr',
+  };
+
+  it('takes gptragent.brxt from releases/latest when GitHub lists gptr.brxt first', async () => {
+    const installed = await installedAt('gptr', GPTRAGENT);
+    const download = (name: string) =>
+      `https://github.com/Broccolito/gptr/releases/download/v1.4.0/${name}`;
+    const renamed = bundleOf(
+      { ...GPTRAGENT, name: 'gptr', entry_point: 'gptr', version: '1.4.0' },
+      'gptr'
+    );
+    const current = bundleOf({ ...GPTRAGENT, version: '1.4.0' }, 'gptragent');
+    const assets = [
+      ['gptr-1.4.0.brxt', renamed],
+      ['gptr.brxt', renamed],
+      ['gptragent-1.4.0.brxt', current],
+      ['gptragent.brxt', current],
+      ['SHA256SUMS', Buffer.from('sums\n')],
+    ] as const;
+    const requested = github(
+      {
+        'https://api.github.com/repos/Broccolito/gptr/releases/latest': {
+          tag_name: 'v1.4.0',
+          assets: assets.map(([name, bytes]) => ({
+            name,
+            browser_download_url: download(name),
+            size: bytes.length,
+            digest: digestOf(bytes),
+          })),
+        },
+      },
+      Object.fromEntries(assets.map(([name, bytes]) => [download(name), bytes]))
+    );
+    vi.mocked(runProbe).mockResolvedValue(successfulProbe);
+    const { runExtensionUpdateCheck } = await loadUpdater();
+
+    await runExtensionUpdateCheck();
+
+    expect(requested.filter((url) => url.includes('/releases/download/'))).toEqual([
+      download('gptragent.brxt'),
+    ]);
+    const manifest = JSON.parse((await packageFiles(installed.dir)).manifest);
+    expect(manifest).toMatchObject({
+      name: 'gptragent',
+      entry_point: 'gptragent',
+      version: '1.4.0',
+    });
+    expect(sentEvents[sentEvents.length - 1]).toEqual({ type: 'all-done', updatedCount: 1 });
+  });
+
+  it('follows the BAAM row to a prerelease tag and never asks releases/latest', async () => {
+    const installed = await installedAt('gptr', { ...GPTRAGENT, version: '0.1.2' });
+    const rowDownload =
+      'https://github.com/Broccolito/gptr/releases/download/bridge-v1.4.0/gptragent.brxt';
+    const bytes = bundleOf({ ...GPTRAGENT, version: '1.4.0' }, 'the bridge prerelease');
+    bundledRegistry.extensions.push({
+      id: 'gptragent',
+      name: 'gptr Agent',
+      version: 'v1.4.0',
+      download: rowDownload,
+      filename: 'gptragent.brxt',
+      extension_name: 'gptragent',
+    });
+    const requested = github(
+      {
+        'https://api.github.com/repos/Broccolito/gptr/releases/tags/bridge-v1.4.0': {
+          tag_name: 'bridge-v1.4.0',
+          prerelease: true,
+          assets: [
+            {
+              name: 'gptragent.brxt',
+              browser_download_url: rowDownload,
+              size: bytes.length,
+              digest: digestOf(bytes),
+            },
+          ],
+        },
+      },
+      { [rowDownload]: bytes }
+    );
+    vi.mocked(runProbe).mockResolvedValue(successfulProbe);
+    const { runExtensionUpdateCheck } = await loadUpdater();
+
+    await runExtensionUpdateCheck();
+
+    expect(requested.some((url) => url.endsWith('/releases/latest'))).toBe(false);
+    expect((await packageFiles(installed.dir)).main).toBe(
+      'replacement from the bridge prerelease\n'
+    );
+    expect(sentEvents).toContainEqual(
+      expect.objectContaining({ type: 'update-done', ext: 'gptragent', to: '1.4.0' })
+    );
+  });
+
+  it('reads the live catalog it was given, and the bundled one when that fails', async () => {
+    const installed = await installedAt('mytool', {
+      name: 'mytool',
+      entry_point: 'mytool',
+      repository: 'https://github.com/example/mytool',
+    });
+    const row = (version: string) => ({
+      id: 'mytool',
+      name: 'My tool',
+      version,
+      download: `https://github.com/example/mytool/releases/download/${version}/mytool.brxt`,
+      filename: 'mytool.brxt',
+    });
+    // The bundled snapshot is older than the install; the live catalog is newer.
+    bundledRegistry.extensions.push(row('v1.3.0'));
+    const bytes = bundleOf({ ...installed.manifest, version: '1.5.0' }, 'the live catalog');
+    const requested = github(
+      {
+        'https://api.github.com/repos/example/mytool/releases/tags/v1.5.0': {
+          tag_name: 'v1.5.0',
+          assets: [{ name: 'mytool.brxt', digest: digestOf(bytes) }],
+        },
+      },
+      { 'https://github.com/example/mytool/releases/download/v1.5.0/mytool.brxt': bytes }
+    );
+    vi.mocked(runProbe).mockResolvedValue(successfulProbe);
+
+    const offline = await loadUpdater();
+    offline.setExtensionUpdateRegistry(async () => ({ error: 'offline' }));
+    await offline.runExtensionUpdateCheck();
+    expect(requested).toEqual([]);
+    expect(sentEvents).toEqual([{ type: 'all-done', updatedCount: 0 }]);
+
+    const online = await loadUpdater();
+    online.setExtensionUpdateRegistry(async () => ({
+      registry: { version: 2, extensions: [row('v1.5.0')], skills: [] },
+    }));
+    await online.runExtensionUpdateCheck();
+    expect((await packageFiles(installed.dir)).main).toBe('replacement from the live catalog\n');
+  });
+
+  it('refuses to download an asset GitHub published no digest for', async () => {
+    const installed = await installedAt('l7-no-digest', {
+      name: 'l7-no-digest',
+      entry_point: 'main.py',
+      repository: 'https://github.com/l7-fixtures/l7-no-digest',
+    });
+    const before = await packageFiles(installed.dir);
+    const bytes = bundleOf({ ...installed.manifest, version: '2.0.0' }, 'an unverifiable download');
+    const url =
+      'https://github.com/l7-fixtures/l7-no-digest/releases/download/v2.0.0/l7-no-digest.brxt';
+    const requested = github(
+      {
+        'https://api.github.com/repos/l7-fixtures/l7-no-digest/releases/latest': {
+          tag_name: 'v2.0.0',
+          assets: [{ name: 'l7-no-digest.brxt', browser_download_url: url, digest: null }],
+        },
+      },
+      { [url]: bytes }
+    );
+    vi.mocked(runProbe).mockResolvedValue(successfulProbe);
+    const { runExtensionUpdateCheck } = await loadUpdater();
+
+    await runExtensionUpdateCheck();
+
+    expect(requested).not.toContain(url);
+    expect(await packageFiles(installed.dir)).toEqual(before);
+    expect(sentEvents).toEqual([{ type: 'all-done', updatedCount: 0 }]);
+  });
+
+  it.each([
+    ['a download that does not match its published digest', {}, 'digest'],
+    ['a bundle for another extension', { name: 'spokeagent' }, 'bundle'],
+    [
+      'a bundle whose entry point the configuration does not run',
+      { entry_point: 'other' },
+      'bundle',
+    ],
+    ['a bundle whose version is not the release version', { version: '2.0.1' }, 'bundle'],
+  ] as const)('refuses %s and leaves the install as it was', async (_label, change, broken) => {
+    const name = 'l7-refused';
+    const installed = await installedAt(name, {
+      name,
+      entry_point: 'main.py',
+      repository: `https://github.com/l7-fixtures/${name}`,
+    });
+    const before = await packageFiles(installed.dir);
+    const bytes = bundleOf(
+      { ...installed.manifest, version: '2.0.0', ...change },
+      'a refused bundle'
+    );
+    const url = `https://github.com/l7-fixtures/${name}/releases/download/v2.0.0/${name}.brxt`;
+    github(
+      {
+        [`https://api.github.com/repos/l7-fixtures/${name}/releases/latest`]: {
+          tag_name: 'v2.0.0',
+          assets: [
+            {
+              name: `${name}.brxt`,
+              browser_download_url: url,
+              digest: broken === 'digest' ? digestOf(Buffer.from('another file')) : digestOf(bytes),
+            },
+          ],
+        },
+      },
+      { [url]: bytes }
+    );
+    vi.mocked(runProbe).mockResolvedValue(successfulProbe);
+    const { runExtensionUpdateCheck } = await loadUpdater();
+
+    await runExtensionUpdateCheck();
+
+    expect(runProbe).not.toHaveBeenCalled();
+    expect(await packageFiles(installed.dir)).toEqual(before);
+    expect(sentEvents).toContainEqual(expect.objectContaining({ type: 'update-error', ext: name }));
+    expect(sentEvents[sentEvents.length - 1]).toEqual({ type: 'all-done', updatedCount: 0 });
+    expect(await fs.readdir(path.dirname(installed.dir))).toEqual([name]);
+  });
+
+  it('refuses a bundle that writes outside the install, leaving it and its parent as they were', async () => {
+    const name = 'l7-traversal';
+    const installed = await installedAt(name, {
+      name,
+      entry_point: 'main.py',
+      repository: `https://github.com/l7-fixtures/${name}`,
+    });
+    const before = await packageFiles(installed.dir);
+    const zip = new AdmZip();
+    zip.addFile(
+      'manifest.json',
+      Buffer.from(JSON.stringify({ ...installed.manifest, version: '2.0.0' }))
+    );
+    zip.addFile('main.py', Buffer.from('replacement from a traversal bundle\n'));
+    zip.addFile('escape.txt', Buffer.from('written outside the install\n'));
+    // adm-zip cleans a `..` out of a name given to addFile; set the raw name afterwards,
+    // which is what a hostile archive carries.
+    zip.getEntry('escape.txt')!.entryName = '../escape.txt';
+    const bytes = zip.toBuffer();
+    expect(new AdmZip(bytes).getEntries().map((entry) => entry.entryName)).toContain(
+      '../escape.txt'
+    );
+    const url = `https://github.com/l7-fixtures/${name}/releases/download/v2.0.0/${name}.brxt`;
+    github(
+      {
+        [`https://api.github.com/repos/l7-fixtures/${name}/releases/latest`]: {
+          tag_name: 'v2.0.0',
+          assets: [{ name: `${name}.brxt`, browser_download_url: url, digest: digestOf(bytes) }],
+        },
+      },
+      { [url]: bytes }
+    );
+    vi.mocked(runProbe).mockResolvedValue(successfulProbe);
+    const { runExtensionUpdateCheck } = await loadUpdater();
+
+    await runExtensionUpdateCheck();
+
+    expect(existsSync(path.join(path.dirname(installed.dir), 'escape.txt'))).toBe(false);
+    expect(await packageFiles(installed.dir)).toEqual(before);
+    expect(runProbe).not.toHaveBeenCalled();
+    expect(sentEvents).toContainEqual(expect.objectContaining({ type: 'update-error', ext: name }));
+    expect(await fs.readdir(path.dirname(installed.dir))).toEqual([name]);
+  });
+
+  it('refuses a bundle whose manifest.json has a second spelling the disk would merge', async () => {
+    const name = 'l7-two-manifests';
+    const installed = await installedAt(name, {
+      name,
+      entry_point: 'main.py',
+      repository: `https://github.com/l7-fixtures/${name}`,
+    });
+    const before = await packageFiles(installed.dir);
+    // The lookup reads the first, which passes every check; on a case-insensitive
+    // disk the extraction would leave the second, another extension at another
+    // version, as the installed manifest.
+    const zip = new AdmZip();
+    zip.addFile(
+      'manifest.json',
+      Buffer.from(JSON.stringify({ ...installed.manifest, version: '2.0.0' }))
+    );
+    zip.addFile('main.py', Buffer.from('replacement from a two-manifest bundle\n'));
+    zip.addFile(
+      'MANIFEST.JSON',
+      Buffer.from(JSON.stringify({ ...installed.manifest, name: 'evil', version: '9.0.0' }))
+    );
+    const bytes = zip.toBuffer();
+    const url = `https://github.com/l7-fixtures/${name}/releases/download/v2.0.0/${name}.brxt`;
+    github(
+      {
+        [`https://api.github.com/repos/l7-fixtures/${name}/releases/latest`]: {
+          tag_name: 'v2.0.0',
+          assets: [{ name: `${name}.brxt`, browser_download_url: url, digest: digestOf(bytes) }],
+        },
+      },
+      { [url]: bytes }
+    );
+    vi.mocked(runProbe).mockResolvedValue(successfulProbe);
+    const { runExtensionUpdateCheck } = await loadUpdater();
+
+    await runExtensionUpdateCheck();
+
+    expect(await packageFiles(installed.dir)).toEqual(before);
+    expect(runProbe).not.toHaveBeenCalled();
+    expect(sentEvents).toContainEqual(expect.objectContaining({ type: 'update-error', ext: name }));
+    expect(await fs.readdir(path.dirname(installed.dir))).toEqual([name]);
+  });
+
+  /**
+   * Round 2 of the same hole: a second entry that is `manifest.json` on disk
+   * under a name no lowercase comparison matches. Each was reproduced through
+   * this function before the fix, leaving the evil manifest installed and
+   * reporting success; the installed manifest then picks the registry row, the
+   * entry point and the repository of every later check.
+   */
+  it.each([
+    ['a dot segment', './manifest.json'],
+    ['a dot segment and a doubled separator', './/manifest.json'],
+    ['a dot segment with a backslash', '.\\manifest.json'],
+    ['a long s the disk reads as s', 'manife\u017ft.json'],
+    ['a trailing dot Windows drops', 'manifest.json.'],
+    ['an NTFS stream', 'manifest.json::$DATA'],
+  ])('refuses a bundle with a second manifest.json spelled with %s', async (_label, alias) => {
+    const name = 'l7-aliased-manifest';
+    const installed = await installedAt(name, {
+      name,
+      entry_point: 'main.py',
+      repository: `https://github.com/l7-fixtures/${name}`,
+    });
+    const before = await packageFiles(installed.dir);
+    const zip = new AdmZip();
+    zip.addFile(
+      'manifest.json',
+      Buffer.from(JSON.stringify({ ...installed.manifest, version: '2.0.0' }))
+    );
+    zip.addFile('main.py', Buffer.from('replacement from an aliased-manifest bundle\n'));
+    zip.addFile(
+      'evil.json',
+      Buffer.from(
+        JSON.stringify({
+          name: 'spokeagent',
+          entry_point: 'evil',
+          version: '9.9.9',
+          repository: 'https://github.com/attacker/x',
+        })
+      )
+    );
+    // Set the raw name, as a hostile archive carries it.
+    zip.getEntry('evil.json')!.entryName = alias;
+    const bytes = zip.toBuffer();
+    expect(new AdmZip(bytes).getEntries().map((entry) => entry.entryName)).toContain(alias);
+    const url = `https://github.com/l7-fixtures/${name}/releases/download/v2.0.0/${name}.brxt`;
+    github(
+      {
+        [`https://api.github.com/repos/l7-fixtures/${name}/releases/latest`]: {
+          tag_name: 'v2.0.0',
+          assets: [{ name: `${name}.brxt`, browser_download_url: url, digest: digestOf(bytes) }],
+        },
+      },
+      { [url]: bytes }
+    );
+    vi.mocked(runProbe).mockResolvedValue(successfulProbe);
+    const { runExtensionUpdateCheck } = await loadUpdater();
+
+    await runExtensionUpdateCheck();
+
+    expect(await packageFiles(installed.dir)).toEqual(before);
+    expect(runProbe).not.toHaveBeenCalled();
+    expect(sentEvents).toContainEqual(expect.objectContaining({ type: 'update-error', ext: name }));
+    expect(sentEvents.filter((event) => event.type === 'update-done')).toEqual([]);
+    expect(await fs.readdir(path.dirname(installed.dir))).toEqual([name]);
+  });
+
+  /**
+   * The layer that mirrors no disk's rules: whatever an extraction leaves as
+   * `manifest.json` must be the bytes that were checked. Simulated here by an
+   * extraction that writes another manifest, as a disk alias nothing above
+   * foresaw would.
+   */
+  it('refuses, and restores the install, when the extracted manifest.json is not the one checked', async () => {
+    const name = 'l7-manifest-changed-on-disk';
+    const installed = await installedAt(name, {
+      name,
+      entry_point: 'main.py',
+      repository: `https://github.com/l7-fixtures/${name}`,
+    });
+    const before = await packageFiles(installed.dir);
+    const bytes = bundleOf({ ...installed.manifest, version: '2.0.0' }, 'a checked bundle');
+    const url = `https://github.com/l7-fixtures/${name}/releases/download/v2.0.0/${name}.brxt`;
+    github(
+      {
+        [`https://api.github.com/repos/l7-fixtures/${name}/releases/latest`]: {
+          tag_name: 'v2.0.0',
+          assets: [{ name: `${name}.brxt`, browser_download_url: url, digest: digestOf(bytes) }],
+        },
+      },
+      { [url]: bytes }
+    );
+    vi.mocked(runProbe).mockResolvedValue(successfulProbe);
+    vi.doMock('./safeZip', async (importOriginal) => {
+      const actual = await importOriginal<typeof import('./safeZip')>();
+      return {
+        ...actual,
+        safeExtractZip: (zip: AdmZip, dir: string) => {
+          actual.safeExtractZip(zip, dir);
+          writeFileSync(
+            path.join(dir, 'manifest.json'),
+            JSON.stringify({ ...installed.manifest, name: 'spokeagent', version: '9.9.9' })
+          );
+        },
+      };
+    });
+    try {
+      const { runExtensionUpdateCheck } = await loadUpdater();
+
+      await runExtensionUpdateCheck();
+    } finally {
+      vi.doUnmock('./safeZip');
+    }
+
+    expect(await packageFiles(installed.dir)).toEqual(before);
+    expect(runProbe).not.toHaveBeenCalled();
+    expect(sentEvents).toContainEqual(
+      expect.objectContaining({
+        type: 'update-error',
+        ext: name,
+        error: expect.stringMatching(/manifest\.json/),
+      })
+    );
+    expect(sentEvents.filter((event) => event.type === 'update-done')).toEqual([]);
+    expect(await fs.readdir(path.dirname(installed.dir))).toEqual([name]);
+  });
+
+  it('refuses a download whose stated size is over the cap without reading it', async () => {
+    const name = 'l7-oversized';
+    const installed = await installedAt(name, {
+      name,
+      entry_point: 'main.py',
+      repository: `https://github.com/l7-fixtures/${name}`,
+    });
+    const before = await packageFiles(installed.dir);
+    const url = `https://github.com/l7-fixtures/${name}/releases/download/v2.0.0/${name}.brxt`;
+    const { MAX_BUNDLE_BYTES, runExtensionUpdateCheck } = await loadUpdater();
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: string | URL | Request) => {
+        if (String(input).endsWith('/releases/latest')) {
+          return new Response(
+            JSON.stringify({
+              tag_name: 'v2.0.0',
+              assets: [
+                {
+                  name: `${name}.brxt`,
+                  browser_download_url: url,
+                  digest: digestOf(Buffer.from('x')),
+                },
+              ],
+            }),
+            { status: 200 }
+          );
+        }
+        return new Response(new Uint8Array(4), {
+          status: 200,
+          headers: { 'content-length': String(MAX_BUNDLE_BYTES + 1) },
+        });
+      })
+    );
+
+    await runExtensionUpdateCheck();
+
+    expect(await packageFiles(installed.dir)).toEqual(before);
+    const failure = sentEvents.find((event) => event.type === 'update-error');
+    expect(String(failure?.error)).toMatch(/larger than/);
+  });
+
+  it('stops reading a download at the cap when no size was stated', async () => {
+    const { downloadBytes } = await loadUpdater();
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response(new Uint8Array(64), { status: 200 }))
+    );
+    await expect(downloadBytes('https://example.invalid/a.brxt', () => {}, 16)).rejects.toThrow(
+      /larger than/
+    );
+    await expect(
+      downloadBytes('https://example.invalid/a.brxt', () => {}, 64)
+    ).resolves.toHaveLength(64);
+  });
+
+  it('reports a refused release once per run of the app, not at every check', async () => {
+    const name = 'l7-refused-once';
+    const installed = await installedAt(name, {
+      name,
+      entry_point: 'main.py',
+      repository: `https://github.com/l7-fixtures/${name}`,
+    });
+    const bytes = bundleOf(
+      { ...installed.manifest, entry_point: 'another', version: '2.0.0' },
+      'a refused bundle'
+    );
+    const url = `https://github.com/l7-fixtures/${name}/releases/download/v2.0.0/${name}.brxt`;
+    const requested = github(
+      {
+        [`https://api.github.com/repos/l7-fixtures/${name}/releases/latest`]: {
+          tag_name: 'v2.0.0',
+          assets: [{ name: `${name}.brxt`, browser_download_url: url, digest: digestOf(bytes) }],
+        },
+      },
+      { [url]: bytes }
+    );
+    const { runExtensionUpdateCheck } = await loadUpdater();
+
+    await runExtensionUpdateCheck();
+    await runExtensionUpdateCheck();
+
+    expect(requested.filter((request) => request === url)).toHaveLength(1);
+    expect(sentEvents.filter((event) => event.type === 'update-error')).toHaveLength(1);
+    expect(sentEvents.filter((event) => event.type === 'update-found')).toHaveLength(1);
+    expect(sentEvents[sentEvents.length - 1]).toEqual({ type: 'all-done', updatedCount: 0 });
+  });
+
+  it('leaves a folder under an old id to the daemon, asking nothing', async () => {
+    const installed = await installedAt('gptragent', { ...GPTRAGENT, version: '0.1.0' });
+    const before = await packageFiles(installed.dir);
+    const requested = github({}, {});
+    const { runExtensionUpdateCheck } = await loadUpdater();
+
+    await runExtensionUpdateCheck();
+
+    expect(requested).toEqual([]);
+    expect(await packageFiles(installed.dir)).toEqual(before);
+    expect(sentEvents).toEqual([{ type: 'all-done', updatedCount: 0 }]);
   });
 });
 

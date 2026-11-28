@@ -13,6 +13,7 @@ import { MarketplaceDialog, MarketplaceRow } from './MarketplaceDialog';
 import { BROWSE_EXTENSIONS_COPY, MARKETPLACE_COPY } from './copy';
 import { PrivacyBadge } from '../ui/PrivacyBadge';
 import { readRegistryDownload } from '../../utils/registryDownloadResult';
+import { currentExtensionKey } from '../../utils/extensionRenames';
 
 interface Props {
   onClose: () => void;
@@ -71,8 +72,12 @@ export default function BrowseExtensionsModal({
     };
   }, []);
 
+  // A row keeps its registry id after the extension is renamed (`gptragent`), while an install
+  // made or moved by this release is configured under the new id (`gptr`).
   const isInstalled = (e: RegistryExtension) =>
-    installedNames.has(e.name.toLowerCase()) || installedNames.has(e.id.toLowerCase());
+    installedNames.has(e.name.toLowerCase()) ||
+    installedNames.has(e.id.toLowerCase()) ||
+    installedNames.has(currentExtensionKey(e.extension_name ?? e.id));
 
   /** Best match first under a query; registry order when there is none. */
   const filtered = useMemo(() => {

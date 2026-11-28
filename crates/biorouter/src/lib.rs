@@ -30,6 +30,7 @@ pub mod dictation;
 pub mod elicitation_answer;
 pub mod execution;
 pub mod extension_install;
+pub mod extension_rename;
 pub mod folder_access;
 pub mod fork_safety;
 pub mod guardrails;

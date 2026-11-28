@@ -785,6 +785,23 @@ pub const BACKFILLED_CAPABILITIES: &[&str] = &["browser"];
 impl ExtensionState for EnabledExtensionsState {
     const EXTENSION_NAME: &'static str = "enabled_extensions";
     const VERSION: &'static str = "v0";
+
+    /// The stored roster as this build loads it: a config saved under an
+    /// extension id that was renamed since reads under its current id, and its
+    /// install folder follows a completed move
+    /// ([`crate::config::extension_renames::project_configs`]). The row is not
+    /// rewritten here; the next roster write stores what it read.
+    fn from_value(value: &Value) -> Result<Self> {
+        let mut state: Self = serde_json::from_value(value.clone()).map_err(|e| {
+            anyhow::anyhow!(
+                "Failed to deserialize {} state: {}",
+                Self::EXTENSION_NAME,
+                e
+            )
+        })?;
+        state.extensions = crate::config::extension_renames::project_configs(state.extensions);
+        Ok(state)
+    }
 }
 
 impl EnabledExtensionsState {
@@ -885,6 +902,57 @@ mod tests {
             ..with_browser
         };
         assert!(with_browser.backfill(&machine, person).is_empty());
+    }
+
+    /// A saved chat's roster that names gptr Agent by its old id loads under
+    /// the current one, so its tools carry the current prefix and the chat
+    /// keeps the extension (and its private tier, which both names carry).
+    /// Every reader goes through `from_value`: `from_extension_data`, the
+    /// workspace's saved roster and the session route.
+    #[test]
+    fn a_saved_roster_naming_an_old_extension_id_loads_under_the_current_one() {
+        let stored = json!({
+            "extensions": [
+                {
+                    "type": "stdio",
+                    "name": "gptragent",
+                    "description": "gptr Agent",
+                    "cmd": "uv",
+                    "args": ["run", "--directory", "/nowhere/gptragent", "gptragent"],
+                    "available_tools": ["r"],
+                },
+                {
+                    "type": "platform",
+                    "name": "todo",
+                    "description": "Todo",
+                    "bundled": true,
+                    "available_tools": [],
+                },
+            ],
+        });
+        let state = EnabledExtensionsState::from_value(&stored).unwrap();
+        let keys: Vec<String> = state.extensions.iter().map(ExtensionConfig::key).collect();
+        assert_eq!(keys, vec!["gptr".to_string(), "todo".to_string()]);
+        match &state.extensions[0] {
+            ExtensionConfig::Stdio {
+                args,
+                available_tools,
+                ..
+            } => {
+                assert_eq!(args[3], "gptragent", "the entry point is the bundle's own");
+                assert_eq!(available_tools, &vec!["r".to_string()]);
+            }
+            other => panic!("not stdio: {other:?}"),
+        }
+
+        let mut data = ExtensionData::new();
+        data.set_extension_state(
+            EnabledExtensionsState::EXTENSION_NAME,
+            EnabledExtensionsState::VERSION,
+            stored,
+        );
+        let read = EnabledExtensionsState::from_extension_data(&data).unwrap();
+        assert_eq!(read.extensions[0].key(), "gptr");
     }
 
     fn checklist(markdown: &str) -> TodoState {

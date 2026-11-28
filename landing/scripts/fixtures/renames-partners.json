@@ -1,0 +1,7 @@
+{
+  "version": 1,
+  "renames": [
+    { "from": "oldpublicagent", "to": "newpublicagent", "note": "A public card renamed: emits nothing." },
+    { "from": "oldprivateagent", "to": "renamedprivateagent", "note": "The card is the new id; the old id joins the private set." }
+  ]
+}

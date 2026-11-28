@@ -16,6 +16,7 @@ import { activateExtensionDefault } from './settings/extensions';
 import { classifyExtension } from './settings/extensions/extensionPrivacy';
 import { upsertConfig } from '../api';
 import { userActionHeaders } from '../utils/userAction';
+import { currentExtensionKey, isRenamedAway } from '../utils/extensionRenames';
 import { toastService } from '../toasts';
 import { DependencyErrorBanner } from './DependencyErrorBanner';
 import {
@@ -67,6 +68,17 @@ interface Props {
 }
 
 const NO_LOCAL_PATH_MESSAGE = COPY.noLocalPath;
+
+/**
+ * The name a bundle installs under: the id the extension has now when its manifest still says
+ * one that was renamed away (`gptragent.brxt` installs as `gptr`, the folder, the provenance
+ * record and the config entry alike, so its tools are `gptr__*`), and otherwise exactly the name
+ * the manifest declares, case included (`CDWAgent` stays `CDWAgent`). The entry point is never
+ * renamed: it is the script the bundle ships.
+ */
+function installNameFor(manifestName: string): string {
+  return isRenamedAway(manifestName) ? currentExtensionKey(manifestName) : manifestName;
+}
 
 /**
  * A description's first sentence and the rest. The summary shows the first sentence and folds
@@ -206,11 +218,8 @@ export function BrxtInstallModal({ onClose, onInstalled, preloadedFilePath, orig
     setError(null);
 
     try {
-      const result = await window.electron.installBrxtBundle(
-        filePath,
-        manifest.name,
-        registrySource
-      );
+      const installName = installNameFor(manifest.name);
+      const result = await window.electron.installBrxtBundle(filePath, installName, registrySource);
 
       if ('error' in result) {
         setError(result.error);
@@ -245,7 +254,7 @@ export function BrxtInstallModal({ onClose, onInstalled, preloadedFilePath, orig
       });
 
       const extensionConfig = {
-        name: manifest.name,
+        name: installName,
         description: manifest.description,
         type: 'stdio' as const,
         cmd: 'uv',

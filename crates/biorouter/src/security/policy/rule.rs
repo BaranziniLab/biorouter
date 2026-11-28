@@ -244,7 +244,14 @@ impl CompiledRule {
             return false;
         }
         if let Some(globs) = &self.tool_globs {
-            if !globs.iter().any(|g| g.matches(tool)) {
+            // Every spelling of the tool: a rule written for a tool before its
+            // extension was renamed still governs it, so a deny cannot be lost
+            // by the rename (`config::extension_renames`).
+            let spellings = crate::config::extension_renames::tool_name_aliases(tool);
+            if !spellings
+                .iter()
+                .any(|spelling| globs.iter().any(|g| g.matches(spelling)))
+            {
                 return false;
             }
         }
@@ -323,5 +330,33 @@ fn compile_globs(
             }
             Ok(Some(globs))
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn rule_for_tools(tools: &[&str]) -> CompiledRule {
+        let tools: Vec<String> = tools.iter().map(|tool| format!("\"{tool}\"")).collect();
+        let yaml = format!(
+            "id: renamed-tool\nmatch:\n  tools: [{}]\ndecision: deny\n",
+            tools.join(", ")
+        );
+        CompiledRule::compile(serde_yaml::from_str(&yaml).unwrap()).unwrap()
+    }
+
+    /// I4 of the gptr rename: a policy rule whose tool globs name an old tool
+    /// still applies to the renamed tool, so a deny cannot be lost by the
+    /// rename, and it reaches no other tool.
+    #[test]
+    fn a_tool_glob_written_for_an_old_tool_name_matches_the_renamed_tool() {
+        let cmd = ParsedCommand::parse("echo hi", std::path::Path::new("/tmp"));
+        assert!(rule_for_tools(&["gptragent__r"]).matches("gptr__r", &cmd));
+        assert!(rule_for_tools(&["gptragent__*"]).matches("gptr__inspect", &cmd));
+        assert!(rule_for_tools(&["gptr__r"]).matches("gptragent__r", &cmd));
+        assert!(!rule_for_tools(&["gptragent__r"]).matches("gptr__inspect", &cmd));
+        assert!(!rule_for_tools(&["gptragent__*"]).matches("developer__shell", &cmd));
+        assert!(rule_for_tools(&["developer__shell"]).matches("developer__shell", &cmd));
     }
 }

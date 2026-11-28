@@ -48,7 +48,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { spawn, type ChildProcess } from 'child_process';
 import AdmZip from 'adm-zip';
-import { safeExtractZip } from './utils/safeZip';
+import { extractedFileMatchesEntry, safeExtractZip } from './utils/safeZip';
 import 'dotenv/config';
 import {
   checkServerStatus,
@@ -196,7 +196,11 @@ import {
   runProbe,
   SPAWN_ENV,
 } from './utils/dependencyChecker';
-import { runExtensionUpdateCheck, scheduleExtensionUpdateCheck } from './utils/extensionUpdater';
+import {
+  runExtensionUpdateCheck,
+  scheduleExtensionUpdateCheck,
+  setExtensionUpdateRegistry,
+} from './utils/extensionUpdater';
 import {
   isAllowedArtifactFrameNavigation,
   isAllowedRendererPermission,
@@ -6909,6 +6913,14 @@ ipcMain.handle(
       // Extract bundle (zip-slip guarded: rejects entries that escape installDir)
       const zip = new AdmZip(filePath);
       safeExtractZip(zip, installDir);
+      // The install modal read the archive's `manifest.json` entry
+      // (`brxt:validate-and-read`) and writes the config from it; the extension
+      // updater later reads the file on disk. The two must be the same bytes.
+      if (!extractedFileMatchesEntry(zip, installDir, 'manifest.json')) {
+        throw new Error(
+          'the manifest.json the bundle left on disk is not the one that was read, so another of its entries names the same file'
+        );
+      }
 
       // Pre-build the virtual environment.
       // Async, not spawnSync: UV_SYNC_TIMEOUT_MS is ten minutes, and a
@@ -8717,6 +8729,17 @@ async function appMain() {
 
   setupDependencyChecker(STARTUP_DEPENDENCY_CHECK_DELAY_MS);
 
+  // The extension updater follows each BAAM-listed extension's registry row, read from the same
+  // document and last-good cache `registry:fetch` serves (the updater falls back to the bundled
+  // snapshot). Registered here rather than passed to the schedule call so the menu's own
+  // `runExtensionUpdateCheck()` reads the same catalog.
+  setExtensionUpdateRegistry(() =>
+    fetchRegistryWithLastGood({
+      url: REGISTRY_URL,
+      cachePath: registryCachePath(),
+      onWriteError: (err) => log.warn('Could not write the last-good registry cache:', err),
+    })
+  );
   scheduleExtensionUpdateCheck(STARTUP_EXTENSION_CHECK_DELAY_MS);
 
   // Setup macOS dock menu

@@ -2517,6 +2517,13 @@ mechanism that used to be claimed here no longer exists.
    re-affiliated one are each a named failure. A card therefore **cannot make itself private**:
    doing so takes two edits, the list and the page, and the second is what makes somebody review the
    first.
+   A renamed private extension keeps both ids in the set (`gptr` and `gptragent` since 2026-11-28):
+   the generator emits the new id from `crates/biorouter/src/config/extension_renames.json` with the
+   card's affiliation, so a lookup that misses the rename loses routing, never the tier. A build
+   older than the rename, which knows only `gptragent`, classifies the moved entry by a provenance
+   record keyed `gptr` that names the registry id `gptragent`; a local install, which records no
+   provenance, is given one. See
+   [Extension id renames](../extensions/extension-renames.md#privacy).
 
 ⚠ **What neither mechanism covers, and what was given up to get here.** This section previously
 asserted a third: that the generator hard-fails when a card's description matches a clinical keyword

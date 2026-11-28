@@ -206,6 +206,11 @@ pub struct ExtensionInstallTransaction {
     /// otherwise be attached on a pre-flight that never saw it.
     #[allow(clippy::type_complexity)]
     attach_guard: Option<Box<dyn Fn(&str) -> Option<String> + Send + Sync>>,
+    /// The extension the caller says this bundle is: a marketplace row's stated
+    /// `extension_name`. A bundle whose manifest names another extension is
+    /// refused before anything is written. See
+    /// [`ExtensionInstallTransaction::expect_extension`].
+    expected_extension: Option<String>,
     /// Everything this run created, in the order it created it, so a failure
     /// undoes exactly its own work and nothing else.
     undo: Undo,
@@ -260,9 +265,23 @@ fn copy_install_tree(source: &Path, destination: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn open_install_lock_file(key: &str) -> anyhow::Result<std::fs::File> {
-    let lock_root = crate::config::paths::Paths::in_config_dir("extension-install-locks");
-    std::fs::create_dir_all(&lock_root)?;
+/// `<config>/extension-install-locks`: one lock file per extension key, held
+/// for the whole of an install and by `extension_rename`'s move.
+pub(crate) fn install_lock_root() -> PathBuf {
+    crate::config::paths::Paths::in_config_dir("extension-install-locks")
+}
+
+pub(crate) fn open_install_lock_file(key: &str) -> anyhow::Result<std::fs::File> {
+    open_install_lock_file_in(&install_lock_root(), key)
+}
+
+/// [`open_install_lock_file`] under `lock_root`, for a caller (or a test) that
+/// names its own config folder.
+pub(crate) fn open_install_lock_file_in(
+    lock_root: &Path,
+    key: &str,
+) -> anyhow::Result<std::fs::File> {
+    std::fs::create_dir_all(lock_root)?;
     let lock_name = format!("{:x}.lock", Sha256::digest(key.as_bytes()));
     let lock = std::fs::OpenOptions::new()
         .create(true)
@@ -284,6 +303,7 @@ impl ExtensionInstallTransaction {
             registered_enabled: None,
             manager: None,
             attach_guard: None,
+            expected_extension: None,
             undo: Undo::default(),
         }
     }
@@ -318,6 +338,26 @@ impl ExtensionInstallTransaction {
     ) -> Self {
         self.attach_guard = Some(Box::new(guard));
         self
+    }
+
+    /// Refuse a bundle that is not the extension `name`, the `extension_name`
+    /// a BAAM registry row states. Every id the extension has had counts
+    /// (`gptragent` and `gptr` are one extension), so a row written before a
+    /// rename still accepts the renamed bundle and the reverse.
+    ///
+    /// ⚠ Only a name the registry STATED (`advertises_name`). A row without one
+    /// falls back to its registry id, which is not the extension's name
+    /// (`spokeagent-0.4.1` installed as `spokeagent`), and expecting it would
+    /// refuse a correct bundle.
+    pub fn expect_extension(mut self, name: impl Into<String>) -> Self {
+        self.expected_extension = Some(name.into());
+        self
+    }
+
+    /// The extension this install is held to, if any
+    /// ([`Self::expect_extension`]).
+    pub fn expected_extension(&self) -> Option<&str> {
+        self.expected_extension.as_deref()
     }
 
     pub fn install_id(&self) -> &str {
@@ -366,7 +406,14 @@ impl ExtensionInstallTransaction {
 
         // ── validate ──────────────────────────────────────────────────────
         let bundle = BrxtBundle::open(&bundle_path)?;
-        let manifest = bundle.manifest().clone();
+        // From here `manifest.name` is the name this install registers, which
+        // for a renamed id is the current one (`extension_renames`). Every
+        // later use (key, folder, lock, switch, attach guard, config entry,
+        // claim, catalogue event, provenance) reads it.
+        let manifest = match self.manifest_to_install(&bundle) {
+            Ok(manifest) => manifest,
+            Err(refusal) => return Ok(InstallReport::failed(self.install_id.clone(), refusal)),
+        };
         let skills = bundle.skills().to_vec();
         let key = name_to_key(&manifest.name);
         let lock = open_install_lock_file(&key)?;
@@ -509,6 +556,19 @@ impl ExtensionInstallTransaction {
             &skills,
             &env_keys,
         ))
+    }
+
+    /// The manifest this run registers, or why the bundle is refused.
+    ///
+    /// Asked before anything is locked or written: a marketplace row names the
+    /// extension it lists ([`Self::expect_extension`]), and a bundle that is
+    /// another one is not it.
+    fn manifest_to_install(&self, bundle: &BrxtBundle) -> Result<BrxtManifest, String> {
+        let bundled = bundle.manifest();
+        match bundle_refusal(&bundled.name, self.expected_extension.as_deref()) {
+            Some(refusal) => Err(refusal),
+            None => Ok(installed_manifest(bundled.clone())),
+        }
     }
 
     /// The credential phase: write what the caller already had, ask for what is
@@ -1080,6 +1140,29 @@ fn enabled_to_persist(operator_switch: Option<bool>, requested: bool) -> bool {
     operator_switch.unwrap_or(requested)
 }
 
+/// Why a bundle whose manifest declares `bundled` may not be installed as the
+/// extension `expected`, or `None` when it may (or nothing was expected).
+fn bundle_refusal(bundled: &str, expected: Option<&str>) -> Option<String> {
+    let expected = expected?;
+    if crate::extension_rename::is_same_extension(bundled, expected) {
+        return None;
+    }
+    Some(format!(
+        "The downloaded bundle is the `{bundled}` extension, not `{expected}`, which the \
+         marketplace lists. Nothing was installed."
+    ))
+}
+
+/// The manifest as this install registers it: an old id is installed under its
+/// current one (`gptragent.brxt` installs as `gptr`), so the key, the folder,
+/// the lock, the config entry and the provenance record all carry the name the
+/// extension has now. The entry point is the bundle's own, because it names a
+/// script inside the bundle.
+fn installed_manifest(mut manifest: BrxtManifest) -> BrxtManifest {
+    manifest.name = crate::extension_rename::installed_name(&manifest.name);
+    manifest
+}
+
 /// What the credential phase is working on, so the helpers below take one
 /// borrow instead of four.
 struct InstallContext<'a> {
@@ -1460,6 +1543,63 @@ mod tests {
         );
         assert!(json.contains("https://biorouter.ucsf.edu/"), "{json}");
         assert!(json.contains("spokeagent-0.4.1"), "{json}");
+    }
+
+    fn renamed_manifest(name: &str) -> BrxtManifest {
+        BrxtManifest {
+            name: name.to_string(),
+            display_name: "gptr Agent".to_string(),
+            entry_point: "gptragent".to_string(),
+            repository: "https://github.com/Broccolito/gptr".to_string(),
+            env_vars: Vec::new(),
+            ..spoke_manifest()
+        }
+    }
+
+    /// `gptragent.brxt` installs as `gptr`: its tools are `gptr__*` from the
+    /// first start. The entry point names a script inside the bundle, so it is
+    /// the bundle's own and never renamed.
+    #[test]
+    fn a_renamed_id_installs_under_its_current_name_with_its_own_entry_point() {
+        for bundled in ["gptragent", "GptrAgent", "gptr"] {
+            let installed = installed_manifest(renamed_manifest(bundled));
+            assert_eq!(installed.name, "gptr", "{bundled}");
+            assert_eq!(installed.entry_point, "gptragent", "{bundled}");
+            assert_eq!(installed.display_name, "gptr Agent", "{bundled}");
+            let config = compose_config(
+                &installed,
+                Path::new("/ext/gptr"),
+                HashMap::new(),
+                Vec::new(),
+            );
+            assert_eq!(config.name(), "gptr");
+            let ExtensionConfig::Stdio { args, .. } = &config else {
+                panic!("a bundle registers a stdio extension")
+            };
+            assert_eq!(args, &["run", "--directory", "/ext/gptr", "gptragent"]);
+        }
+        // Every other name keeps the manifest's exact spelling.
+        for kept in ["CDWAgent", "spokeagent", "gptragentx"] {
+            assert_eq!(installed_manifest(renamed_manifest(kept)).name, kept);
+        }
+    }
+
+    /// A marketplace row names the extension it lists. A bundle that turns out
+    /// to be another extension is refused; one under any id the listed
+    /// extension has had is the same extension.
+    #[test]
+    fn a_marketplace_row_accepts_its_bundle_under_any_id_and_refuses_another() {
+        assert_eq!(bundle_refusal("spokeagent", None), None);
+        assert_eq!(bundle_refusal("gptragent", Some("gptragent")), None);
+        assert_eq!(bundle_refusal("gptr", Some("gptragent")), None);
+        assert_eq!(bundle_refusal("GptrAgent", Some("gptr")), None);
+        assert_eq!(bundle_refusal("CDWAgent", Some("cdwagent")), None);
+        let refusal = bundle_refusal("spokeagent", Some("gptragent"))
+            .expect("a bundle of another extension is refused");
+        assert!(
+            refusal.contains("spokeagent") && refusal.contains("gptragent"),
+            "{refusal}"
+        );
     }
 
     /// An optional, non-secret variable must not be able to summon a dialog —

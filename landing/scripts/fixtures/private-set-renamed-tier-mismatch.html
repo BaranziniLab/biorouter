@@ -1,0 +1,45 @@
+<!--
+  Fixture: both ends of the real rename gptragent -> gptr have a card, and the
+  two cards disagree about the tier: gptragent is private, gptr is public.
+
+  Expected: exit 1, by the rename rule, with the real map
+  (crates/biorouter/src/config/extension_renames.json) and no extra flag. A
+  rename is one extension under two ids, so a catalog that makes one id public
+  would let the other id's private data reach a public model under the new
+  name.
+-->
+<div id="extensions-section">
+  <div class="ext-grid" id="extensions-grid">
+
+    <div class="ext-card" data-license="Apache-2.0" data-privacy="private" data-extension-name="gptragent">
+      <div class="ext-card-header">
+        <div class="ext-meta">
+          <h3>gptr Agent</h3>
+          <div class="ext-org">Fixtures · v0.1.0</div>
+        </div>
+        <a href="https://example.invalid/gptr-agent" class="ext-gh-link">GitHub</a>
+      </div>
+      <p class="ext-desc">The old id, private under no institution's agreements.</p>
+      <div class="ext-footer">
+        <div class="ext-tags"><span class="tag private" data-privacy-badge>Private</span><span class="tag mcp">MCP</span></div>
+        <a href="https://example.invalid/gptragent.brxt" class="brxt-chip">.brxt</a>
+      </div>
+    </div>
+
+    <div class="ext-card" data-license="Apache-2.0" data-extension-name="gptr">
+      <div class="ext-card-header">
+        <div class="ext-meta">
+          <h3>gptr</h3>
+          <div class="ext-org">Fixtures · v0.2.0</div>
+        </div>
+        <a href="https://example.invalid/gptr" class="ext-gh-link">GitHub</a>
+      </div>
+      <p class="ext-desc">The new id of the same extension, wrongly left public.</p>
+      <div class="ext-footer">
+        <div class="ext-tags"><span class="tag public" data-privacy-badge>Public</span><span class="tag mcp">MCP</span></div>
+        <a href="https://example.invalid/gptr.brxt" class="brxt-chip">.brxt</a>
+      </div>
+    </div>
+
+  </div>
+</div>

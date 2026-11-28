@@ -66,8 +66,17 @@ pub(crate) enum OfferedToolName<'a> {
 /// Execution narrowed, the toolshim's roster when the native one is empty), never
 /// the extension manager's full roster: the refusal lists names, and a hidden
 /// private server's tool names must never reach a public model.
+///
+/// A name whose extension prefix is an id Biorouter renamed since
+/// (`gptragent__r`, read from a transcript, a skill or a workflow) is the
+/// renamed tool (`gptr__r`) when, and only when, this turn offered that tool
+/// ([`crate::config::extension_renames::current_tool_name`]). It is resolved
+/// here, before inspection, for the same reason a bare name is (I5).
 pub(crate) fn offered_tool_for_name<'a>(tools: &'a [Tool], name: &str) -> OfferedToolName<'a> {
     if let Some(tool) = tools.iter().find(|tool| tool.name == name) {
+        return OfferedToolName::Offered(tool);
+    }
+    if let Some(tool) = offered_renamed_tool(tools, name) {
         return OfferedToolName::Offered(tool);
     }
     if name.contains("__") {
@@ -88,6 +97,17 @@ pub(crate) fn offered_tool_for_name<'a>(tools: &'a [Tool], name: &str) -> Offere
             quoted_tool_names(several.iter().map(|tool| tool.name.as_ref()))
         )),
     }
+}
+
+/// The offered tool `name` means after an extension rename, if `name` carries a
+/// renamed extension's old id and the tool under its current name is offered.
+/// Never anything outside `tools`.
+fn offered_renamed_tool<'a>(tools: &'a [Tool], name: &str) -> Option<&'a Tool> {
+    let current = crate::config::extension_renames::current_tool_name(name);
+    if current == name {
+        return None;
+    }
+    tools.iter().find(|tool| tool.name == current.as_ref())
 }
 
 /// The refusal for a bare name no offered tool ends in, listing up to
@@ -163,7 +183,10 @@ fn offered_names_listing(name: &str, tools: &[Tool]) -> Option<String> {
 /// list (a frontend or platform tool, an extension enabled this turn); the hint
 /// is added only when dispatch answers that no such tool exists.
 fn unoffered_prefixed_name_hint(name: &str, tools: &[Tool]) -> Option<String> {
-    if !name.contains("__") || tools.iter().any(|tool| tool.name == name) {
+    if !name.contains("__")
+        || tools.iter().any(|tool| tool.name == name)
+        || offered_renamed_tool(tools, name).is_some()
+    {
         return None;
     }
     let listing = offered_names_listing(name, tools)?;
@@ -4007,6 +4030,46 @@ mod offered_name_tests {
         assert!(reason.contains("`docker__shell`"), "{reason}");
         assert!(!reason.contains("memory__remember"), "{reason}");
         assert!(reason.contains("was not run"), "{reason}");
+    }
+
+    /// I5 of the gptr rename: a model that writes a tool by its extension's
+    /// old id (from a transcript, a skill or a workflow) runs the renamed tool,
+    /// and the rename happens here, before inspection, so permissions, hooks
+    /// and policy judge the name that will run.
+    #[test]
+    fn an_old_tool_name_resolves_to_the_offered_renamed_tool() {
+        let tools = offered(&["gptr__r", "gptr__inspect", "developer__shell"]);
+        assert_eq!(resolved(&tools, "gptragent__r"), Some("gptr__r"));
+        assert_eq!(
+            resolved(&tools, "gptragent__inspect"),
+            Some("gptr__inspect")
+        );
+        assert!(
+            unoffered_prefixed_name_hint("gptragent__r", &tools).is_none(),
+            "a name that resolves is not told it was not offered"
+        );
+
+        // An exact name always wins, even an old one that is itself offered.
+        let tools = offered(&["gptragent__r", "gptr__r"]);
+        assert_eq!(resolved(&tools, "gptragent__r"), Some("gptragent__r"));
+    }
+
+    /// I5: the old name resolves only to a tool this turn OFFERED. A renamed
+    /// tool Gate E withheld (a private server's, from a public model) stays
+    /// unresolved, so dispatch refuses it as it refuses any unoffered name and
+    /// its current name is never written into the request.
+    #[test]
+    fn an_old_tool_name_never_resolves_to_a_tool_this_turn_did_not_offer() {
+        let tools = offered(&["developer__shell"]);
+        assert!(matches!(
+            offered_tool_for_name(&tools, "gptragent__r"),
+            OfferedToolName::Unresolved
+        ));
+        let tools = offered(&["gptr__inspect"]);
+        assert!(matches!(
+            offered_tool_for_name(&tools, "gptragent__r"),
+            OfferedToolName::Unresolved
+        ));
     }
 
     #[test]

@@ -1,0 +1,45 @@
+<!--
+  Fixture: both ends of the real rename gptragent -> gptr have a private card,
+  and the two cards disagree about the affiliation: gptragent declares none,
+  gptr declares ucsf.
+
+  Expected: exit 1, by the rename rule, with the real map
+  (crates/biorouter/src/config/extension_renames.json) and no extra flag.
+  Absent and ["ucsf"] are different answers, so one extension under two ids
+  would be reachable from different models depending on which id a store held.
+-->
+<div id="extensions-section">
+  <div class="ext-grid" id="extensions-grid">
+
+    <div class="ext-card" data-license="Apache-2.0" data-privacy="private" data-extension-name="gptragent">
+      <div class="ext-card-header">
+        <div class="ext-meta">
+          <h3>gptr Agent</h3>
+          <div class="ext-org">Fixtures · v0.1.0</div>
+        </div>
+        <a href="https://example.invalid/gptr-agent" class="ext-gh-link">GitHub</a>
+      </div>
+      <p class="ext-desc">The old id, private under no institution's agreements.</p>
+      <div class="ext-footer">
+        <div class="ext-tags"><span class="tag private" data-privacy-badge>Private</span><span class="tag mcp">MCP</span></div>
+        <a href="https://example.invalid/gptragent.brxt" class="brxt-chip">.brxt</a>
+      </div>
+    </div>
+
+    <div class="ext-card" data-license="Apache-2.0" data-privacy="private" data-extension-name="gptr" data-affiliation="ucsf">
+      <div class="ext-card-header">
+        <div class="ext-meta">
+          <h3>gptr</h3>
+          <div class="ext-org">Fixtures · UCSF · v0.2.0</div>
+        </div>
+        <a href="https://example.invalid/gptr" class="ext-gh-link">GitHub</a>
+      </div>
+      <p class="ext-desc">The new id of the same extension, re-affiliated by accident.</p>
+      <div class="ext-footer">
+        <div class="ext-tags"><span class="tag private" data-privacy-badge>Private</span><span class="tag affiliation" data-affiliation-badge="ucsf">UCSF data</span><span class="tag ucsf">UCSF</span><span class="tag mcp">MCP</span></div>
+        <a href="https://example.invalid/gptr.brxt" class="brxt-chip">.brxt</a>
+      </div>
+    </div>
+
+  </div>
+</div>

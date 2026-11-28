@@ -703,6 +703,10 @@ struct SetToolsPlan {
     /// under DR-15's opt-out) — what the first-crossing record half needs.
     write_target: Option<crate::privacy::SessionClassification>,
     add_configs: Vec<crate::agents::ExtensionConfig>,
+    /// `remove_extensions` as the target holds them: a name that is an
+    /// extension id renamed since names the extension held under the current
+    /// id (`preflight_extension_removals`).
+    remove_extensions: Vec<String>,
     new_provider: Option<(
         String,
         String,
@@ -3878,6 +3882,7 @@ impl WorkspaceClient {
         let SetToolsPlan {
             write_target,
             add_configs,
+            remove_extensions,
             new_provider,
         } = self
             .preflight_set_tools(caller_session_id, cap, &args)
@@ -3905,7 +3910,7 @@ impl WorkspaceClient {
         // now changed where its roster actually lives — the session row — and
         // an agent is minted only for the provider switch, which genuinely
         // needs one.
-        let touches_extensions = !add_configs.is_empty() || !args.remove_extensions.is_empty();
+        let touches_extensions = !add_configs.is_empty() || !remove_extensions.is_empty();
         let (live, agent) = if touches_extensions || new_provider.is_some() {
             let agent_manager = crate::execution::manager::AgentManager::instance()
                 .await
@@ -3933,7 +3938,7 @@ impl WorkspaceClient {
                     cap,
                     &args.session_id,
                     add_configs,
-                    &args.remove_extensions,
+                    &remove_extensions,
                 )
                 .await?,
             );
@@ -4107,7 +4112,7 @@ impl WorkspaceClient {
         // F4: removals are judged HERE, before any approval — they used to be
         // judged only once the handler had fetched the target's agent, which is
         // after the card the user had already been asked to approve.
-        Self::preflight_extension_removals(
+        let remove_extensions = Self::preflight_extension_removals(
             self.context.session_manager.as_ref(),
             cap,
             &args.session_id,
@@ -4186,6 +4191,7 @@ impl WorkspaceClient {
         Ok(SetToolsPlan {
             write_target,
             add_configs,
+            remove_extensions,
             new_provider,
         })
     }
@@ -4221,14 +4227,22 @@ impl WorkspaceClient {
         )
     }
 
+    /// Judge `remove_extensions` against the target conversation before any
+    /// approval.
+    ///
+    /// Returns the names as the target holds them, for the handler to apply:
+    /// each one as written, except an extension id renamed since
+    /// (`config::extension_renames`) that the target holds only under its
+    /// current id, which comes back as that id. Exact first, so a target that
+    /// holds both ids keeps each name meaning its own entry.
     async fn preflight_extension_removals(
         session_manager: &crate::session::SessionManager,
         cap: crate::privacy::CallCapability,
         target_session_id: &str,
         names: &[String],
-    ) -> Result<(), String> {
+    ) -> Result<Vec<String>, String> {
         if names.is_empty() {
-            return Ok(());
+            return Ok(Vec::new());
         }
         let live = match crate::execution::manager::AgentManager::instance().await {
             Ok(manager) => manager.peek_agent(target_session_id).await,
@@ -4247,6 +4261,7 @@ impl WorkspaceClient {
                     .map_err(|e| e.to_string())?
             }
         };
+        let mut held_names = Vec::with_capacity(names.len());
         for name in names {
             let Some(agent) = &live else {
                 if let Some(refusal) =
@@ -4258,10 +4273,18 @@ impl WorkspaceClient {
                 // second copy of it — and BELOW the privacy arm for the same
                 // reason: reachable only by a caller already entitled to see what
                 // that conversation has loaded.
-                if !saved.iter().any(|config| {
-                    crate::agents::extension_manager::normalize(&config.name())
-                        == crate::agents::extension_manager::normalize(name)
-                }) {
+                let saved_holds = |wanted: &str| {
+                    saved.iter().any(|config| {
+                        crate::agents::extension_manager::normalize(&config.name()) == wanted
+                    })
+                };
+                let key = crate::agents::extension_manager::normalize(name);
+                let current = crate::config::extension_renames::current_key(&key);
+                if saved_holds(&key) {
+                    held_names.push(name.clone());
+                } else if current != key && saved_holds(current) {
+                    held_names.push(current.to_owned());
+                } else {
                     return Err(Self::nothing_to_remove(name, target_session_id));
                 }
                 continue;
@@ -4282,8 +4305,11 @@ impl WorkspaceClient {
             {
                 return Err(Self::nothing_to_remove(name, target_session_id));
             }
+            let key = crate::agents::extension_manager::normalize(name);
+            let loaded = agent.extension_manager.loaded_key_for(name).await;
+            held_names.push(if loaded == key { name.clone() } else { loaded });
         }
-        Ok(())
+        Ok(held_names)
     }
 
     /// The knowledge-base half of the pre-flight (F4): everything
@@ -14238,6 +14264,48 @@ pub(crate) mod tests {
             vec!["roster-alpha".to_string(), "roster-gamma".to_string()],
             "one named removal replaced the whole saved roster"
         );
+    }
+
+    /// The gptr rename: a cold conversation's saved roster and a remove list
+    /// may each name gptr Agent by either id, and the removal lands whichever
+    /// the two use: the roster reads under the current id, and an old id in
+    /// the request names the extension held under the current one.
+    #[tokio::test]
+    #[serial_test::serial(workspace_services)]
+    async fn set_tools_on_a_cold_conversation_removes_an_extension_named_by_either_id() {
+        crate::workspace_services::set_for_tests(None);
+        let c = client();
+        let old_roster =
+            cold_target_with_roster(&c, "cold-renamed-roster", &["roster-alpha", "gptragent"])
+                .await;
+        let new_roster =
+            cold_target_with_roster(&c, "cold-renamed-request", &["roster-alpha", "gptr"]).await;
+
+        let by_current = call_as(
+            &c,
+            "workspace_set_tools",
+            serde_json::json!({ "session_id": old_roster, "remove_extensions": ["gptr"] }),
+            private_caller(),
+        )
+        .await;
+        let by_old = call_as(
+            &c,
+            "workspace_set_tools",
+            serde_json::json!({ "session_id": new_roster, "remove_extensions": ["gptragent"] }),
+            private_caller(),
+        )
+        .await;
+        let (current_text, old_text) = (text_of(&by_current), text_of(&by_old));
+        crate::workspace_services::clear_test_override();
+        assert_ne!(by_current.is_error, Some(true), "{current_text}");
+        assert_ne!(by_old.is_error, Some(true), "{old_text}");
+        for target in [&old_roster, &new_roster] {
+            assert_eq!(
+                saved_names(&c, target).await,
+                vec!["roster-alpha".to_string()],
+                "{target}"
+            );
+        }
     }
 
     /// The same door, the other direction: a cold removal of a name the

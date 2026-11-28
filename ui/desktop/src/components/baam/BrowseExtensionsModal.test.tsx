@@ -459,3 +459,53 @@ describe('BrowseExtensionsModal — each row action names its extension', () => 
     expect(screen.queryByRole('button', { name: 'Add' })).toBeNull();
   });
 });
+
+/**
+ * The gptr rename. BAAM keeps listing gptr Agent under its registry id `gptragent` (ids never
+ * move), while an install made or migrated by this release is configured as `gptr`. The row must
+ * still read Installed, or a person is offered a second install of what they already have.
+ */
+describe('BrowseExtensionsModal: an extension installed under its new id', () => {
+  const GPTRAGENT_ROW = {
+    id: 'gptragent',
+    name: 'gptr Agent',
+    organization: 'Broccolito · UCSF',
+    version: 'v0.1.2',
+    description: 'Work inside an R session you already have open.',
+    tags: [],
+    github: 'https://github.com/Broccolito/GptrAgent',
+    download: 'https://github.com/Broccolito/GptrAgent/releases/download/v0.1.2/gptragent.brxt',
+    filename: 'gptragent.brxt',
+    privacy: 'private',
+    extension_name: 'gptragent',
+  };
+
+  beforeEach(() => {
+    loadRegistry.mockResolvedValue({
+      live: true,
+      registry: { extensions: [GPTRAGENT_ROW, REGISTRY_ENTRY], skills: [] },
+    });
+  });
+
+  it('reads Installed on the gptragent row when gptr is configured', async () => {
+    renderModal({ installedNames: new Set(['gptr']) });
+
+    const row = (await screen.findByText('gptr Agent')).closest('[data-marketplace-row]');
+    expect(within(row as HTMLElement).getByText('Installed')).toBeInTheDocument();
+    expect(
+      within(row as HTMLElement).queryByRole('button', {
+        name: BROWSE_EXTENSIONS_COPY.addNamed('gptr Agent'),
+      })
+    ).toBeNull();
+    // Only the renamed extension: an unrelated row still offers Add.
+    const other = screen.getByText('Playwright Agent').closest('[data-marketplace-row]');
+    expect(within(other as HTMLElement).queryByText('Installed')).toBeNull();
+  });
+
+  it('still reads Installed for a config not yet moved off the old id', async () => {
+    renderModal({ installedNames: new Set(['gptragent']) });
+
+    const row = (await screen.findByText('gptr Agent')).closest('[data-marketplace-row]');
+    expect(within(row as HTMLElement).getByText('Installed')).toBeInTheDocument();
+  });
+});

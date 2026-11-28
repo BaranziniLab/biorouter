@@ -38,6 +38,11 @@
 // `--assert-private-set` is the fixture opt-in for the closed-list assertion a
 // real run always applies — see EXPECTED_PRIVATE_EXTENSIONS below.
 //
+// Every run reads the extension rename map,
+// crates/biorouter/src/config/extension_renames.json, and puts both ids of a
+// renamed private extension into the compiled set. `--renames <file>` replaces
+// that map for a fixture run, and is refused on a real one.
+//
 // A real run (and `--check`) also checks the registry it has just built against
 // the BAAM catalogs in landing/catalog/ (landing/scripts/check-catalog.mjs), so
 // the outputs are never regenerated while a catalog disagrees with the page. A
@@ -162,6 +167,25 @@ if (CHECK && !IS_REAL_RUN) {
   process.exit(1);
 }
 
+// `--renames <file>` replaces the extension rename map for a FIXTURE run, for
+// the reason `--emit-rust` and `--assert-private-set` exist: the real map holds
+// one rename, of a card the real page carries, so without the flag the rule
+// that puts a rename partner into the compiled private set could only be
+// exercised in the one direction the real catalog happens to need. A real run
+// always reads the crate's map: on a real run the flag would be a command-line
+// way to change the compiled private set.
+const RENAMES_REAL_LABEL = 'crates/biorouter/src/config/extension_renames.json';
+const RENAMES_FLAG = flag('--renames', null);
+if (RENAMES_FLAG !== null && IS_REAL_RUN) {
+  console.error(`registry: --renames is for fixture runs; a real run always reads ${RENAMES_REAL_LABEL}`);
+  process.exit(1);
+}
+// Resolved from this file, not from the working directory, so a copy of the
+// generator written beside it (the test suite's mutants) reads the same map.
+const RENAMES_SOURCE =
+  RENAMES_FLAG ?? fileURLToPath(new URL('../../crates/biorouter/src/config/extension_renames.json', import.meta.url));
+const RENAMES_LABEL = RENAMES_FLAG ?? RENAMES_REAL_LABEL;
+
 // Two generators that read baam.html at different moments can interleave their
 // writes and leave the three outputs from two different generations. Held only
 // for the writes of a real run.
@@ -257,6 +281,15 @@ const INSTITUTION_NAMES = Object.fromEntries(INSTITUTIONS.map((i) => [i.id, i.na
 // institution's agreements (DR-26's "unconstrained", reachable from any private
 // model). `null` is a distinct answer, not an empty list, so it is spelled out
 // here rather than inferred from a missing value.
+//
+// ⚠ **A renamed extension is listed under every id it has had.** The rename map
+// (crates/biorouter/src/config/extension_renames.json, read below) is one
+// extension under two ids, so when either id is a private card the generator
+// emits BOTH into the compiled set, with that card's affiliation. Both ids are
+// listed here too, so a rename is still two reviewed edits: one to the map, one
+// to this list. Today the card is `gptragent` and `gptr` is its partner; on the
+// day the catalog moves to a `gptr` card the same rule emits `gptragent` from
+// it, and this list does not change.
 const EXPECTED_PRIVATE_EXTENSIONS = [
   ['cdwagent', ['ucsf']],
   ['ucsfomopagent', ['ucsf']],
@@ -264,6 +297,9 @@ const EXPECTED_PRIVATE_EXTENSIONS = [
   // withheld from public models; it is the person's own machine, so no
   // institution's agreements apply (BAAM refresh, owner decision 1, 2026-11).
   ['gptragent', null],
+  // gptr Agent again, under the id it was renamed to on 2026-11-28 (owner
+  // approval). The rename partner of the gptragent card, with its affiliation.
+  ['gptr', null],
 ];
 
 // Every closed-list failure carries this. A gate that says only "unexpected"
@@ -272,7 +308,8 @@ const EXPECTED_PRIVATE_EXTENSIONS = [
 const CLOSED_SET_ADVICE =
   'the private set is a closed list, not something a card grants itself — changing it means ' +
   'editing EXPECTED_PRIVATE_EXTENSIONS in landing/scripts/build-registry.mjs as well as the ' +
-  'card in landing/baam.html, deliberately two edits so that adding, removing or re-affiliating ' +
+  'card in landing/baam.html (or, for a renamed id, the map in ' +
+  `${RENAMES_REAL_LABEL}), deliberately two edits so that adding, removing or re-affiliating ` +
   'a private extension is a reviewed decision rather than a side effect of writing a card';
 
 // A declared extension name has to survive TWO reductions, in two different
@@ -300,6 +337,120 @@ const normalizeLikeTheManager = (s) =>
     .map((c) => (/[A-Za-z0-9_-]/.test(c) ? c : '_'))
     .join('')
     .toLowerCase();
+
+// ---- The extension rename map ---------------------------------------------
+// One table, three readers: the daemon compiles it in
+// (crates/biorouter/src/config/extension_renames.rs, with `include_str!`), the
+// desktop keeps a pinned mirror (ui/desktop/src/utils/extensionRenames.ts), and
+// this generator reads it from disk to put both ids of a renamed private
+// extension into the compiled private set.
+//
+// ⚠ **Read strictly, and never as empty on a failure.** A map this generator
+// cannot read would drop every rename partner from the compiled set, which
+// classifies the new id Public: a fail-open produced by a typo in a JSON file.
+// So an unreadable file, an unknown version or field, and a row the daemon would
+// refuse are all build failures. The rules are the daemon's own
+// (`extension_renames.rs`, `validate`), so the two readers cannot disagree about
+// which rows exist.
+const RENAMES_VERSION = 1;
+const RENAME_TABLE_FIELDS = ['version', 'renames'];
+const RENAME_ROW_FIELDS = ['from', 'to', 'note'];
+
+function loadRenames(source, label) {
+  let table;
+  try {
+    table = JSON.parse(readFileSync(source, 'utf8'));
+  } catch (err) {
+    fail(
+      `cannot read the extension rename map ${label}: ${err.message}. Without it the ` +
+        `compiled private set would lose every renamed id, so nothing is written`
+    );
+    return [];
+  }
+  if (table === null || typeof table !== 'object' || Array.isArray(table)) {
+    fail(`the extension rename map ${label} is not a JSON object`);
+    return [];
+  }
+  const unknown = Object.keys(table).filter((k) => !RENAME_TABLE_FIELDS.includes(k));
+  if (unknown.length > 0) {
+    fail(`the extension rename map ${label} has fields this generator does not read: ${unknown.join(', ')}`);
+    return [];
+  }
+  if (table.version !== RENAMES_VERSION) {
+    fail(
+      `${label} is version ${JSON.stringify(table.version)}, and this generator reads version ` +
+        `${RENAMES_VERSION}; a newer map may hold renames this build would miss`
+    );
+    return [];
+  }
+  if (!Array.isArray(table.renames)) {
+    fail(`the extension rename map ${label} has no "renames" list`);
+    return [];
+  }
+
+  const rows = [];
+  table.renames.forEach((row, index) => {
+    const at = `${label}: rename #${index + 1}`;
+    if (row === null || typeof row !== 'object' || Array.isArray(row)) {
+      fail(`${at} is not an object`);
+      return;
+    }
+    const extra = Object.keys(row).filter((k) => !RENAME_ROW_FIELDS.includes(k));
+    if (extra.length > 0) {
+      fail(`${at} has fields this generator does not read: ${extra.join(', ')}`);
+      return;
+    }
+    const { from, to } = row;
+    if (typeof from !== 'string' || typeof to !== 'string') {
+      fail(`${at} needs a string "from" and a string "to"`);
+      return;
+    }
+    const where = `${label}: rename ${from} -> ${to}`;
+    let sound = true;
+    // The agreement check every data-extension-name gets, applied to both ids:
+    // each one is a config key, a tool prefix and a folder name at once, so it
+    // has to come out of both reductions unchanged.
+    for (const name of [from, to]) {
+      const key = nameToKey(name);
+      const managed = normalizeLikeTheManager(name);
+      if (!key) {
+        fail(`${where}: an id may not be empty or only whitespace`);
+        sound = false;
+      } else if (managed !== key) {
+        fail(
+          `${where}: "${name}" reduces to "${key}" here but "${managed}" in the extension ` +
+            `manager. An id must be ASCII letters, digits, "_" or "-" only, or the compiled ` +
+            `private set would hold a key the running app never produces`
+        );
+        sound = false;
+      } else if (key !== name) {
+        fail(
+          `${where}: "${name}" is not written as its own key "${key}"; the map holds ` +
+            `name_to_key keys (lowercase, no whitespace), so write it that way`
+        );
+        sound = false;
+      }
+    }
+    if (from === to) {
+      fail(`${where}: an id is renamed to itself`);
+      sound = false;
+    }
+    if (sound) rows.push({ from, to });
+  });
+
+  // Duplicates and chains, as the daemon's validator refuses them. A chain would
+  // make "the current id" depend on how many times a lookup is applied.
+  for (const [i, a] of rows.entries()) {
+    for (const b of rows.slice(i + 1)) {
+      if (a.from === b.from) fail(`${label}: "${a.from}" is renamed twice`);
+      if (a.to === b.to) fail(`${label}: two extensions are renamed to "${a.to}"`);
+    }
+    if (rows.some((b) => b.from === a.to)) {
+      fail(`${label}: "${a.to}" is both a current id and an old one; rename "${a.from}" straight to the newest id`);
+    }
+  }
+  return rows;
+}
 
 const html = readFileSync(INPUT, 'utf8');
 
@@ -860,6 +1011,92 @@ for (const e of extensions) {
 }
 
 /**
+ * An affiliation as every closed-set and rename message spells it: `(absent)`
+ * for a card that declares none, `[a, b]` (sorted) otherwise. Absent means
+ * unconstrained, which is a different answer from `[]` (permits nothing), so
+ * the two never render alike.
+ */
+const ABSENT_AFFILIATION = '(absent)';
+const affiliationLabel = (insts) =>
+  Array.isArray(insts) ? `[${[...insts].sort().join(', ')}]` : ABSENT_AFFILIATION;
+
+/**
+ * The compiled private set, as entries `{ key, affiliation, label, rename, card }`
+ * sorted by key: every private card under its `data-extension-name`, plus, for
+ * each rename in the map with a private card at either end, the OTHER end, with
+ * that card's affiliation (`rename` and `card` say where such an entry came
+ * from; both are null for a card's own entry).
+ *
+ * ⚠ **Symmetric, so it survives the catalog moving to the new id.** Today the
+ * card is the old id (`gptragent`) and the partner is the new one (`gptr`).
+ * When the catalog later carries a `gptr` card instead, the same rule emits
+ * `gptragent` from it, and the set does not change.
+ *
+ * ⚠ **Two cards on one rename must agree.** A rename is one extension under two
+ * ids, so a page that gives the two ids different tiers or affiliations would
+ * let a store holding one id reach what the other id withholds. That is a build
+ * failure on every run, fixture included: it is a property of the page and the
+ * map, not of the closed list.
+ *
+ * A public card's rename emits nothing. A rename partner is a name for the
+ * compiled set only, never a registry row: registry.json stays the cards.
+ */
+function privateSetOf(exts, renames) {
+  const cardOf = new Map();
+  for (const e of exts) {
+    if (e.extension_name && !cardOf.has(e.extension_name)) cardOf.set(e.extension_name, e);
+  }
+  const affiliationOf = (e) => (Array.isArray(e.affiliation) ? e.affiliation : null);
+
+  const entries = new Map();
+  for (const e of exts) {
+    // A private card with no `data-extension-name` has already failed a rule
+    // that names the real problem.
+    if (e.privacy !== 'private' || !e.extension_name) continue;
+    entries.set(e.extension_name, {
+      key: e.extension_name,
+      affiliation: affiliationOf(e),
+      label: e.id || e.name || e.extension_name,
+      rename: null,
+      card: null,
+    });
+  }
+
+  for (const rename of renames) {
+    const from = cardOf.get(rename.from);
+    const to = cardOf.get(rename.to);
+    if (from && to) {
+      // Both ids are cards; each contributes its own entry above, so the only
+      // question is whether they describe one extension.
+      const fromAffiliation = affiliationLabel(affiliationOf(from));
+      const toAffiliation = affiliationLabel(affiliationOf(to));
+      if (from.privacy !== to.privacy || fromAffiliation !== toAffiliation) {
+        fail(
+          `the rename ${rename.from} -> ${rename.to} (${RENAMES_LABEL}) has a card at both ends, ` +
+            `and they disagree: "${rename.from}" is ${from.privacy} with affiliation ` +
+            `${fromAffiliation}, "${rename.to}" is ${to.privacy} with affiliation ${toAffiliation}. ` +
+            `A rename is one extension under two ids, so its two cards must declare the same ` +
+            `data-privacy and the same data-affiliation`
+        );
+      }
+      continue;
+    }
+    const card = from ?? to;
+    if (!card || card.privacy !== 'private') continue;
+    const partner = card === from ? rename.to : rename.from;
+    entries.set(partner, {
+      key: partner,
+      affiliation: affiliationOf(card),
+      label: partner,
+      rename,
+      card,
+    });
+  }
+
+  return [...entries.values()].sort((a, b) => (a.key < b.key ? -1 : a.key > b.key ? 1 : 0));
+}
+
+/**
  * The catalog's private set must be EXACTLY `EXPECTED_PRIVATE_EXTENSIONS` —
  * same keys, same affiliations — or the run fails naming the difference.
  *
@@ -872,25 +1109,25 @@ for (const e of extensions) {
  *   * a listed extension is re-affiliated (which flows count as
  *     cross-institutional changes underneath the warning copy).
  *
- * A private card with no `data-extension-name` is skipped here: it has already
- * failed a rule that names the real problem, and reporting it a second time as
- * "not in the closed set" would point at the wrong file.
+ * Asked of `privateSetOf`'s entries, so a rename partner is held to the list
+ * exactly as a card is: a rename nobody listed grows the set by accident, and a
+ * listed id whose rename row was deleted shrinks it.
  */
-function assertClosedPrivateSet(exts) {
-  const key = (insts) => [...insts].sort().join(', ');
-  const ABSENT = '(absent)';
+function assertClosedPrivateSet(entries) {
   const expected = new Map(
-    EXPECTED_PRIVATE_EXTENSIONS.map(([k, insts]) => [k, insts === null ? ABSENT : `[${key(insts)}]`])
+    EXPECTED_PRIVATE_EXTENSIONS.map(([k, insts]) => [k, affiliationLabel(insts)])
   );
   const seen = new Set();
 
-  for (const e of exts) {
-    if (e.privacy !== 'private' || !e.extension_name) continue;
-    const label = e.id || e.name || e.extension_name;
-    seen.add(e.extension_name);
-    if (!expected.has(e.extension_name)) {
+  for (const e of entries) {
+    seen.add(e.key);
+    const through = e.rename
+      ? ` through the rename ${e.rename.from} -> ${e.rename.to} in ${RENAMES_LABEL} (its card ` +
+        `"${e.card.id || e.card.extension_name}" is private)`
+      : '';
+    if (!expected.has(e.key)) {
       fail(
-        `${label}: declares data-privacy="private", but "${e.extension_name}" is not in the ` +
+        `${e.label}: declares data-privacy="private"${through}, but "${e.key}" is not in the ` +
           `closed private set {${[...expected.keys()].join(', ')}} — ${CLOSED_SET_ADVICE}`
       );
       continue;
@@ -898,12 +1135,13 @@ function assertClosedPrivateSet(exts) {
     // Absent affiliation means unconstrained, which is a different answer from
     // ["ucsf"], not a milder one — so it is a mismatch, spelled out as such
     // rather than rendered as an empty list a reader would misread.
-    const declared = Array.isArray(e.affiliation) ? `[${key(e.affiliation)}]` : ABSENT;
-    const want = expected.get(e.extension_name);
+    const declared = affiliationLabel(e.affiliation);
+    const want = expected.get(e.key);
     if (declared !== want) {
       fail(
-        `${label}: "${e.extension_name}" is private with affiliation ${declared}, but the ` +
-          `closed private set records ${want} — ${CLOSED_SET_ADVICE}`
+        `${e.label}: "${e.key}" is private with affiliation ${declared}, but the ` +
+          `closed private set records ${want}${through ? `; it is private${through}` : ''} — ` +
+          CLOSED_SET_ADVICE
       );
     }
   }
@@ -912,7 +1150,8 @@ function assertClosedPrivateSet(exts) {
     if (!seen.has(k)) {
       fail(
         `the closed private set names "${k}", but no card in this catalog declares ` +
-          `data-privacy="private" with that data-extension-name — ${CLOSED_SET_ADVICE}`
+          `data-privacy="private" with that data-extension-name, and no rename in ` +
+          `${RENAMES_LABEL} pairs it with a private card — ${CLOSED_SET_ADVICE}`
       );
     }
   }
@@ -1010,8 +1249,14 @@ function assertInstitutionRowsAreWellFormed() {
 }
 
 assertInstitutionRowsAreWellFormed();
+
+// The compiled private set: the private cards, and the rename partner of each.
+// Derived on every run, because the rename rule (two cards on one rename must
+// agree) is a property of the page and the map, not of the closed list.
+const privateEntries = privateSetOf(extensions, loadRenames(RENAMES_SOURCE, RENAMES_LABEL));
+
 if (IS_REAL_RUN || ASSERT_PRIVATE_SET) {
-  assertClosedPrivateSet(extensions);
+  assertClosedPrivateSet(privateEntries);
   assertInstitutionsAreNamedByACard(extensions);
 }
 
@@ -1093,9 +1338,13 @@ function renderSliceConst(head, cells) {
  */
 const SKIP_FMT = '#[rustfmt::skip]';
 
-function renderPrivateSet(exts) {
-  const privateExts = exts.filter((e) => e.privacy === 'private');
-  const keys = privateExts.map((e) => e.extension_name).sort();
+/**
+ * `entries` is `privateSetOf`'s answer: every private card's key and the rename
+ * partner of each, so a renamed private extension is compiled in under both ids
+ * with one affiliation.
+ */
+function renderPrivateSet(entries) {
+  const keys = entries.map((e) => e.key).sort();
   const body = renderSliceConst(
     'pub const PRIVATE_EXTENSIONS: &[&str]',
     keys.map((k) => `"${k}"`)
@@ -1104,10 +1353,11 @@ function renderPrivateSet(exts) {
   // Only entries that DECLARE an affiliation get a row. An extension with no
   // declaration must produce no row at all, never a row with an empty list:
   // absent means unconstrained, an empty allowlist permits nothing, and the two
-  // are opposite answers.
-  const affiliationRows = privateExts
+  // are opposite answers. A rename partner carries its card's affiliation, so
+  // it gets a row exactly when its card does.
+  const affiliationRows = entries
     .filter((e) => Array.isArray(e.affiliation) && e.affiliation.length > 0)
-    .map((e) => [e.extension_name, [...e.affiliation].sort()])
+    .map((e) => [e.key, [...e.affiliation].sort()])
     .sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0))
     .map(([key, insts]) => `("${key}", &[${insts.map((i) => `"${i}"`).join(', ')}])`);
   const affiliations = renderSliceConst(
@@ -1129,7 +1379,9 @@ function renderPrivateSet(exts) {
       '//! `landing/scripts/build-registry.mjs` writes this in the same run as',
       '//! `landing/registry.json` and the desktop fallback snapshot, from the',
       '//! `data-privacy` / `data-extension-name` / `data-affiliation` annotations on',
-      '//! the extension cards in `landing/baam.html`. Regenerate all three with:',
+      '//! the extension cards in `landing/baam.html` and the extension rename map in',
+      '//! `crates/biorouter/src/config/extension_renames.json`. Regenerate all three',
+      '//! with:',
       '//!',
       '//! ```text',
       '//! node landing/scripts/build-registry.mjs',
@@ -1159,6 +1411,11 @@ function renderPrivateSet(exts) {
       '',
       '/// The BAAM extensions whose cards declare `data-privacy="private"`, and which',
       '/// so must never be admitted to a public session.',
+      '///',
+      '/// A renamed extension is listed under every id it has had: for each rename',
+      '/// in `config/extension_renames.json` with a private card at either end, the',
+      '/// other end is listed too, with that card\'s affiliation. So a store or a',
+      '/// lookup that still names the old id keeps the private tier.',
       '///',
       '/// Values are `name_to_key` **keys** — whitespace-stripped and lowercased —',
       '/// which is the form `classify_extension` reduces its argument to before the',
@@ -1346,7 +1603,7 @@ if (violations.length) {
 // in three forms, and a failure between them leaves a published registry the
 // app does not enforce.
 const out = JSON.stringify(registry, null, 2) + '\n';
-const rustSource = renderPrivateSet(extensions);
+const rustSource = renderPrivateSet(privateEntries);
 const tally =
   `${extensions.length} extensions, ${skills.length} skills ` +
   `(${skills.filter((s) => s.category === 'Core').length} core, ` +

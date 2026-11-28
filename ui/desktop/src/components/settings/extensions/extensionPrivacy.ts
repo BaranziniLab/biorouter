@@ -18,8 +18,16 @@ import { nameToKey } from './utils';
  * tier for itself (that would be R11(i) inverted). So the set is duplicated, and
  * the drift runs in the direction that under-marks: an extension added to the
  * Rust baseline and not here loses its GUI warning while staying fully
- * enforced. That is the safe half — the user sees no warning and then sees the
- * refusal — but it is still drift, and the two lists must be edited together.
+ * enforced. That is the safe half (the user sees no warning and then sees the
+ * refusal), but it is still drift, so `extensionPrivacy.privateSet.test.ts`
+ * reads the generated Rust file and fails until this list equals it. That test
+ * is new with the gptr rename: before it, this list had silently lacked
+ * `gptragent`, badging gptr Agent Public while every gate refused it.
+ *
+ * A renamed extension is listed under every id it has had (`gptragent` and
+ * `gptr`, `utils/extensionRenames.ts`), because the generator emits both into
+ * the Rust set: a config, chat or workflow that still names the old id is
+ * badged Private like the new one.
  *
  * This constant is the compiled-in HALF of the private set. Task 37 made
  * `classifyExtension` below the union `PRIVATE_EXTENSIONS ∪
@@ -30,7 +38,12 @@ import { nameToKey } from './utils';
  * same reduction `name_to_key` applies in Rust, so `UCSFOMOPAgent`,
  * `ucsfomopagent` and ` ucsfomopagent ` all resolve identically on both sides.
  */
-export const PRIVATE_EXTENSION_KEYS: readonly string[] = ['cdwagent', 'ucsfomopagent'];
+export const PRIVATE_EXTENSION_KEYS: readonly string[] = [
+  'cdwagent',
+  'gptr',
+  'gptragent',
+  'ucsfomopagent',
+];
 
 /**
  * R11(ii): anything not on the marketplace list is Public. Fail-open, by

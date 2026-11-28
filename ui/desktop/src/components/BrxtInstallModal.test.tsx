@@ -8,8 +8,9 @@ import type { BrxtManifest } from '../types/brxt';
  * anything, so the context is stubbed down to the one member the component
  * closes over.
  */
+const addExtension = vi.hoisted(() => vi.fn(async () => {}));
 vi.mock('./ConfigContext', () => ({
-  useConfig: () => ({ addExtension: vi.fn() }),
+  useConfig: () => ({ addExtension }),
   // `PrivacyBadge` reads the master switch off this same context and fails loudly
   // if the mock omits it — see the warning in `ui/PrivacyBadge.tsx`.
   usePrivacyTiersEnabled: () => true,
@@ -32,6 +33,7 @@ const MANIFEST: BrxtManifest = {
 afterEach(() => {
   cleanup();
   delete (window as unknown as { electron?: unknown }).electron;
+  addExtension.mockClear();
 });
 
 describe('BrxtInstallModal — issue #56 §13.5', () => {
@@ -570,5 +572,97 @@ describe('BrxtInstallModal — the dialog', () => {
       COPY.optionalHelp('X', 3),
     ];
     for (const text of sentences) expect(text).not.toMatch(/[\u2013\u2014]/);
+  });
+});
+
+/**
+ * The gptr rename. A bundle whose manifest still says an old id (`gptragent.brxt`, which BAAM
+ * serves until old clients are rare) installs under the id the extension has now, so the folder,
+ * the provenance record and the config entry all say `gptr` and its tools are `gptr__*`. The
+ * entry point stays the bundle's own: it is the script the bundle really ships. A bundle that was
+ * never renamed keeps the name it declares exactly, case included.
+ */
+describe('BrxtInstallModal: a bundle under a renamed id', () => {
+  const bundle = (manifest: Partial<BrxtManifest>) => {
+    const install = vi.fn(async (_path: string, name: string) => ({ installDir: `/ext/${name}` }));
+    (window as unknown as { electron: unknown }).electron = {
+      validateBrxtBundle: vi.fn(async () => ({
+        manifest: { ...MANIFEST, ...manifest, env_vars: [] },
+        skillsPreview: [],
+      })),
+      installBrxtBundle: install,
+    };
+    return install;
+  };
+
+  it('installs gptragent.brxt as gptr, keeping the entry point it ships', async () => {
+    const install = bundle({
+      name: 'gptragent',
+      display_name: 'gptr Agent',
+      entry_point: 'gptragent',
+      repository: 'https://github.com/Broccolito/gptr',
+    });
+    render(
+      <BrxtInstallModal
+        onClose={() => {}}
+        onInstalled={() => {}}
+        preloadedFilePath="/tmp/gptragent.brxt"
+        origin={{
+          kind: 'marketplace',
+          registrySource: {
+            registryId: 'gptragent',
+            sourceUrl: 'https://example.test/gptragent.brxt',
+          },
+          entry: { name: 'gptr Agent', privacyTier: 'private' },
+          downloading: false,
+          onRetry: () => {},
+        }}
+      />
+    );
+
+    await userEvent.setup().click(await screen.findByRole('button', { name: 'Install extension' }));
+
+    await waitFor(() => expect(addExtension).toHaveBeenCalled());
+    // The registry id never moves: provenance says where the bundle came from.
+    expect(install).toHaveBeenCalledWith('/tmp/gptragent.brxt', 'gptr', {
+      registryId: 'gptragent',
+      sourceUrl: 'https://example.test/gptragent.brxt',
+    });
+    expect(addExtension).toHaveBeenCalledWith(
+      'gptr',
+      expect.objectContaining({
+        name: 'gptr',
+        args: ['run', '--directory', '/ext/gptr', 'gptragent'],
+      }),
+      true
+    );
+  });
+
+  it('keeps the name a bundle that was never renamed declares, case included', async () => {
+    const install = bundle({
+      name: 'CDWAgent',
+      display_name: 'CDW Agent',
+      entry_point: 'cdwagent',
+    });
+    render(
+      <BrxtInstallModal
+        onClose={() => {}}
+        onInstalled={() => {}}
+        preloadedFilePath="/tmp/cdwagent.brxt"
+      />
+    );
+
+    await userEvent.setup().click(await screen.findByRole('button', { name: 'Install extension' }));
+
+    await waitFor(() => expect(addExtension).toHaveBeenCalled());
+    expect(install).toHaveBeenCalledWith('/tmp/cdwagent.brxt', 'CDWAgent', undefined);
+    expect(addExtension).toHaveBeenCalledWith(
+      'CDWAgent',
+      expect.objectContaining({
+        name: 'CDWAgent',
+        args: ['run', '--directory', '/ext/CDWAgent', 'cdwagent'],
+      }),
+      true
+    );
   });
 });

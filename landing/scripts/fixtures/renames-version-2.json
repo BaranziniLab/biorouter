@@ -1,0 +1,6 @@
+{
+  "version": 2,
+  "renames": [
+    { "from": "gptragent", "to": "gptr" }
+  ]
+}

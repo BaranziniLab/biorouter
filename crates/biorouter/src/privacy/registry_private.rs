@@ -3,7 +3,9 @@
 //! `landing/scripts/build-registry.mjs` writes this in the same run as
 //! `landing/registry.json` and the desktop fallback snapshot, from the
 //! `data-privacy` / `data-extension-name` / `data-affiliation` annotations on
-//! the extension cards in `landing/baam.html`. Regenerate all three with:
+//! the extension cards in `landing/baam.html` and the extension rename map in
+//! `crates/biorouter/src/config/extension_renames.json`. Regenerate all three
+//! with:
 //!
 //! ```text
 //! node landing/scripts/build-registry.mjs
@@ -34,12 +36,17 @@
 /// The BAAM extensions whose cards declare `data-privacy="private"`, and which
 /// so must never be admitted to a public session.
 ///
+/// A renamed extension is listed under every id it has had: for each rename
+/// in `config/extension_renames.json` with a private card at either end, the
+/// other end is listed too, with that card's affiliation. So a store or a
+/// lookup that still names the old id keeps the private tier.
+///
 /// Values are `name_to_key` **keys** — whitespace-stripped and lowercased —
 /// which is the form `classify_extension` reduces its argument to before the
 /// lookup. That makes the entry match either spelling the registry publishes:
 /// the id (`cdwagent`) or the bundle `manifest.name` (`CDWAgent`).
 #[rustfmt::skip]
-pub const PRIVATE_EXTENSIONS: &[&str] = &["cdwagent", "gptragent", "ucsfomopagent"];
+pub const PRIVATE_EXTENSIONS: &[&str] = &["cdwagent", "gptr", "gptragent", "ucsfomopagent"];
 
 /// Whose agreements each private extension's data is under — DR-26's third
 /// axis, keyed by the same `name_to_key` key as the set above.

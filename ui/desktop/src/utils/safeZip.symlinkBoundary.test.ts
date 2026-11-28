@@ -2,6 +2,7 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import AdmZip from 'adm-zip';
+import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { runProbe } from './dependencyChecker';
@@ -188,9 +189,12 @@ describe('extension updater with pre-existing links', () => {
                 tag_name: 'v2.0.0',
                 assets: [
                   {
-                    name: 'boundary-extension.brxt',
+                    // The updater takes only `<installed name>.brxt` with its
+                    // published digest, so the fixture states both.
+                    name: `${fixture.name}.brxt`,
                     browser_download_url: downloadUrl,
                     size: archive.length,
+                    digest: `sha256:${createHash('sha256').update(archive).digest('hex')}`,
                   },
                 ],
               }),

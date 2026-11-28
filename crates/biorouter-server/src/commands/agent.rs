@@ -593,6 +593,11 @@ pub async fn run(exit_with_parent: Option<u32>) -> Result<()> {
     // and before `install_user_action_proof` pins the capability keys this
     // daemon was launched with (SD-12), so the pin records the migrated values.
     biorouter::config::retired_lead_worker::migrate_on_start();
+    // A renamed extension id (`gptragent` -> `gptr`): its config entry, install
+    // folder and provenance record move to the current id once, before any chat
+    // loads an extension. Only the daemon moves anything; the command line
+    // tool reads an unmoved install through the same projection.
+    biorouter::extension_rename::migrate_on_start();
     // AD-19: the retired Copilot engine's macOS agent, left running by an earlier version of
     // this installation, is ended once. Off the start path: it reads the process table.
     tokio::task::spawn_blocking(biorouter_mcp::computer_use::retired::end_retired_engine_agent);

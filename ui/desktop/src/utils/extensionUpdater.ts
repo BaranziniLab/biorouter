@@ -2,42 +2,44 @@
  * extensionUpdater.ts
  *
  * On startup, scans installed extensions in the Biorouter config directory's
- * `extensions/` folder, reads each manifest.json for version + repository,
- * queries the GitHub releases API for the latest .brxt asset, and auto-updates
- * outdated ones in the background.
+ * `extensions/` folder, reads each manifest.json, decides which release (if
+ * any) it may move to, and auto-updates outdated ones in the background.
+ *
+ * Which release is decided by `extensionReleaseSource.ts`: an extension BAAM
+ * lists follows its registry row, anything else takes exactly `<name>.brxt`
+ * from `releases/latest`, and nothing is installed without the SHA-256 digest
+ * GitHub publishes for the asset. This module downloads it, checks the bytes
+ * against that digest and the bundle's manifest against the install BEFORE
+ * opening anything over the install, then extracts it with the backup restore
+ * below, and refuses (restoring the backup) when the `manifest.json` left on
+ * disk is not the one it checked.
  *
  * Skips silently on network errors so offline users are unaffected.
  */
 
 import * as path from 'path';
-import * as os from 'os';
 import * as fs from 'fs/promises';
+import { createHash } from 'crypto';
 import { BrowserWindow } from 'electron';
-import { compareVersions } from 'compare-versions';
 import AdmZip from 'adm-zip';
-import { safeExtractZip } from './safeZip';
+import { assertDistinctZipEntries, extractedFileMatchesEntry, safeExtractZip } from './safeZip';
 import log from './logger';
 import { runProbe } from './dependencyChecker';
 import { biorouterExtensionsDir as sharedExtensionsDir } from './biorouterPaths';
+import { isRegistryDocument, type RegistryFetchResult } from './registryCache';
+import {
+  checkBundleManifest,
+  chooseExtensionRelease,
+  cleanVersion,
+  type InstalledManifest,
+} from './extensionReleaseSource';
+import bundledRegistry from '../components/baam/registry.fallback.json';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
-interface ExtensionManifest {
-  name: string;
+interface ExtensionManifest extends InstalledManifest {
   display_name: string;
   description: string;
-  version: string;
-  entry_point: string;
-  repository: string; // e.g. "https://github.com/owner/repo"
-}
-
-interface GitHubRelease {
-  tag_name: string;
-  assets: Array<{
-    name: string;
-    browser_download_url: string;
-    size: number;
-  }>;
 }
 
 interface ExtensionUpdateInfo {
@@ -46,6 +48,12 @@ interface ExtensionUpdateInfo {
   currentVersion: string;
   latestVersion: string;
   downloadUrl: string;
+  /** The release asset's file name, for the notices. */
+  assetName: string;
+  /** 64 lowercase hex digits: the digest GitHub published for the asset. */
+  sha256: string;
+  /** The installed manifest the bundle is held to. */
+  installed: ExtensionManifest;
   installDir: string;
 }
 
@@ -92,26 +100,48 @@ export function biorouterExtensionsDir(): string {
   return sharedExtensionsDir();
 }
 
-const GITHUB_API_BASE = 'https://api.github.com/repos';
+/**
+ * Where the BAAM catalogue comes from. `main.ts` registers the live one (the
+ * same document and last-good cache `registry:fetch` serves the Browse modal)
+ * before the startup check is scheduled; the menu's own checks call
+ * `runExtensionUpdateCheck()` with no argument and read the same loader.
+ */
+export type ExtensionUpdateRegistryLoader = () => Promise<RegistryFetchResult | null | undefined>;
 
-/** Parse owner/repo from a GitHub URL. Returns null for non-GitHub URLs. */
-function parseGitHubRepo(repoUrl: string): { owner: string; repo: string } | null {
-  try {
-    const url = new URL(repoUrl);
-    if (!url.hostname.includes('github.com')) return null;
-    const parts = url.pathname.replace(/^\//, '').replace(/\/$/, '').split('/');
-    if (parts.length < 2) return null;
-    const [owner, repo] = parts;
-    if (!owner || !repo) return null;
-    return { owner, repo: repo.replace(/\.git$/, '') };
-  } catch {
-    return null;
-  }
+let registryLoader: ExtensionUpdateRegistryLoader | undefined;
+
+export function setExtensionUpdateRegistry(
+  loader: ExtensionUpdateRegistryLoader | undefined
+): void {
+  registryLoader = loader;
 }
 
-/** Clean version string: strip leading 'v' and whitespace. */
-function cleanVersion(v: string): string {
-  return v.trim().replace(/^v/i, '');
+/**
+ * The catalogue for one check: the registered loader's document, or the
+ * snapshot bundled with the app when there is no loader or it has nothing to
+ * give (offline with no cache, a page that is not a catalogue). Falling back
+ * matters: with no catalogue at all, a BAAM-listed extension would be treated
+ * as unlisted and asked of `releases/latest`, which is exactly what its row
+ * exists to prevent. A stale snapshot can never move an install backwards,
+ * because only a newer version is ever installed.
+ */
+async function loadUpdateRegistry(): Promise<unknown> {
+  if (registryLoader) {
+    try {
+      const result = await registryLoader();
+      if (result && isRegistryDocument(result.registry)) return result.registry;
+      log.warn(
+        '[ExtensionUpdater] The marketplace catalog could not be read; using the one bundled with the app.',
+        result?.error ?? ''
+      );
+    } catch (err) {
+      log.warn(
+        '[ExtensionUpdater] The marketplace catalog could not be read; using the one bundled with the app.',
+        (err as Error).message
+      );
+    }
+  }
+  return bundledRegistry;
 }
 
 /** Fetch with a timeout and a User-Agent header (GitHub requires it). */
@@ -130,18 +160,40 @@ async function fetchJson<T>(url: string, timeoutMs = 15000): Promise<T> {
   }
 }
 
-/** Download a URL to a file, tracking progress. */
-async function downloadFile(
+/**
+ * The largest bundle the updater reads. A bundle is held in memory whole so its
+ * digest can be checked before anything is written, so an unbounded download is
+ * unbounded memory. Extension bundles are megabytes; this leaves room for one
+ * that ships a runtime.
+ */
+export const MAX_BUNDLE_BYTES = 256 * 1024 * 1024;
+
+function tooLarge(maxBytes: number): Error {
+  return new Error(
+    `The download is larger than ${Math.round(maxBytes / (1024 * 1024))} MB, more than any extension bundle needs. Nothing was changed.`
+  );
+}
+
+/**
+ * Download a URL into memory, tracking progress, refusing more than `maxBytes`:
+ * by the stated size before reading, and by the bytes received while reading,
+ * since the stated size is the server's word.
+ */
+export async function downloadBytes(
   url: string,
-  dest: string,
-  onProgress: (percent: number) => void
-): Promise<void> {
+  onProgress: (percent: number) => void,
+  maxBytes = MAX_BUNDLE_BYTES
+): Promise<Buffer> {
   const res = await fetch(url, {
     headers: { 'User-Agent': 'Biorouter-ExtensionUpdater/1.0' },
   });
   if (!res.ok) throw new Error(`Download failed: HTTP ${res.status}`);
 
   const total = Number(res.headers.get('content-length') || 0);
+  if (total > maxBytes) {
+    await res.body?.cancel().catch(() => {});
+    throw tooLarge(maxBytes);
+  }
   let received = 0;
   const chunks: Uint8Array[] = [];
 
@@ -151,32 +203,79 @@ async function downloadFile(
   while (true) {
     const { done, value } = await reader.read();
     if (done) break;
-    chunks.push(value);
     received += value.length;
+    if (received > maxBytes) {
+      await reader.cancel().catch(() => {});
+      throw tooLarge(maxBytes);
+    }
+    chunks.push(value);
     if (total > 0) onProgress(Math.round((received / total) * 100));
   }
 
-  const buf = Buffer.concat(chunks);
-  await fs.writeFile(dest, buf);
+  return Buffer.concat(chunks);
+}
+
+/**
+ * Releases this run of the app refused for what the published bundle IS (its
+ * manifest, or entries that cannot be extracted safely), keyed by the install
+ * and the asset's digest. The same bytes are refused the same way at every
+ * check, so the notice is shown once per run rather than at each startup and
+ * menu check; a new release has a new digest and is judged afresh. A digest
+ * mismatch or a network failure is not recorded: those can pass on a retry.
+ */
+const refusedReleases = new Set<string>();
+
+function refusalKey(installDir: string, sha256: string): string {
+  return `${installDir}\0${sha256}`;
+}
+
+/** A refusal that comes from the published bytes themselves. */
+class BundleRefusal extends Error {}
+
+/** The bundle's own `manifest.json`, parsed, or null when it has none it can read. */
+function readBundleManifest(zip: AdmZip): unknown {
+  const entry = zip.getEntry('manifest.json');
+  if (!entry || entry.isDirectory) return null;
+  try {
+    return JSON.parse(entry.getData().toString('utf8'));
+  } catch {
+    return null;
+  }
 }
 
 // ─── Core update flow ─────────────────────────────────────────────────────────
 
-async function scanInstalledExtensions(): Promise<
-  Array<{ manifest: ExtensionManifest; installDir: string }>
-> {
+interface InstalledExtension {
+  manifest: ExtensionManifest;
+  installDir: string;
+  /** The folder's name under `extensions/`, which can differ from the manifest's name. */
+  folderName: string;
+}
+
+async function scanInstalledExtensions(): Promise<InstalledExtension[]> {
   const extensionsDir = biorouterExtensionsDir();
   try {
     const entries = await fs.readdir(extensionsDir, { withFileTypes: true });
-    const results: Array<{ manifest: ExtensionManifest; installDir: string }> = [];
+    const results: InstalledExtension[] = [];
     for (const entry of entries) {
       if (!entry.isDirectory()) continue;
       const manifestPath = path.join(extensionsDir, entry.name, 'manifest.json');
       try {
         const raw = await fs.readFile(manifestPath, 'utf8');
         const manifest = JSON.parse(raw) as ExtensionManifest;
-        if (manifest.name && manifest.version && manifest.repository) {
-          results.push({ manifest, installDir: path.join(extensionsDir, entry.name) });
+        // No repository is needed for an extension BAAM lists: its row says
+        // where releases come from. `chooseExtensionRelease` skips an unlisted
+        // one without a GitHub repository.
+        if (
+          typeof manifest.name === 'string' &&
+          manifest.name &&
+          typeof manifest.version === 'string'
+        ) {
+          results.push({
+            manifest,
+            installDir: path.join(extensionsDir, entry.name),
+            folderName: entry.name,
+          });
         }
       } catch {
         // skip malformed manifests
@@ -189,18 +288,17 @@ async function scanInstalledExtensions(): Promise<
 }
 
 async function checkExtensionUpdate(
-  manifest: ExtensionManifest,
-  installDir: string
+  { manifest, installDir, folderName }: InstalledExtension,
+  registry: unknown
 ): Promise<ExtensionUpdateInfo | null> {
-  const parsed = parseGitHubRepo(manifest.repository);
-  if (!parsed) return null;
-
-  const { owner, repo } = parsed;
-  const apiUrl = `${GITHUB_API_BASE}/${owner}/${repo}/releases/latest`;
-
-  let release: GitHubRelease;
+  let decision;
   try {
-    release = await fetchJson<GitHubRelease>(apiUrl);
+    decision = await chooseExtensionRelease({
+      folderName,
+      manifest,
+      registry,
+      fetchJson: (url) => fetchJson<unknown>(url),
+    });
   } catch (err) {
     log.warn(
       `[ExtensionUpdater] Cannot fetch release for ${manifest.name}:`,
@@ -209,30 +307,40 @@ async function checkExtensionUpdate(
     return null;
   }
 
-  const latestVersion = cleanVersion(release.tag_name);
-  const currentVersion = cleanVersion(manifest.version);
-
-  let cmp: number;
-  try {
-    cmp = compareVersions(latestVersion, currentVersion);
-  } catch {
-    cmp = 0;
+  switch (decision.kind) {
+    case 'up-to-date':
+      return null;
+    case 'skip':
+      log.info(`[ExtensionUpdater] Not checking ${folderName}: ${decision.reason}.`);
+      return null;
+    case 'refuse':
+      log.warn(`[ExtensionUpdater] Not updating ${manifest.name}: ${decision.reason}.`);
+      return null;
+    case 'update':
+      break;
   }
-  if (cmp <= 0) return null; // already up-to-date
 
-  // Find a .brxt asset
-  const asset = release.assets.find((a) => a.name.endsWith('.brxt'));
-  if (!asset) {
-    log.info(`[ExtensionUpdater] No .brxt asset in release ${latestVersion} for ${manifest.name}`);
+  const { release } = decision;
+  if (refusedReleases.has(refusalKey(installDir, release.sha256))) {
+    log.info(
+      `[ExtensionUpdater] Not updating ${manifest.name}: ${release.tag}/${release.assetName} was refused earlier in this run.`
+    );
     return null;
   }
-
+  log.info(
+    `[ExtensionUpdater] ${manifest.name} ${manifest.version} → ${release.version} ` +
+      `from ${release.from === 'registry' ? 'its marketplace entry' : 'the latest release'} ` +
+      `(${release.tag}/${release.assetName}${release.prerelease ? ', a prerelease' : ''})`
+  );
   return {
     name: manifest.name,
     displayName: manifest.display_name,
-    currentVersion,
-    latestVersion,
-    downloadUrl: asset.browser_download_url,
+    currentVersion: cleanVersion(manifest.version),
+    latestVersion: release.version,
+    downloadUrl: release.downloadUrl,
+    assetName: release.assetName,
+    sha256: release.sha256,
+    installed: manifest,
     installDir,
   };
 }
@@ -241,7 +349,6 @@ async function applyUpdate(
   info: ExtensionUpdateInfo,
   send: (e: ExtensionUpdateEvent) => void
 ): Promise<boolean> {
-  let tmpDir: string | undefined;
   let backupRoot: string | undefined;
   let backupDir: string | undefined;
   let backupReady = false;
@@ -249,9 +356,6 @@ async function applyUpdate(
   let error: string | undefined;
 
   try {
-    tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'biorouter-ext-update-'));
-    const tmpBrxt = path.join(tmpDir, 'extension.brxt');
-
     send({
       type: 'update-start',
       ext: info.name,
@@ -261,12 +365,41 @@ async function applyUpdate(
     });
 
     // Download
-    await downloadFile(info.downloadUrl, tmpBrxt, (percent) => {
+    const bytes = await downloadBytes(info.downloadUrl, (percent) => {
       send({ type: 'update-progress', ext: info.name, percent });
     });
     send({ type: 'update-progress', ext: info.name, percent: 100 });
 
-    const zip = new AdmZip(tmpBrxt);
+    // Every check below runs before the install is touched, so a refused bundle
+    // leaves nothing to restore. The digest first, before the archive is even
+    // opened: until it matches, these bytes are not the release.
+    const actual = createHash('sha256').update(bytes).digest('hex');
+    if (actual !== info.sha256) {
+      throw new Error(
+        `The download does not match the checksum GitHub published for ${info.assetName}. Nothing was changed.`
+      );
+    }
+    let zip: AdmZip;
+    try {
+      zip = new AdmZip(bytes);
+      // Every entry first: one outside the install, or two that could name one
+      // file on disk (`manifest.json` beside `MANIFEST.JSON`, `./manifest.json`
+      // or `manifeſt.json`, where the lookup below would check one and the
+      // extraction install the other). `safeExtractZip` checks again, but
+      // refusing here means a hostile bundle never starts the backup and
+      // restore. A name rule cannot know every disk, so the extracted manifest
+      // is also read back below.
+      assertDistinctZipEntries(zip);
+    } catch (err) {
+      throw new BundleRefusal(`${(err as Error).message}. Nothing was changed.`);
+    }
+    const mismatch = checkBundleManifest(
+      info.installed,
+      readBundleManifest(zip),
+      info.latestVersion
+    );
+    if (mismatch) throw new BundleRefusal(`${mismatch} Nothing was changed.`);
+
     // Keep the backup nested so a surviving backup cannot be scanned as an
     // installed extension. Build at the stable path: venv launchers embed it.
     backupRoot = await fs.mkdtemp(path.join(path.dirname(info.installDir), '.update-'));
@@ -274,6 +407,16 @@ async function applyUpdate(
     await fs.cp(info.installDir, backupDir, { recursive: true, verbatimSymlinks: true });
     backupReady = true;
     safeExtractZip(zip, info.installDir);
+    // The layer that mirrors no disk's rules. Whatever the extraction left as
+    // `manifest.json` steers every later check (its name picks the registry
+    // row, its entry point is what the next bundle is held to, its repository
+    // is where an unlisted extension's releases come from), so it must be the
+    // bytes checked above, and not another entry the disk merged into it.
+    if (!extractedFileMatchesEntry(zip, info.installDir, 'manifest.json')) {
+      throw new BundleRefusal(
+        'The manifest.json the bundle left on disk is not the one that was checked, so another of its entries names the same file. The previous version was restored.'
+      );
+    }
 
     // Re-run uv sync to apply any dependency changes.
     // Async, not spawnSync: this runs on a background timer 8 s after launch,
@@ -290,6 +433,7 @@ async function applyUpdate(
     }
   } catch (err) {
     error = (err as Error).message;
+    if (err instanceof BundleRefusal) refusedReleases.add(refusalKey(info.installDir, info.sha256));
     if (backupReady && backupDir) {
       try {
         await fs.rm(info.installDir, { recursive: true, force: true });
@@ -300,12 +444,11 @@ async function applyUpdate(
       }
     }
   } finally {
-    for (const directory of [tmpDir, retainBackup ? undefined : backupRoot]) {
-      if (!directory) continue;
+    if (backupRoot && !retainBackup) {
       try {
-        await fs.rm(directory, { recursive: true, force: true });
+        await fs.rm(backupRoot, { recursive: true, force: true });
       } catch {
-        /* best-effort cleanup — ignore if the temp dir is already gone */
+        /* best-effort cleanup: the backup dir may already be gone */
       }
     }
   }
@@ -351,6 +494,7 @@ async function checkInstalledExtensionUpdates(): Promise<void> {
     log.info('[ExtensionUpdater] No installed extensions found.');
     return;
   }
+  const registry = await loadUpdateRegistry();
 
   // Notify all windows about updates via a push event
   const send = (evt: ExtensionUpdateEvent) => {
@@ -360,13 +504,13 @@ async function checkInstalledExtensionUpdates(): Promise<void> {
   };
 
   let updatedCount = 0;
-  for (const { manifest, installDir } of installed) {
+  for (const extension of installed) {
     let updateInfo: ExtensionUpdateInfo | null = null;
     try {
-      updateInfo = await checkExtensionUpdate(manifest, installDir);
+      updateInfo = await checkExtensionUpdate(extension, registry);
     } catch (err) {
       // Network/parse error — skip silently (offline fallback)
-      log.warn(`[ExtensionUpdater] Skipping ${manifest.name}:`, (err as Error).message);
+      log.warn(`[ExtensionUpdater] Skipping ${extension.manifest.name}:`, (err as Error).message);
       continue;
     }
 

@@ -131,6 +131,12 @@ installed-only result is not evidence that the extension's tools are callable.
 
 ---
 
+## Updating an installed extension
+
+The desktop app checks installed extensions for a newer release in the background, and since the release that renamed `gptragent` to `gptr` it no longer takes the first `.brxt` of a repository's latest release. An extension BAAM lists follows its registry row (the row's version, its download URL and that asset's SHA-256 digest from GitHub's release API, so a prerelease that is never latest is reachable); any other extension takes only the asset named exactly `<its id>.brxt` from `releases/latest`. A bundle is applied only when its digest matches, its manifest name is one of the installed extension's ids, its entry point is the installed one and its version is the release's; the whole archive is checked before the install is touched (traversal, and two entries that could be one file on disk, such as `manifest.json` beside `./manifest.json`, `MANIFEST.JSON` or `manifeſt.json`), an entry that would land on a file an earlier entry wrote is refused while extracting, the extracted `manifest.json` must be the one that was checked, a download over 256 MB is refused, and a refused or failed update restores the previous copy. Every install surface also applies Biorouter's extension rename map, so `gptragent.brxt` installs as `gptr` and keeps its own entry point. Why the rules are these, and how the rename reaches saved chats and permissions: [Extension id renames](extension-renames.md).
+
+---
+
 ## Staying current: `CatalogChanged` (issue #112)
 
 An install that succeeds on disk is useless if nothing notices. Four inventories read the extension map — `ConfigContext.extensionsList` in the renderer, the Settings list, the composer's picker, and the running agent's `ExtensionManager` — and each used to be repaired by whichever code path happened to write. An install from *outside* the GUI repaired none of them, which is why two correctly installed extensions could not be attached to the chat that had just asked for them.
@@ -190,6 +196,7 @@ The desktop suite adds a structural assertion for the same reason: `types/messag
 
 - [Extensions, skills, and MCP agents](extensions-and-skills-guide.md) — the end-user guide to all three extension kinds.
 - [Extension Manager](built-in/extension-manager.md) — the built-in that hosts `install_extension`.
+- [Extension id renames](extension-renames.md): the rename map, and the updater's rules for which release it applies.
 - [Secret storage](../security/secret-storage.md) — where a credential actually lives once stored.
 - [Privacy tiers](../security/privacy-tiers.md) — Gate F1, and why it lands on the attach.
 - [Browser access decisions](../deployment/serve-decisions.md) — SD-1, and why a browser daemon cannot accept credentials over HTTP.

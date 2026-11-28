@@ -1,0 +1,10 @@
+{
+  "version": 1,
+  "renames": [
+    {
+      "from": "gptragent",
+      "to": "gptr",
+      "note": "gptr Agent's extension id, renamed with the owner's approval on 2026-11-28. The BAAM registry id stays gptragent."
+    }
+  ]
+}

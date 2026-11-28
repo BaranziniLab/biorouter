@@ -494,6 +494,19 @@ fn record_matches_install(
         && record.source_url.as_deref() == Some(expected.source_url.as_str())
 }
 
+/// [`registry_ids_for`] over `records` alone, for a test that supplies the
+/// whole store (`extensions::tier_with_records`).
+#[cfg(test)]
+pub(crate) fn registry_ids_in(
+    records: &HashMap<String, ExtensionProvenance>,
+    keys: &[String],
+    referenced_paths: &[String],
+) -> Vec<String> {
+    let mut ids = Vec::new();
+    collect_ids(records.iter(), keys, referenced_paths, &mut ids);
+    ids
+}
+
 fn collect_ids<'a>(
     records: impl Iterator<Item = (&'a String, &'a ExtensionProvenance)>,
     keys: &[String],

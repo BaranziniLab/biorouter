@@ -233,6 +233,9 @@ pub fn persisted_subagent_extension_projection(
         .iter()
         .map(ExtensionGrant::ui_projection)
         .collect::<Result<Vec<_>>>()
+        // A grant written under an extension id renamed since shows its
+        // current id, as every other config read does.
+        .map(crate::config::extension_renames::project_configs)
         .map(Some)
 }
 
@@ -321,6 +324,15 @@ impl ExtensionGrant {
         };
         Ok(config)
     }
+}
+
+/// The manager key an extension named `name` answers to now. A grant written
+/// before its extension was renamed names it by its old id, while the config
+/// the catalog returns for it (and the one a live manager holds) carries the
+/// current one (`config::extension_renames`), so a cold child's grant check
+/// compares both by this key.
+fn current_extension_key(name: &str) -> String {
+    crate::config::extension_renames::current_key(&super::normalize(name)).to_string()
 }
 
 fn extension_kind(extension: &ExtensionConfig) -> &'static str {
@@ -423,11 +435,12 @@ impl Agent {
         let allowed: HashSet<String> = profile
             .extension_grants
             .iter()
-            .map(|grant| super::normalize(&grant.name))
+            .map(|grant| current_extension_key(&grant.name))
             .collect();
 
         let mut expected = Vec::new();
         for grant in &profile.extension_grants {
+            // `get_extension_by_name` finds the current entry for an old id.
             let config = crate::config::get_extension_by_name(&grant.name).ok_or_else(|| {
                 anyhow!(
                     "subagent extension '{}' is no longer present in the local catalog",
@@ -441,7 +454,7 @@ impl Agent {
 
         for existing in self.persistable_extension_configs().await {
             let existing_name = existing.name();
-            if !allowed.contains(&super::normalize(&existing_name)) {
+            if !allowed.contains(&current_extension_key(&existing_name)) {
                 bail!(
                     "cold subagent already holds extension '{}' outside its persisted grant",
                     existing_name
@@ -801,6 +814,30 @@ mod tests {
         assert_eq!(projection.len(), 1);
         assert_eq!(projection[0].name(), "remote_kb");
         assert!(!serde_json::to_string(&projection).unwrap().contains(secret));
+    }
+
+    /// A child spawned while gptr Agent was still `gptragent` shows it under
+    /// the current id: the badge projection is a config read like any other.
+    #[test]
+    fn a_profile_granting_an_old_extension_id_projects_the_current_one() {
+        let extension = ExtensionConfig::stdio("gptragent", "uv", "gptr Agent", 30_u64);
+        let profile = SubagentRuntimeProfile::new(
+            "safe prompt".into(),
+            None,
+            Vec::new(),
+            &[extension],
+            &["gptragent__r".into()],
+        )
+        .unwrap();
+        let mut data = ExtensionData::new();
+        install_profile_value(&mut data, serde_json::to_value(&profile).unwrap());
+        let projection = persisted_subagent_extension_projection(&data)
+            .unwrap()
+            .unwrap();
+        assert_eq!(projection.len(), 1);
+        assert_eq!(projection[0].key(), "gptr");
+        assert!(projection[0].is_tool_available("r"));
+        assert!(!projection[0].is_tool_available("inspect"));
     }
 
     #[tokio::test]

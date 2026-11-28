@@ -15,6 +15,12 @@
 // Moved and retired list, the hand-written counts), and fails when any of them
 // disagree or when a duplicate rule (D1 to D4) or the gap rule (G1) fails.
 //
+// It also holds the catalog to Biorouter's extension id rename map,
+// crates/biorouter/src/config/extension_renames.json (docs/extensions/
+// extension-renames.md): a row whose id or manifest_name the map renames
+// records the new id in renamed_locally_to and in aliases, and no row records
+// a rename the map does not hold.
+//
 // build-registry.mjs runs the same checkCatalogs() on the registry it has just
 // built in memory, before it writes or compares anything, so the published
 // outputs can never be regenerated while a catalog disagrees with the page.
@@ -58,6 +64,30 @@ export function loadCatalogs(dir = CATALOG_DIR) {
   const read = (name) => JSON.parse(readFileSync(join(dir, name), 'utf8'));
   return { extensions: read('extensions.json'), skills: read('skills.json'), jobs: read('jobs.json') };
 }
+
+/** The table the Rust crate compiles in; its own tests validate it fully. */
+export const RENAMES_FILE = 'crates/biorouter/src/config/extension_renames.json';
+
+/**
+ * The extension id rename map, [{ from, to }], read from this repository. Both
+ * names are already name_to_key keys. The Rust crate refuses a malformed table
+ * in its tests; this only refuses what would make the catalog rule meaningless.
+ */
+export function loadRenames(repo = REPO_ROOT) {
+  const table = JSON.parse(readFileSync(join(repo, RENAMES_FILE), 'utf8'));
+  if (table?.version !== 1 || !Array.isArray(table.renames)) {
+    throw new Error(`${RENAMES_FILE}: expected "version": 1 and a "renames" list`);
+  }
+  return table.renames.map((r, i) => {
+    if (typeof r?.from !== 'string' || typeof r?.to !== 'string' || !r.from || !r.to) {
+      throw new Error(`${RENAMES_FILE}: rename ${i} needs a "from" and a "to"`);
+    }
+    return { from: r.from, to: r.to };
+  });
+}
+
+/** Rust's name_to_key: whitespace stripped, lowercased. The rename map is keyed by it. */
+const extensionKey = (name) => String(name ?? '').replace(/\s+/g, '').toLowerCase();
 
 /**
  * Biorouter's own skill, bundle and extension names, read from this repository
@@ -208,11 +238,47 @@ const sameList = (a, b) => JSON.stringify([...(a ?? [])].sort()) === JSON.string
 const statusTarget = (status) => (status.startsWith('superseded_by:') ? status.slice('superseded_by:'.length) : '');
 
 /**
+ * The local id renames, held to the rows (docs/extensions/extension-renames.md).
+ * A row is renamed when its id or its manifest_name is a rename's `from`; it
+ * must then say so in renamed_locally_to and carry the new id in aliases,
+ * whatever its status, because the record outlives the turn-on that supersedes
+ * the row. A row that states renamed_locally_to must match a rename in the map.
+ */
+export function renameFailures(extRows, renames) {
+  const out = [];
+  const f = (sub, row, msg) => out.push(failure('rename', `${sub}:${row.id}`, `extension ${row.id}: ${msg}`, [`extension:${row.id}`]));
+  const keysOf = (row) => [...new Set([extensionKey(row.id), extensionKey(row.manifest_name)].filter(Boolean))];
+  for (const row of extRows) {
+    const keys = keysOf(row);
+    const mine = renames.filter((r) => keys.includes(r.from));
+    if (mine.length > 1) {
+      f('ambiguous', row, `the rename map renames both ${mine.map((r) => r.from).join(' and ')}, which name this one row`);
+      continue;
+    }
+    const [rename] = mine;
+    const claimed = row.renamed_locally_to;
+    if (rename) {
+      if (claimed !== rename.to) {
+        f('renamed-to', row, `${RENAMES_FILE} renames ${rename.from} to ${rename.to}, but the row's renamed_locally_to is ${claimed === undefined ? '(absent)' : JSON.stringify(claimed)}; set it to "${rename.to}"`);
+      }
+      if (!(row.aliases ?? []).includes(rename.to)) {
+        f('alias', row, `${RENAMES_FILE} renames ${rename.from} to ${rename.to}, but "${rename.to}" is not in the row's aliases`);
+      }
+    }
+    if (claimed !== undefined && !renames.some((r) => keys.includes(r.from) && r.to === claimed)) {
+      f('unmapped', row, `renamed_locally_to is ${JSON.stringify(claimed)}, but ${RENAMES_FILE} holds no rename of ${keys.join(' or ')} to it; add the rename there first`);
+    }
+  }
+  return out;
+}
+
+/**
  * registry: { extensions, skills } as build-registry.mjs builds it.
  * html: landing/baam.html. catalogs: loadCatalogs(). builtins: readBuiltins().
+ * renames: loadRenames(), read from this repository when left out.
  * Returns { errors, warnings, accepted, counts }.
  */
-export function checkCatalogs({ registry, html, catalogs, builtins }) {
+export function checkCatalogs({ registry, html, catalogs, builtins, renames = loadRenames() }) {
   const raw = [];
   const warnings = [];
   const { extensions: extCat, skills: skillCat, jobs } = catalogs;
@@ -247,6 +313,7 @@ export function checkCatalogs({ registry, html, catalogs, builtins }) {
       if (r.privacy !== 'public' && r.privacy !== 'private') s('privacy', `privacy "${r.privacy}" is not public or private`);
     }
   }
+  raw.push(...renameFailures(extRows, renames));
 
   // Registry ↔ catalog: extensions.
   const cards = new Map((registry?.extensions ?? []).map((e) => [e.id, e]));

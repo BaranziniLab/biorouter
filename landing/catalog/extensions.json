@@ -2448,7 +2448,10 @@
       "group": "tools",
       "version": "0.1.2",
       "status": "active",
-      "aliases": [],
+      "aliases": [
+        "gptr"
+      ],
+      "renamed_locally_to": "gptr",
       "job": "r.live-session",
       "role": "tool",
       "source": {

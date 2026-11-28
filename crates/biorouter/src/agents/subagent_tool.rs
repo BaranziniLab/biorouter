@@ -1559,8 +1559,21 @@ pub(crate) fn handle_bridged_subagent_tool(
     )
 }
 
+/// The manager key a spawn's extension name asks for. An id Biorouter renamed
+/// since (`gptragent`) asks for the current one (`gptr`), so a workflow, a skill
+/// or a model that learned the old name still names the extension
+/// (`config::extension_renames`).
 fn extension_request_key(name: &str) -> String {
-    crate::agents::extension_manager::normalize(&crate::config::extensions::name_to_key(name))
+    let key =
+        crate::agents::extension_manager::normalize(&crate::config::extensions::name_to_key(name));
+    crate::config::extension_renames::current_key(&key).to_owned()
+}
+
+/// The manager key a held or installed config answers to, by the rule
+/// [`extension_request_key`] applies to a request: its current id.
+fn extension_config_key(config: &crate::agents::ExtensionConfig) -> String {
+    let key = crate::agents::extension_manager::normalize(&config.key());
+    crate::config::extension_renames::current_key(&key).to_owned()
 }
 
 fn unsupported_bridged_extension_names(
@@ -1574,10 +1587,8 @@ fn unsupported_bridged_extension_names(
         .filter_map(|field| params.get(field).and_then(Value::as_array))
         .flatten()
         .collect();
-    let available: std::collections::HashSet<String> = available
-        .iter()
-        .map(|extension| crate::agents::extension_manager::normalize(&extension.key()))
-        .collect();
+    let available: std::collections::HashSet<String> =
+        available.iter().map(extension_config_key).collect();
     requested
         .into_iter()
         .filter_map(Value::as_str)
@@ -3575,11 +3586,9 @@ fn narrow_child_extensions_by_name(task_config: &mut TaskConfig, params: &Subage
             .iter()
             .map(|name| extension_request_key(name))
             .collect::<std::collections::HashSet<_>>();
-        task_config.extensions.retain(|extension| {
-            requested.contains(&crate::agents::extension_manager::normalize(
-                &extension.key(),
-            ))
-        });
+        task_config
+            .extensions
+            .retain(|extension| requested.contains(&extension_config_key(extension)));
     }
 }
 
@@ -3589,7 +3598,7 @@ fn narrow_child_extensions_by_name(task_config: &mut TaskConfig, params: &Subage
 /// [`crate::agents::extension_manager::resolve_bundled_extension`] accepts,
 /// the label a person sees included ("Auto Visualiser", "Biorouter Copilot").
 fn names_extension(requested: &str, config: &crate::agents::ExtensionConfig) -> bool {
-    extension_request_key(requested) == crate::agents::extension_manager::normalize(&config.key())
+    extension_request_key(requested) == extension_config_key(config)
         || crate::agents::extension_manager::resolve_bundled_extension(requested)
             .is_some_and(|target| target.matches_config(config))
 }
@@ -11353,6 +11362,53 @@ decision_settings:
             )
             .unwrap();
             assert_eq!(names(&added.add), ["autovisualiser"]);
+        }
+
+        /// The gptr rename: a spawn that names gptr Agent by its old id (a
+        /// workflow, a skill, a model that learned the name) changes the
+        /// extension the chat holds under its current id, both ways.
+        #[test]
+        fn an_old_extension_id_names_the_extension_held_under_its_current_id() {
+            let gptr = crate::agents::ExtensionConfig::stdio("gptr", "uv", "gptr Agent", 30_u64);
+            let inherited = [builtin_extension("developer"), gptr.clone()];
+            let removed = resolve_child_extension_changes(
+                &params(json!({ "instructions": "x", "remove_extensions": ["gptragent"] })),
+                &inherited,
+                private_call(),
+                &[],
+                &HashSet::new(),
+            )
+            .unwrap();
+            assert_eq!(removed.remove, ["gptr"]);
+
+            let added = resolve_child_extension_changes(
+                &params(json!({ "instructions": "x", "add_extensions": ["GptrAgent"] })),
+                &inherited,
+                private_call(),
+                &[],
+                &HashSet::new(),
+            )
+            .unwrap();
+            assert_eq!(names(&added.add), ["gptr"]);
+
+            // Installed but not held: the old id finds the installed entry.
+            let installed_only = resolve_child_extension_changes(
+                &params(json!({ "instructions": "x", "add_extensions": ["gptragent"] })),
+                &[builtin_extension("developer")],
+                private_call(),
+                &[installed(gptr.clone(), true)],
+                &HashSet::new(),
+            )
+            .unwrap();
+            assert_eq!(names(&installed_only.add), ["gptr"]);
+
+            // And the `extensions` narrowing keeps it.
+            let mut task = parent_task_config(ProviderTier::Private, inherited.to_vec());
+            narrow_child_extensions_by_name(
+                &mut task,
+                &params(json!({ "instructions": "x", "extensions": ["gptragent"] })),
+            );
+            assert_eq!(names(&task.extensions), ["gptr"]);
         }
 
         /// Without the spawning call's capability (a coding-agent bridge

@@ -200,6 +200,21 @@ const REJECTED = [
     /^registry: .*"cdwagent" is private with affiliation \[stanford\], but the closed private set records \[ucsf\]/m,
     ['--assert-private-set'],
   ],
+
+  // A rename is one extension under two ids (crates/biorouter/src/config/
+  // extension_renames.json, read from disk with no flag). When both ids have a
+  // card, the cards must agree, or a store holding one id reaches a different
+  // tier, or a different institution's models, than a store holding the other.
+  // Checked on every run, with no opt-in: it is a property of the page and the
+  // map, not of the closed list.
+  [
+    'private-set-renamed-tier-mismatch',
+    /^registry: the rename gptragent -> gptr .*has a card at both ends, and they disagree: "gptragent" is private with affiliation \(absent\), "gptr" is public with affiliation \(absent\)/m,
+  ],
+  [
+    'private-set-renamed-affiliation-mismatch',
+    /^registry: the rename gptragent -> gptr .*has a card at both ends, and they disagree: "gptragent" is private with affiliation \(absent\), "gptr" is private with affiliation \[ucsf\]/m,
+  ],
 ];
 
 for (const [name, rule, args = []] of REJECTED) {
@@ -288,16 +303,21 @@ test('a public card is not refused for describing patients honestly', () => {
   assert.match(reg.extensions[0].description, /patient population/);
 });
 
-test('the closed private set is exactly the three extensions the operator named', () => {
+test('the closed private set is exactly the four keys the operator named', () => {
   // The assertion inside the generator is checked against fixtures above; this
   // is the other half — that the list it holds is still the right list, read
   // off the committed security artifact rather than off the generator's own
   // constant. A run that widened both together would pass every fixture here.
-  // gptragent is the third (owner decision 1 of the November 2026 BAAM
-  // refresh): private, with no affiliation row, because no institution's
-  // agreements cover a person's own R session.
+  // gptragent is the third extension (owner decision 1 of the November 2026
+  // BAAM refresh): private, with no affiliation row, because no institution's
+  // agreements cover a person's own R session. gptr is the same extension
+  // under the id it was renamed to on 2026-11-28, emitted from the rename map
+  // so that both ids stay private; it has no affiliation row either.
   const rust = readFileSync(PROTECTED_PRIVATE_SET, 'utf8');
-  assert.match(rust, /PRIVATE_EXTENSIONS: &\[&str\] =\s*&\["cdwagent", "gptragent", "ucsfomopagent"\];/);
+  assert.match(
+    rust,
+    /PRIVATE_EXTENSIONS: &\[&str\] =\s*&\["cdwagent", "gptr", "gptragent", "ucsfomopagent"\];/
+  );
   assert.match(
     rust,
     /EXTENSION_AFFILIATIONS: &\[\(&str, &\[&str\]\)\] =\s*&\[\("cdwagent", &\["ucsf"\]\), \("ucsfomopagent", &\["ucsf"\]\)\];/
@@ -949,17 +969,33 @@ test('a featured card that repeats nothing in the grids is refused by name', () 
 // rewritten to `[]`, which must refuse that same fixture. Without the mutant, a
 // generator that read `null` and `[]` alike would pass every other test here.
 test('the closed set accepts a private extension with no affiliation, and emits no affiliation row for it', () => {
+  // With the real rename map, read from disk with no flag: the gptragent card
+  // also puts its new id, gptr, into the compiled set, and neither id gets an
+  // affiliation row.
   const out = outPath();
   const rs = rustPath();
   const r = run({ input: fixture('private-set-unaffiliated'), out, args: ['--assert-private-set', '--emit-rust', rs] });
   assert.equal(r.code, 0, r.both);
   const rust = readFileSync(rs, 'utf8');
-  assert.match(rust, /PRIVATE_EXTENSIONS: &\[&str\] =\s*&\["cdwagent", "gptragent", "ucsfomopagent"\];/);
+  assert.match(
+    rust,
+    /PRIVATE_EXTENSIONS: &\[&str\] =\s*&\["cdwagent", "gptr", "gptragent", "ucsfomopagent"\];/
+  );
   assert.doesNotMatch(rust, /\("gptragent", &\[/, 'an unaffiliated private extension gets no affiliation row');
+  assert.doesNotMatch(rust, /\("gptr", &\[/, 'nor does the id it was renamed to');
+  assert.match(
+    rust,
+    /EXTENSION_AFFILIATIONS: &\[\(&str, &\[&str\]\)\] =\s*&\[\("cdwagent", &\["ucsf"\]\), \("ucsfomopagent", &\["ucsf"\]\)\];/
+  );
   const reg = JSON.parse(readFileSync(out, 'utf8'));
   const gptr = reg.extensions.find((e) => e.id === 'gptragent');
   assert.equal(gptr.privacy, 'private');
   assert.equal('affiliation' in gptr, false, 'absent means unconstrained, so the registry omits the field');
+  // A rename partner is a name for the compiled set, never a catalog row.
+  assert.deepEqual(
+    reg.extensions.map((e) => e.id),
+    ['cdwagent', 'ucsfomopagent', 'gptragent']
+  );
 });
 
 test('mutant caught: a closed-set entry of [] is not the same as null', () => {
@@ -977,4 +1013,161 @@ test('mutant caught: a closed-set entry of [] is not the same as null', () => {
     rmSync(copy, { force: true });
     copies.delete(copy);
   }
+});
+
+// ---- Renamed extensions keep their tier under both ids ---------------------
+// crates/biorouter/src/config/extension_renames.json maps an old extension id
+// to its new one (gptragent -> gptr). The generator reads it from disk, at a
+// path relative to its own file, so the mutant copies below read the real map
+// too. When either end of a rename is a private card, BOTH ids go into the
+// compiled set with that card's affiliation: a store that still names the old
+// id, or a lookup that forgets to resolve a name, keeps the private tier.
+//
+// Each mutant is the generator with one closed-set entry changed, run against
+// the fixture that is the set exactly as named. Without the mutants, a
+// generator that ignored the gptr entry, or read `null` and `[]` alike for it,
+// would pass every other test here.
+
+const renamesFixture = (name) => join(FIXTURES, `renames-${name}.json`);
+
+/** Run `body` against a copy of the generator with `from` replaced by `to`. */
+function withMutant(tag, from, to, body) {
+  const src = readFileSync(GENERATOR, 'utf8');
+  assert.ok(src.includes(from), `the mutant anchor must still read exactly ${from}`);
+  const copy = join(SCRIPTS, `.build-registry.${tag}-${tmpSeq++}.mjs`);
+  copies.add(copy);
+  try {
+    writeFileSync(copy, src.replace(from, to));
+    return body(copy);
+  } finally {
+    rmSync(copy, { force: true });
+    copies.delete(copy);
+  }
+}
+
+test('mutant caught (m1): a rename partner nobody listed is refused as not in the closed set', () => {
+  const r = withMutant('gptr-deleted', "  ['gptr', null],\n", '', (script) =>
+    run({
+      input: fixture('private-set-unaffiliated'),
+      out: outPath(),
+      args: ['--assert-private-set'],
+      script,
+    })
+  );
+  assert.equal(r.code, 1, `the mutant must refuse the derived gptr entry\n${r.both}`);
+  assert.match(
+    r.stderr,
+    /^registry: gptr: declares data-privacy="private" through the rename gptragent -> gptr .*but "gptr" is not in the closed private set/m
+  );
+  // The advice names the map as well as the list, because either edit is the
+  // decision being made.
+  assert.match(r.stderr, /extension_renames\.json/);
+});
+
+test('mutant caught (m2): the rename partner of an unaffiliated card is null, not []', () => {
+  const r = withMutant('gptr-empty-affiliation', "['gptr', null],", "['gptr', []],", (script) =>
+    run({
+      input: fixture('private-set-unaffiliated'),
+      out: outPath(),
+      args: ['--assert-private-set'],
+      script,
+    })
+  );
+  assert.equal(r.code, 1, `the mutant must refuse the derived gptr entry\n${r.both}`);
+  assert.match(
+    r.stderr,
+    /"gptr" is private with affiliation \(absent\), but the closed private set records \[\]/
+  );
+});
+
+test('mutant caught (m3): without the rename map, the closed set names gptr and no card declares it', () => {
+  const out = outPath();
+  const r = run({
+    input: fixture('private-set-unaffiliated'),
+    out,
+    args: ['--assert-private-set', '--renames', renamesFixture('empty')],
+  });
+  assert.equal(r.code, 1, `an empty map must leave gptr unaccounted for\n${r.both}`);
+  assert.match(
+    r.stderr,
+    /^registry: the closed private set names "gptr", but no card in this catalog declares data-privacy="private" with that data-extension-name/m
+  );
+  // Only gptr: every other listed key still has its card.
+  assert.doesNotMatch(r.stderr, /names "(cdwagent|gptragent|ucsfomopagent)"/);
+  assert.equal(existsSync(out), false, 'a rejected run must leave the file it was asked to write absent');
+});
+
+test('a rename partner takes its card\'s affiliation, from either end, and a public card\'s rename emits nothing', () => {
+  const out = outPath();
+  const rs = rustPath();
+  const r = run({
+    input: fixture('private-set-renamed-partners'),
+    out,
+    args: ['--renames', renamesFixture('partners'), '--emit-rust', rs],
+  });
+  assert.equal(r.code, 0, r.both);
+  const rust = readFileSync(rs, 'utf8');
+  // The card is the NEW id here (renamedprivateagent), so the partner is the
+  // old one: the rule survives the day the catalog moves to the new id.
+  assert.match(rust, /PRIVATE_EXTENSIONS: &\[&str\] = &\["oldprivateagent", "renamedprivateagent"\];/);
+  // Both ids get the card's row. Two rows this wide pass rustfmt's 60-column
+  // array width, so they go one per line.
+  assert.ok(
+    rust.includes(
+      'pub const EXTENSION_AFFILIATIONS: &[(&str, &[&str])] = &[\n' +
+        '    ("oldprivateagent", &["ucsf"]),\n' +
+        '    ("renamedprivateagent", &["ucsf"]),\n' +
+        '];'
+    ),
+    `the rename partner must carry its card's affiliation row:\n${rust}`
+  );
+  assert.equal(rust.includes('publicagent'), false, 'a public card\'s rename must emit nothing');
+  const reg = JSON.parse(readFileSync(out, 'utf8'));
+  assert.deepEqual(
+    reg.extensions.map((e) => [e.id, e.privacy, e.extension_name]),
+    [
+      ['oldpublicagent', 'public', 'oldpublicagent'],
+      ['renamedprivateagent', 'private', 'renamedprivateagent'],
+    ],
+    'a rename partner is a name for the compiled set, never a catalog row'
+  );
+});
+
+test('a rename target the extension manager would store differently is refused, writing nothing', () => {
+  const out = outPath();
+  const r = run({ input: fixture('happy'), out, args: ['--renames', renamesFixture('punctuated')] });
+  assert.equal(r.code, 1, r.both);
+  assert.match(
+    r.stderr,
+    /^registry: .*rename gptragent -> gptr\.agent: "gptr\.agent" reduces to "gptr\.agent" here but "gptr_agent" in the extension manager/m
+  );
+  assert.equal(existsSync(out), false, 'a rejected run must leave the file it was asked to write absent');
+});
+
+test('a rename map this generator cannot read is refused, never treated as empty', () => {
+  // Fail closed: a map read as empty drops every rename partner from the
+  // compiled set, which classifies the new id Public.
+  const out = outPath();
+  const r = run({ input: fixture('happy'), out, args: ['--renames', renamesFixture('version-2')] });
+  assert.equal(r.code, 1, r.both);
+  assert.match(r.stderr, /^registry: .*renames-version-2\.json.*version 2, and this generator reads version 1/m);
+  assert.equal(existsSync(out), false, 'a rejected run must leave the file it was asked to write absent');
+
+  const missing = run({
+    input: fixture('happy'),
+    out: outPath(),
+    args: ['--renames', join(scratch, 'no-such-renames.json')],
+  });
+  assert.equal(missing.code, 1, missing.both);
+  assert.match(missing.stderr, /^registry: cannot read the extension rename map/m);
+});
+
+test('--renames is refused on a real run, which always reads the crate\'s map', () => {
+  // Like --emit-rust and --assert-private-set: a fixture affordance. On a real
+  // run it would be a command-line way to change the compiled private set.
+  protectingArtifacts(() => {
+    const r = run({ args: ['--renames', renamesFixture('empty')] });
+    assert.equal(r.code, 1, r.both);
+    assert.match(r.stderr, /--renames is for fixture runs/);
+  });
 });

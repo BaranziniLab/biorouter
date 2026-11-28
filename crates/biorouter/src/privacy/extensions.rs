@@ -165,6 +165,32 @@ pub fn resolve_extension(
     }
 }
 
+/// The tier a build whose compiled private set is `private` gives `key`, when
+/// `records` is the whole provenance store: the same identities and the same
+/// join as [`resolve_extension`], with the set and the store supplied.
+///
+/// A test seam for a build that predates a rename. Such a build shares the
+/// config folder (a lagging terminal CLI, an older desktop beside a newer one),
+/// knows only the old id, and classifies the renamed entry by the provenance
+/// record the rename leaves (`extension_rename`), so the test asks this
+/// function rather than restating the join.
+#[cfg(test)]
+pub(crate) fn tier_with_records(
+    private: &'static [&'static str],
+    key: &str,
+    config: Option<&crate::agents::extension::ExtensionConfig>,
+    records: &std::collections::HashMap<String, super::provenance::ExtensionProvenance>,
+) -> ProviderTier {
+    let snapshot = RegistrySnapshot {
+        private,
+        affiliations: &[],
+    };
+    let identities = identities_with(key, config, |keys, referenced| {
+        super::provenance::registry_ids_in(records, keys, referenced)
+    });
+    resolve_identities_in(&snapshot, &identities).tier
+}
+
 #[cfg(test)]
 fn resolve_in(
     registry: &RegistrySnapshot,
@@ -222,6 +248,16 @@ fn identities(
     key: &str,
     config: Option<&crate::agents::extension::ExtensionConfig>,
 ) -> Vec<String> {
+    identities_with(key, config, super::provenance::registry_ids_for)
+}
+
+/// [`identities`], with the provenance join supplied: the store this process
+/// reads in production, a fixed one in [`tier_with_records`].
+fn identities_with(
+    key: &str,
+    config: Option<&crate::agents::extension::ExtensionConfig>,
+    registry_ids_for: impl Fn(&[String], &[String]) -> Vec<String>,
+) -> Vec<String> {
     use crate::config::extensions::name_to_key;
     let mut keys = vec![name_to_key(key)];
     if let Some(config) = config {
@@ -234,7 +270,7 @@ fn identities(
     // ⚠ Looked up with the CONFIG keys only. Feeding recorded ids back in would
     // let one record reach another record's row, chaining identities the install
     // never claimed.
-    for id in super::provenance::registry_ids_for(&keys, &referenced) {
+    for id in registry_ids_for(&keys, &referenced) {
         let id = name_to_key(&id);
         if !keys.contains(&id) {
             keys.push(id);
@@ -338,21 +374,111 @@ mod tests {
     /// `playwrightagent` into the set would go unnoticed there, and so would a
     /// hand edit. The set is small, deliberate and reviewed by name, so its
     /// exact value belongs in an assertion rather than in a comment.
-    #[test]
     ///
     /// `gptragent` joined in the November 2026 BAAM refresh (owner decision 1):
     /// a live R session holds whatever the person loaded, so it is private, and
     /// it carries no affiliation, because no institution's agreements cover the
     /// person's own machine.
-    fn the_generated_set_is_exactly_these_three_keys() {
+    ///
+    /// `gptr` is the same extension under the id it was renamed to on
+    /// 2026-11-28 (`config/extension_renames.json`). The generator emits it as
+    /// the rename partner of the private `gptragent` card, so BOTH names are in
+    /// the set: a store that still names the old id, or a lookup that forgets
+    /// to resolve a name, keeps the private tier and loses only routing.
+    #[test]
+    fn the_generated_set_is_exactly_these_four_keys() {
         assert_eq!(
             private_extension_ids().collect::<Vec<_>>(),
-            vec!["cdwagent", "gptragent", "ucsfomopagent"],
+            vec!["cdwagent", "gptr", "gptragent", "ucsfomopagent"],
             "the compiled-in private set changed. It is generated from the \
-             data-privacy annotations in landing/baam.html by \
+             data-privacy annotations in landing/baam.html and the rename map in \
+             crates/biorouter/src/config/extension_renames.json by \
              landing/scripts/build-registry.mjs. If that change is intended, \
              say so here; if it is not, the generator or the page is wrong"
         );
+    }
+
+    /// I1 of the gptr rename: an extension that was renamed is the same
+    /// extension, so both of its ids resolve to one tier and one affiliation.
+    ///
+    /// Asked of the real resolver for every row of the real rename map, by name
+    /// and through a config of either name launched from the old install folder
+    /// and from the new one, because those are the shapes the stores hold
+    /// between the rename and the start migration.
+    #[test]
+    fn every_rename_keeps_its_tier_and_affiliation_under_both_names() {
+        let renames = crate::config::extension_renames::renames();
+        assert!(
+            !renames.is_empty(),
+            "the rename map is empty, so this test asserts nothing"
+        );
+        for rename in renames {
+            let from = resolve_extension(&rename.from, None);
+            let to = resolve_extension(&rename.to, None);
+            assert_eq!(
+                from, to,
+                "`{}` and `{}` are one extension and must classify alike",
+                rename.from, rename.to
+            );
+            for dir_name in [&rename.from, &rename.to] {
+                let dir =
+                    format!("/home/researcher/.config/biorouter/extensions/rename-i1-{dir_name}");
+                for (key, name) in [
+                    (&rename.from, &rename.from),
+                    (&rename.to, &rename.to),
+                    (&rename.to, &rename.from),
+                    (&rename.from, &rename.to),
+                ] {
+                    let config = uv_config(name, &dir);
+                    assert_eq!(
+                        resolve_extension(key, Some(&config)),
+                        from,
+                        "key `{key}` with a config named `{name}` must classify like `{}`",
+                        rename.from
+                    );
+                }
+            }
+        }
+
+        // Non-vacuity: equality holds for two Public names too, so the one
+        // private rename the map holds is asserted Private under both names.
+        let gptr = resolve_extension("gptr", None);
+        assert_eq!(gptr.tier, ProviderTier::Private);
+        assert_eq!(gptr.affiliation, ExtensionAffiliation::Any);
+        assert_eq!(resolve_extension("gptragent", None), gptr);
+    }
+
+    /// Gate C's own predicate, for every tool the renamed gptr Agent offers,
+    /// under its current and its old prefix. A public caller is refused both; a
+    /// private caller is refused neither, so the refusal follows the tier and
+    /// not a quirk of one spelling.
+    #[test]
+    fn a_tool_of_either_name_is_refused_to_a_public_caller() {
+        use crate::config::extension_renames::{current_tool_name, tool_name_aliases};
+        use crate::privacy::refusal::privacy_refusal;
+        for tool in ["gptr__sessions", "gptr__inspect", "gptr__r"] {
+            let spellings: Vec<String> = tool_name_aliases(tool)
+                .into_iter()
+                .map(|alias| alias.into_owned())
+                .collect();
+            assert!(
+                spellings.iter().any(|s| s.starts_with("gptragent__")),
+                "{tool} must have an old spelling: {spellings:?}"
+            );
+            for spelling in &spellings {
+                assert_eq!(current_tool_name(spelling), tool);
+                let (prefix, _) = spelling.split_once("__").expect("a prefixed tool name");
+                let class = resolve_extension(prefix, None);
+                assert!(
+                    privacy_refusal(prefix, class.tier, ProviderTier::Public).is_some(),
+                    "{spelling} must be refused to a public caller"
+                );
+                assert!(
+                    privacy_refusal(prefix, class.tier, ProviderTier::Private).is_none(),
+                    "{spelling} must be callable from a private caller"
+                );
+            }
+        }
     }
 
     /// The key has to survive both reductions on the way in and come out the
@@ -647,7 +773,7 @@ mod tests {
     }
 
     /// The generated table, stated once where a human reads it — the same
-    /// reasoning as `the_generated_set_is_exactly_these_three_keys`. An assertion
+    /// reasoning as `the_generated_set_is_exactly_these_four_keys`. An assertion
     /// that merely checked `cdwagent` is UCSF would pass while a generator bug
     /// tagged a third extension, or dropped an institution from the map that the
     /// warning copy needs.

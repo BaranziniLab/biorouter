@@ -1,4 +1,5 @@
 use super::base::Config;
+use super::extension_renames::{current_key, project_config, project_config_in, rename_of};
 use crate::agents::extension::PLATFORM_EXTENSIONS;
 use crate::agents::ExtensionConfig;
 use indexmap::IndexMap;
@@ -118,6 +119,10 @@ fn get_extensions_map() -> IndexMap<String, ExtensionEntry> {
     // Also project the idempotent split on reads, including a concurrent pre-migration snapshot.
     migrate_computer_use_capabilities(&mut extensions_map);
     rename_application_drafter(&mut extensions_map);
+    project_renamed_extensions(
+        &mut extensions_map,
+        &crate::extension_install::brxt::extensions_root(),
+    );
     inject_builtin_extensions(&mut extensions_map);
     inject_platform_extensions(&mut extensions_map);
     extensions_map
@@ -271,6 +276,71 @@ fn rename_application_drafter(extensions: &mut IndexMap<String, ExtensionEntry>)
     }
 }
 
+/// Read every entry of a renamed extension as this build loads it
+/// (`config::extension_renames`): an entry under an old id gets the current id
+/// as its name AND its map key, in the same position, and an entry of either
+/// id follows a moved install folder. Collision-safe like `project_configs`:
+/// while the map holds the current id too, the old entry is left exactly as
+/// it was. Every write saves the projection.
+fn project_renamed_extensions(
+    extensions: &mut IndexMap<String, ExtensionEntry>,
+    root: &std::path::Path,
+) {
+    let renamed = |key: &str| super::extension_renames::all_keys(key).len() > 1;
+    if !extensions
+        .values()
+        .any(|entry| renamed(&entry.config.key()))
+    {
+        return;
+    }
+    let config_keys: Vec<String> = extensions
+        .values()
+        .map(|entry| entry.config.key())
+        .collect();
+    let stored = std::mem::take(extensions);
+    let stored_keys: Vec<String> = stored.keys().cloned().collect();
+    let taken_by_another = |key: &str, this: &str| {
+        stored_keys
+            .iter()
+            .any(|stored| stored == key && stored != this)
+    };
+    for (stored_key, entry) in stored {
+        let key = entry.config.key();
+        let target = match rename_of(&key) {
+            // An old id. While the map holds the current id too, leave it as it
+            // was: both stay private by name and load under their own keys.
+            Some(rename) => {
+                if config_keys.contains(&rename.to) || taken_by_another(&rename.to, &stored_key) {
+                    None
+                } else {
+                    Some(rename.to.clone())
+                }
+            }
+            // The current id: only its folder may need to follow a move, and a
+            // map key still spelled as the old id moves to the current one.
+            None if renamed(&key) => match rename_of(&name_to_key(&stored_key)) {
+                Some(rename) if rename.to == key && !taken_by_another(&rename.to, &stored_key) => {
+                    Some(rename.to.clone())
+                }
+                _ => Some(stored_key.clone()),
+            },
+            None => None,
+        };
+        match target {
+            Some(target) if !extensions.contains_key(&target) => {
+                let projected = ExtensionEntry {
+                    enabled: entry.enabled,
+                    config: project_config_in(entry.config, root),
+                };
+                extensions.insert(target, projected);
+            }
+            _ => {
+                extensions.insert(stored_key, entry);
+            }
+        }
+    }
+}
+
 pub fn bundled_extension_display_name(name: &str) -> Option<&'static str> {
     match name {
         "Workspace" | "workspace" => return Some("Workspace Control"),
@@ -363,6 +433,20 @@ fn platform_entry_matches_key(entry: &ExtensionEntry, key: &str) -> bool {
 }
 
 fn save_extensions_map(extensions: IndexMap<String, ExtensionEntry>) {
+    // Every installer and every write of the rename projection passes here, so
+    // this is where an entry first says a renamed extension's current id
+    // (`gptr`). A build older than the rename that shares this folder knows
+    // only the old id; without a record naming it, a local install would be
+    // public there (`extension_rename::identity_record`).
+    //
+    // ⚠ BEFORE the write, as the start migration orders it (record at step 5,
+    // config at step 7): written after, an older build reading the folder in
+    // between, or after a failed record write, saw `gptr` with no record. A
+    // record for an entry whose write then fails only raises a tier, and the
+    // next save (or the start migration) writes one that failed here.
+    crate::extension_rename::record_identities_of_renamed_installs(
+        extensions.values().map(|entry| &entry.config),
+    );
     let config = Config::global();
     if let Err(e) = config.set_param(EXTENSIONS_CONFIG_KEY, &extensions) {
         // TODO(jack) why is this just a debug statement?
@@ -406,22 +490,39 @@ pub fn persisted_extension_names() -> std::collections::HashSet<String> {
     persisted_names_from_raw(&raw)
 }
 
+/// A renamed extension's persisted entry answers for its current name as well
+/// (`config::extension_renames`): the file says `gptragent` until the daemon
+/// moves it, and every reader loads the entry as `gptr`.
 fn persisted_names_from_raw(raw: &Mapping) -> std::collections::HashSet<String> {
-    raw.iter()
-        .filter_map(
-            |(k, v)| match (k, serde_yaml::from_value::<ExtensionEntry>(v.clone())) {
-                (serde_yaml::Value::String(_), Ok(entry)) => Some(entry.config.name().to_string()),
-                _ => None,
-            },
-        )
-        .collect()
+    let mut names = std::collections::HashSet::new();
+    for (k, v) in raw {
+        if let (serde_yaml::Value::String(_), Ok(entry)) =
+            (k, serde_yaml::from_value::<ExtensionEntry>(v.clone()))
+        {
+            let name = entry.config.name().to_string();
+            let key = name_to_key(&name);
+            let current = current_key(&key);
+            if current != key {
+                names.insert(current.to_owned());
+            }
+            names.insert(name);
+        }
+    }
+    names
 }
 
 /// True when `name` has an entry the operator actually wrote into the config
 /// file, as opposed to an injected platform default. See
-/// [`persisted_extension_names`].
+/// [`persisted_extension_names`]. An old id of a renamed extension answers for
+/// its current entry.
 pub fn extension_entry_is_persisted(name: &str) -> bool {
-    persisted_extension_names().contains(name)
+    let names = persisted_extension_names();
+    if names.contains(name) {
+        return true;
+    }
+    let key = name_to_key(name);
+    let current = current_key(&key);
+    current != key && names.contains(current)
 }
 
 /// Like [`get_extension_by_name`], but returns the whole config entry so
@@ -437,6 +538,30 @@ fn find_entry_by_name<'a>(
     extensions
         .values()
         .find(|entry| entry.config.name() == name)
+        .or_else(|| {
+            // An old id of a renamed extension finds its current entry.
+            let key = name_to_key(name);
+            let current = current_key(&key);
+            (current != key)
+                .then(|| {
+                    extensions
+                        .values()
+                        .find(|entry| entry.config.key() == current)
+                })
+                .flatten()
+        })
+}
+
+/// The map key `key` names in `extensions`: itself when present, and for an
+/// old id of a renamed extension, the current id the projection moved it to.
+fn resolve_map_key<'a>(extensions: &IndexMap<String, ExtensionEntry>, key: &'a str) -> &'a str {
+    if extensions.contains_key(key) {
+        return key;
+    }
+    match rename_of(&name_to_key(key)) {
+        Some(rename) if extensions.contains_key(&rename.to) => rename.to.as_str(),
+        _ => key,
+    }
 }
 
 /// Issue #112. The three functions below are the ONLY places this process
@@ -484,6 +609,25 @@ fn change_row(
     }
 }
 
+/// An entry a writer names by an old id of a renamed extension is written as
+/// the current entry, so the file never holds the extension twice (two entries
+/// would load two copies of its tools). The one exception is a map that still
+/// holds the old id as an entry of its own (both ids configured, which the
+/// projection leaves alone): a write naming the old id is that entry's.
+fn current_entry_in(
+    extensions: &IndexMap<String, ExtensionEntry>,
+    entry: ExtensionEntry,
+) -> ExtensionEntry {
+    let key = entry.config.key();
+    if rename_of(&key).is_some() && extensions.values().any(|other| other.config.key() == key) {
+        return entry;
+    }
+    ExtensionEntry {
+        enabled: entry.enabled,
+        config: project_config(entry.config),
+    }
+}
+
 /// Write an entry **without announcing it**, for a caller that will publish a
 /// richer catalogue event itself.
 ///
@@ -497,6 +641,7 @@ fn change_row(
 /// unless you are the one publishing.
 pub fn set_extension_silent(entry: ExtensionEntry) {
     let mut extensions = get_extensions_map();
+    let entry = current_entry_in(&extensions, entry);
     extensions.insert(entry.config.key(), entry);
     save_extensions_map(extensions);
     crate::catalog::CatalogEvents::global().sync_snapshot(&get_all_extensions());
@@ -505,6 +650,7 @@ pub fn set_extension_silent(entry: ExtensionEntry) {
 pub fn set_extension(entry: ExtensionEntry) {
     use crate::catalog::{CatalogChangeReason, CatalogEntryChange};
     let mut extensions = get_extensions_map();
+    let entry = current_entry_in(&extensions, entry);
     let key = entry.config.key();
     let previous = extensions.get(&key).cloned();
     // ⚠ An identical rewrite is not a change. `syncBundledExtensions` and the
@@ -543,6 +689,7 @@ pub fn set_extension(entry: ExtensionEntry) {
 pub fn remove_extension(key: &str) {
     use crate::catalog::{CatalogChangeReason, CatalogEntryChange};
     let mut extensions = get_extensions_map();
+    let key = resolve_map_key(&extensions, key);
     let Some(removed) = extensions.shift_remove(key) else {
         // Nothing was there. Announcing a removal would wake every client to
         // refetch an unchanged inventory.
@@ -638,8 +785,12 @@ fn stored_key_of(
     key: &str,
     expected: &ExtensionEntry,
 ) -> Option<String> {
+    // The caller validated the entry as every reader loads it, so a stored
+    // entry of a renamed extension matches through its projection too.
     let matches = |current: &ExtensionEntry| {
-        current.enabled == expected.enabled && current.config == expected.config
+        current.enabled == expected.enabled
+            && (current.config == expected.config
+                || project_config(current.config.clone()) == expected.config)
     };
     if extensions.get(key).is_some_and(matches) {
         return Some(key.to_owned());
@@ -694,6 +845,7 @@ fn insert_extension_if_absent(
 pub fn set_extension_enabled(key: &str, enabled: bool) {
     use crate::catalog::{CatalogChangeReason, CatalogEntryChange};
     let mut extensions = get_extensions_map();
+    let key = resolve_map_key(&extensions, key);
     let Some(entry) = extensions.get_mut(key) else {
         return;
     };
@@ -811,6 +963,7 @@ pub fn get_all_extension_names() -> Vec<String> {
 
 pub fn is_extension_enabled(key: &str) -> bool {
     let extensions = get_extensions_map();
+    let key = resolve_map_key(&extensions, key);
     extensions.get(key).map(|e| e.enabled).unwrap_or(false)
 }
 
@@ -1106,6 +1259,216 @@ mod entry_lookup_tests {
         assert!(!entry.enabled);
 
         assert!(find_entry_by_name(&extensions, "missing").is_none());
+    }
+}
+
+#[cfg(test)]
+mod rename_projection_tests {
+    use super::*;
+    use std::path::{Path, PathBuf};
+
+    fn stdio(name: &str, dir: &Path) -> ExtensionEntry {
+        ExtensionEntry {
+            enabled: false,
+            config: ExtensionConfig::Stdio {
+                name: name.to_owned(),
+                description: "Work in a live R session.".to_owned(),
+                cmd: "uv".to_owned(),
+                args: vec![
+                    "run".to_owned(),
+                    "--directory".to_owned(),
+                    dir.display().to_string(),
+                    "gptragent".to_owned(),
+                ],
+                envs: Default::default(),
+                env_keys: vec!["GPTR_TOKEN".to_owned()],
+                timeout: Some(120),
+                bundled: None,
+                available_tools: vec!["r".to_owned()],
+            },
+        }
+    }
+
+    fn other(name: &str) -> ExtensionEntry {
+        ExtensionEntry {
+            enabled: true,
+            config: ExtensionConfig::stdio(name, "run-me", "another", 30_u64),
+        }
+    }
+
+    fn folder_arg(entry: &ExtensionEntry) -> PathBuf {
+        match &entry.config {
+            ExtensionConfig::Stdio { args, .. } => PathBuf::from(&args[2]),
+            _ => panic!("stdio"),
+        }
+    }
+
+    #[test]
+    fn an_old_entry_reads_under_its_current_id_in_place_and_follows_its_folder() {
+        let root = tempfile::tempdir().unwrap();
+        let old = root.path().join("gptragent");
+        let new = root.path().join("gptr");
+        std::fs::create_dir(&old).unwrap();
+        let stored = IndexMap::from([
+            ("alpha".to_owned(), other("alpha")),
+            ("gptragent".to_owned(), stdio("GptrAgent", &old)),
+            ("omega".to_owned(), other("omega")),
+        ]);
+
+        let mut before_move = stored.clone();
+        project_renamed_extensions(&mut before_move, root.path());
+        assert_eq!(
+            before_move.keys().collect::<Vec<_>>(),
+            ["alpha", "gptr", "omega"]
+        );
+        let entry = &before_move["gptr"];
+        assert_eq!(entry.config.name(), "gptr");
+        assert!(!entry.enabled, "the operator's switch is kept");
+        assert_eq!(folder_arg(entry), old, "the folder has not moved yet");
+        assert_eq!(before_move["alpha"], other("alpha"));
+
+        std::fs::rename(&old, &new).unwrap();
+        let mut after_move = stored.clone();
+        project_renamed_extensions(&mut after_move, root.path());
+        assert_eq!(folder_arg(&after_move["gptr"]), new);
+
+        // A current entry still pointing at the old folder follows it too, and
+        // an old map key holding it moves to the current id.
+        let mut current = IndexMap::from([("gptragent".to_owned(), stdio("gptr", &old))]);
+        project_renamed_extensions(&mut current, root.path());
+        assert_eq!(current.keys().collect::<Vec<_>>(), ["gptr"]);
+        assert_eq!(folder_arg(&current["gptr"]), new);
+
+        // Projecting twice is projecting once.
+        let once = after_move.clone();
+        project_renamed_extensions(&mut after_move, root.path());
+        assert_eq!(after_move, once);
+    }
+
+    #[test]
+    fn a_map_that_already_holds_the_current_id_keeps_the_old_entry_as_it_was() {
+        let root = tempfile::tempdir().unwrap();
+        let both = IndexMap::from([
+            (
+                "gptragent".to_owned(),
+                stdio("gptragent", &root.path().join("gptragent")),
+            ),
+            ("gptr".to_owned(), stdio("gptr", &root.path().join("gptr"))),
+        ]);
+        let mut projected = both.clone();
+        project_renamed_extensions(&mut projected, root.path());
+        assert_eq!(projected, both);
+
+        // Two entries of the old id never collapse into one.
+        let twice = IndexMap::from([
+            (
+                "gptragent".to_owned(),
+                stdio("gptragent", &root.path().join("a")),
+            ),
+            (
+                "GptrAgent".to_owned(),
+                stdio("GptrAgent", &root.path().join("b")),
+            ),
+        ]);
+        let mut projected = twice.clone();
+        project_renamed_extensions(&mut projected, root.path());
+        assert_eq!(projected.len(), 2, "{projected:?}");
+    }
+
+    #[test]
+    fn a_write_under_the_old_id_is_the_current_entry_unless_both_are_configured() {
+        let dir = Path::new("/nonexistent/extensions/gptragent");
+        let mut single = IndexMap::from([("gptragent".to_owned(), stdio("gptragent", dir))]);
+        project_renamed_extensions(
+            &mut single,
+            &crate::extension_install::brxt::extensions_root(),
+        );
+        assert_eq!(
+            current_entry_in(&single, stdio("gptragent", dir))
+                .config
+                .name(),
+            "gptr"
+        );
+
+        let both = IndexMap::from([
+            ("gptragent".to_owned(), stdio("gptragent", dir)),
+            ("gptr".to_owned(), stdio("gptr", dir)),
+        ]);
+        let written = current_entry_in(&both, stdio("gptragent", dir));
+        assert_eq!(
+            written.config.name(),
+            "gptragent",
+            "a write naming the old id is that entry's while both are configured"
+        );
+        assert_eq!(
+            current_entry_in(&both, other("alpha")),
+            other("alpha"),
+            "other extensions are written as given"
+        );
+    }
+
+    #[test]
+    fn a_lookup_by_the_old_name_finds_the_current_entry() {
+        let root = tempfile::tempdir().unwrap();
+        let mut extensions = IndexMap::from([(
+            "gptragent".to_owned(),
+            stdio("gptragent", &root.path().join("gptragent")),
+        )]);
+        project_renamed_extensions(&mut extensions, root.path());
+        for name in ["gptragent", "GptrAgent", "gptr"] {
+            let entry = find_entry_by_name(&extensions, name)
+                .unwrap_or_else(|| panic!("{name} finds the gptr entry"));
+            assert_eq!(entry.config.name(), "gptr");
+        }
+        assert!(find_entry_by_name(&extensions, "gptragentx").is_none());
+    }
+
+    /// #42's operator switch is read as "persisted AND `enabled: false`", and
+    /// the persisted set is read from the raw file, which still says
+    /// `gptragent` until the daemon moves it. The current name must count.
+    #[test]
+    fn a_persisted_old_entry_answers_for_the_current_name() {
+        let raw: Mapping = serde_yaml::from_str(
+            r#"
+gptragent:
+  enabled: false
+  type: stdio
+  name: gptragent
+  cmd: uv
+  args: []
+  description: ""
+  timeout: 300
+"#,
+        )
+        .unwrap();
+        let names = persisted_names_from_raw(&raw);
+        assert!(names.contains("gptragent"));
+        assert!(names.contains("gptr"), "{names:?}");
+    }
+
+    /// An uninstall validates the entry it SAW, which is the projection; the
+    /// file still holds the old one. A removal must find it.
+    #[test]
+    fn a_removal_validated_against_the_projected_entry_finds_the_stored_one() {
+        let dir = Path::new("/nonexistent/extensions/gptragent");
+        let stored = IndexMap::from([
+            ("alpha".to_owned(), other("alpha")),
+            ("gptragent".to_owned(), stdio("gptragent", dir)),
+        ]);
+        let mut projected = stored.clone();
+        project_renamed_extensions(
+            &mut projected,
+            &crate::extension_install::brxt::extensions_root(),
+        );
+        let seen = projected["gptr"].clone();
+        assert_eq!(
+            stored_key_of(&stored, "gptr", &seen).as_deref(),
+            Some("gptragent")
+        );
+        // A real replacement is still left alone.
+        let mut replaced = seen.clone();
+        replaced.enabled = true;
+        assert!(stored_key_of(&stored, "gptr", &replaced).is_none());
     }
 }
 

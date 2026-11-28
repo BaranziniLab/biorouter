@@ -107,6 +107,9 @@ pub fn secret_already_stored(key: &str) -> bool {
 pub struct BrxtBundle {
     path: PathBuf,
     manifest: BrxtManifest,
+    /// The `manifest.json` entry's bytes, which [`Self::extract_to`] holds the
+    /// extracted file to.
+    manifest_bytes: Vec<u8>,
     skills: Vec<BundledSkill>,
 }
 
@@ -135,6 +138,10 @@ impl BrxtBundle {
             .filter_map(|i| archive.by_index(i).ok().map(|f| f.name().to_string()))
             .collect();
 
+        // Before anything is read by name: a second entry that is the same
+        // file on disk would be extracted over the one read below.
+        refuse_aliased_entries(&names)?;
+
         for (present, missing) in [
             (names.iter().any(|n| n == "manifest.json"), "manifest.json"),
             (
@@ -155,13 +162,15 @@ impl BrxtBundle {
             }
         }
 
-        let manifest: BrxtManifest = {
+        let (manifest, manifest_bytes): (BrxtManifest, Vec<u8>) = {
             let mut entry = archive
                 .by_name("manifest.json")
                 .map_err(|e| anyhow!("Could not read manifest.json: {}", e))?;
             let mut buf = String::new();
             entry.read_to_string(&mut buf)?;
-            serde_json::from_str(&buf).map_err(|e| anyhow!("Invalid manifest.json: {}", e))?
+            let manifest =
+                serde_json::from_str(&buf).map_err(|e| anyhow!("Invalid manifest.json: {}", e))?;
+            (manifest, buf.into_bytes())
         };
         if manifest.name.trim().is_empty() {
             bail!("manifest.json missing required field: \"name\"");
@@ -175,6 +184,7 @@ impl BrxtBundle {
         Ok(Self {
             path: path.to_path_buf(),
             manifest,
+            manifest_bytes,
             skills,
         })
     }
@@ -212,8 +222,120 @@ impl BrxtBundle {
                 .with_context(|| format!("writing {}", out_path.display()))?;
             std::io::copy(&mut entry, &mut out)?;
         }
+        // The layer that mirrors no disk's rules. [`refuse_aliased_entries`]
+        // reads names; a disk can still alias two of them (an existing link
+        // inside the folder, a filesystem's own folding). The config this
+        // install writes comes from the manifest `open` read, and the desktop
+        // updater later reads the file on disk, so the two must be one.
+        if fs::read(root.join("manifest.json")).ok().as_deref() != Some(&self.manifest_bytes[..]) {
+            bail!(
+                "The manifest.json this bundle left on disk is not the one that was read, so \
+                 another of its entries names the same file"
+            );
+        }
         Ok(())
     }
+}
+
+/// One path part, folded the way the most forgiving disk Biorouter writes to
+/// reads it: Unicode compatibility forms, case by Unicode rules (upper then
+/// lower, so U+017F is `s`), and the trailing dots and spaces Windows drops.
+/// It folds MORE than any one filesystem, which only refuses more bundles. The
+/// desktop's `foldedPart` (`ui/desktop/src/utils/safeZip.ts`) is the same rule.
+fn folded_part(part: &str) -> String {
+    use unicode_normalization::UnicodeNormalization;
+    let folded: String = part
+        .nfkc()
+        .collect::<String>()
+        .to_uppercase()
+        .to_lowercase()
+        .nfkc()
+        .collect();
+    let trimmed = folded.trim_end_matches(['.', ' ']);
+    if trimmed.is_empty() {
+        folded
+    } else {
+        trimmed.to_owned()
+    }
+}
+
+/// An 8.3 short name (`MANIFE~1.JSO`), which Windows can resolve to a long one.
+fn is_short_name(part: &str) -> bool {
+    let tilde_digit = part
+        .as_bytes()
+        .windows(2)
+        .any(|pair| pair[0] == b'~' && pair[1].is_ascii_digit());
+    let (stem, extension) = match part.split_once('.') {
+        Some((stem, extension)) => (stem, Some(extension)),
+        None => (part, None),
+    };
+    tilde_digit
+        && (1..=8).contains(&stem.chars().count())
+        && extension.is_none_or(|ext| ext.chars().count() <= 3 && !ext.contains('.'))
+}
+
+/// Refuse a bundle in which two entries could name one file on a disk
+/// Biorouter writes to: names that differ only in case (by Unicode rules),
+/// Unicode form, a `.` segment, or trailing dots and spaces, or a file that is
+/// also another entry's folder. Also refuses a name with a colon (an NTFS
+/// stream: `manifest.json::$DATA` is `manifest.json`) or the shape of an 8.3
+/// short name. The desktop's `assertDistinctZipEntries` is the same rule.
+///
+/// ⚠ **Why.** [`BrxtBundle::open`] reads ONE entry named `manifest.json`, and
+/// [`BrxtBundle::extract_to`] writes every entry in order, so a bundle carrying
+/// `manifest.json` and then `./manifest.json` installs a manifest nobody read.
+fn refuse_aliased_entries(names: &[String]) -> Result<()> {
+    let mut files: HashMap<String, &str> = HashMap::new();
+    let mut folders: HashMap<String, &str> = HashMap::new();
+    let clash = |first: &str, second: &str| {
+        anyhow!(
+            "Bundle entries {first} and {second} name one file on disk; not a valid .brxt bundle"
+        )
+    };
+    for name in names {
+        let parts: Vec<&str> = name
+            .split(['/', '\\'])
+            .filter(|part| !part.is_empty() && *part != ".")
+            .collect();
+        for part in &parts {
+            if part.contains(':') {
+                bail!(
+                    "Bundle entry {name} cannot be extracted safely: it has a colon, which names \
+                     a file stream on Windows"
+                );
+            }
+            if is_short_name(part) {
+                bail!(
+                    "Bundle entry {name} cannot be extracted safely: it has the shape of an 8.3 \
+                     short name, which Windows can read as another file"
+                );
+            }
+        }
+        if parts.is_empty() {
+            continue;
+        }
+        let folded: Vec<String> = parts.iter().map(|part| folded_part(part)).collect();
+        for depth in 1..folded.len() {
+            let folder = folded[..depth].join("/");
+            if let Some(file) = files.get(&folder) {
+                return Err(clash(file, name));
+            }
+            folders.entry(folder).or_insert(name);
+        }
+        let key = folded.join("/");
+        if name.ends_with('/') || name.ends_with('\\') {
+            if let Some(file) = files.get(&key) {
+                return Err(clash(file, name));
+            }
+            folders.entry(key).or_insert(name);
+            continue;
+        }
+        if let Some(earlier) = files.get(&key).or_else(|| folders.get(&key)) {
+            return Err(clash(earlier, name));
+        }
+        files.insert(key, name);
+    }
+    Ok(())
 }
 
 fn extraction_target(root: &Path, relative: &Path) -> Result<PathBuf> {
@@ -439,6 +561,12 @@ mod tests {
     /// A structurally valid `.brxt` whose manifest declares `name`, written
     /// into `dir` and nowhere else.
     fn bundle_declaring(dir: &Path, name: &str) -> PathBuf {
+        bundle_with_extra_entries(dir, name, &[])
+    }
+
+    /// [`bundle_declaring`], with `extra` entries after the four required ones,
+    /// under their raw names, as a hostile archive carries them.
+    fn bundle_with_extra_entries(dir: &Path, name: &str, extra: &[(&str, &[u8])]) -> PathBuf {
         use std::io::Write as _;
         let path = dir.join("fixture.brxt");
         let mut zip = zip::ZipWriter::new(fs::File::create(&path).unwrap());
@@ -460,12 +588,94 @@ mod tests {
                 b"[project]\nname = \"fixture\"\n".to_vec(),
             ),
             ("src/main.py", b"pass\n".to_vec()),
-        ] {
+        ]
+        .into_iter()
+        .chain(extra.iter().map(|(entry, body)| (*entry, body.to_vec())))
+        {
             zip.start_file(entry, options).unwrap();
             zip.write_all(&body).unwrap();
         }
         zip.finish().unwrap();
         path
+    }
+
+    const EVIL_MANIFEST: &[u8] =
+        br#"{"name":"spokeagent","display_name":"x","description":"","version":"9.9.9","entry_point":"evil","repository":"https://github.com/attacker/x","env_vars":[]}"#;
+
+    /// ⚠ **`open` reads ONE `manifest.json` and `extract_to` writes every
+    /// entry**, so a second entry that is the same file on disk would install a
+    /// manifest nobody checked. The desktop updater reads that file later and
+    /// is steered by it. Every spelling here names `manifest.json` (or
+    /// `src/main.py`) on some disk Biorouter writes to: a `.` segment on all of
+    /// them, Unicode case and trailing dots on APFS and NTFS, a stream or a
+    /// short name on NTFS.
+    #[test]
+    fn a_second_spelling_of_an_entry_is_refused_at_open() {
+        for alias in [
+            "./manifest.json",
+            ".//manifest.json",
+            "MANIFEST.JSON",
+            "manife\u{17f}t.json",
+            "manifest.json.",
+            "manifest.json ",
+            "manifest.json::$DATA",
+            "MANIFE~1.JSO",
+            "src/./main.py",
+            "SRC/main.py",
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let path = bundle_with_extra_entries(dir.path(), "fixture", &[(alias, EVIL_MANIFEST)]);
+            let Err(err) = BrxtBundle::open(&path) else {
+                panic!("{alias:?} beside the checked entry was accepted");
+            };
+            let message = err.to_string();
+            assert!(
+                message.contains("name one file") || message.contains("cannot be extracted"),
+                "{alias:?} was refused for the wrong reason: {message}"
+            );
+        }
+    }
+
+    #[test]
+    fn ordinary_names_still_open() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = bundle_with_extra_entries(
+            dir.path(),
+            "fixture",
+            &[
+                (".python-version", b"3.12\n"),
+                ("src/pkg/__init__.py", b""),
+                ("src/a.b.c.py", b""),
+                ("docs/notes~draft.md", b""),
+                ("skills/", b""),
+            ],
+        );
+        BrxtBundle::open(&path).unwrap();
+    }
+
+    /// The layer that mirrors no disk's rules: whatever an extraction leaves as
+    /// `manifest.json` must be the bytes `open` checked. Here an existing link
+    /// inside the folder (which extraction follows, since it stays inside)
+    /// carries a later entry onto the checked file.
+    #[cfg(unix)]
+    #[test]
+    fn extraction_refuses_when_the_manifest_on_disk_is_not_the_one_read() {
+        let dir = tempfile::tempdir().unwrap();
+        let path =
+            bundle_with_extra_entries(dir.path(), "fixture", &[("alias.txt", EVIL_MANIFEST)]);
+        let bundle = BrxtBundle::open(&path).unwrap();
+        let install = dir.path().join("install");
+        fs::create_dir_all(&install).unwrap();
+        fs::write(install.join("manifest.json"), b"{}").unwrap();
+        std::os::unix::fs::symlink(install.join("manifest.json"), install.join("alias.txt"))
+            .unwrap();
+
+        let err = bundle.extract_to(&install).unwrap_err().to_string();
+
+        assert!(
+            err.contains("manifest.json"),
+            "refused for the wrong reason: {err}"
+        );
     }
 
     /// ⚠ **The bundle names its own install directory.** Every installer does

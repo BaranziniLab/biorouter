@@ -1,0 +1,6 @@
+{
+  "version": 1,
+  "renames": [
+    { "from": "gptragent", "to": "gptr.agent", "note": "A target the extension manager would store as gptr_agent." }
+  ]
+}

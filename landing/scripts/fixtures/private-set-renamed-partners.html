@@ -1,0 +1,48 @@
+<!--
+  Fixture: two cards whose extension ids the map in renames-partners.json
+  renames. Run with that map through the fixture-only renames flag.
+
+    oldpublicagent      -> newpublicagent       the card is the OLD id, and public
+    oldprivateagent     -> renamedprivateagent  the card is the NEW id, and private
+
+  Expected: exit 0. The private card's rename partner, oldprivateagent, joins
+  the compiled private set with the card's own affiliation (ucsf), because the
+  rule is symmetric: either end of a rename may be the card. The public card's
+  rename emits nothing anywhere. registry.json still holds exactly the two
+  cards: a rename partner is a name for the compiled set, never a catalog row.
+-->
+<div id="extensions-section">
+  <div class="ext-grid" id="extensions-grid">
+
+    <div class="ext-card" data-license="Apache-2.0" data-extension-name="OldPublicAgent">
+      <div class="ext-card-header">
+        <div class="ext-meta">
+          <h3>Old Public Agent</h3>
+          <div class="ext-org">Fixtures · v0.1.0</div>
+        </div>
+        <a href="https://example.invalid/old-public-agent" class="ext-gh-link">GitHub</a>
+      </div>
+      <p class="ext-desc">A public card under an id the map renames. Its new id must not become private.</p>
+      <div class="ext-footer">
+        <div class="ext-tags"><span class="tag public" data-privacy-badge>Public</span><span class="tag mcp">MCP</span></div>
+        <a href="https://example.invalid/oldpublicagent.brxt" class="brxt-chip">.brxt</a>
+      </div>
+    </div>
+
+    <div class="ext-card" data-license="Apache-2.0" data-privacy="private" data-extension-name="RenamedPrivateAgent" data-affiliation="ucsf">
+      <div class="ext-card-header">
+        <div class="ext-meta">
+          <h3>Renamed Private Agent</h3>
+          <div class="ext-org">Fixtures · UCSF · v0.1.0</div>
+        </div>
+        <a href="https://example.invalid/renamed-private-agent" class="ext-gh-link">GitHub</a>
+      </div>
+      <p class="ext-desc">A private card under the id the map renames TO. Its old id must stay private, under the same institution.</p>
+      <div class="ext-footer">
+        <div class="ext-tags"><span class="tag private" data-privacy-badge>Private</span><span class="tag affiliation" data-affiliation-badge="ucsf">UCSF data</span><span class="tag ucsf">UCSF</span><span class="tag mcp">MCP</span></div>
+        <a href="https://example.invalid/renamedprivateagent.brxt" class="brxt-chip">.brxt</a>
+      </div>
+    </div>
+
+  </div>
+</div>

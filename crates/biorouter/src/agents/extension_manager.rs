@@ -1342,6 +1342,22 @@ impl<'a> ScannedCall<'a> {
     }
 }
 
+/// The key an extension named `key` (already [`normalize`]d) is loaded under
+/// in `extensions`: `key` itself when something is loaded under it; otherwise,
+/// when `key` is an id Biorouter renamed (`config::extension_renames`) and the
+/// extension is loaded under the current id, that id; otherwise `key`. Exact
+/// first, so a chat that holds both ids keeps each name meaning its own entry.
+fn loaded_extension_key(extensions: &HashMap<String, Extension>, key: String) -> String {
+    if extensions.contains_key(&key) {
+        return key;
+    }
+    let current = crate::config::extension_renames::current_key(&key);
+    if current != key && extensions.contains_key(current) {
+        return current.to_string();
+    }
+    key
+}
+
 /// Sanitizes a string by replacing invalid characters with underscores.
 /// Valid characters match [a-zA-Z0-9_-]
 pub fn normalize(input: &str) -> String {
@@ -2262,6 +2278,11 @@ impl ExtensionManager {
         config: ExtensionConfig,
         origin: ExtensionOrigin,
     ) -> ExtensionResult<()> {
+        // A config from a store written before an extension was renamed (a
+        // workflow, a recipe, the CLI, a saved roster) loads under its current
+        // id, so its tools carry the current prefix (`config::extension_renames`).
+        // First, so every check below and the key it is loaded under agree.
+        let config = crate::config::extension_renames::project_config(config);
         let config_name = config.key().to_string();
         let sanitized_name = normalize(&config_name);
         if sanitized_name == "computercontroller"
@@ -2805,16 +2826,21 @@ impl ExtensionManager {
         }
     }
 
-    /// Get aggregated usage statistics
+    /// Unload the extension `name` names: its normalized key, or, when nothing
+    /// is loaded under it and `name` is an id renamed since, the extension
+    /// loaded under the current id ([`loaded_extension_key`], the resolution
+    /// [`Self::assert_extension_manageable`] asks too).
     pub async fn remove_extension(&self, name: &str) -> ExtensionResult<()> {
-        let sanitized_name = normalize(name);
+        let mut extensions = self.extensions.lock().await;
+        let sanitized_name = loaded_extension_key(&extensions, normalize(name));
         if sanitized_name == "computercontroller" {
             self.computer_use.revoke();
         }
         if sanitized_name == crate::security::browser_use::EXTENSION_KEY {
             self.browser_use.revoke();
         }
-        self.extensions.lock().await.remove(&sanitized_name);
+        extensions.remove(&sanitized_name);
+        drop(extensions);
         self.invalidate_tools_cache_and_bump_version().await;
         Ok(())
     }
@@ -2823,8 +2849,18 @@ impl ExtensionManager {
         Ok(self.extensions.lock().await.keys().cloned().collect())
     }
 
+    /// Whether `name` is loaded, as given or, for an id renamed since, under
+    /// its current id ([`loaded_extension_key`]).
     pub async fn is_extension_enabled(&self, name: &str) -> bool {
-        self.extensions.lock().await.contains_key(name)
+        let extensions = self.extensions.lock().await;
+        extensions.contains_key(&loaded_extension_key(&extensions, name.to_string()))
+    }
+
+    /// The key `name` is loaded under, by the rule [`Self::remove_extension`]
+    /// and [`Self::assert_extension_manageable`] share: the normalized name,
+    /// or the current id of a renamed one when only that is loaded.
+    pub(crate) async fn loaded_key_for(&self, name: &str) -> String {
+        loaded_extension_key(&*self.extensions.lock().await, normalize(name))
     }
 
     /// Is `tool` granted for `extension` in this session's configuration?
@@ -3813,12 +3849,16 @@ impl ExtensionManager {
         name: &str,
         admitted: crate::privacy::CallCapability,
     ) -> Result<(), ErrorData> {
-        let loaded = self
-            .extensions
-            .lock()
-            .await
-            .get(&normalize(name))
-            .map(|extension| extension.config.clone());
+        let loaded = {
+            let extensions = self.extensions.lock().await;
+            // The key `remove_extension` removes under, by the same function:
+            // a gate that resolved another key than its executor would be a
+            // gate with a bypass (see above).
+            let key = loaded_extension_key(&extensions, normalize(name));
+            extensions
+                .get(&key)
+                .map(|extension| extension.config.clone())
+        };
         manageability_refusal(name, loaded.as_ref(), admitted).map_or(Ok(()), Err)
     }
 
@@ -4226,7 +4266,14 @@ impl ExtensionManager {
         }
     }
 
+    /// The name `dispatch_tool_call` routes: a bare Code Execution tool gets
+    /// its prefix, and a name whose prefix is an extension id renamed since
+    /// (`gptragent__r`, from a transcript, a skill or a script) gets the
+    /// current id (`gptr__r`) when this manager holds the extension under the
+    /// current id and nothing under the old one. A chat that holds both keeps
+    /// each name meaning its own extension.
     async fn prefixed_tool_name(&self, tool_name: &str) -> String {
+        let extensions = self.extensions.lock().await;
         if !tool_name.contains("__")
             && [
                 "execute_code",
@@ -4236,12 +4283,20 @@ impl ExtensionManager {
                 "watch_job",
             ]
             .contains(&tool_name)
-            && self.extensions.lock().await.contains_key("code_execution")
+            && extensions.contains_key("code_execution")
         {
-            format!("code_execution__{tool_name}")
-        } else {
-            tool_name.to_string()
+            return format!("code_execution__{tool_name}");
         }
+        if let Some((old_prefix, _)) = tool_name.split_once("__") {
+            let current_prefix = crate::config::extension_renames::current_key(old_prefix);
+            if current_prefix != old_prefix
+                && extensions.contains_key(current_prefix)
+                && !extensions.contains_key(old_prefix)
+            {
+                return crate::config::extension_renames::current_tool_name(tool_name).into_owned();
+            }
+        }
+        tool_name.to_string()
     }
 
     /// Dispatch one tool call to the extension that owns it.
@@ -5844,6 +5899,106 @@ mod tests {
             self.add_client(name.to_string(), config, client, None, None)
                 .await;
         }
+    }
+
+    /// The gptr rename (B2, lookup-time resolution): a stored call to
+    /// `gptragent__r` reaches the extension now loaded as `gptr`, at the
+    /// dispatch choke point every path shares, and only while the map holds the
+    /// current id and not the old one. A chat that somehow holds BOTH keeps
+    /// each name meaning its own extension.
+    #[tokio::test]
+    async fn an_old_tool_prefix_is_routed_to_the_extension_loaded_under_its_current_id() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let em = ExtensionManager::new_without_provider(temp_dir.path().to_path_buf());
+
+        // Nothing loaded under either id: nothing to route to, nothing renamed.
+        assert_eq!(em.prefixed_tool_name("gptragent__r").await, "gptragent__r");
+
+        em.add_mock_extension("gptr".to_string(), Arc::new(MockClient {}))
+            .await;
+        assert_eq!(em.prefixed_tool_name("gptragent__r").await, "gptr__r");
+        assert_eq!(em.prefixed_tool_name("gptr__r").await, "gptr__r");
+        assert_eq!(
+            em.prefixed_tool_name("developer__shell").await,
+            "developer__shell"
+        );
+
+        let dispatched = em
+            .dispatch_tool_call(
+                "test-session-id",
+                CallToolRequestParams {
+                    task: None,
+                    name: "gptragent__tool".into(),
+                    arguments: Some(object!({})),
+                    meta: None,
+                },
+                crate::privacy::CallCapability::for_test(
+                    crate::privacy::ProviderTier::Private,
+                    false,
+                ),
+                CancellationToken::default(),
+            )
+            .await
+            .expect("the old prefix routes to the extension loaded as gptr");
+        assert!(dispatched.result.await.is_ok());
+
+        // Both loaded: the old name is its own extension's.
+        em.add_mock_extension("gptragent".to_string(), Arc::new(MockClient {}))
+            .await;
+        assert_eq!(em.prefixed_tool_name("gptragent__r").await, "gptragent__r");
+    }
+
+    /// Extension names given as strings (`manage_extensions`, a subagent's or
+    /// another chat's remove list) resolve the old id to the loaded current
+    /// one, exact name first.
+    #[tokio::test]
+    async fn an_old_extension_id_names_the_extension_loaded_under_its_current_id() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let em = ExtensionManager::new_without_provider(temp_dir.path().to_path_buf());
+        em.add_mock_extension("gptr".to_string(), Arc::new(MockClient {}))
+            .await;
+        assert!(em.is_extension_enabled("gptragent").await);
+        assert!(em.is_extension_enabled("gptr").await);
+        assert!(!em.is_extension_enabled("developer").await);
+
+        em.remove_extension("gptragent").await.unwrap();
+        assert!(!em.is_extension_enabled("gptr").await);
+
+        // Both loaded: removing the old id removes only the entry under it.
+        em.add_mock_extension("gptr".to_string(), Arc::new(MockClient {}))
+            .await;
+        em.add_mock_extension("gptragent".to_string(), Arc::new(MockClient {}))
+            .await;
+        em.remove_extension("gptragent").await.unwrap();
+        let mut left = em.list_extensions().await.unwrap();
+        left.sort();
+        assert_eq!(left, vec!["gptr".to_string()]);
+    }
+
+    /// A config read from a store that predates the rename (a workflow, a
+    /// recipe, the CLI) is projected before anything else, so it is keyed by the
+    /// current id. Here the projection is what makes the add a no-op: `gptr` is
+    /// already loaded, and without it the old key would be spawned beside it.
+    #[tokio::test]
+    async fn an_added_config_under_an_old_id_is_keyed_by_the_current_one() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let em = Arc::new(ExtensionManager::new_without_provider(
+            temp_dir.path().to_path_buf(),
+        ));
+        em.add_mock_extension("gptr".to_string(), Arc::new(MockClient {}))
+            .await;
+        em.add_extension(ExtensionConfig::stdio(
+            "gptragent",
+            "/nonexistent/biorouter-rename-fixture",
+            "gptr Agent",
+            30_u64,
+        ))
+        .await
+        .expect("the projected key is already loaded, so nothing is spawned");
+        assert_eq!(
+            em.list_extensions().await.unwrap(),
+            vec!["gptr".to_string()]
+        );
     }
 
     struct MockClient {}

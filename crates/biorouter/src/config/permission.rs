@@ -59,13 +59,30 @@ pub fn set_session_always_confirm(session: &crate::session::Session, tools: &[St
 
 /// Whether `tool_name` must be put to a person before it runs in `session`,
 /// whatever the permission mode ([`set_session_always_confirm`]).
+///
+/// Names are compared by their current spelling
+/// ([`crate::config::extension_renames::current_tool_name`]), so an
+/// application whose manifest still names a tool by its extension's old id
+/// keeps asking before the renamed tool runs.
 pub fn session_always_confirms(session: &crate::session::Session, tool_name: &str) -> bool {
+    use crate::config::extension_renames::current_tool_name;
     let map = SESSION_ALWAYS_CONFIRM
         .read()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let wanted = current_tool_name(tool_name);
     map.get(&session.id).is_some_and(|entry| {
-        entry.created_at == session.created_at && entry.tools.iter().any(|t| t == tool_name)
+        entry.created_at == session.created_at
+            && entry.tools.iter().any(|t| current_tool_name(t) == wanted)
     })
+}
+
+/// How restrictive a level is, for choosing between two spellings of one tool.
+fn restrictiveness(level: &PermissionLevel) -> u8 {
+    match level {
+        PermissionLevel::AlwaysAllow => 0,
+        PermissionLevel::AskBefore => 1,
+        PermissionLevel::NeverAllow => 2,
+    }
 }
 
 /// Enum representing the possible permission levels for a tool.
@@ -150,29 +167,47 @@ impl PermissionManager {
     }
 
     /// Helper function to retrieve the permission level for a specific permission category and tool.
+    ///
+    /// A tool whose extension was renamed is judged under every spelling a
+    /// stored choice may use ([`crate::config::extension_renames::tool_name_aliases`],
+    /// the exact name first), so a choice written before the rename keeps
+    /// applying after it. When two spellings disagree, the more restrictive one
+    /// wins: that can only happen when an older build, which knows only the old
+    /// name, wrote one of them, and a deny must never be lost to the rename
+    /// (I4). A tool of an extension that was never renamed has one spelling and
+    /// is judged exactly as before.
     fn get_permission(&self, name: &str, principal_name: &str) -> Option<PermissionLevel> {
         let map = self.permission_map.read().unwrap();
         // Check if the permission category exists in the map
-        if let Some(permission_config) = map.get(name) {
+        let permission_config = map.get(name)?;
+        let level_of = |spelling: &str| {
+            let listed = |list: &Vec<String>| list.iter().any(|p| p == spelling);
             // Check the permission levels for the given tool
-            if permission_config
-                .always_allow
-                .contains(&principal_name.to_string())
-            {
-                return Some(PermissionLevel::AlwaysAllow);
-            } else if permission_config
-                .ask_before
-                .contains(&principal_name.to_string())
-            {
-                return Some(PermissionLevel::AskBefore);
-            } else if permission_config
-                .never_allow
-                .contains(&principal_name.to_string())
-            {
-                return Some(PermissionLevel::NeverAllow);
+            if listed(&permission_config.always_allow) {
+                Some(PermissionLevel::AlwaysAllow)
+            } else if listed(&permission_config.ask_before) {
+                Some(PermissionLevel::AskBefore)
+            } else if listed(&permission_config.never_allow) {
+                Some(PermissionLevel::NeverAllow)
+            } else {
+                None
+            }
+        };
+        let mut found: Option<PermissionLevel> = level_of(principal_name);
+        for alias in crate::config::extension_renames::tool_name_aliases(principal_name) {
+            if alias.as_ref() == principal_name {
+                continue;
+            }
+            if let Some(level) = level_of(&alias) {
+                if found
+                    .as_ref()
+                    .is_none_or(|held| restrictiveness(&level) > restrictiveness(held))
+                {
+                    found = Some(level);
+                }
             }
         }
-        None // Return None if no matching permission level is found
+        found // None if no matching permission level is found
     }
 
     /// Updates the user permission level for a specific tool.
@@ -186,19 +221,29 @@ impl PermissionManager {
     }
 
     /// Helper function to update a permission level for a specific tool in a given permission category.
+    ///
+    /// The choice is stored under the tool's current name and replaces every
+    /// spelling of the tool in every list, the old ones a rename left behind
+    /// included, so the newest choice is the one that holds.
     fn update_permission(&self, name: &str, principal_name: &str, level: PermissionLevel) {
+        let spellings: Vec<String> =
+            crate::config::extension_renames::tool_name_aliases(principal_name)
+                .into_iter()
+                .map(|alias| alias.into_owned())
+                .collect();
+        let principal_name =
+            crate::config::extension_renames::current_tool_name(principal_name).into_owned();
+        let principal_name = principal_name.as_str();
         let mut map = self.permission_map.write().unwrap();
         // Get or create a new PermissionConfig for the specified category
         let permission_config = map.entry(name.to_string()).or_default();
 
-        // Remove the principal from all existing lists to avoid duplicates
-        permission_config
-            .always_allow
-            .retain(|p| p != principal_name);
-        permission_config.ask_before.retain(|p| p != principal_name);
-        permission_config
-            .never_allow
-            .retain(|p| p != principal_name);
+        // Remove the principal, under every spelling, from all existing lists
+        // to avoid duplicates
+        let other_spelling = |p: &String| !spellings.iter().any(|spelling| spelling == p);
+        permission_config.always_allow.retain(other_spelling);
+        permission_config.ask_before.retain(other_spelling);
+        permission_config.never_allow.retain(other_spelling);
 
         // Add the principal to the appropriate list
         match level {
@@ -224,19 +269,44 @@ impl PermissionManager {
         }
     }
 
-    /// Removes all entries where the principal name starts with the given extension name.
+    /// Removes the choices for the given extension's tools (`<name>__…`, and an
+    /// entry naming the extension itself), and those of every other id the
+    /// extension has had ([`crate::config::extension_renames::all_keys`]) that
+    /// is not configured now.
     pub fn remove_extension(&self, extension_name: &str) {
+        let configured: Vec<String> = crate::config::extensions::get_all_extensions()
+            .into_iter()
+            .map(|entry| entry.config.key())
+            .collect();
+        self.remove_extension_choices(extension_name, &configured);
+    }
+
+    /// [`Self::remove_extension`], with the configured keys given.
+    ///
+    /// ⚠ **The full `<id>__` prefix, never the bare name.** A bare
+    /// `starts_with("gptr")` also matched `gptrtools__x`, so removing one
+    /// extension dropped another's choices, its denies included. And an id
+    /// still configured keeps its choices: both ids installed is a conflict the
+    /// rename move leaves alone, with both entries loaded.
+    pub(crate) fn remove_extension_choices(
+        &self,
+        extension_name: &str,
+        still_configured: &[String],
+    ) {
+        let prefixes: Vec<String> = crate::config::extension_renames::all_keys(extension_name)
+            .into_iter()
+            .chain(std::iter::once(extension_name))
+            .filter(|key| *key == extension_name || !still_configured.iter().any(|c| c == key))
+            .map(|key| format!("{key}__"))
+            .collect();
+        let kept = |p: &String| {
+            p != extension_name && !prefixes.iter().any(|prefix| p.starts_with(prefix.as_str()))
+        };
         let mut map = self.permission_map.write().unwrap();
         for permission_config in map.values_mut() {
-            permission_config
-                .always_allow
-                .retain(|p| !p.starts_with(extension_name));
-            permission_config
-                .ask_before
-                .retain(|p| !p.starts_with(extension_name));
-            permission_config
-                .never_allow
-                .retain(|p| !p.starts_with(extension_name));
+            permission_config.always_allow.retain(kept);
+            permission_config.ask_before.retain(kept);
+            permission_config.never_allow.retain(kept);
         }
 
         match serde_yaml::to_string(&*map) {
@@ -421,6 +491,175 @@ user:
         set_session_always_confirm(&first, &[]);
     }
 
+    /// I4 of the gptr rename: a choice a person wrote for a tool before its
+    /// extension was renamed keeps judging the tool under its new name, in both
+    /// categories, and a deny is among them.
+    #[test]
+    fn a_choice_written_for_an_old_tool_name_judges_the_new_name() {
+        let temp = TempDir::new().unwrap();
+        fs::write(
+            temp.path().join(PERMISSION_FILE),
+            r#"
+user:
+  always_allow: [gptragent__r]
+  ask_before: [gptragent__inspect]
+  never_allow: [gptragent__sessions]
+smart_approve:
+  always_allow: []
+  ask_before: []
+  never_allow: [gptragent__inspect]
+"#,
+        )
+        .unwrap();
+        let manager = PermissionManager::new(temp.path().to_owned());
+
+        assert_eq!(
+            manager.get_user_permission("gptr__r"),
+            Some(PermissionLevel::AlwaysAllow)
+        );
+        assert_eq!(
+            manager.get_user_permission("gptr__inspect"),
+            Some(PermissionLevel::AskBefore)
+        );
+        assert_eq!(
+            manager.get_user_permission("gptr__sessions"),
+            Some(PermissionLevel::NeverAllow)
+        );
+        assert_eq!(
+            manager.get_smart_approve_permission("gptr__inspect"),
+            Some(PermissionLevel::NeverAllow)
+        );
+        // A tool of an extension that was never renamed is judged exactly as before.
+        assert_eq!(manager.get_user_permission("developer__shell"), None);
+    }
+
+    /// A deny under either spelling is never shadowed by an allow under the
+    /// other. Two spellings of one tool can only both be present when an older
+    /// build (which knows only the old name) wrote one of them, and the
+    /// restrictive answer is the one that cannot be wrong.
+    #[test]
+    fn a_deny_under_either_spelling_of_a_tool_is_never_shadowed() {
+        for (allowed, denied) in [("gptr__r", "gptragent__r"), ("gptragent__r", "gptr__r")] {
+            let temp = TempDir::new().unwrap();
+            fs::write(
+                temp.path().join(PERMISSION_FILE),
+                format!(
+                    "user:\n  always_allow: [{allowed}]\n  ask_before: []\n  never_allow: [{denied}]\n"
+                ),
+            )
+            .unwrap();
+            let manager = PermissionManager::new(temp.path().to_owned());
+            for name in ["gptr__r", "gptragent__r"] {
+                assert_eq!(
+                    manager.get_user_permission(name),
+                    Some(PermissionLevel::NeverAllow),
+                    "{name} with {allowed} allowed and {denied} denied"
+                );
+            }
+        }
+    }
+
+    /// Writing a choice for a tool clears every other spelling of it, so the
+    /// newest choice is the one that holds.
+    #[test]
+    fn writing_a_choice_clears_the_old_spellings_of_the_same_tool() {
+        let temp = TempDir::new().unwrap();
+        fs::write(
+            temp.path().join(PERMISSION_FILE),
+            "user:\n  always_allow: []\n  ask_before: []\n  never_allow: [gptragent__r]\n",
+        )
+        .unwrap();
+        let manager = PermissionManager::new(temp.path().to_owned());
+        manager.update_user_permission("gptr__r", PermissionLevel::AlwaysAllow);
+        assert_eq!(
+            manager.get_user_permission("gptr__r"),
+            Some(PermissionLevel::AlwaysAllow)
+        );
+        let map = manager.permission_map.read().unwrap();
+        let config = map.get(USER_PERMISSION).unwrap();
+        for list in [
+            &config.always_allow,
+            &config.ask_before,
+            &config.never_allow,
+        ] {
+            assert!(!list.iter().any(|name| name == "gptragent__r"), "{list:?}");
+        }
+        assert_eq!(config.always_allow, vec!["gptr__r".to_string()]);
+    }
+
+    /// An application's `needs_approval` list written with an old tool name
+    /// still makes the chat ask before the renamed tool runs, and the other way
+    /// round.
+    #[test]
+    fn a_session_always_confirm_set_matches_either_spelling_of_a_tool() {
+        let app_chat = chat("perm-always-confirm-renamed");
+        set_session_always_confirm(&app_chat, &["gptragent__r".to_string()]);
+        assert!(session_always_confirms(&app_chat, "gptr__r"));
+        assert!(session_always_confirms(&app_chat, "gptragent__r"));
+        assert!(!session_always_confirms(&app_chat, "gptr__inspect"));
+
+        set_session_always_confirm(&app_chat, &["gptr__r".to_string()]);
+        assert!(session_always_confirms(&app_chat, "gptragent__r"));
+        set_session_always_confirm(&app_chat, &[]);
+    }
+
+    /// Removing an extension's choices removes those written under any of its
+    /// ids.
+    #[test]
+    fn removing_an_extension_removes_the_choices_of_each_of_its_ids() {
+        let (manager, _temp_dir) = create_test_permission_manager();
+        manager.update_user_permission("gptr__r", PermissionLevel::AlwaysAllow);
+        manager.update_user_permission("developer__shell", PermissionLevel::AlwaysAllow);
+        manager.remove_extension_choices("gptragent", &[]);
+        assert_eq!(manager.get_user_permission("gptr__r"), None);
+        assert_eq!(
+            manager.get_user_permission("developer__shell"),
+            Some(PermissionLevel::AlwaysAllow)
+        );
+    }
+
+    /// A tool whose name merely begins with the removed extension's name is
+    /// another extension's, and keeps its choices, a deny included.
+    #[test]
+    fn removing_an_extension_keeps_the_choices_of_one_whose_name_it_begins() {
+        let (manager, _temp_dir) = create_test_permission_manager();
+        manager.update_user_permission("gptr__r", PermissionLevel::AlwaysAllow);
+        manager.update_user_permission("gptrtools__x", PermissionLevel::NeverAllow);
+        manager.remove_extension_choices("gptr", &[]);
+        assert_eq!(manager.get_user_permission("gptr__r"), None);
+        assert_eq!(
+            manager.get_user_permission("gptrtools__x"),
+            Some(PermissionLevel::NeverAllow)
+        );
+    }
+
+    /// Both ids configured (the conflict the rename move leaves alone):
+    /// removing one keeps the other's choices.
+    #[test]
+    fn removing_one_of_two_configured_ids_keeps_the_other_s_choices() {
+        let (manager, _temp_dir) = create_test_permission_manager();
+        manager.update_user_permission("gptr__r", PermissionLevel::NeverAllow);
+        // A choice a build before the rename wrote, under the old spelling.
+        manager
+            .permission_map
+            .write()
+            .unwrap()
+            .entry(USER_PERMISSION.to_string())
+            .or_default()
+            .always_allow
+            .push("gptragent__inspect".to_string());
+        manager.remove_extension_choices("gptragent", &["gptr".to_owned()]);
+        assert_eq!(
+            manager.get_user_permission("gptr__r"),
+            Some(PermissionLevel::NeverAllow)
+        );
+        let map = manager.permission_map.read().unwrap();
+        let config = map.get(USER_PERMISSION).unwrap();
+        assert!(!config
+            .always_allow
+            .contains(&"gptragent__inspect".to_string()));
+    }
+
     #[test]
     fn test_remove_extension() {
         let (manager, _temp_dir) = create_test_permission_manager();
@@ -429,7 +668,7 @@ user:
         manager.update_user_permission("prefix__tool3", PermissionLevel::AskBefore);
 
         // Remove entries starting with "prefix"
-        manager.remove_extension("prefix");
+        manager.remove_extension_choices("prefix", &[]);
 
         let map = manager.permission_map.read().unwrap();
         let config = map.get(USER_PERMISSION).unwrap();
