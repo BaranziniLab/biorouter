@@ -26,7 +26,7 @@ jobs:
           - arch: arm64
             runner: ubuntu-24.04-arm
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - name: Check build inputs, memory and available disk
         run: |
           set -euo pipefail
@@ -48,7 +48,7 @@ jobs:
 
       - name: Restore the pinned Light model and voice detector
         id: speech-cache
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: ${{ runner.temp }}/speech-models
           key: docker-speech-${{ matrix.arch }}-67a179f608ea6114bd3fdb9060e762b588a3fb3bd00c4387971be4d177958067-2aa269b785eeb53a82983a20501ddf7c1d9c48e33ab63a41391ac6c9f7fb6987
@@ -91,13 +91,13 @@ jobs:
             --run-root "$RUNNER_TEMP/pr31-$ARCH" "${args[@]}"
       - name: Save verified speech files on main
         if: success() && github.ref == 'refs/heads/main' && steps.speech-cache.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v4
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: ${{ runner.temp }}/speech-models
           key: docker-speech-${{ matrix.arch }}-67a179f608ea6114bd3fdb9060e762b588a3fb3bd00c4387971be4d177958067-2aa269b785eeb53a82983a20501ddf7c1d9c48e33ab63a41391ac6c9f7fb6987
       - name: Keep the check evidence
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: docker-image-${{ matrix.arch }}
           path: |

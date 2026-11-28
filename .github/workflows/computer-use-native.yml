@@ -62,14 +62,14 @@ jobs:
     env:
       BIOROUTER_BUILD_JOBS: "3"
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
           python-version: "3.12"
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: "24"
-      - uses: dtolnay/rust-toolchain@master
+      - uses: dtolnay/rust-toolchain@df2a88e9fe4098bad09cb42c3dec7187f15861fc # master
         with:
           toolchain: "1.92"
       - name: Vendored engine source matches its manifest
@@ -92,7 +92,7 @@ jobs:
       # cannot grant; building the fixture keeps it ready for the live gate.
       - name: Build the macOS fixture app
         run: bash scripts/build-copilot-fixture-macos.sh
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: always()
         with:
           name: computer-use-${{ matrix.target }}
@@ -119,14 +119,14 @@ jobs:
       BIOROUTER_BUILD_JOBS: "3"
       CROSS_REGISTRY_MOUNT: ${{ github.workspace }}/.cross-cache/copilot-registry
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
           python-version: "3.12"
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: "24"
-      - uses: actions/cache@v4
+      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: .cross-cache/copilot-registry
           key: copilot-registry-${{ hashFiles('vendor/agent-desktop/source/Cargo.lock') }}
@@ -150,7 +150,7 @@ jobs:
             env HOME="$HOME" PATH="$PATH" python scripts/computer-use-runtime.py contract ${{ matrix.target }}
       - name: Packaging regression tests
         run: python scripts/test-computer-use-packaging.py
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: always()
         with:
           name: computer-use-${{ matrix.target }}
@@ -163,11 +163,11 @@ jobs:
     timeout-minutes: 20
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
           python-version: "3.12"
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: computer-use-win32-x64
           path: target/computer-use/win32-x64
@@ -186,11 +186,11 @@ jobs:
     timeout-minutes: 45
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@master
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: dtolnay/rust-toolchain@df2a88e9fe4098bad09cb42c3dec7187f15861fc # master
         with:
           toolchain: "1.92"
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: computer-use-linux-x64
           path: target/computer-use/linux-x64
@@ -206,7 +206,7 @@ jobs:
         timeout-minutes: 10
         shell: bash
         run: bash scripts/test-copilot-fixture-linux.sh target/computer-use/linux-x64 2>&1 | tee target/copilot-fixture-linux.log
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: always()
         with:
           name: copilot-fixture-linux
@@ -221,11 +221,11 @@ jobs:
     timeout-minutes: 60
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@master
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: dtolnay/rust-toolchain@df2a88e9fe4098bad09cb42c3dec7187f15861fc # master
         with:
           toolchain: "1.92"
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: computer-use-win32-x64
           path: target/computer-use/win32-x64
@@ -240,7 +240,7 @@ jobs:
           $ErrorActionPreference = 'Continue'
           powershell -NoProfile -ExecutionPolicy Bypass -File scripts/test-copilot-fixture-windows.ps1 target/computer-use/win32-x64 2>&1 | ForEach-Object { "$_" } | Tee-Object -FilePath target/copilot-fixture-windows.log
           exit $LASTEXITCODE
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: always()
         with:
           name: copilot-fixture-windows
@@ -255,8 +255,8 @@ jobs:
     timeout-minutes: 30
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@master
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: dtolnay/rust-toolchain@df2a88e9fe4098bad09cb42c3dec7187f15861fc # master
         with:
           toolchain: "1.92"
       - name: cargo test -p agent-desktop-core --lib

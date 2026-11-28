@@ -27,11 +27,10 @@ on:
   schedule:
     - cron: '17 9 * * *'
 
-# Allow the workflow to mint the OIDC token Pages needs and publish.
+# Read only by default. Only the deploy job mints the OIDC token Pages needs and
+# publishes, so only it holds pages and id-token write (its own block below).
 permissions:
   contents: read
-  pages: write
-  id-token: write
 
 # Never run two Pages deploys at once; let an in-flight deploy finish rather
 # than cancelling it (avoids leaving the live site half-published).
@@ -50,10 +49,10 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
       - name: Use Node 24
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: '24'
 
@@ -151,7 +150,7 @@ jobs:
       contents: read
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           persist-credentials: false
 
@@ -183,7 +182,7 @@ jobs:
             "${RUNNER_TEMP}/provider-catalogs/baseten.json"
 
       - name: Hand the feed to the deploy job
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: provider-catalogs
           path: ${{ runner.temp }}/provider-catalogs/
@@ -194,16 +193,20 @@ jobs:
     # A failed catalog must not stop the site: deploy whenever the checks pass.
     if: ${{ !cancelled() && needs.check.result == 'success' }}
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
       - name: Take the fresh Baseten catalog
         if: ${{ needs.baseten-catalog.result == 'success' }}
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: provider-catalogs
           path: landing/provider-catalogs
@@ -226,14 +229,14 @@ jobs:
           fi
 
       - name: Configure Pages
-        uses: actions/configure-pages@v5
+        uses: actions/configure-pages@983d7736d9b0ae728b81ab479565c72886d7745b # v5.0.0
 
       - name: Upload landing/ as the Pages artifact
-        uses: actions/upload-pages-artifact@v3
+        uses: actions/upload-pages-artifact@56afc609e74202658d3ffba0e8f6dda462b719fa # v3.0.1
         with:
           # Served as-is (no Jekyll). The CNAME inside sets the custom domain.
           path: landing
 
       - name: Deploy to GitHub Pages
         id: deployment
-        uses: actions/deploy-pages@v4
+        uses: actions/deploy-pages@d6db90164ac5ed86f2b6aed7e0febac5b3c0c03e # v4.0.5

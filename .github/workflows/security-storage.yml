@@ -53,7 +53,7 @@ jobs:
       CARGO_PROFILE_DEV_DEBUG: 0
       CARGO_TERM_COLOR: always
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           persist-credentials: false
       - name: Record exact source before building
@@ -76,7 +76,7 @@ jobs:
           PY
       - name: Check fixture protocol helpers without Docker or a database
         run: python3 -m unittest discover -s scripts/security-assessment -p test_session_storage_rebuilt.py -v
-      - uses: dtolnay/rust-toolchain@master
+      - uses: dtolnay/rust-toolchain@df2a88e9fe4098bad09cb42c3dec7187f15861fc # master
         with:
           toolchain: '1.92'
       - name: Keep the cache keyed to the pinned toolchain
@@ -87,11 +87,11 @@ jobs:
           for toolchain in $(rustup toolchain list | cut -d' ' -f1); do
             if [ "$toolchain" != "$pinned" ]; then rustup toolchain uninstall "$toolchain"; fi
           done
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           key: serve
           save-if: false
-      - uses: arduino/setup-protoc@v3
+      - uses: arduino/setup-protoc@c65c819552d16ad3c9b72d9dfd5ba5237b9c906b # v3.0.0
         with:
           repo-token: ${{ secrets.GITHUB_TOKEN }}
       - name: Install normal Linux build dependencies
@@ -128,7 +128,7 @@ jobs:
             --repetitions 3 \
             --output "$SECURITY_STORAGE_EVIDENCE/rebuilt-runtime" \
             2>&1 | tee "$SECURITY_STORAGE_EVIDENCE/acceptance.log"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: always()
         with:
           name: rebuilt-session-storage-${{ github.sha }}
