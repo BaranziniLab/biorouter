@@ -17,6 +17,13 @@
       and the `blob: https: http:` it carried until September 2026 was dead — see the
       comment on the same directive in src/main.ts. The two must move together, which
       `src/frameSrcCsp.test.ts` pins.
+
+      `img-src` keeps `https:` here for the served shell only. A remote image in markdown
+      waits for a person's click (OP-P0-09); in a browser on `biorouter serve` there is no
+      main process, so the click sets the address itself and needs this source. The
+      desktop session's policy in src/main.ts admits no web image, and the click is fetched
+      in the main process instead; the stricter policy wins in the desktop.
+      `src/imgSrcCsp.test.ts` pins both.
     -->
     <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval'; img-src 'self' data: blob: https:; connect-src 'self' http: ws: https: wss:; object-src 'none'; font-src 'self' data: https:; media-src 'self' mediastream:; form-action 'none'; base-uri 'self'; manifest-src 'self'; worker-src 'self'; frame-src 'self';"/>
     <title>Biorouter</title>

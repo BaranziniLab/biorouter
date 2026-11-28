@@ -742,13 +742,18 @@ export function dirnameFromPath(value: string): string {
 
 export type MarkdownImageSource =
   | { kind: 'remote'; url: string }
+  | { kind: 'data'; url: string }
   | { kind: 'local'; path: string }
   | { kind: 'blocked' };
 
 /**
- * Where a markdown `<img>` src should load from inside the artifact preview.
- *   - `http(s)` and `data:` URIs pass through unchanged (rendered as `<img src>`),
- *     i.e. remote images are honoured exactly as chat already does — no new fetch.
+ * Where a markdown `<img>` src should load from, in chat and in the preview.
+ *   - An `http(s)` address is `remote`: the renderer draws a button naming its
+ *     host and loads it only on a person's click (OP-P0-09, owner answer D15;
+ *     `utils/remoteImage.ts`). It is never set as an `<img>` source on its own.
+ *   - A `data:` URI is `data`, drawn at once: it requests nothing. (react-markdown's
+ *     URL filter drops one written in markdown before it gets here, so in
+ *     practice this is for callers that bypass that filter.)
  *   - A local reference (relative, absolute, `~`, or `file://`) is resolved
  *     against `baseDir` — the PREVIEWED FILE's directory — and returned as a
  *     `local` path for the caller to read through the main-process allowlisted
@@ -756,18 +761,76 @@ export type MarkdownImageSource =
  *   - A relative traversal that escapes `baseDir` (`../…`) or a bare relative
  *     path with no `baseDir` cannot be resolved and is `blocked` — the renderer
  *     shows a broken-image placeholder rather than a dead `<img>`.
+ *   - A path that names a network host is `blocked` (`namesUnchosenNetworkHost`):
+ *     on Windows the file read's own `realpath` and `lstat` would connect to that
+ *     host before any click. Only a path on the share `baseDir` itself is on is
+ *     read.
  *
  * The main-process allowlist (`isFilePathAllowedForPreview`) is the authoritative
- * gate on what actually gets read; this helper only classifies the src and
- * anchors relative paths, so it never widens that allowlist.
+ * gate on what actually gets read, and refuses a network path of its own accord;
+ * this helper only classifies the src and anchors relative paths, so it never
+ * widens that allowlist.
  */
 export function resolveMarkdownImageSource(src: string, baseDir?: string): MarkdownImageSource {
   const value = src.trim();
   if (!value) return { kind: 'blocked' };
-  if (/^data:/i.test(value)) return { kind: 'remote', url: value };
-  if (/^https?:\/\//i.test(value)) return { kind: 'remote', url: value };
+  if (/^data:/i.test(value)) return { kind: 'data', url: value };
+  // Any slashes: a URL parser reads `https:/host` and `https:\\host` as `https://host`.
+  if (/^https?:/i.test(value)) return { kind: 'remote', url: value };
+  if (fileUrlNamesAHost(value)) return { kind: 'blocked' };
   const resolved = resolveArtifactPath(value, baseDir);
-  return resolved ? { kind: 'local', path: resolved } : { kind: 'blocked' };
+  if (!resolved) return { kind: 'blocked' };
+  if (namesUnchosenNetworkHost([value, safelyDecoded(value), resolved], baseDir)) {
+    return { kind: 'blocked' };
+  }
+  return { kind: 'local', path: resolved };
+}
+
+/**
+ * Two leading separators, of either kind: a scheme-relative web address
+ * (`//host/x.png`) or a Windows network or device path (`\\host\share\x.png`,
+ * `/\host\…`, `\\?\UNC\…`), which reaches that host when it is read.
+ */
+const NETWORK_PATH = /^[\\/]{2}/;
+
+function safelyDecoded(value: string): string {
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    return value;
+  }
+}
+
+/** A `file:` URL with a host other than this machine names a network share. */
+function fileUrlNamesAHost(value: string): boolean {
+  if (!/^file:/i.test(value)) return false;
+  try {
+    const { hostname } = new URL(value);
+    return !!hostname && hostname.toLowerCase() !== 'localhost';
+  } catch {
+    return true;
+  }
+}
+
+function networkPathKey(value: string): string {
+  return value.replace(/\//g, '\\').replace(/\\+$/, '').toLowerCase();
+}
+
+/**
+ * Whether any spelling of an image path is a network path outside the share
+ * `baseDir` is on. A relative image beside a markdown file on a share the person
+ * already works in stays readable; any other host or share does not.
+ */
+function namesUnchosenNetworkHost(spellings: string[], baseDir?: string): boolean {
+  const base = baseDir && NETWORK_PATH.test(baseDir) ? networkPathKey(baseDir) : null;
+  return spellings.some((spelling) => {
+    if (!NETWORK_PATH.test(spelling)) return false;
+    // An absolute path keeps its `..` here; the main process would climb out
+    // of the folder with it, so it never counts as inside.
+    if (!base || /(?:^|[\\/])\.\.(?:[\\/]|$)/.test(spelling)) return true;
+    const key = networkPathKey(spelling);
+    return key !== base && !key.startsWith(`${base}\\`);
+  });
 }
 
 // File paths a tool call is about to create, read off its arguments.

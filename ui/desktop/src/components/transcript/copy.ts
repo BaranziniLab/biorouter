@@ -87,6 +87,18 @@ export const transcriptCopy = {
     imageUnavailable: 'Image unavailable',
     imageUnavailableNamed: (alt: string) => `Image unavailable: ${alt}`,
     loadingImage: 'Loading image',
+    loadingImageNamed: (alt: string) => `Loading image: ${alt}`,
+    /**
+     * A remote image waiting for a click (OP-P0-09). The host is the one thing
+     * shown, because it is the one thing the address cannot fake; the full
+     * address is in the tooltip.
+     */
+    loadImageFrom: (host: string) => `Load image from ${host}`,
+    /** The button's name when the markdown gives the image alt text. */
+    loadImageFromNamed: (host: string, alt: string) => `Load image from ${host}: ${alt}`,
+    /** A remote image inside a link: the link is what a click opens. */
+    imageFrom: (host: string) => `Image from ${host}`,
+    imageFromNamed: (host: string, alt: string) => `${alt} · image from ${host}`,
     /** A markdown task list item's spoken state (`- [x]`, `- [ ]`). */
     taskDone: 'Done',
     taskOpen: 'Not done',

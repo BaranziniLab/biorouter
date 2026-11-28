@@ -147,6 +147,8 @@ import {
   parseAttentionRequest,
 } from './components/crew/attention/attentionMain';
 import { createCachingCdnFetcher, inlineArtifactCdnAssets } from './utils/artifactCdnAssets';
+import { REMOTE_IMAGE_CHANNEL } from './utils/remoteImage';
+import { fetchRemoteImage } from './utils/remoteImageFetch';
 import { isFilePathAllowedForPreview, previewFileRoots } from './utils/pathContainment';
 import { writeFileWithinRoots } from './utils/writeFileWithinRoots';
 import { NativeSaveFileGrants } from './utils/nativeSaveFileGrants';
@@ -462,6 +464,10 @@ export function isAllowedFilePath(resolvedPath: string, sessionWorkingDir?: stri
   // widening adds a root to the allowlist, it does not bypass
   // `isSensitivePreviewPath`. Pointing a chat at ~/.ssh does not make it
   // readable.
+  //
+  // On Windows a UNC path (`\\host\share\…`) outside these roots is refused
+  // first, in every mode, before any `realpath` or `lstat` could connect to the
+  // host it names (`reachesUnchosenNetworkHost`; OP-P0-09 review).
   return isFilePathAllowedForPreview(resolvedPath, allowedFileRoots(sessionWorkingDir), {
     fullyAutomatic: isFullyAutomaticMode(),
   });
@@ -6094,6 +6100,21 @@ ipcMain.handle('biorouter-browser-import:dismiss', (event) => {
   return true;
 });
 
+/**
+ * Fetch the one remote image a person clicked in a chat (OP-P0-09). Only an
+ * app window's own page may ask, and the answer is the image's bytes or a reason
+ * word, never an error the page could read a network's state from.
+ */
+ipcMain.handle(REMOTE_IMAGE_CHANNEL, async (event, url: unknown) => {
+  const win = BrowserWindow.fromWebContents(event.sender);
+  const isAppWindow =
+    !!win && !win.isDestroyed() && windowMap.has(win.id) && win.webContents === event.sender;
+  if (!isAppWindow || event.senderFrame !== event.sender.mainFrame) {
+    return { ok: false, reason: 'invalid' };
+  }
+  return fetchRemoteImage(url);
+});
+
 ipcMain.handle('read-artifact-file', async (event, filePath: string) => {
   const expandedPath = expandBiorouterPath(filePath);
   const resolvedPath = path.resolve(expandedPath);
@@ -8487,7 +8508,19 @@ function installSessionHooks(ses: Electron.Session, appEntryUrl: URL): void {
         // from BOTH files and giving the boot script a hash — a separate
         // change with its own measurement.
         "script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval';" +
-        "img-src 'self' data: blob: https:;" +
+        // No web image (OP-P0-09, owner answer D15). A remote image in markdown
+        // waits for a click, and the click is fetched here in the main process
+        // (`REMOTE_IMAGE_CHANNEL`, `utils/remoteImageFetch.ts`) and drawn from a
+        // `blob:` URL, so nothing in this renderer can reach the web on its own:
+        // a component that forgot the click would still request nothing. The
+        // app's own images are `'self'`, and what it makes is `data:` or `blob:`.
+        //
+        // ⚠ The `<meta>` in index.html keeps `https:`, deliberately: it is also
+        // the only image policy of the page `biorouter serve` sends to a
+        // browser, where there is no main process and the click sets the
+        // address itself. Both policies apply here and the stricter wins.
+        // `src/imgSrcCsp.test.ts` pins both.
+        "img-src 'self' data: blob:;" +
         `connect-src ${buildConnectSrc()};` +
         "object-src 'none';" +
         // Every frame this document creates is `srcdoc`: the artifact preview
