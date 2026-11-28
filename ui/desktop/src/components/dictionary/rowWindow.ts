@@ -95,18 +95,52 @@ export interface GroupBox {
 }
 
 /**
+ * A drawn row taller than the pitch (the History tab's expanded dictation, which is always
+ * drawn): its line, and how many pixels it adds below the pitch.
+ */
+export interface TallRow {
+  line: number;
+  extra: number;
+}
+
+/**
+ * The line `offset` pixels below a group's first row, whose `rows` rows sit on one pitch except
+ * the `tall` ones (in line order), which add their `extra` below themselves.
+ */
+function lineInGroup(
+  rowsLine: number,
+  rows: number,
+  offset: number,
+  pitch: number,
+  tall: readonly TallRow[]
+): number {
+  let shift = 0;
+  for (const row of tall) {
+    if (row.line < rowsLine || row.line >= rowsLine + rows) continue;
+    const top = (row.line - rowsLine) * pitch + shift;
+    if (offset < top) break;
+    if (offset < top + pitch + row.extra) return row.line;
+    shift += row.extra;
+  }
+  return rowsLine + Math.min(rows - 1, Math.floor((offset - shift) / pitch));
+}
+
+/**
  * The first and last line inside `[viewTop, viewBottom]`, from the groups'
  * boxes (in page order): rows and gaps sit on one pitch below their group's
- * first row, so a line is exact without measuring every row. Null when nothing
- * can be measured.
+ * first row, so a line is exact without measuring every row. A row that is
+ * drawn taller than the pitch is named in `tall`, so the lines below it stay
+ * exact too. Null when nothing can be measured.
  */
 export function linesInView(
   boxes: readonly GroupBox[],
   viewTop: number,
   viewBottom: number,
-  pitch: number
+  pitch: number,
+  tall: readonly TallRow[] = []
 ): { first: number; last: number } | null {
   if (boxes.length === 0 || !(viewBottom > viewTop) || !(pitch > 0)) return null;
+  const ordered = tall.length > 1 ? [...tall].sort((a, b) => a.line - b.line) : tall;
   const lineAt = (y: number) => {
     let found = 0;
     for (let index = 0; index < boxes.length; index++) {
@@ -115,7 +149,7 @@ export function linesInView(
     }
     const box = boxes[found];
     if (y < box.rowsTop || box.rows === 0) return box.rowsLine - 1;
-    return box.rowsLine + Math.min(box.rows - 1, Math.floor((y - box.rowsTop) / pitch));
+    return lineInGroup(box.rowsLine, box.rows, y - box.rowsTop, pitch, ordered);
   };
   return { first: lineAt(viewTop), last: lineAt(viewBottom) };
 }

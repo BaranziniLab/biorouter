@@ -328,18 +328,47 @@ Record from the microphone for a few seconds and report what arrived: the device
 
 - **`--seconds <N>`**: How long to record, 1 to 600 (default 5)
 
+#### dictation history [command] [options]
+
+The text of your dictations, newest first, kept on this computer in your local data folder (`~/.local/share/biorouter/dictation/history/` on macOS and Linux, `%LOCALAPPDATA%\UCSF\biorouter\data\dictation\history\` on Windows); never the audio. Biorouter keeps one entry for each dictation you start, in the desktop app, in a `biorouter serve` page, with `biorouter dictate` and with Ctrl+T in a terminal chat, so a text you dictated and then lost can be found again. A new dictation is private unless you turn on public by default, and a private one is shown only to you. The commands work offline, on the same history the desktop app uses on this account; no daemon is needed. See [dictation history](../dictation/history.md).
+
+`history` alone lists, like `history list`. Without a terminal, or in an agent's shell (`BIOROUTER_TERMINAL` set), only public dictations are listed, with no count of the others, and every change except turning a setting off is refused with exit `2`. An id you may not list answers as a missing one ("No dictation with that id.", exit `1`).
+
+| Command | What it does |
+|---|---|
+| `history [list] [--search WORDS] [--limit N] [--format text\|json]` | Lists your dictations, newest first, 50 unless `--limit` (1 to 5000) says otherwise. `--search` keeps those whose text holds the words, ignoring case. Text gives two lines each: the time, where it went, its length, its tier and its id, then the text on one line; `json` (`"schema": 1`) gives `entries` and `total` |
+| `history show <ID> [--format text\|json]` | Prints one dictation's whole text alone on standard output, with its details on standard error, so `biorouter dictation history show <ID> \| pbcopy` copies just the text |
+| `history delete <ID>` (alias `rm`) | Deletes one dictation |
+| `history clear` | Deletes every dictation the listing shows, after you type `delete <count>`; one recorded while you answer is kept |
+| `history publicize <ID>` | Makes a dictation public, so chats on public models may read it, after a warning and the typed word `public`. The warning says when the dictation used your private dictionary terms |
+| `history privatize <ID>` | Makes a dictation private; asks nothing |
+| `history settings [--keep on\|off] [--public-by-default on\|off]` | Prints the two settings, or changes them. **Keep** (on by default) keeps new dictations; **public by default** (off by default) saves new ones as public unless they go to a private chat or use your private terms. Turning either off works anywhere and asks nothing; turning one on asks first, at your own terminal only |
+
+Under your organization's managed policy `history: false`, nothing new is kept, and `publicize`, `privatize` and turning a setting on are refused with exit `2`; listing, `delete`, `clear` and turning a setting off still work.
+
+**Usage:**
+
+```bash
+biorouter dictation history
+biorouter dictation history --search EPAS1 --limit 10
+biorouter dictation history show dch_0b6e8c1a-5e8f-4c6e-9a7d-2f3e4b5c6d7e
+biorouter dictation history settings --keep off
+```
+
 ### dictate [options]
 
 Dictate from this terminal's microphone with the local engine and your personal dictionary. The microphone opens at once; the model loads while you speak, and what you have finished saying is transcribed while you go on, so after the stop only your last few seconds are left to transcribe, however long you spoke. Press Enter to stop, or Escape (or Ctrl-C) to cancel. The text is then shown for review on the terminal: Enter uses it, `e` edits it, Escape discards it. Only after that does it go to standard output (or the clipboard), so `"$(biorouter dictate)"` and a pipe send nothing you have not seen. An Enter or `e` pressed in the first 0.3 s after the text appears does not count, so a held key, or a second press of the Enter that stopped the recording, cannot send it before you have read it. Nothing leaves the computer, and the recording is never written to disk.
 
 It runs only for you, at your own terminal: in an agent's shell (`BIOROUTER_TERMINAL` set) it refuses with "Dictation records your microphone, so only you can start it, from your own terminal. Biorouter does not start it from an agent's shell.", and without a terminal it refuses and points at `biorouter transcribe`, both exit `2`. Where no microphone can be reached it says so before asking for any model: over SSH it gives the routes that work (`biorouter serve` and a tunnel, `biorouter dictate --copy` on your laptop and paste, or a recording copied over and transcribed), naming the port of a `biorouter serve` your own account already runs on that Linux computer (another account's service is never named), and on macOS over SSH it explains that macOS lets only the logged in desktop session use the microphone. A recording stops by itself at 10 minutes, with a warning 30 s before.
 
+Once the text is out, it is kept in your [dictation history](../dictation/history.md) as a terminal dictation (a clipboard one with `--copy`), and for the `--session` chat when you name one, unless you pass `--no-history`.
+
 Only your public dictionary terms shape the text unless you ask otherwise, because the text may go anywhere: `--private-terms` includes your private terms for this one recording after a warning you answer `y` to, and only at your own terminal with a private model configured.
 
 **Options:**
 
 - **`--copy`**: Put the text on the system clipboard instead of standard output. On Windows it is kept out of the cloud clipboard; on Linux, where a copy lasts only while its owner runs, it waits up to 60 s for you to paste. With no clipboard reachable (no display), the text is printed instead and the exit code is `5`
-- **`--no-history`**: With `--copy`, ask clipboard managers not to keep the text in their history. Under WSL the copy goes through `powershell.exe Set-Clipboard`, which cannot keep it out of Windows clipboard history, so `--copy --no-history` is refused there before the microphone opens (exit `2`); run without `--copy` to print the text, or without `--no-history` to copy it anyway
+- **`--no-history`**: Keep this dictation out of your dictation history, and with `--copy` also ask clipboard managers not to keep the text in their history. Under WSL the copy goes through `powershell.exe Set-Clipboard`, which cannot keep it out of Windows clipboard history, so `--copy --no-history` is refused there before the microphone opens (exit `2`); run without `--copy` to print the text, or without `--no-history` to copy it anyway
 - **`--format <FORMAT>`**: `text` (default) or `json` (`"schema": 1`, as `transcribe` writes it, with `destination` and the latency in `timings`: `stop_to_text_ms`, the tail that was left to decode, and the segments decoded while you spoke; on a failure `error_code` and `message`)
 - **`--seconds <N>`**: Stop after N seconds, 1 to 600
 - **`--session <SESSION_ID>`**: The chat the text is for. Its private dictionary terms are used only when the chat is private, you run this at your own terminal, and a private model is configured
@@ -365,7 +394,7 @@ biorouter dictate --format json --no-review
 
 ### transcribe [options] `<FILE|->`
 
-Transcribe a recording on this computer with the local engine and your personal dictionary, and print the text. Nothing leaves the computer. It reads WAV (any rate, depth and channel count), AIFF, FLAC, MP3, M4A and MP4 audio (AAC or Apple Lossless), raw AAC (ADTS) and Ogg (Vorbis or FLAC), or `-` for standard input, so a phone's or a Mac's voice memo needs no conversion, a Lossless one included; Opus and WebM are refused with an `ffmpeg` line that converts the file to WAV first. A recording may be up to 2 hours long, and standard input up to 200 MB. The command runs in cron, scripts, Docker and an agent's shell alike; in an agent's shell it uses only your public dictionary terms and records no use of them.
+Transcribe a recording on this computer with the local engine and your personal dictionary, and print the text. Nothing leaves the computer, and nothing is kept in your dictation history. It reads WAV (any rate, depth and channel count), AIFF, FLAC, MP3, M4A and MP4 audio (AAC or Apple Lossless), raw AAC (ADTS) and Ogg (Vorbis or FLAC), or `-` for standard input, so a phone's or a Mac's voice memo needs no conversion, a Lossless one included; Opus and WebM are refused with an `ffmpeg` line that converts the file to WAV first. A recording may be up to 2 hours long, and standard input up to 200 MB. The command runs in cron, scripts, Docker and an agent's shell alike; in an agent's shell it uses only your public dictionary terms and records no use of them.
 
 **Options:**
 
@@ -2151,7 +2180,7 @@ are **classic CLI only**; start it with `BIOROUTER_CLI_CLASSIC=1 biorouter sessi
 
 ### Dictation in terminal chats
 
-At your own interactive terminal, press Ctrl+T or type `/dictate` to record into the TUI, classic CLI, or shared daemon chat prompt. Press Enter or Ctrl+T to stop. Escape or Ctrl+C cancels only the recording. The transcript appears in the input at the cursor; press Enter again to send it. A recording made while the TUI streams a reply does not stop that reply. Nothing is sent automatically.
+At your own interactive terminal, press Ctrl+T or type `/dictate` to record into the TUI, classic CLI, or shared daemon chat prompt. Press Enter or Ctrl+T to stop. Escape or Ctrl+C cancels only the recording. The transcript appears in the input at the cursor; press Enter again to send it. A recording made while the TUI streams a reply does not stop that reply. Nothing is sent automatically. The text is kept in your [dictation history](../dictation/history.md) for that chat, as `biorouter dictate` keeps it.
 
 `BIOROUTER_CLI_DICTATION_KEY` changes the Ctrl key letter; an empty value turns off the chord while `/dictate` remains available. When it matches `BIOROUTER_CLI_NEWLINE_KEY`, the newline chord wins and the TUI reports the clash. In the TUI a letter the interface already binds (B, C, D or O) is not offered as the dictation key. `/dictate status` shows the terminal state, and `/dictate retry` retries a failed transcription while its recording remains in memory for up to five minutes. After three failures within ten seconds, dictation pauses for that chat.
 

@@ -1924,10 +1924,14 @@ print(\"hello, world\")
             .expect("the transport entry point kept running instead of returning")
     }
 
-    const DICTIONARY_TOOLS: [&str; 3] = [
+    /// The Dictionary capability's four tools (P-7). An ACP stdio agent offers all four;
+    /// `search_dictations` refuses inside any ACP process (DD-100), which
+    /// `biorouter::agents::dictionary_extension` tests in a process of its own.
+    const DICTIONARY_TOOLS: [&str; 4] = [
         "dictionary__add_terms",
         "dictionary__list_terms",
         "dictionary__remove_added_terms",
+        "dictionary__search_dictations",
     ];
 
     fn dictionary_tool_names(tools: Vec<rmcp::model::Tool>) -> std::collections::BTreeSet<String> {
@@ -2013,7 +2017,7 @@ print(\"hello, world\")
     /// PR-23: a `--ws` agent (`deny_stdio_mcp`) has dictionary learning turned
     /// off, so even with the Dictionary extension loaded the model's roster in
     /// an ACP chat has no `dictionary__` tool. The same agent without
-    /// `deny_stdio_mcp`, as stdio builds it, advertises all three, which shows
+    /// `deny_stdio_mcp`, as stdio builds it, advertises all four, which shows
     /// the WebSocket setup is what removes them.
     #[tokio::test]
     async fn an_acp_websocket_agent_offers_the_model_no_dictionary_tool() {

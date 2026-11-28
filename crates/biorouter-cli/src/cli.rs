@@ -1441,6 +1441,161 @@ enum DictationCommand {
         #[arg(long, value_name = "N", default_value_t = 5, value_parser = clap::value_parser!(u32).range(1..=600))]
         seconds: u32,
     },
+
+    /// The text of your dictations, newest first, kept on this computer; never the audio.
+    /// Without a terminal, or in an agent's shell, only the public ones are listed
+    #[command(about = "List, show or change your dictation history")]
+    History {
+        #[command(subcommand)]
+        command: Option<HistoryCommand>,
+
+        /// Only dictations whose text holds these words
+        #[arg(long = "search", value_name = "WORDS")]
+        search: Option<String>,
+
+        /// How many to list, newest first (default 50)
+        #[arg(long, value_name = "N", value_parser = clap::value_parser!(u32).range(1..=5000))]
+        limit: Option<u32>,
+
+        #[arg(
+            long = "format",
+            value_name = "FORMAT",
+            value_parser = clap::builder::PossibleValuesParser::new(["text", "json"])
+        )]
+        format: Option<String>,
+    },
+}
+
+/// `biorouter dictation history` (DD-96). Listing and showing are reads; deleting, clearing,
+/// changing a dictation's tier and turning a setting on need a person at an interactive
+/// terminal, and turning a setting off works anywhere.
+#[derive(Subcommand)]
+enum HistoryCommand {
+    /// Your dictations, newest first (what `history` alone prints)
+    #[command(about = "List your dictations", visible_alias = "ls")]
+    List {
+        /// Only dictations whose text holds these words
+        #[arg(long = "search", value_name = "WORDS")]
+        search: Option<String>,
+
+        /// How many to list, newest first (default 50)
+        #[arg(long, value_name = "N", value_parser = clap::value_parser!(u32).range(1..=5000))]
+        limit: Option<u32>,
+
+        #[arg(
+            long = "format",
+            value_name = "FORMAT",
+            value_parser = clap::builder::PossibleValuesParser::new(["text", "json"])
+        )]
+        format: Option<String>,
+    },
+
+    /// One dictation's whole text, alone on standard output
+    #[command(about = "Show one dictation")]
+    Show {
+        #[arg(value_name = "ID")]
+        id: String,
+
+        #[arg(
+            long = "format",
+            value_name = "FORMAT",
+            default_value = "text",
+            value_parser = clap::builder::PossibleValuesParser::new(["text", "json"])
+        )]
+        format: String,
+    },
+
+    /// Delete one dictation from your history
+    #[command(about = "Delete one dictation", visible_alias = "rm")]
+    Delete {
+        #[arg(value_name = "ID")]
+        id: String,
+    },
+
+    /// Delete every dictation listed, after you type the count
+    #[command(about = "Delete your dictation history")]
+    Clear {},
+
+    /// Let chats on public models read a dictation, after a warning and the typed word
+    /// public
+    #[command(about = "Make a dictation public")]
+    Publicize {
+        #[arg(value_name = "ID")]
+        id: String,
+    },
+
+    /// Let only chats on private models read a dictation
+    #[command(about = "Make a dictation private")]
+    Privatize {
+        #[arg(value_name = "ID")]
+        id: String,
+    },
+
+    /// Show the history's settings, or change them
+    #[command(about = "Show or change the dictation history's settings")]
+    Settings {
+        /// Keep the text of new dictations (on by default)
+        #[arg(
+            long = "keep",
+            value_name = "ON|OFF",
+            value_parser = clap::builder::PossibleValuesParser::new(["on", "off"])
+        )]
+        keep: Option<String>,
+
+        /// Save new dictations as public, unless they go to a private chat or use your
+        /// private terms (off by default)
+        #[arg(
+            long = "public-by-default",
+            value_name = "ON|OFF",
+            value_parser = clap::builder::PossibleValuesParser::new(["on", "off"])
+        )]
+        public_by_default: Option<String>,
+    },
+}
+
+impl HistoryCommand {
+    fn into_action(
+        command: Option<Self>,
+        search: Option<String>,
+        limit: Option<u32>,
+        format: Option<String>,
+    ) -> crate::commands::dictation::history::Action {
+        use crate::commands::dictation::history::{Action, Format, DEFAULT_LIMIT};
+        let listed =
+            |search: Option<String>, limit: Option<u32>, format: Option<String>| Action::List {
+                search,
+                limit: limit.map_or(DEFAULT_LIMIT, |n| n as usize),
+                format: Format::parse(format.as_deref()),
+            };
+        let on = |value: Option<String>| value.map(|v| v == "on");
+        match command {
+            None => listed(search, limit, format),
+            Some(Self::List {
+                search: inner_search,
+                limit: inner_limit,
+                format: inner_format,
+            }) => listed(
+                inner_search.or(search),
+                inner_limit.or(limit),
+                inner_format.or(format),
+            ),
+            Some(Self::Show { id, format }) => Action::Show {
+                id,
+                format: Format::parse(Some(&format)),
+            },
+            Some(Self::Delete { id }) => Action::Delete { id },
+            Some(Self::Clear {}) => Action::Clear,
+            Some(Self::Publicize { id }) => Action::Publicize { id },
+            Some(Self::Privatize { id }) => Action::Privatize { id },
+            Some(Self::Settings {
+                keep,
+                public_by_default,
+            }) => Action::Settings {
+                keep_history: on(keep),
+                public_by_default: on(public_by_default),
+            },
+        }
+    }
 }
 
 /// `biorouter dictionary` (DD-75). Writes need a person at an interactive terminal,
@@ -2525,7 +2680,8 @@ enum Command {
         #[arg(long)]
         copy: bool,
 
-        /// With --copy: ask clipboard managers not to keep the text in their history
+        /// Keep the text out of your dictation history, and with --copy ask clipboard
+        /// managers not to keep it in theirs
         #[arg(long = "no-history")]
         no_history: bool,
 
@@ -4069,6 +4225,17 @@ async fn handle_dictation_subcommand(command: DictationCommand) -> Result<()> {
         }
         DictationCommand::Test { seconds } => {
             crate::commands::dictate::handle_microphone_test(seconds).await
+        }
+        DictationCommand::History {
+            command,
+            search,
+            limit,
+            format,
+        } => {
+            crate::commands::dictation::history::handle(HistoryCommand::into_action(
+                command, search, limit, format,
+            ))
+            .await
         }
     }
 }
@@ -5863,6 +6030,121 @@ mod cli_tests {
                 .unwrap_or_else(|e| panic!("`biorouter {name} list` does not parse: {e}"));
             assert!(matches!(parsed.command, Some(Command::Session { .. })));
         }
+    }
+
+    /// DD-96: `biorouter dictation history` and its commands parse to the actions the
+    /// history runs, with the listing's flags on `history` itself or on `history list`.
+    #[test]
+    fn dictation_history_commands_parse() {
+        use crate::commands::dictation::history::{Action, Format, DEFAULT_LIMIT};
+        let action = |argv: &[&str]| {
+            let parsed = Cli::try_parse_from(argv)
+                .unwrap_or_else(|e| panic!("`{}` does not parse: {e}", argv.join(" ")));
+            match parsed.command {
+                Some(Command::Dictation {
+                    command:
+                        DictationCommand::History {
+                            command,
+                            search,
+                            limit,
+                            format,
+                        },
+                }) => HistoryCommand::into_action(command, search, limit, format),
+                _ => panic!("`{}` is not `dictation history`", argv.join(" ")),
+            }
+        };
+        assert_eq!(
+            action(&["biorouter", "dictation", "history"]),
+            Action::List {
+                search: None,
+                limit: DEFAULT_LIMIT,
+                format: Format::Text
+            }
+        );
+        let searched = Action::List {
+            search: Some("EPAS1".into()),
+            limit: 5,
+            format: Format::Json,
+        };
+        assert_eq!(
+            action(&[
+                "biorouter",
+                "dictation",
+                "history",
+                "--search",
+                "EPAS1",
+                "--limit",
+                "5",
+                "--format",
+                "json"
+            ]),
+            searched
+        );
+        assert_eq!(
+            action(&[
+                "biorouter",
+                "dictation",
+                "history",
+                "ls",
+                "--search",
+                "EPAS1",
+                "--limit",
+                "5",
+                "--format",
+                "json"
+            ]),
+            searched
+        );
+        let id = "dch_6f0b8a52-6a1e-4f7e-9d0b-2a3c1d4e5f60";
+        assert_eq!(
+            action(&["biorouter", "dictation", "history", "show", id]),
+            Action::Show {
+                id: id.into(),
+                format: Format::Text
+            }
+        );
+        assert_eq!(
+            action(&["biorouter", "dictation", "history", "delete", id]),
+            Action::Delete { id: id.into() }
+        );
+        assert_eq!(
+            action(&["biorouter", "dictation", "history", "clear"]),
+            Action::Clear
+        );
+        assert_eq!(
+            action(&["biorouter", "dictation", "history", "publicize", id]),
+            Action::Publicize { id: id.into() }
+        );
+        assert_eq!(
+            action(&["biorouter", "dictation", "history", "privatize", id]),
+            Action::Privatize { id: id.into() }
+        );
+        assert_eq!(
+            action(&[
+                "biorouter",
+                "dictation",
+                "history",
+                "settings",
+                "--keep",
+                "off",
+                "--public-by-default",
+                "on"
+            ]),
+            Action::Settings {
+                keep_history: Some(false),
+                public_by_default: Some(true)
+            }
+        );
+        assert_eq!(
+            action(&["biorouter", "dictation", "history", "settings"]),
+            Action::Settings {
+                keep_history: None,
+                public_by_default: None
+            }
+        );
+        assert!(
+            Cli::try_parse_from(["biorouter", "dictation", "history", "--limit", "0"]).is_err()
+        );
     }
 }
 

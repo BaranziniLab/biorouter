@@ -24,7 +24,11 @@ import { isBrowserSurface } from '../../utils/surface';
 import {
   attachDictationComposer,
   cancelDictation,
+  copyLostDictation,
   dictationActivityFor,
+  dismissLostDictation,
+  getLostDictation,
+  insertLostDictation,
   noteDictationUnavailable,
   requestDictationSetup,
   startDictation,
@@ -33,9 +37,16 @@ import {
   type DictationActivity,
   type DictationInserted,
   type DictationTarget,
+  type LostDictation,
 } from './dictationSession';
 import { noteDictationInterest } from './dictationStore';
-import { registerFnGestureTarget } from './fnGestureClient';
+import {
+  dismissFnConflictNote,
+  getFnConflictNote,
+  registerFnGestureTarget,
+  subscribeFnConflictNote,
+  type FnConflictNote,
+} from './fnGestureClient';
 import { acknowledgeSharedOriginNotice, needsSharedOriginNotice } from './sharedOriginGate';
 
 /** A hold of the chord at least this long talks while held (DD-62); a shorter one toggles. */
@@ -83,7 +94,50 @@ export interface DictationComposerOptions {
    * gates open or close.
    */
   isEmpty?: () => boolean;
+  /**
+   * Whether the composer's field exists now (default true). A composer whose field is rendered
+   * only some of the time, as a message's editor is only while editing, passes that condition:
+   * while it is false the composer neither attaches to the session nor offers itself to the fn
+   * gestures, so no dictation can choose a field that is not there.
+   */
+  enabled?: boolean;
+  /**
+   * The composer draws the two dictation notes whose actions it wires itself: a transcript whose
+   * field was gone (MSG-INSERT-LOST, with **Insert here** and **Copy**) and the one-time fn note
+   * (MSG-FN-CONFLICT). The chat composer and Home do; such a composer is where those notes go.
+   */
+  showsDictationNotes?: boolean;
 }
+
+/**
+ * The two dictation notes a composer that draws them reads and answers
+ * ({@link DictationComposerOptions.showsDictationNotes}): the transcript kept because its field
+ * was gone (`dictationSession.ts`) and the one-time fn note (`fnGestureClient.ts`). Each read is a
+ * store for `useSyncExternalStore`, so the notes row renders on its own and the composer does not.
+ */
+export interface DictationNotesBinding {
+  subscribeLost: (listener: () => void) => () => void;
+  lost: () => LostDictation | null;
+  /** **Insert here**: the kept text into composer `key`, at its caret. */
+  insertLost: (key: string) => boolean;
+  /** **Copy**, from the person's click only. */
+  copyLost: () => Promise<boolean>;
+  dismissLost: () => void;
+  subscribeFnNote: (listener: () => void) => () => void;
+  fnNote: () => FnConflictNote | null;
+  dismissFnNote: () => void;
+}
+
+const DICTATION_NOTES: DictationNotesBinding = {
+  subscribeLost: (listener) => subscribeDictation(listener),
+  lost: () => getLostDictation(),
+  insertLost: (key) => insertLostDictation(key),
+  copyLost: () => copyLostDictation(),
+  dismissLost: () => dismissLostDictation(),
+  subscribeFnNote: (listener) => subscribeFnConflictNote(listener),
+  fnNote: () => getFnConflictNote(),
+  dismissFnNote: () => dismissFnConflictNote(),
+};
 
 /**
  * What a composer's render depends on: `free`, `holding` (arming, recording or transcribing:
@@ -93,7 +147,7 @@ export type DictationGate = 'free' | 'holding' | 'listening';
 
 export interface DictationComposerControl {
   key: string;
-  /** Whether this composer shows its microphone. */
+  /** Whether this composer shows its microphone: its field exists ({@link DictationComposerOptions.enabled}). */
   available: boolean;
   /** This composer's gate; the composer renders only when it changes. */
   gate: DictationGate;
@@ -117,6 +171,8 @@ export interface DictationComposerControl {
   sharedOriginOpen: boolean;
   acknowledgeSharedOrigin: () => void;
   cancelSharedOrigin: () => void;
+  /** The notes this composer draws itself, when it draws them; null otherwise. */
+  notes: DictationNotesBinding | null;
 }
 
 const holding = (activity: DictationActivity): boolean =>
@@ -124,7 +180,8 @@ const holding = (activity: DictationActivity): boolean =>
 
 export function useDictationComposer(options: DictationComposerOptions): DictationComposerControl {
   const { key, textAreaRef, storesDraft } = options;
-  const available = true;
+  const available = options.enabled ?? true;
+  const showsNotes = options.showsDictationNotes === true;
   const [sharedOriginOpen, setSharedOriginOpen] = useState(false);
   const latest = useRef(options);
   latest.current = options;
@@ -153,8 +210,9 @@ export function useDictationComposer(options: DictationComposerOptions): Dictati
       storesDraft,
       draftPrefix: () => latest.current.draftPrefix?.() ?? 0,
       onInserted: (event) => latest.current.onInserted?.(event),
+      showsLostText: showsNotes,
     });
-  }, [available, key, storesDraft, textAreaRef]);
+  }, [available, key, storesDraft, textAreaRef, showsNotes]);
 
   const interested = useRef(false);
   const noteInterest = useCallback(() => {
@@ -201,8 +259,8 @@ export function useDictationComposer(options: DictationComposerOptions): Dictati
     [key, startOrStop]
   );
 
-  // The fn gestures (macOS) press this composer's microphone when it is the one in focus, or the
-  // one focused last (`fnGestureClient.ts`).
+  // The fn gestures (macOS) press this composer's microphone when it is the one fn chooses: its
+  // field has focus, it is the active pane's, or it was focused last (`fieldTarget.ts`).
   const pressRef = useRef(press);
   pressRef.current = press;
   useEffect(() => {
@@ -210,8 +268,9 @@ export function useDictationComposer(options: DictationComposerOptions): Dictati
     return registerFnGestureTarget(key, {
       press: () => pressRef.current(),
       field: () => textAreaRef.current,
+      showsNotes,
     });
-  }, [available, key, textAreaRef]);
+  }, [available, key, textAreaRef, showsNotes]);
 
   const acknowledgeSharedOrigin = useCallback(() => {
     acknowledgeSharedOriginNotice();
@@ -320,6 +379,7 @@ export function useDictationComposer(options: DictationComposerOptions): Dictati
       sharedOriginOpen,
       acknowledgeSharedOrigin,
       cancelSharedOrigin,
+      notes: showsNotes ? DICTATION_NOTES : null,
     }),
     [
       key,
@@ -334,6 +394,7 @@ export function useDictationComposer(options: DictationComposerOptions): Dictati
       sharedOriginOpen,
       acknowledgeSharedOrigin,
       cancelSharedOrigin,
+      showsNotes,
     ]
   );
 }

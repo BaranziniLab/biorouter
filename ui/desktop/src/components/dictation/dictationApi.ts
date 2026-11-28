@@ -45,6 +45,7 @@ import type {
   DictationStreamCreated as GeneratedStreamCreated,
   DictationStreamRequest as GeneratedStreamRequest,
   DictationTranscript as GeneratedTranscript,
+  DictationHistorySurface,
 } from '../../api';
 import { getApiUrl } from '../../config';
 import type { DecisionModelRef } from '../../utils/sessionDecisions';
@@ -74,6 +75,11 @@ export interface StreamRequest {
   include_private_terms?: boolean;
   /** At most 2 KiB, ranking only. */
   context?: string;
+  /**
+   * Where the text goes, as the dictation history records it (DD-96). Sent by the capture page
+   * for a dictation outside a chat; a stream that sends none is filed by its `target_kind`.
+   */
+  surface?: DictationHistorySurface;
 }
 
 /** A draft's decision models in the shape `new_chat_decision_models` carries. */
@@ -188,6 +194,8 @@ export interface DictationStatus {
     external_engine: Allowance;
     dictionary: Allowance;
     agent_writes: Allowance;
+    /** Managed `dictation.history` (DD-96); a daemon older than the history sends none. */
+    history?: Allowance;
     allowed_models: string[] | null;
   };
   limits: { max_seconds: number; max_chunk_bytes: number; max_streams: number };

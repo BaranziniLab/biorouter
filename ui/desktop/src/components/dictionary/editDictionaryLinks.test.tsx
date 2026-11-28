@@ -17,6 +17,9 @@ vi.mock('../../api', async () => ({
   ...(await vi.importActual<typeof import('../../api')>('../../api')),
   readAllConfig: activationReads.config,
   getDictionarySettings: activationReads.settings,
+  // The Speech models section also holds the history group; a daemon without the history
+  // routes hides it, which keeps this test about the dictionary links.
+  getDictationHistorySettings: vi.fn(async () => ({ response: { ok: false, status: 404 } })),
 }));
 
 /**

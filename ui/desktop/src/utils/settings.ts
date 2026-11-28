@@ -38,6 +38,19 @@ export interface Settings {
    */
   windowCanvasMode?: WindowCanvasMode;
   /**
+   * The theme family the app last showed, as reported by a chat window over `theme:appearance`
+   * (DD-99): a word from the generated family list, never a colour. With `themeFollowsSystem` it
+   * lets main dress the dictation indicator while no chat window is open
+   * (`resolveAppearance` in utils/themeAppearance.ts). Absent until a window reports.
+   */
+  themeFamily?: string;
+  /**
+   * Whether the mode the app last showed follows the system's light or dark setting (the
+   * person chose System). Main then reads the mode from `nativeTheme` rather than from
+   * `windowCanvasMode`, because the system can change while no window is open.
+   */
+  themeFollowsSystem?: boolean;
+  /**
    * R-31, Windows: legacy folders whose "older Biorouter folder found" notice
    * the person asked not to see again (`noticeHiddenLegacyFolder` in main.ts).
    * Keyed by the folder, so a different one is still shown.

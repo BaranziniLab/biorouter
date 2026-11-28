@@ -24,6 +24,24 @@ export function managedPolicyPath(
   return null;
 }
 
+/**
+ * Every key a `dictation:` block may carry, the same list as `DICTATION_POLICY_KEYS` in
+ * `crates/biorouter/src/managed/dictation.rs`. Any other key reads as denying, so a key
+ * the daemon knows and this list lacks would turn dictation off on the laptop for every
+ * policy that names it. The test reads the Rust list and fails when the two differ.
+ */
+export const LAPTOP_DICTATION_POLICY_KEYS = [
+  'enabled',
+  'capture',
+  'model_downloads',
+  'allowed_models',
+  'models_dir',
+  'external_engine',
+  'dictionary',
+  'dictionary_agent_writes',
+  'history',
+] as const;
+
 const ALLOWED: LaptopDictationPolicy = { enabled: true, capture: true };
 const DENIED: LaptopDictationPolicy = { enabled: false, capture: false };
 
@@ -51,16 +69,7 @@ export function readLaptopDictationPolicy(
     if (document.dictation === undefined) return ALLOWED;
     if (!record(document.dictation)) return DENIED;
     const block = document.dictation;
-    const knownKeys = new Set([
-      'enabled',
-      'capture',
-      'model_downloads',
-      'allowed_models',
-      'models_dir',
-      'external_engine',
-      'dictionary',
-      'dictionary_agent_writes',
-    ]);
+    const knownKeys = new Set<string>(LAPTOP_DICTATION_POLICY_KEYS);
     if (Object.keys(block).some((key) => !knownKeys.has(key))) return DENIED;
     if (block.enabled !== undefined && typeof block.enabled !== 'boolean') return DENIED;
     if (block.capture !== undefined && typeof block.capture !== 'boolean') return DENIED;

@@ -20,7 +20,7 @@ import { Input } from '../ui/input';
 import { Textarea } from '../ui/textarea';
 import { DICTIONARY_LABELS, dictionaryMessage } from './copy';
 import { publicizeWarning } from './rows';
-import type { TermOrigin } from './termOrigin';
+import { historyStartsPrivate, type TermOrigin } from './termOrigin';
 import { addTerm, editTerm, setTermTier, type Outcome } from './useDictionary';
 
 /** A term takes at most eight spoken forms (MSG-TERM-FORMS). */
@@ -31,9 +31,15 @@ export type TermDialogMode =
       kind: 'add';
       /** The word or selection the context menu passed. */
       text?: string;
-      /** Where the add started; only the context menu door resolves one (O-36). */
+      /**
+       * Where the add started; the context menu door resolves one (O-36), and a History row
+       * names its dictation (`history-design.md` 10.6).
+       */
       origin?: TermOrigin;
-      /** **Only in private chats** at open: ticked for a private chat or an unresolved transcript. */
+      /**
+       * **Only in private chats** at open: ticked for a private chat or an unresolved transcript.
+       * An origin in a History row overrides it with the dictation's own tier.
+       */
       startPrivate?: boolean;
     }
   | { kind: 'edit'; entry: DictionaryEntryView };
@@ -112,7 +118,9 @@ const MATCHES: DictionaryMatch[] = ['exact', 'fuzzy', 'prompt_only'];
  * (a box ticked at open can still be unticked, which adds the word publicly
  * after MSG-PUBLICIZE-WARN, and while it stays ticked **Add term** is disabled
  * with that reason); and a **More options** disclosure with **Match** and **Always use in
- * dictation**. On an edit, unticking a private term is a publicize: it asks
+ * dictation**. A word taken from the **History** tab starts the box at its dictation's tier
+ * (ticked for a private dictation, whatever chat it went to), and unticking it warns with
+ * MSG-PUBLICIZE-WARN-HISTORY. On an edit, unticking a private term is a publicize: it asks
  * MSG-PUBLICIZE-WARN (or MSG-PUBLICIZE-WARN-NO-CHAT) before it saves. The
  * daemon's refusal sentence shows under **Term**, and MSG-SAME-LETTERS, which an
  * add answers beside a new row, shows there as a note before the dialog closes.
@@ -130,9 +138,10 @@ export default function TermDialog({ mode, authority, onClose }: TermDialogProps
   );
   const [spoken, setSpoken] = useState(editing ? editing.spoken_forms.join('\n') : '');
   const [note, setNote] = useState(editing?.note ?? '');
+  const fromHistory = mode.kind === 'add' ? historyStartsPrivate(mode.origin) : null;
   const initialPrivate = editing
     ? editing.tier === 'private'
-    : mode.kind === 'add' && mode.startPrivate === true;
+    : (fromHistory ?? (mode.kind === 'add' && mode.startPrivate === true));
   const [onlyPrivate, setOnlyPrivate] = useState(initialPrivate);
   const [match, setMatch] = useState<DictionaryMatch | null>(editing?.match ?? null);
   const [always, setAlways] = useState(editing?.bias === 'always');
@@ -214,7 +223,7 @@ export default function TermDialog({ mode, authority, onClose }: TermDialogProps
   };
 
   const privateHelp = addFromPrivateUnticked
-    ? dictionaryMessage('MSG-PUBLICIZE-WARN')
+    ? dictionaryMessage(fromHistory !== null ? 'MSG-PUBLICIZE-WARN-HISTORY' : 'MSG-PUBLICIZE-WARN')
     : privateReason && !editing
       ? privateReason
       : null;

@@ -1027,6 +1027,7 @@ pub mod crew_tools;
 pub mod crew_transfers;
 pub mod decisions;
 pub mod dictation;
+pub mod dictation_history;
 pub mod dictionary;
 pub mod errors;
 pub mod folder_access;
@@ -1106,6 +1107,7 @@ pub fn configure(state: Arc<crate::state::AppState>, secret_key: String) -> Rout
         .merge(llamacpp::routes(state.clone()))
         .merge(ollama::routes(state.clone()))
         .merge(dictation::routes(state.clone()))
+        .merge(dictation_history::routes(state.clone()))
         .merge(dictionary::routes(state.clone()))
         .merge(memory::routes(state.clone()))
         // The interface's own endpoints -- the filesystem browser, settings,

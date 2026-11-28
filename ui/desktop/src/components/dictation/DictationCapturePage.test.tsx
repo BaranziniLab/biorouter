@@ -63,6 +63,7 @@ type Command =
       privateConfirmed: boolean;
       generation: number;
       pressedAtEpochMs: number;
+      surface?: unknown;
     }
   | { type: 'stop' | 'cancel' | 'retry' | 'drop' };
 
@@ -204,5 +205,51 @@ describe('a clipboard dictation whose transcription failed', () => {
     const preview = await failedDictation('preview', new DictationStreamError('engineFailed'), 8);
     expect(preview.cancelled).toBe(true);
     expect(lastReply()).toEqual({ type: 'failed', reason: 'engine-failed', generation: 8 });
+  });
+});
+
+/**
+ * Where the text goes, for the dictation history (DESIGN 4.3, step 5): main says `other_app` when
+ * it kept an app to type into, and the page forwards it in the stream request. A daemon that does
+ * not know the field ignores it.
+ */
+describe('the stream request names where the text goes', () => {
+  async function startWith(source: AnywhereSource, surface: unknown, generation: number) {
+    const index = fakes.streams.length;
+    act(() =>
+      send({
+        type: 'start',
+        source,
+        privateConfirmed: false,
+        generation,
+        pressedAtEpochMs: 0,
+        ...(surface === undefined ? {} : { surface }),
+      })
+    );
+    await settle();
+    capture(index).live();
+    await settle();
+    const request = stream(index).request as StreamRequest & { surface?: string };
+    act(() => send({ type: 'cancel' }));
+    await settle();
+    return request;
+  }
+
+  it('forwards main’s word for the app in front, and says clipboard without one', async () => {
+    expect((await startWith('shortcut', 'other_app', 1)).surface).toBe('other_app');
+    expect((await startWith('shortcut', 'clipboard', 2)).surface).toBe('clipboard');
+    // An older main sends none.
+    expect((await startWith('shortcut', undefined, 3)).surface).toBe('clipboard');
+    expect((await startWith('tray', undefined, 4)).surface).toBe('clipboard');
+  });
+
+  it('never takes another word, and a preview is always a preview', async () => {
+    expect((await startWith('shortcut', 'composer', 5)).surface).toBe('clipboard');
+    expect((await startWith('tray', 'other_app', 6)).surface).toBe('clipboard');
+    expect((await startWith('preview', 'other_app', 7)).surface).toBe('app_preview');
+    expect((await startWith('preview', undefined, 8)).surface).toBe('app_preview');
+    const request = await startWith('shortcut', 'other_app', 9);
+    expect(request.target_kind).toBe('external');
+    expect(request.include_private_terms).toBeUndefined();
   });
 });

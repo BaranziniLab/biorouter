@@ -30,7 +30,7 @@
  *   splash.bg             = `--background-canvas` (the page's own ground)
  *   splash inks           = the BASE family's `mark` inks, in every family: the
  *                           splash draws the wordmark, which is fixed to the brand
- *   surface.*             = the five semantic tokens in SURFACE_TOKENS
+ *   surface.*             = the semantic tokens in SURFACE_TOKENS
  *   GRAPH_PALETTE.ground  = `--background-muted`, and with it all 35 solved
  *                           knowledge-graph hexes, which are contrast ratios
  *                           against that ground and nothing else
@@ -161,6 +161,12 @@ const wellGround = (theme, mode) => resolveRaw('--background-well', scopeFor(the
  * only knew light vs dark, which pinned every family to Parchment's ground.
  * Resolving the same tokens here keeps one source of truth: change a family's
  * `background-default` and the notebook/spreadsheet previews follow.
+ *
+ * The dictation indicator (DD-99) is the same kind of surface: a `data:` page
+ * under `default-src 'none'` in a window with no preload. It wears the armed
+ * Send button's colours, `accent` with `onAccent` on it, and the floating
+ * surface's `shadow`, so the bubble follows the family and the mode without a
+ * colour of its own (`utils/dictationIndicator.ts`, `indicatorPalette`).
  */
 const SURFACE_TOKENS = {
   background: '--background-default',
@@ -168,13 +174,32 @@ const SURFACE_TOKENS = {
   muted: '--text-muted',
   card: '--background-card',
   border: '--border-subtle',
+  accent: '--background-accent',
+  onAccent: '--text-on-accent',
+  shadow: '--shadow-default',
 };
+/**
+ * The surface values main writes into the indicator page itself. Main re-checks
+ * them before it writes one (`indicatorPalette`), and refuses anything else; the
+ * checks here make a family that breaks them fail where it is defined, rather
+ * than ship a bubble that silently falls back to Parchment.
+ */
+const SURFACE_HEX = ['accent', 'onAccent'];
+// One shadow layer: two to four lengths in px (or a bare 0), then an rgba() colour. The shape
+// `indicatorPalette` accepts, so a family whose shadow grows a var() or a keyword fails here.
+const SHADOW_LAYER =
+  /^(?:-?\d*\.?\d+(?:px)?\s+){2,4}rgba\(\s*\d{1,3}\s*,\s*\d{1,3}\s*,\s*\d{1,3}\s*,\s*(?:0|1|0?\.\d+)\s*\)$/;
+const isIndicatorShadow = (value) =>
+  typeof value === 'string' &&
+  value.split(/,\s*(?![^()]*\))/).every((layer) => SHADOW_LAYER.test(layer.trim()));
 const surface = (theme, mode) =>
   Object.fromEntries(
-    Object.entries(SURFACE_TOKENS).map(([key, token]) => [
-      key,
-      resolveRaw(token, scopeFor(theme, mode)),
-    ])
+    Object.entries(SURFACE_TOKENS).map(([key, token]) => {
+      const value = resolveRaw(token, scopeFor(theme, mode));
+      // A compound shadow may be written over several lines in main.css; the
+      // emitted literal is one line, so the TS string and the page stay plain.
+      return [key, key === 'shadow' && value ? value.replace(/\s+/g, ' ') : value];
+    })
   );
 
 const obj = (o, indent = 4) =>
@@ -344,8 +369,8 @@ export type ThemeModeData = {
    */
   wellGround: string;
   /**
-   * Resolved literal values for the five semantic tokens a CSP-sandboxed
-   * surface has to inline.
+   * Resolved literal values for the semantic tokens a CSP-sandboxed surface
+   * has to inline.
    *
    * A \`srcdoc\` iframe under \`default-src 'none'\` cannot reach the app
    * stylesheet, so \`var(--text-default)\` is empty inside it. The notebook and
@@ -365,6 +390,21 @@ export type ThemeModeData = {
     card: string;
     /** --border-subtle — hairlines and table cell rules. */
     border: string;
+    /**
+     * The armed Send button's fill (--background-accent), a 6-digit hex: the
+     * dictation indicator's capsule (DD-99).
+     */
+    accent: string;
+    /**
+     * The ink on \`accent\`, Send's arrow (--text-on-accent), a 6-digit hex held
+     * to 4.5:1 against it: the indicator's bars and dot.
+     */
+    onAccent: string;
+    /**
+     * The floating surface's lift and hairline (--shadow-default), as one line
+     * of px lengths and rgba() colours: the indicator's edge on the desktop.
+     */
+    shadow: string;
   };
   /** Which token the terminal dock paints. Families genuinely differ. */
   terminalGround: string;
@@ -607,6 +647,39 @@ const failures = [];
           failures.push(
             `${t.id}.${mode}: sandboxed surface "${ink}" ${value} on ${surfaceBg} = ${c.toFixed(2)}:1 (need 4.5)`
           );
+        }
+      }
+
+      // The dictation indicator (DD-99) writes `accent`, `onAccent` and `shadow`
+      // into a page that cannot load the stylesheet, and main refuses any value
+      // that is not a plain hex (or, for the shadow, plain px lengths and rgba()
+      // colours). A family whose values break that would ship a Parchment
+      // bubble with nothing failing, so it fails here. The bars and dot are
+      // graphics, so their floor is 3:1; check-contrast.mjs already holds the
+      // same pair to 4.5:1 for Send's arrow.
+      {
+        const values = surface(t, mode);
+        for (const key of SURFACE_HEX) {
+          if (!/^#[0-9a-f]{6}$/i.test(values[key] ?? '')) {
+            failures.push(
+              `${t.id}.${mode}: indicator surface "${key}" (${SURFACE_TOKENS[key]}) resolves to ` +
+                `${JSON.stringify(values[key])}, not a 6-digit hex`
+            );
+          }
+        }
+        if (!isIndicatorShadow(values.shadow)) {
+          failures.push(
+            `${t.id}.${mode}: indicator surface "shadow" (${SURFACE_TOKENS.shadow}) resolves to ` +
+              `${JSON.stringify(values.shadow)}, not px lengths and rgba() colours`
+          );
+        }
+        if (SURFACE_HEX.every((key) => /^#[0-9a-f]{6}$/i.test(values[key] ?? ''))) {
+          const c = contrast(values.onAccent, values.accent);
+          if (c < 3) {
+            failures.push(
+              `${t.id}.${mode}: indicator ink ${values.onAccent} on ${values.accent} = ${c.toFixed(2)}:1 (need 3)`
+            );
+          }
         }
       }
 

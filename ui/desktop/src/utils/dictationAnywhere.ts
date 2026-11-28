@@ -1,4 +1,10 @@
 import type { StreamRequest, Transcript } from '../components/dictation/dictationApi';
+import {
+  dictationMessage,
+  insertRefusalMessage,
+  insertRestoreMessage,
+} from '../components/dictation/copy';
+import type { InsertRefusal, InsertRestored, InsertResult } from './textInsertHelper';
 
 export const DEFAULT_ANYWHERE_SHORTCUT = 'CommandOrControl+Alt+Shift+D';
 export const REVIEW_TEXT_MS = 5 * 60 * 1000;
@@ -38,6 +44,15 @@ export const DEFAULT_ANYWHERE_SETTINGS: AnywhereSettings = {
   disclosureShown: false,
 };
 
+/**
+ * A start from the global shortcut, or from fn in another app, that came while the last dictation
+ * still transcribed (F13, DD-102). It waits, one deep, and main starts it the moment that
+ * transcript arrives; a release or another key for its gesture drops it first.
+ */
+export interface AnywhereQueuedStart {
+  source: 'shortcut';
+}
+
 export interface AnywhereState {
   phase: AnywherePhase;
   /**
@@ -51,6 +66,8 @@ export interface AnywhereState {
   reason: AnywhereReason | null;
   reviewText: string | null;
   reviewExpiresAt: number | null;
+  /** The start waiting for this dictation's transcript, or null. */
+  queued: AnywhereQueuedStart | null;
 }
 
 export const INITIAL_ANYWHERE_STATE: AnywhereState = {
@@ -61,6 +78,7 @@ export const INITIAL_ANYWHERE_STATE: AnywhereState = {
   reason: null,
   reviewText: null,
   reviewExpiresAt: null,
+  queued: null,
 };
 
 /**
@@ -92,6 +110,21 @@ export function canStartAnywhere(
 }
 
 /**
+ * Whether a start that cannot begin now waits for the transcript instead (F13): only the global
+ * shortcut and fn in another app (`shortcut`), with the switch on, while the last dictation
+ * transcribes, and only one. A tray start is never queued (the tray shows what runs), nor a
+ * preview one (its field may change before the wait ends).
+ */
+export function queuesAnywhereStart(
+  phase: AnywherePhase,
+  source: AnywhereSource,
+  switchOn: boolean,
+  queued: AnywhereQueuedStart | null
+): boolean {
+  return phase === 'transcribing' && source === 'shortcut' && switchOn && queued === null;
+}
+
+/**
  * Whether a failed dictation keeps its recording for **Retry** (owner decision, 2026-11-13): a
  * tray or shortcut dictation, whose text goes to the clipboard, after a failure the stream can
  * send again (`DictationStreamError.retryable`, as the composer keeps one). A preview dictation
@@ -119,6 +152,8 @@ export type AnywhereEvent =
   | { type: 'stop' }
   /** **Retry** on the review card: the held recording is transcribed again. */
   | { type: 'retry'; source: AnywhereSource }
+  /** A release or another key for the queued start's gesture: it goes, the transcription goes on. */
+  | { type: 'unqueue' }
   | { type: 'cancel' }
   | { type: 'refuse'; reason: AnywhereReason }
   | { type: 'review'; text: string; now: number }
@@ -134,11 +169,17 @@ export function nextAnywhereState(state: AnywhereState, event: AnywhereEvent): A
     case 'disable':
       // Off ends a tray or shortcut dictation at once. A preview dictation goes on and
       // comes to rest as `off`.
+      // A queued start is a shortcut one, which the switch governs, so it goes either way.
       return !anywhereAtRest(state.phase) && !switchGovernsSource(state.source)
-        ? { ...state, switchOn: false }
+        ? { ...state, switchOn: false, queued: null }
         : INITIAL_ANYWHERE_STATE;
     case 'start':
-      if (!canStartAnywhere(state.phase, event.source, state.switchOn)) return state;
+      if (!canStartAnywhere(state.phase, event.source, state.switchOn)) {
+        // The global shortcut and fn are public terms only, so the queued start carries none.
+        return queuesAnywhereStart(state.phase, event.source, state.switchOn, state.queued)
+          ? { ...state, queued: { source: 'shortcut' } }
+          : state;
+      }
       return {
         ...INITIAL_ANYWHERE_STATE,
         phase: 'arming',
@@ -162,6 +203,8 @@ export function nextAnywhereState(state: AnywhereState, event: AnywhereEvent): A
         switchOn: state.switchOn,
         source: event.source,
       };
+    case 'unqueue':
+      return state.queued ? { ...state, queued: null } : state;
     case 'cancel':
       return atRest(state);
     case 'refuse':
@@ -185,16 +228,46 @@ export function nextAnywhereState(state: AnywhereState, event: AnywhereEvent): A
   }
 }
 
+/**
+ * Where a Dictate to clipboard dictation's text goes, as the dictation history names it
+ * (`DictationHistorySurface`): typed into the app that was in front (`other_app`), copied
+ * (`clipboard`), or inserted into an app preview or in-app browser page (`app_preview`).
+ */
+export type AnywhereSurface = 'other_app' | 'clipboard' | 'app_preview';
+
+const ANYWHERE_SURFACES: readonly AnywhereSurface[] = ['other_app', 'clipboard', 'app_preview'];
+
+/** A surface word from main, or null for anything else. */
+export function parseAnywhereSurface(raw: unknown): AnywhereSurface | null {
+  return ANYWHERE_SURFACES.includes(raw as AnywhereSurface) ? (raw as AnywhereSurface) : null;
+}
+
+/**
+ * The surface a dictation from `source` records: a preview's is `app_preview`; a tray or
+ * shortcut one is `other_app` when main kept an app to type into, else `clipboard`.
+ */
+export function anywhereSurface(source: AnywhereSource, typesIntoApp: boolean): AnywhereSurface {
+  if (source === 'preview') return 'app_preview';
+  return typesIntoApp ? 'other_app' : 'clipboard';
+}
+
+/** The stream request, with the surface the history records (an older daemon ignores it). */
+export type ExternalStreamRequest = StreamRequest & { surface: AnywhereSurface };
+
 export function externalStreamRequest(
   sampleRate: number,
   source: AnywhereSource,
-  privateConfirmed: boolean
-): StreamRequest {
+  privateConfirmed: boolean,
+  surface: AnywhereSurface | null = null
+): ExternalStreamRequest {
   return {
     target_kind: 'external',
     sample_rate: sampleRate,
     format: 's16le',
     ...(source !== 'shortcut' && privateConfirmed ? { include_private_terms: true } : {}),
+    // A preview's surface is fixed, and only the shortcut ever types into another app; anything
+    // else is a copy.
+    surface: anywhereSurface(source, source === 'shortcut' && surface === 'other_app'),
   };
 }
 
@@ -231,6 +304,50 @@ export function reviewTextBeforeExpiry(
   now: number
 ): string | null {
   return text !== null && expiresAt !== null && now < expiresAt ? text : null;
+}
+
+// ── Copy last dictation (F10, F15, DD-102) ───────────────────────────────────
+// A paste into another app cannot be checked: the app may ignore Command-V, or focus may be on a
+// button. So main holds the last text Biorouter typed into another app, and the text of a review
+// card a new start closed, for what is left of {@link REVIEW_TEXT_MS}, in its own memory only. The
+// tray offers **Copy last dictation** while it lasts, and only that click writes it to the
+// clipboard. It goes at its expiry, at quit and when **Dictate into other apps** turns off.
+
+/** The text **Copy last dictation** would copy, and when it goes. */
+export interface LastDictation {
+  text: string;
+  expiresAt: number;
+}
+
+/** The text a paste just typed, held for {@link REVIEW_TEXT_MS} from `now`. */
+export function heldLastDictation(text: string, now: number): LastDictation {
+  return { text, expiresAt: now + REVIEW_TEXT_MS };
+}
+
+/** The held text while it lasts, else null. */
+export function lastDictationBeforeExpiry(held: LastDictation | null, now: number): string | null {
+  return held ? reviewTextBeforeExpiry(held.text, held.expiresAt, now) : null;
+}
+
+/**
+ * Whether a delivery leaves its text for **Copy last dictation**: a paste into another app, which
+ * nothing can confirm. A copy is on the clipboard already, and a review card holds its own text.
+ */
+export function holdsLastDictation(delivered: AnywhereDelivered): boolean {
+  return delivered.kind === 'inserted';
+}
+
+/**
+ * A review card a new start closes hands its text over with the time it had left (F15), so the
+ * card never blocks the next dictation and its text is not lost.
+ */
+export function reviewHandOff(
+  text: string | null,
+  expiresAt: number | null,
+  now: number
+): LastDictation | null {
+  const live = reviewTextBeforeExpiry(text, expiresAt, now);
+  return live !== null && expiresAt !== null ? { text: live, expiresAt } : null;
 }
 
 /**
@@ -316,4 +433,352 @@ export function afterAnywhereSettingsWriteFailure(
   }
   if (!requestedEnabled) return { settings: { ...current, enabled: false }, offRequested: true };
   return { settings: previous, offRequested: previousOffRequested };
+}
+
+// ── Typing the text into the app in front (DD-97, macOS) ──────────────────────
+// Dictate to clipboard from the global shortcut, or from fn in another app, types its text into
+// the app that was in front when it started, through the `biorouter-textinsert` helper
+// (`utils/textInsertHelper.ts`), and copies it only when that app cannot take it. The tray item
+// and a preview dictation never type into another app.
+
+/** **Type into the app you are using**: `<config>/dictation/insert.json`, written only by main. */
+export interface InsertSettings {
+  enabled: boolean;
+}
+
+/** On by default on macOS, the one system Biorouter can type into another app on. */
+export function defaultInsertSettings(platform: string): InsertSettings {
+  return { enabled: platform === 'darwin' };
+}
+
+export function parseInsertSettings(raw: unknown, platform: string): InsertSettings {
+  if (platform !== 'darwin') return { enabled: false };
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return defaultInsertSettings(platform);
+  const row = raw as Record<string, unknown>;
+  return { enabled: typeof row.enabled === 'boolean' ? row.enabled : true };
+}
+
+/**
+ * Whether the insertion helper runs: on macOS, with the setting on and **Dictate into other apps**
+ * on, while something can start a dictation that types into another app (fn in other apps, or a
+ * registered global shortcut). Otherwise no helper runs at all.
+ */
+export function textInsertWanted(input: {
+  platform: string;
+  insertEnabled: boolean;
+  anywhereOn: boolean;
+  fnOtherApps: boolean;
+  shortcutRegistered: boolean;
+}): boolean {
+  return (
+    input.platform === 'darwin' &&
+    input.insertEnabled &&
+    input.anywhereOn &&
+    (input.fnOtherApps || input.shortcutRegistered)
+  );
+}
+
+/** The app a dictation types into: the one in front when it started. */
+export interface InsertTarget {
+  /** The Dictate to clipboard generation the target belongs to. */
+  generation: number;
+  pid: number;
+  bundle: string | null;
+}
+
+/** Only `shortcut` (the global shortcut and fn in another app) ever types into an app. */
+export function capturesInsertTarget(source: AnywhereSource, insertEnabled: boolean): boolean {
+  return source === 'shortcut' && insertEnabled;
+}
+
+/**
+ * The target a start keeps from the helper's `front` answer: the app in front, unless that is
+ * Biorouter itself (whose own composers take fn's text) or the helper could not say.
+ */
+export function insertTargetFrom(
+  front: { pid: number; bundle: string | null } | null,
+  ownPid: number,
+  generation: number
+): InsertTarget | null {
+  if (!front || !Number.isSafeInteger(front.pid) || front.pid <= 0 || front.pid === ownPid)
+    return null;
+  return {
+    generation,
+    pid: front.pid,
+    bundle: typeof front.bundle === 'string' ? front.bundle : null,
+  };
+}
+
+/**
+ * The text a finished dictation may type into an app: real speech that is not only dictionary
+ * words, from a daemon new enough to say so. Null for everything `clipboardOutcome` answers
+ * without writing (nothing heard, an echo, an older daemon), which keep their own messages.
+ */
+export function insertableText(transcript: Transcript): string | null {
+  if (transcript.no_speech || !transcript.text.trim()) return null;
+  if (transcript.dictionary_only !== false) return null;
+  return transcript.text;
+}
+
+/** One line of the unpackaged insert log: never the text, only what happened and its length. */
+export interface InsertLogEntry {
+  route: 'other_app' | 'clipboard' | 'app_preview';
+  method: 'paste' | 'copy' | 'embedded';
+  /** The target app's bundle id, or null when there was none or the helper did not say. */
+  bundle: string | null;
+  result: 'inserted' | 'copied' | 'review' | 'refused' | InsertRefusal;
+  /** Why a paste was refused, beside the copy that replaced it. */
+  reason?: InsertRefusal;
+  /** How a paste that worked left the clipboard, when the helper said. */
+  restored?: InsertRestored;
+  /**
+   * `false` for an insert on a test pasteboard: every step ran but the Command-V, so nothing
+   * reached the app. Absent for a paste that was posted.
+   */
+  posted?: false;
+  chars: number;
+}
+
+const RESTORED_WORDS: readonly InsertRestored[] = [
+  'all',
+  'moved',
+  'partial',
+  'kept-text',
+  'cleared',
+];
+
+const BUNDLE_ID = /^[A-Za-z0-9.-]{1,255}$/;
+
+/** {@link InsertLogEntry} as one JSON line. A bundle id of any other shape is left out. */
+export function insertLogLine(entry: InsertLogEntry, at: Date = new Date()): string {
+  const line: Record<string, unknown> = {
+    at: at.toISOString(),
+    route: entry.route,
+    method: entry.method,
+    bundle: entry.bundle && BUNDLE_ID.test(entry.bundle) ? entry.bundle : null,
+    result: entry.result,
+    chars: Number.isSafeInteger(entry.chars) && entry.chars >= 0 ? entry.chars : 0,
+  };
+  if (entry.reason) line.reason = entry.reason;
+  if (entry.restored && RESTORED_WORDS.includes(entry.restored)) line.restored = entry.restored;
+  if (entry.posted === false) line.posted = false;
+  return JSON.stringify(line);
+}
+
+/** What main lends {@link deliverAnywhereTranscript}, so a test can hand it fakes. */
+export interface AnywhereDelivery {
+  /** The helper's `insert` (`TextInsertService.insert`). */
+  insert: (pid: number, text: string) => Promise<InsertResult>;
+  /** The clipboard, or the unpackaged test file standing in for it. */
+  write: (text: string) => void;
+  read: () => string;
+  /** A system notification. */
+  notify: (body: string) => void;
+  /** The focused review card, with its sentence and the text to copy from it. */
+  review: (message: string, text: string | null) => void;
+  /** The paste shortcut the sentences name (⌘V on macOS). */
+  pasteKey: string;
+  /** The review card's sentence for a daemon too old to say whether the text is dictionary words only. */
+  oldBackendMessage: string;
+  log?: (entry: InsertLogEntry) => void;
+}
+
+/** What {@link deliverAnywhereTranscript} did, for its tests. */
+export type AnywhereDelivered =
+  | { kind: 'inserted'; restored?: InsertRestored }
+  | { kind: 'copied'; reason?: InsertRefusal }
+  | { kind: 'review'; reason?: InsertRefusal }
+  | { kind: 'nothing' | 'echo' | 'old-backend' };
+
+/** The review card's sentence when the clipboard did not keep a copy (also main's Copy last dictation). */
+export const REVIEW_COPY_FAILED = 'The clipboard did not keep the text. Copy it from this card.';
+
+/**
+ * A finished Dictate to clipboard dictation's text, delivered:
+ *
+ * - with a target and real speech, typed into the target app and nothing else: the clipboard is
+ *   never written and no card is shown (the indicator fades); a notification says so only when
+ *   the helper could not put back everything the clipboard held (`restored`, DD-102);
+ * - when the helper refuses (no permission, a password field, another app in front, a failure),
+ *   copied, with a notification that names the reason;
+ * - without a target, copied as before, with "Copied N words";
+ * - nothing heard, an echo of dictionary words, or an older daemon: their own message, and
+ *   neither the clipboard nor any app is touched.
+ *
+ * The review card opens only when the clipboard did not keep a copy (or for an older daemon), so
+ * it never takes focus from an app the text is still going to.
+ */
+export async function deliverAnywhereTranscript(
+  transcript: Transcript,
+  target: InsertTarget | null,
+  delivery: AnywhereDelivery
+): Promise<AnywhereDelivered> {
+  const text = insertableText(transcript);
+  let refused: InsertRefusal | undefined;
+  if (target && text !== null) {
+    let result: InsertResult;
+    try {
+      result = await delivery.insert(target.pid, text);
+    } catch {
+      result = { ok: false, reason: 'failed' };
+    }
+    if (result.ok) {
+      const { restored, posted } = result;
+      delivery.log?.({
+        route: 'other_app',
+        method: 'paste',
+        bundle: target.bundle,
+        result: 'inserted',
+        ...(restored ? { restored } : {}),
+        // A test pasteboard's insert: it counts as inserted (no copy stands in for it), and the
+        // log says that no paste reached the app.
+        ...(posted === false ? { posted } : {}),
+        chars: text.length,
+      });
+      // Nothing to say when everything came back, or the person copied something meanwhile.
+      const message = insertRestoreMessage(restored);
+      if (message) delivery.notify(message);
+      return restored ? { kind: 'inserted', restored } : { kind: 'inserted' };
+    }
+    refused = result.reason;
+    delivery.log?.({
+      route: 'other_app',
+      method: 'paste',
+      bundle: target.bundle,
+      result: refused,
+      chars: text.length,
+    });
+  }
+  const outcome = clipboardOutcome(transcript, delivery.write, delivery.read);
+  const logCopy = (result: 'copied' | 'review') =>
+    delivery.log?.({
+      route: target ? 'other_app' : 'clipboard',
+      method: 'copy',
+      bundle: target?.bundle ?? null,
+      result,
+      ...(refused ? { reason: refused } : {}),
+      chars: transcript.text.length,
+    });
+  switch (outcome.kind) {
+    case 'copied':
+      logCopy('copied');
+      delivery.notify(
+        refused
+          ? insertRefusalMessage(refused, delivery.pasteKey)
+          : dictationMessage('MSG-CLIPBOARD-COPIED', {
+              n: String(outcome.words),
+              key: delivery.pasteKey,
+            })
+      );
+      return refused ? { kind: 'copied', reason: refused } : { kind: 'copied' };
+    case 'review':
+      logCopy('review');
+      delivery.review(REVIEW_COPY_FAILED, outcome.text);
+      return refused ? { kind: 'review', reason: refused } : { kind: 'review' };
+    case 'nothing':
+      delivery.notify(dictationMessage('MSG-CLIPBOARD-NOTHING'));
+      return { kind: 'nothing' };
+    case 'echo':
+      delivery.notify(dictationMessage('MSG-CLIPBOARD-ECHO'));
+      return { kind: 'echo' };
+    case 'old-backend':
+      delivery.review(delivery.oldBackendMessage, null);
+      return { kind: 'old-backend' };
+    case 'failed':
+      // `clipboardOutcome` never answers `failed`; the type allows it.
+      return { kind: 'nothing' };
+  }
+}
+
+/**
+ * How long main waits before telling every window the dictation history changed (F18): at once,
+ * unless it told them less than `minMs` ago, then the rest of that interval. A clock that went
+ * backwards waits at most the interval.
+ */
+export function historyBroadcastDelay(lastAt: number, now: number, minMs: number): number {
+  if (!Number.isFinite(lastAt)) return 0;
+  const since = now - lastAt;
+  if (since < 0) return minMs;
+  return Math.max(0, minMs - since);
+}
+
+/**
+ * Whether the hidden capture window stays open between dictations instead of closing after its
+ * idle wait: while fn may dictate into other apps (macOS, the fn shortcut and its **Use fn in
+ * other apps** row, and **Dictate into other apps**), so a short first hold does not wait for the
+ * whole page to load and lose its words.
+ */
+export function captureWindowStaysWarm(input: {
+  platform: string;
+  fnEnabled: boolean;
+  fnOtherApps: boolean;
+  anywhereOn: boolean;
+}): boolean {
+  return input.platform === 'darwin' && input.fnEnabled && input.fnOtherApps && input.anywhereOn;
+}
+
+// ── Test seams (DESIGN 3.12) ─────────────────────────────────────────────────
+
+/** The unpackaged-only variables main reads through {@link dictationTestSeams}, and nowhere else. */
+export const DICTATION_TEST_SEAM_ENV = {
+  fnTrace: 'BIOROUTER_FN_TRACE',
+  clipboardFile: 'BIOROUTER_TEST_CLIPBOARD_FILE',
+  insertLog: 'BIOROUTER_TEST_INSERT_LOG',
+} as const;
+
+export interface DictationTestSeams {
+  /** Log each fn helper line and intent (`formatFnTrace`): never a key code or any text. */
+  fnTrace: boolean;
+  /** A file that stands in for the system clipboard in the copy paths. */
+  clipboardFile: string | null;
+  /** A file that takes one {@link insertLogLine} per insertion attempt. */
+  insertLog: string | null;
+}
+
+const NO_SEAMS: DictationTestSeams = { fnTrace: false, clipboardFile: null, insertLog: null };
+
+/** An absolute path, on either system's spelling, with no NUL; anything else is not believed. */
+function seamPath(raw: string | undefined): string | null {
+  const value = raw?.trim();
+  if (!value || value.includes('\0') || value.length > 4096) return null;
+  return /^(?:\/|[A-Za-z]:[\\/])/.test(value) ? value : null;
+}
+
+/** Where main's copy paths write and read back the text: see {@link anywhereClipboardTarget}. */
+export type AnywhereClipboardTarget =
+  | { kind: 'system' }
+  | { kind: 'file'; file: string }
+  | { kind: 'none' };
+
+/**
+ * Where main's copy paths (a refused insert, a dictation with no target, **Copy last dictation**,
+ * the review card's **Copy**) write the text: the clipboard seam's file when one is named; else,
+ * in a run that names a test pasteboard for the insertion helper
+ * (`namesTextInsertTestPasteboard`), nowhere, so the read back finds nothing and the review card
+ * holds the text; else the person's clipboard. A live test thus never writes the clipboard, even
+ * when it names only the test pasteboard.
+ */
+export function anywhereClipboardTarget(
+  seams: Pick<DictationTestSeams, 'clipboardFile'>,
+  testPasteboardNamed: boolean
+): AnywhereClipboardTarget {
+  if (seams.clipboardFile !== null) return { kind: 'file', file: seams.clipboardFile };
+  return testPasteboardNamed ? { kind: 'none' } : { kind: 'system' };
+}
+
+/**
+ * The dictation test seams. A packaged app reads none of them, whatever its environment holds,
+ * so a shipped Biorouter never logs its fn gestures, never writes a dictation to a file in place
+ * of the clipboard and never keeps an insert log.
+ */
+export function dictationTestSeams(
+  app: { isPackaged: boolean },
+  env: Readonly<Record<string, string | undefined>>
+): DictationTestSeams {
+  if (app.isPackaged) return NO_SEAMS;
+  return {
+    fnTrace: env[DICTATION_TEST_SEAM_ENV.fnTrace]?.trim() === '1',
+    clipboardFile: seamPath(env[DICTATION_TEST_SEAM_ENV.clipboardFile]),
+    insertLog: seamPath(env[DICTATION_TEST_SEAM_ENV.insertLog]),
+  };
 }

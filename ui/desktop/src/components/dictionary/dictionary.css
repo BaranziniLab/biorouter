@@ -43,3 +43,68 @@
     border-color: Highlight;
   }
 }
+
+/* The History tab's rows ("Rows" in history-design.md 10.2). Every collapsed row has one
+   height, whatever its text: two lines of body text (clamped with an end ellipsis, and held at
+   two lines when the text is shorter) and one muted line, so the list can draw only the rows
+   near the viewport on one pitch (rowWindow.ts). An expanded row shows the whole text, which
+   the person may select. */
+.br-history-body {
+  cursor: pointer;
+  border-radius: var(--radius-sm);
+}
+
+.br-history-text {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+  height: calc(var(--text-body--line-height) * 2);
+  height: 2lh;
+}
+
+.br-history-row[data-expanded] .br-history-text {
+  display: block;
+  -webkit-line-clamp: none;
+  line-clamp: none;
+  height: auto;
+  white-space: pre-wrap;
+  user-select: text;
+  cursor: text;
+}
+
+.br-history-meta {
+  height: var(--text-supporting--line-height);
+  height: 1lh;
+  margin-top: 2px;
+}
+
+.br-history-row[data-expanded] .br-history-meta {
+  height: auto;
+}
+
+/* The microphone, with the lock badge when the dictation is private: private is a shape, not
+   a tint, so it takes the line's muted ink and the badge its own accent. */
+.br-history-glyph {
+  display: inline-flex;
+  flex-shrink: 0;
+  width: 14px;
+  height: 14px;
+}
+
+.br-history-glyph > svg {
+  width: 14px;
+  height: 14px;
+}
+
+/* A row the person acted on while the pointer held the list: dimmed in place until the
+   pointer leaves and the list catches up, as a term row is. */
+.br-history-row[data-settled] > :first-child {
+  opacity: 0.55;
+}
+
+.br-history-row[data-settled] .br-history-body {
+  cursor: default;
+}

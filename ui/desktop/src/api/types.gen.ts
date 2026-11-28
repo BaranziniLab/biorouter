@@ -2565,6 +2565,162 @@ export type DictationErrorBody = {
     message: string;
 };
 
+/**
+ * What this caller may do, before any click, so no surface offers a doomed control.
+ */
+export type DictationHistoryAuthority = {
+    list_private: Allowance;
+    raise_settings: Allowance;
+    tier_change: Allowance;
+    write: Allowance;
+};
+
+/**
+ * `POST /dictation/history/clear`.
+ */
+export type DictationHistoryClearRequest = {
+    /**
+     * The newest entry's time the page showed: every listable entry created at or before
+     * it goes, so a dictation recorded while the confirmation was open survives.
+     */
+    through: string;
+};
+
+/**
+ * 200 from the bulk delete and the clear.
+ */
+export type DictationHistoryDeleted = {
+    /**
+     * How many entries went. An id this caller may not list is skipped as missing.
+     */
+    deleted: number;
+};
+
+/**
+ * 200 from the tier route.
+ */
+export type DictationHistoryEntryAnswer = {
+    entry: DictationHistoryEntryView;
+};
+
+/**
+ * One entry as a caller is shown it: the stored entry without its chat's incarnation and
+ * its institutions, with the model's display name.
+ */
+export type DictationHistoryEntryView = {
+    /**
+     * When the transcript was ready, in whole seconds.
+     */
+    created_at: string;
+    duration_ms: number;
+    id: string;
+    /**
+     * The speech model's catalog id.
+     */
+    model: string;
+    /**
+     * The model's display name, when the catalog knows it.
+     */
+    model_name?: string | null;
+    /**
+     * Whether private dictionary terms were eligible for this dictation: only for a
+     * caller that may list private entries.
+     */
+    private_terms?: boolean | null;
+    /**
+     * The chat the text was dictated into: only while the chat holding that id is the one
+     * the entry recorded and this caller may list it.
+     */
+    session_id?: string | null;
+    surface: DictationHistorySurface;
+    /**
+     * The corrected text, at most 32 KiB.
+     */
+    text: string;
+    tier: DictionaryTier;
+    /**
+     * Set when the text was cut to 32 KiB.
+     */
+    truncated?: boolean | null;
+};
+
+/**
+ * Every refusal of a history route.
+ */
+export type DictationHistoryErrorBody = {
+    /**
+     * `agent`, `host_tier`, `host_settings`, `not_found`, `policy`, `unreadable`, `busy`,
+     * `invalid`, `too_large`, `bad_request` or `write_failed`.
+     */
+    code: string;
+    /**
+     * The sentence to show. It never names a dictation's text or id.
+     */
+    message: string;
+};
+
+/**
+ * `POST /dictation/history/delete`.
+ */
+export type DictationHistoryIdsRequest = {
+    /**
+     * At most 5,000.
+     */
+    ids: Array<string>;
+};
+
+/**
+ * 200 from `GET /dictation/history`: newest first.
+ */
+export type DictationHistoryList = {
+    entries: Array<DictationHistoryEntryView>;
+    /**
+     * The next page's `cursor`; opaque.
+     */
+    next_cursor?: string | null;
+    /**
+     * How many entries this caller may list match, over every page. Never a count of
+     * anything withheld.
+     */
+    total: number;
+};
+
+/**
+ * 200 from `GET` and `POST /dictation/history/settings`.
+ */
+export type DictationHistorySettings = {
+    authority: DictationHistoryAuthority;
+    /**
+     * **Dictation history**: whether new dictations are kept. On by default; an
+     * unreadable settings file reads as off.
+     */
+    keep_history: boolean;
+    /**
+     * **Save new dictations as public**. Off by default.
+     */
+    public_by_default: boolean;
+};
+
+/**
+ * `POST /dictation/history/settings`.
+ */
+export type DictationHistorySettingsRequest = {
+    keep_history?: boolean | null;
+    public_by_default?: boolean | null;
+};
+
+/**
+ * Where a dictation went: a label only, never read for privacy or bias.
+ */
+export type DictationHistorySurface = 'composer' | 'crew' | 'clipboard' | 'other_app' | 'app_preview' | 'terminal';
+
+/**
+ * `POST /dictation/history/{id}/tier`.
+ */
+export type DictationHistoryTierRequest = {
+    tier: DictionaryTier;
+};
+
 export type DictationInstallJob = {
     bytes_done: number;
     bytes_per_second: number;
@@ -2628,6 +2784,7 @@ export type DictationPolicyView = {
     dictionary: Allowance;
     enabled: Allowance;
     external_engine: Allowance;
+    history: Allowance;
     install: Allowance;
     managed: boolean;
 };
@@ -2737,6 +2894,7 @@ export type DictationStreamRequest = {
      * `chat` and `editor` only.
      */
     session_id?: string | null;
+    surface?: DictationHistorySurface | null;
     target_kind: DictationTargetKind;
 };
 
@@ -13885,6 +14043,231 @@ export type BenchDictationModelResponses = {
 };
 
 export type BenchDictationModelResponse = BenchDictationModelResponses[keyof BenchDictationModelResponses];
+
+export type ListDictationHistoryData = {
+    body?: never;
+    path?: never;
+    query?: {
+        /**
+         * A case folded substring of the text, at most 200 characters.
+         */
+        q?: string | null;
+        /**
+         * The `next_cursor` of the previous page.
+         */
+        cursor?: string | null;
+        /**
+         * At most 200; 100 when absent.
+         */
+        limit?: number | null;
+    };
+    url: '/dictation/history';
+};
+
+export type ListDictationHistoryErrors = {
+    /**
+     * bad_request: a query this daemon cannot read, a search over 200 characters, or a cursor it did not give
+     */
+    422: DictationHistoryErrorBody;
+    /**
+     * unreadable (MSG-HISTORY-FILE)
+     */
+    503: DictationHistoryErrorBody;
+};
+
+export type ListDictationHistoryError = ListDictationHistoryErrors[keyof ListDictationHistoryErrors];
+
+export type ListDictationHistoryResponses = {
+    /**
+     * The entries this caller may list, newest first, with an ETag over this page
+     */
+    200: DictationHistoryList;
+};
+
+export type ListDictationHistoryResponse = ListDictationHistoryResponses[keyof ListDictationHistoryResponses];
+
+export type ClearDictationHistoryData = {
+    body: DictationHistoryClearRequest;
+    path?: never;
+    query?: never;
+    url: '/dictation/history/clear';
+};
+
+export type ClearDictationHistoryErrors = {
+    /**
+     * agent (MSG-HISTORY-AGENT)
+     */
+    403: DictationHistoryErrorBody;
+    /**
+     * unreadable (MSG-HISTORY-FILE)
+     */
+    503: DictationHistoryErrorBody;
+};
+
+export type ClearDictationHistoryError = ClearDictationHistoryErrors[keyof ClearDictationHistoryErrors];
+
+export type ClearDictationHistoryResponses = {
+    /**
+     * How many entries this caller may list, created at or before `through`, were deleted
+     */
+    200: DictationHistoryDeleted;
+};
+
+export type ClearDictationHistoryResponse = ClearDictationHistoryResponses[keyof ClearDictationHistoryResponses];
+
+export type DeleteDictationHistoryEntriesData = {
+    body: DictationHistoryIdsRequest;
+    path?: never;
+    query?: never;
+    url: '/dictation/history/delete';
+};
+
+export type DeleteDictationHistoryEntriesErrors = {
+    /**
+     * agent (MSG-HISTORY-AGENT)
+     */
+    403: DictationHistoryErrorBody;
+    /**
+     * too_large: a body over 512 KiB or more than 5,000 ids
+     */
+    413: DictationHistoryErrorBody;
+    /**
+     * unreadable (MSG-HISTORY-FILE)
+     */
+    503: DictationHistoryErrorBody;
+};
+
+export type DeleteDictationHistoryEntriesError = DeleteDictationHistoryEntriesErrors[keyof DeleteDictationHistoryEntriesErrors];
+
+export type DeleteDictationHistoryEntriesResponses = {
+    /**
+     * How many of the named entries this caller may list were deleted
+     */
+    200: DictationHistoryDeleted;
+};
+
+export type DeleteDictationHistoryEntriesResponse = DeleteDictationHistoryEntriesResponses[keyof DeleteDictationHistoryEntriesResponses];
+
+export type GetDictationHistorySettingsData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/dictation/history/settings';
+};
+
+export type GetDictationHistorySettingsResponses = {
+    /**
+     * The person's switches and what this caller may do
+     */
+    200: DictationHistorySettings;
+};
+
+export type GetDictationHistorySettingsResponse = GetDictationHistorySettingsResponses[keyof GetDictationHistorySettingsResponses];
+
+export type ChangeDictationHistorySettingsData = {
+    body: DictationHistorySettingsRequest;
+    path?: never;
+    query?: never;
+    url: '/dictation/history/settings';
+};
+
+export type ChangeDictationHistorySettingsErrors = {
+    /**
+     * agent, host_settings (MSG-HISTORY-HOST-SETTINGS, a raise on a daemon with no key from anyone but the served person) or policy
+     */
+    403: DictationHistoryErrorBody;
+    /**
+     * unreadable: the settings file could not be read, so nothing was changed
+     */
+    503: DictationHistoryErrorBody;
+};
+
+export type ChangeDictationHistorySettingsError = ChangeDictationHistorySettingsErrors[keyof ChangeDictationHistorySettingsErrors];
+
+export type ChangeDictationHistorySettingsResponses = {
+    /**
+     * The switches after the change
+     */
+    200: DictationHistorySettings;
+};
+
+export type ChangeDictationHistorySettingsResponse = ChangeDictationHistorySettingsResponses[keyof ChangeDictationHistorySettingsResponses];
+
+export type DeleteDictationHistoryEntryData = {
+    body?: never;
+    path: {
+        /**
+         * The entry's id
+         */
+        id: string;
+    };
+    query?: never;
+    url: '/dictation/history/{id}';
+};
+
+export type DeleteDictationHistoryEntryErrors = {
+    /**
+     * agent (MSG-HISTORY-AGENT): a daemon that holds a key and no proof
+     */
+    403: DictationHistoryErrorBody;
+    /**
+     * not_found (MSG-HISTORY-NOT-FOUND), for a missing id and one this caller may not list alike
+     */
+    404: DictationHistoryErrorBody;
+    /**
+     * unreadable (MSG-HISTORY-FILE)
+     */
+    503: DictationHistoryErrorBody;
+};
+
+export type DeleteDictationHistoryEntryError = DeleteDictationHistoryEntryErrors[keyof DeleteDictationHistoryEntryErrors];
+
+export type DeleteDictationHistoryEntryResponses = {
+    /**
+     * Deleted
+     */
+    204: void;
+};
+
+export type DeleteDictationHistoryEntryResponse = DeleteDictationHistoryEntryResponses[keyof DeleteDictationHistoryEntryResponses];
+
+export type ChangeDictationHistoryTierData = {
+    body: DictationHistoryTierRequest;
+    path: {
+        /**
+         * The entry's id
+         */
+        id: string;
+    };
+    query?: never;
+    url: '/dictation/history/{id}/tier';
+};
+
+export type ChangeDictationHistoryTierErrors = {
+    /**
+     * agent, host_tier (MSG-HISTORY-HOST-TIER, decided before the id is read) or policy
+     */
+    403: DictationHistoryErrorBody;
+    /**
+     * not_found (MSG-HISTORY-NOT-FOUND)
+     */
+    404: DictationHistoryErrorBody;
+    /**
+     * unreadable (MSG-HISTORY-FILE)
+     */
+    503: DictationHistoryErrorBody;
+};
+
+export type ChangeDictationHistoryTierError = ChangeDictationHistoryTierErrors[keyof ChangeDictationHistoryTierErrors];
+
+export type ChangeDictationHistoryTierResponses = {
+    /**
+     * The entry with its new tier
+     */
+    200: DictationHistoryEntryAnswer;
+};
+
+export type ChangeDictationHistoryTierResponse = ChangeDictationHistoryTierResponses[keyof ChangeDictationHistoryTierResponses];
 
 export type CancelDictationInstallData = {
     body: DictationModelRequest;

@@ -3894,6 +3894,7 @@ mod managed_call_tool_tests {
                 "dictionary__add_terms",
                 "dictionary__list_terms",
                 "dictionary__remove_added_terms",
+                "dictionary__search_dictations",
             ] {
                 assert_eq!(
                     refusal(&managed, tool).as_deref(),
@@ -3930,7 +3931,52 @@ mod managed_call_tool_tests {
             assert!(refused.contains(tool), "{refused}");
         }
         assert_eq!(refusal(&managed, "dictionary__list_terms"), None);
+        // The history search is read only, and this route dispatches it public, so it
+        // reaches public dictations only and is left open (DD-100).
+        assert_eq!(refusal(&managed, "dictionary__search_dictations"), None);
         assert_eq!(refusal(&managed, "developer__text_editor"), None);
+    }
+
+    /// Managed `history: false` refuses the history search at this route, and nothing
+    /// else of the Dictionary; `enabled: false` refuses it with every dictionary tool.
+    #[test]
+    fn call_tool_refuses_the_history_search_while_policy_forbids_history() {
+        let forbidden = policy("dictation:\n  history: false\n");
+        assert_eq!(
+            refusal(&forbidden, "dictionary__search_dictations").as_deref(),
+            Some(MANAGED_DENY_REASON)
+        );
+        assert_eq!(refusal(&forbidden, "dictionary__list_terms"), None);
+        let off = policy("dictation:\n  enabled: false\n");
+        assert_eq!(
+            refusal(&off, "dictionary__search_dictations").as_deref(),
+            Some(MANAGED_DENY_REASON)
+        );
+    }
+
+    /// The dictation history's file is refused by path at this route, whatever the chat,
+    /// so a shell cannot read past the search's tier rule here either. The refusal names
+    /// the dictation history and no dictation.
+    #[test]
+    fn call_tool_refuses_a_shell_read_of_the_dictation_history() {
+        let file = biorouter::dictation::history::history_dir().join("history.jsonl");
+        let arguments = serde_json::json!({ "command": format!("cat {}", file.display()) });
+        let refused = call_tool_boundary_refusal_under(
+            &ManagedPolicy::empty(),
+            "developer__shell",
+            arguments.as_object(),
+        )
+        .expect("a shell read of the dictation history ran at call_tool");
+        assert!(refused.contains("dictation history"), "{refused}");
+        let elsewhere = serde_json::json!({ "command": "cat notes/history.jsonl" });
+        assert_eq!(
+            call_tool_boundary_refusal_under(
+                &ManagedPolicy::empty(),
+                "developer__shell",
+                elsewhere.as_object(),
+            ),
+            None
+        );
     }
 
     /// The route reads the policy file for each request, and decides before it
@@ -8552,6 +8598,215 @@ mod dictionary_script_route_tests {
         });
         let _ = state.agent_manager.remove_session(&session.id).await;
         let _ = state.session_manager().delete_session(&session.id).await;
+    }
+}
+
+#[cfg(test)]
+mod dictation_search_route_tests {
+    //! DD-100 at `POST /agent/call_tool`, which dispatches as
+    //! `CallCapability::public_enforced()` on the secret alone: the history search, called
+    //! directly or from a script sent through the route, finds only public dictations,
+    //! even for a chat classified private, and never ratchets the chat it names.
+    //!
+    //! Each test runs in a process of its own with its own sandbox root, because the
+    //! history is a process-wide store the route tests of other lanes write to.
+
+    use super::*;
+    use axum::body::Body;
+    use axum::http::Request;
+    use biorouter::dictation::history::{open_history, store, EntryTier, HistoryEntry, Surface};
+    use tower::ServiceExt;
+
+    const TOOL_CALLS: &str = "biorouter/tool-calls";
+
+    fn dictation(seconds: i64, text: &str, tier: EntryTier) -> HistoryEntry {
+        HistoryEntry {
+            id: store::new_entry_id(),
+            created_at: chrono::DateTime::from_timestamp(1_795_707_552 + seconds, 0).unwrap(),
+            text: text.to_string(),
+            tier,
+            institutions: None,
+            surface: Surface::Composer,
+            duration_ms: 1_000,
+            model: "whisper-small.en-q8_0".to_string(),
+            private_terms: false,
+            session_id: None,
+            session_incarnation: None,
+            truncated: None,
+        }
+    }
+
+    fn seed_both_tiers() {
+        let history = open_history();
+        history
+            .append(dictation(0, "EPAS1 PUBLICSENTINEL", EntryTier::Public))
+            .unwrap();
+        history
+            .append(dictation(1, "EPAS1 PRIVATESENTINEL", EntryTier::Private))
+            .unwrap();
+    }
+
+    async fn call_tool_route(
+        state: &Arc<AppState>,
+        session_id: &str,
+        name: &str,
+        arguments: Value,
+    ) -> (StatusCode, Value) {
+        let body = serde_json::json!({
+            "session_id": session_id,
+            "name": name,
+            "arguments": arguments,
+        });
+        let response = routes(Arc::clone(state))
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/agent/call_tool")
+                    .header("content-type", "application/json")
+                    .body(Body::from(body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let status = response.status();
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        (
+            status,
+            serde_json::from_slice(&bytes).unwrap_or(Value::Null),
+        )
+    }
+
+    fn text_of(body: &Value) -> String {
+        body["content"]
+            .as_array()
+            .map(|items| {
+                items
+                    .iter()
+                    .filter_map(|item| item["text"].as_str())
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            })
+            .unwrap_or_default()
+    }
+
+    /// A person's chat with the named capabilities loaded, raised private when asked.
+    async fn chat_with(state: &Arc<AppState>, private: bool, capabilities: &[&str]) -> Session {
+        let temp = std::env::temp_dir();
+        let session = state
+            .session_manager()
+            .create_session(temp, "DD-100 call_tool search".into(), SessionType::User)
+            .await
+            .unwrap();
+        if private {
+            state
+                .session_manager()
+                .update(&session.id)
+                .raise_privacy(SessionClassification::Private, "turn:test")
+                .apply()
+                .await
+                .unwrap();
+        }
+        // Session ids are reissued: never inherit an agent an earlier test left.
+        let _ = state.agent_manager.remove_session(&session.id).await;
+        let agent = state.get_agent(session.id.clone()).await.unwrap();
+        for name in capabilities {
+            let target = biorouter::agents::extension_manager::resolve_bundled_extension(name)
+                .unwrap_or_else(|| panic!("{name} is a bundled capability"));
+            agent
+                .add_extension(target.into_config(format!("{name} for the call_tool search")))
+                .await
+                .unwrap();
+        }
+        state
+            .session_manager()
+            .get_session(&session.id, false)
+            .await
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn call_tool_searches_only_public_dictations_even_for_a_private_chat() {
+        if !crate::test_sandbox::in_a_process_of_its_own() {
+            return;
+        }
+        let root = tempfile::TempDir::new().unwrap();
+        let _root = crate::test_sandbox::relocate_path_root(root.path());
+        seed_both_tiers();
+        let state = AppState::new().await.unwrap();
+
+        for private in [true, false] {
+            let chat = chat_with(&state, private, &["dictionary"]).await;
+            let (status, body) = call_tool_route(
+                &state,
+                &chat.id,
+                "dictionary__search_dictations",
+                serde_json::json!({ "query": "EPAS1" }),
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK, "{body}");
+            assert_eq!(body["is_error"], serde_json::json!(false), "{body}");
+            let text = text_of(&body);
+            assert!(text.contains("PUBLICSENTINEL"), "private {private}: {text}");
+            assert!(
+                !text.contains("PRIVATESENTINEL"),
+                "call_tool reached a private dictation (private chat: {private}): {text}"
+            );
+            let after = state
+                .session_manager()
+                .get_session(&chat.id, false)
+                .await
+                .unwrap();
+            assert_eq!(
+                (after.privacy_tier, after.privacy_reason.clone()),
+                (chat.privacy_tier, chat.privacy_reason.clone()),
+                "the search changed the chat's row"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn a_script_through_call_tool_searches_only_public_dictations() {
+        if !crate::test_sandbox::in_a_process_of_its_own() {
+            return;
+        }
+        let root = tempfile::TempDir::new().unwrap();
+        let _root = crate::test_sandbox::relocate_path_root(root.path());
+        seed_both_tiers();
+        let state = AppState::new().await.unwrap();
+        let chat = chat_with(&state, true, &["code_execution", "dictionary"]).await;
+
+        let (status, body) = call_tool_route(
+            &state,
+            &chat.id,
+            "code_execution__execute_code",
+            serde_json::json!({
+                "code": "import { search_dictations } from \"dictionary\"; \
+                         record_result(search_dictations({ query: \"EPAS1\" }));"
+            }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["is_error"], serde_json::json!(false), "{body}");
+        let calls = body["_meta"][TOOL_CALLS]
+            .as_array()
+            .unwrap_or_else(|| panic!("the result records no script calls: {body}"));
+        assert_eq!(calls.len(), 1, "{body}");
+        assert_eq!(calls[0]["tool"], "dictionary__search_dictations", "{body}");
+        assert_eq!(calls[0]["status"], "ok", "{body}");
+        let text = text_of(&body);
+        assert!(text.contains("PUBLICSENTINEL"), "{text}");
+        assert!(
+            !body.to_string().contains("PRIVATESENTINEL"),
+            "a script through call_tool reached a private dictation: {body}"
+        );
+        let after = state
+            .session_manager()
+            .get_session(&chat.id, false)
+            .await
+            .unwrap();
+        assert_eq!(after.privacy_reason, chat.privacy_reason);
     }
 }
 

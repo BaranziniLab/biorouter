@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { resetDictationStoreForTests } from '../dictation/dictationStore';
 import { fakeStatusApi, speechStatus } from '../dictation/dictationTestKit';
 import { answer, entry, listing, scan, settings } from './dictionaryTestKit';
+import { dictation, historyAnswer, historyPage, historySettings } from './history/historyTestKit';
 
 /**
  * While the privacy master switch is off every dictionary term, a private one included,
@@ -23,6 +24,8 @@ const api = vi.hoisted(() => ({
   listDictionaryEntries: vi.fn(),
   getDictionarySettings: vi.fn(),
   getDictionarySuggestionScan: vi.fn(),
+  listDictationHistory: vi.fn(),
+  getDictationHistorySettings: vi.fn(),
 }));
 vi.mock('../../api', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../api')>()),
@@ -37,10 +40,13 @@ vi.mock('../ui/scroll-area', () => ({
 
 import DictionaryView from './DictionaryView';
 import { resetDictionaryStoreForTests } from './useDictionary';
+import { resetHistoryStoreForTests } from './useDictationHistory';
 import { resetSuggestionScanForTests } from './useSuggestionScan';
 
 beforeEach(() => {
   resetDictionaryStoreForTests();
+  resetHistoryStoreForTests();
+  window.localStorage.clear();
   resetSuggestionScanForTests();
   resetDictationStoreForTests(fakeStatusApi(() => speechStatus()).api);
   api.listDictionaryEntries.mockImplementation(async () =>
@@ -48,11 +54,15 @@ beforeEach(() => {
   );
   api.getDictionarySettings.mockResolvedValue(answer(200, settings()));
   api.getDictionarySuggestionScan.mockResolvedValue(answer(200, scan()));
+  api.listDictationHistory.mockResolvedValue(
+    historyPage([dictation({ text: 'EGLN1 in a private chat' })])
+  );
+  api.getDictationHistorySettings.mockResolvedValue(historyAnswer(200, historySettings()));
 });
 
-const renderPage = () =>
+const renderPage = (at = '/dictionary') =>
   render(
-    <MemoryRouter initialEntries={['/dictionary']}>
+    <MemoryRouter initialEntries={[at]}>
       <DictionaryView />
     </MemoryRouter>
   );
@@ -62,6 +72,13 @@ describe('the Dictionary page with the privacy tiers off', () => {
     privacy.enabled = false;
     renderPage();
     await screen.findByText('EGLN1');
+    expect(screen.getByTestId('privacy-tiers-off-note')).toBeInTheDocument();
+  });
+
+  it('shows the same note on the History tab', async () => {
+    privacy.enabled = false;
+    renderPage('/dictionary?tab=history');
+    await screen.findByText('EGLN1 in a private chat');
     expect(screen.getByTestId('privacy-tiers-off-note')).toBeInTheDocument();
   });
 

@@ -15,7 +15,9 @@ import {
   abortFinishingStream,
   keepsFailedRecording,
   HELD_FOR_RETRY_MS,
+  parseAnywhereSurface,
   type AnywhereSource,
+  type AnywhereSurface,
 } from '../../utils/dictationAnywhere';
 
 type CaptureCommand =
@@ -25,6 +27,11 @@ type CaptureCommand =
       privateConfirmed: boolean;
       generation: number;
       pressedAtEpochMs: number;
+      /**
+       * Where the text goes, for the dictation history: `other_app` when main kept an app to type
+       * into, else `clipboard`; a preview's is always `app_preview`. Absent from an older main.
+       */
+      surface?: AnywhereSurface;
     }
   | { type: 'stop' }
   | { type: 'cancel' }
@@ -108,7 +115,8 @@ export default function DictationCapturePage() {
       source: AnywhereSource,
       privateConfirmed: boolean,
       commandGeneration: number,
-      pressedAtEpochMs: number
+      pressedAtEpochMs: number,
+      surface: AnywhereSurface | null
     ) => {
       if (capture || stream || starting) return;
       // A new dictation ends any hold; main sends `drop` first as well.
@@ -163,7 +171,7 @@ export default function DictationCapturePage() {
           if (token === generation && reason === 'track-ended') void stop();
         });
         stream = createDictationStream(
-          externalStreamRequest(nextCapture.sampleRate, source, privateConfirmed)
+          externalStreamRequest(nextCapture.sampleRate, source, privateConfirmed, surface)
         );
         for (const pcm of pending) stream.push(pcm);
         pending = [];
@@ -257,7 +265,8 @@ export default function DictationCapturePage() {
           command.source,
           command.privateConfirmed,
           command.generation,
-          command.pressedAtEpochMs
+          command.pressedAtEpochMs,
+          parseAnywhereSurface(command.surface)
         );
       if (command.type === 'stop') void stop();
       if (command.type === 'cancel') cancel();

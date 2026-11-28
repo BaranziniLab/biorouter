@@ -1211,16 +1211,19 @@ const CODING_AGENT_BRIDGE_ALLOWED_TODO_TOOLS: &[&str] = &[
 
 const CODING_AGENT_BRIDGE_ALLOWED_CHAT_RECALL_TOOLS: &[&str] = &["chatrecall__chatrecall"];
 
-/// The Dictionary's three tools (DD-51), offered to a Claude Code or Codex chat exactly as
-/// to any provider's chat (owner decision 2026-11-13: access follows the privacy match,
-/// never the provider). Nothing here widens what a chat sees: each call dispatches with the
-/// bridge plan's capability, a coding-agent chat is public, so `list_terms` and
-/// `remove_added_terms` reach only the public rows and an add lands public; and
-/// `on_request` still activates a term only from the person's latest message.
+/// The Dictionary's four tools (DD-51, DD-100), offered to a Claude Code or Codex chat
+/// exactly as to any provider's chat (owner decision 2026-11-13: access follows the privacy
+/// match, never the provider). Nothing here widens what a chat sees: each call dispatches
+/// with the bridge plan's capability, a coding-agent chat is public, so `list_terms` and
+/// `remove_added_terms` reach only the public rows, an add lands public, and
+/// `search_dictations` finds only public dictations; and `on_request` still activates a
+/// term only from the person's latest message. The list is the router's whole roster,
+/// which `coding_agent_bridge_offers_the_dictionary_and_only_its_public_rows` pins.
 const CODING_AGENT_BRIDGE_ALLOWED_DICTIONARY_TOOLS: &[&str] = &[
     "dictionary__add_terms",
     "dictionary__list_terms",
     "dictionary__remove_added_terms",
+    "dictionary__search_dictations",
 ];
 
 // The Decisions capability (`decisions_extension.rs`), default ON. It was
@@ -24911,15 +24914,36 @@ mod tests {
             .next()
             .expect("the bridge URL ends in its nonce");
         let grant = coding_agent_bridge::lookup(nonce).expect("the bridge grant is live");
-        for expected in CODING_AGENT_BRIDGE_ALLOWED_DICTIONARY_TOOLS {
-            assert!(
+        // An equality, not an inclusion: the chat's live `dictionary__` roster, what crosses
+        // the bridge and the allowlist are one set, so a tool the Dictionary gains later
+        // cannot silently miss a coding-agent chat (and a fifth one fails here until the
+        // allowlist names it).
+        let dictionary_names = |names: Vec<String>| {
+            names
+                .into_iter()
+                .filter(|name| name.starts_with("dictionary__"))
+                .collect::<std::collections::BTreeSet<_>>()
+        };
+        let allowed = CODING_AGENT_BRIDGE_ALLOWED_DICTIONARY_TOOLS
+            .iter()
+            .map(|name| (*name).to_string())
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(
+            dictionary_names(tools.iter().map(|tool| tool.name.to_string()).collect()),
+            allowed,
+            "the Dictionary's live roster is the bridge allowlist"
+        );
+        assert_eq!(
+            dictionary_names(
                 grant
                     .tools()
                     .iter()
-                    .any(|tool| tool.name.as_ref() == *expected),
-                "{expected} must cross the bridge like any provider's tool"
-            );
-        }
+                    .map(|tool| tool.name.to_string())
+                    .collect()
+            ),
+            allowed,
+            "every Dictionary tool crosses the bridge like any provider's tool"
+        );
 
         let listed = grant
             .call(CallToolRequestParams {
@@ -24944,6 +24968,156 @@ mod tests {
             !text.contains("Xylophagy"),
             "a public coding-agent chat must never receive a private row: {text}"
         );
+    }
+
+    /// DD-100 on the coding-agent bridge: a Claude Code or Codex chat may search the
+    /// dictation history like any provider's chat, and reaches only the public dictations,
+    /// because every bridge plan samples a public provider. Also when the agent's own slot
+    /// holds a private model while the iteration provider is the coding agent, the case
+    /// `prepare_coding_agent_bridge_plan` judges by the iteration provider; and the
+    /// reading chat is never ratcheted.
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn coding_agent_bridge_searches_only_public_dictations() {
+        use crate::dictation::history::{open_history, store, EntryTier, HistoryEntry, Surface};
+        if !crate::test_sandbox::in_a_process_of_its_own() {
+            return;
+        }
+        coding_agent_bridge::publish_base_url("http://127.0.0.1:1");
+        let path_root = tempfile::TempDir::new().expect("an isolated history root");
+        let _root = crate::test_sandbox::relocate_path_root(
+            path_root.path().to_str().expect("a UTF-8 temporary path"),
+        );
+        let dictation = |seconds: i64, text: &str, tier: EntryTier| HistoryEntry {
+            id: store::new_entry_id(),
+            created_at: chrono::DateTime::from_timestamp(1_795_707_552 + seconds, 0).unwrap(),
+            text: text.to_string(),
+            tier,
+            institutions: None,
+            surface: Surface::Composer,
+            duration_ms: 1_000,
+            model: "whisper-small.en-q8_0".to_string(),
+            private_terms: false,
+            session_id: None,
+            session_incarnation: None,
+            truncated: None,
+        };
+        let history = open_history();
+        history
+            .append(dictation(0, "EPAS1 Tachyzoite", EntryTier::Public))
+            .expect("seed a public dictation");
+        history
+            .append(dictation(10, "EPAS1 Xylophagy", EntryTier::Private))
+            .expect("seed a newer private dictation");
+
+        struct PrivateSlot;
+        #[async_trait::async_trait]
+        impl Provider for PrivateSlot {
+            fn metadata() -> crate::providers::base::ProviderMetadata {
+                BridgedChildProvider::metadata()
+            }
+            fn get_name(&self) -> &str {
+                "private-slot"
+            }
+            fn get_model_config(&self) -> crate::model::ModelConfig {
+                crate::model::ModelConfig::new_or_fail("bridge-child-model")
+            }
+            fn tier(&self) -> ProviderTier {
+                ProviderTier::Private
+            }
+            async fn complete_with_model(
+                &self,
+                _model_config: &crate::model::ModelConfig,
+                _system: &str,
+                _messages: &[Message],
+                _tools: &[Tool],
+            ) -> Result<
+                (Message, crate::providers::base::ProviderUsage),
+                crate::providers::errors::ProviderError,
+            > {
+                unreachable!("no turn runs here")
+            }
+        }
+
+        let (agent, session_id) = agent_with_one_extension_for_tests().await;
+        let dictionary =
+            resolve_bundled_extension("dictionary").expect("the Dictionary capability");
+        agent
+            .add_extension(dictionary.into_config("Dictionary history bridge".into()))
+            .await
+            .expect("enable the Dictionary capability");
+        let iteration_provider: Arc<dyn Provider> = Arc::new(BridgedChildProvider {
+            name: "claude_code",
+        });
+
+        for (case, slot) in [
+            ("the coding agent bound", Arc::clone(&iteration_provider)),
+            (
+                "a private model in the slot",
+                Arc::new(PrivateSlot) as Arc<dyn Provider>,
+            ),
+        ] {
+            *agent.provider.lock().await = Some(slot);
+            let tools = agent.list_tools(&session_id, None).await;
+            let session = agent
+                .config
+                .session_manager
+                .get_session(&session_id, true)
+                .await
+                .expect("read the bridge parent");
+            let conversation = session
+                .conversation
+                .clone()
+                .unwrap_or_else(Conversation::empty);
+            let lease = issue_test_tool_bridge(
+                &agent,
+                &iteration_provider,
+                &session,
+                &conversation,
+                &tools,
+            )
+            .await
+            .expect("coding-agent providers need a live grant");
+            let nonce = lease
+                .url()
+                .rsplit('/')
+                .next()
+                .expect("the bridge URL ends in its nonce");
+            let grant = coding_agent_bridge::lookup(nonce).expect("the bridge grant is live");
+            let found = grant
+                .call(CallToolRequestParams {
+                    name: "dictionary__search_dictations".into(),
+                    arguments: Some(object!({"query": "EPAS1"})),
+                    meta: None,
+                    task: None,
+                })
+                .await
+                .unwrap_or_else(|error| panic!("{case}: the search must dispatch: {error}"));
+            assert_eq!(found.is_error, Some(false), "{case}: {found:?}");
+            let text = found
+                .content
+                .iter()
+                .filter_map(|content| content.as_text().map(|text| text.text.as_str()))
+                .collect::<String>();
+            assert!(
+                text.contains("Tachyzoite"),
+                "{case}: the public dictation is found: {text}"
+            );
+            assert!(
+                !text.contains("Xylophagy") && !text.contains("private"),
+                "{case}: a coding-agent chat must never receive a private dictation: {text}"
+            );
+            let row = agent
+                .config
+                .session_manager
+                .get_session(&session_id, false)
+                .await
+                .expect("read the bridge parent again");
+            assert!(
+                !row.privacy_tier.is_private(),
+                "{case}: a public search ratcheted the chat"
+            );
+        }
     }
 
     #[tokio::test]
@@ -27229,6 +27403,7 @@ mod tests {
             "dictionary__add_terms".to_string(),
             "dictionary__list_terms".to_string(),
             "dictionary__remove_added_terms".to_string(),
+            "dictionary__search_dictations".to_string(),
         ]);
         assert_eq!(names(agent.list_tools(&session.id, None).await), expected);
 
@@ -27315,6 +27490,7 @@ mod tests {
             "dictionary__add_terms".to_string(),
             "dictionary__list_terms".to_string(),
             "dictionary__remove_added_terms".to_string(),
+            "dictionary__search_dictations".to_string(),
         ]);
         assert_eq!(
             dictionary_tools(agent.list_tools(&person.id, None).await),
@@ -27326,6 +27502,18 @@ mod tests {
             name: "dictionary__add_terms".into(),
             arguments: Some(
                 serde_json::json!({"terms": [{"written": "EPAS1"}], "requested_by_user": true})
+                    .as_object()
+                    .unwrap()
+                    .clone(),
+            ),
+            task: None,
+        };
+        // The history search is a person's own chat's too (DD-100).
+        let search_dictations = || CallToolRequestParams {
+            meta: None,
+            name: "dictionary__search_dictations".into(),
+            arguments: Some(
+                serde_json::json!({"query": "EPAS1"})
                     .as_object()
                     .unwrap()
                     .clone(),
@@ -27344,18 +27532,21 @@ mod tests {
                 dictionary_tools(agent.list_tools(&other.id, None).await).is_empty(),
                 "a {kind} session was offered dictionary tools"
             );
-            let (_, result) = agent
-                .dispatch_tool_call(add_terms(), "request".into(), None, &other)
-                .await;
-            match result {
-                Err(error) => assert!(
-                    error
-                        .message
-                        .contains("The Dictionary capability is unavailable in this session."),
-                    "{kind}: {}",
-                    error.message
-                ),
-                Ok(_) => panic!("dictionary__add_terms ran in a {kind} session"),
+            for call in [add_terms(), search_dictations()] {
+                let name = call.name.to_string();
+                let (_, result) = agent
+                    .dispatch_tool_call(call, "request".into(), None, &other)
+                    .await;
+                match result {
+                    Err(error) => assert!(
+                        error
+                            .message
+                            .contains("The Dictionary capability is unavailable in this session."),
+                        "{kind} {name}: {}",
+                        error.message
+                    ),
+                    Ok(_) => panic!("{name} ran in a {kind} session"),
+                }
             }
         }
 
@@ -27365,6 +27556,9 @@ mod tests {
         let (_, scoped_result) = agent
             .dispatch_tool_call(add_terms(), "request".into(), None, &crew_chat)
             .await;
+        let (_, scoped_search) = agent
+            .dispatch_tool_call(search_dictations(), "request".into(), None, &crew_chat)
+            .await;
         crate::crew::remove_test_scope(&crew, &crew_chat.id).await;
         assert!(
             scoped_tools.is_empty(),
@@ -27373,6 +27567,10 @@ mod tests {
         assert!(
             scoped_result.is_err(),
             "dictionary__add_terms ran in a Crew scoped chat"
+        );
+        assert!(
+            scoped_search.is_err(),
+            "dictionary__search_dictations ran in a Crew scoped chat"
         );
         assert_eq!(
             dictionary_tools(agent.list_tools(&crew_chat.id, None).await),

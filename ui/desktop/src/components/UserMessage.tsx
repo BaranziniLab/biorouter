@@ -238,6 +238,10 @@ export default function UserMessage({
       editSpansRef.current = recorded.dictation;
       ledgerTextRef.current = recorded.text;
     },
+    // The editor's field exists only while editing: a closed editor neither attaches to the
+    // session nor offers itself to fn, so a dictation never chooses a field that is not there
+    // (a transcript then would have gone nowhere).
+    enabled: isEditing,
   });
   const lastEditProseRef = useRef(editProse);
   useLayoutEffect(() => {

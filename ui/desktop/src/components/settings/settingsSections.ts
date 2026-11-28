@@ -15,6 +15,8 @@
  *   DD-66 in `docs/history/local-dictation-2026-11/implementation-plan.md`).
  * - `dictionary`: the dictionary's rows inside Speech models
  *   (`settings/models/DictionarySettingsRows.tsx`), a group of rows rather than a section.
+ * - `dictation-history` ({@link SETTINGS_GROUPS}): the dictation history's rows at the end of
+ *   Speech models (`settings/models/DictationHistorySettingsRows.tsx`).
  * - `memory`, `configuration`: WS-SETTINGS-B (`settings/memory/**`,
  *   `settings/config/**`).
  * - `usage`: WS-USAGE (`settings/usage/**`).
@@ -73,10 +75,33 @@ export const SETTINGS_SECTION_IDS = Object.fromEntries(
 
 export type SettingsSectionId = (typeof SETTINGS_SECTIONS)[SettingsSectionKey]['id'];
 
+/**
+ * Groups of rows inside a section that a deep link lands on by a key of its own. A group is not a
+ * section (it has no heading and is not in the tab's section order), so it is kept out of
+ * {@link SETTINGS_SECTIONS}; its root renders `id={SETTINGS_GROUP_IDS.<key>}` and `SettingsView`
+ * scrolls to it and highlights its first row exactly as it does a section.
+ *
+ * - `dictation-history`: the **Dictation history** rows at the end of Speech models (DD-96,
+ *   `settings/models/DictationHistorySettingsRows.tsx`). The Dictionary page's History tab links
+ *   to them.
+ */
+export const SETTINGS_GROUPS = {
+  'dictation-history': { id: 'settings-dictation-history', tab: 'models' },
+} as const satisfies Record<string, { id: string; tab: SettingsTab }>;
+
+export type SettingsGroupKey = keyof typeof SETTINGS_GROUPS;
+
+export type SettingsGroupId = (typeof SETTINGS_GROUPS)[SettingsGroupKey]['id'];
+
+/** `SETTINGS_GROUP_IDS.dictationHistory === 'settings-dictation-history'`. */
+export const SETTINGS_GROUP_IDS = {
+  dictationHistory: SETTINGS_GROUPS['dictation-history'].id,
+} as const;
+
 export interface SettingsDeepLinkTarget {
   tab: SettingsTab;
-  /** Absent when the link lands on the top of the tab. */
-  sectionId?: SettingsSectionId;
+  /** Absent when the link lands on the top of the tab. A section's id, or a group's. */
+  sectionId?: SettingsSectionId | SettingsGroupId;
 }
 
 /**
@@ -99,7 +124,8 @@ export const SETTINGS_DEEP_LINKS: Readonly<Record<string, SettingsDeepLinkTarget
 
 /**
  * Resolve a `section` key to the tab and section it names. A legacy key wins;
- * otherwise any {@link SettingsSectionKey} (`memory`, `usage`, …) works too.
+ * otherwise any {@link SettingsSectionKey} (`memory`, `usage`, …) works too, and
+ * then any {@link SettingsGroupKey} (`dictation-history`).
  * Unknown keys return null, so the view stays on its current tab.
  */
 export function resolveSettingsDeepLink(
@@ -111,6 +137,10 @@ export function resolveSettingsDeepLink(
   }
   if (Object.prototype.hasOwnProperty.call(SETTINGS_SECTIONS, section)) {
     const target = SETTINGS_SECTIONS[section as SettingsSectionKey];
+    return { tab: target.tab, sectionId: target.id };
+  }
+  if (Object.prototype.hasOwnProperty.call(SETTINGS_GROUPS, section)) {
+    const target = SETTINGS_GROUPS[section as SettingsGroupKey];
     return { tab: target.tab, sectionId: target.id };
   }
   return null;

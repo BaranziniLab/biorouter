@@ -1479,6 +1479,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "biorouter-textinsert"
+version = "1.94.6"
+dependencies = [
+ "dispatch2",
+ "objc2",
+ "objc2-app-kit",
+ "objc2-core-graphics",
+ "objc2-foundation",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "bit-set"
 version = "0.5.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5926,6 +5939,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d49e936b501e5c5bf01fda3a9452ff86dc3ea98ad5f283e1455153142d97518c"
 dependencies = [
  "bitflags 2.10.0",
+ "libc",
  "objc2",
  "objc2-core-graphics",
  "objc2-foundation",
@@ -5950,6 +5964,7 @@ checksum = "e022c9d066895efa1345f8e33e584b9f958da2fd4cd116792e15e07e4720a807"
 dependencies = [
  "bitflags 2.10.0",
  "dispatch2",
+ "libc",
  "objc2",
  "objc2-core-foundation",
  "objc2-io-surface",

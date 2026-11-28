@@ -186,6 +186,15 @@ These are exactly the values that used to be typed in two-to-four places and dri
 | boot-splash `--br-bg` | `--background-canvas`, the page's own ground (it was `--background-muted` until 2026-10-11, one step off the page, which flashed grey on a slow launch) |
 | boot-splash `--br-navy`, `--br-coral` | the **base** family's `mark` inks, in every family: the splash draws the wordmark, which does not follow the family |
 | picker label + swatch, family list | the definition's `label` / `swatch` / `id` |
+| `surface.*` in `themes.generated.ts` | `SURFACE_TOKENS` in `scripts/generate-themes.mjs`, resolved per family and mode: `background`, `text`, `muted`, `card` and `border` for the sandboxed notebook and spreadsheet previews, and since 2026-11-26 `accent` (`--background-accent`), `onAccent` (`--text-on-accent`) and `shadow` (`--shadow-default`) for the dictation indicator (DD-99) |
+
+A CSP-sandboxed surface (a `srcdoc` frame or a `data:` page under `default-src 'none'`) cannot reach
+the app stylesheet, so it inlines these literals. The dictation indicator is one: a `data:` page in a
+window with no preload that wears the armed **Send** button's pair, `accent` with `onAccent` on it,
+in the family and mode the app shows. A chat window tells main only the words (family, mode, whether
+it follows the system, over `theme:appearance`); main looks the literals up with `indicatorPalette`
+(`utils/dictationIndicator.ts`) and checks them again before it writes one, so no page can paint a
+window with a colour of its own.
 
 `terminalGround` is **per family on purpose**. Parchment dark paints `--background-code`; Alma Mater
 and Roche Limit paint `--background-muted`. Assuming they agreed would silently re-ground two
@@ -409,7 +418,11 @@ lets the guards resolve a family in isolation.
 ### Guards
 
 - `npm run themes` refuses to emit if any syntax stop, terminal stop or sandboxed-surface pair
-  falls below its floor on the **shared** grounds. Syntax stops are held to 4.5:1 on
+  falls below its floor on the **shared** grounds. It also refuses a family whose indicator surface
+  breaks what main accepts: `accent` or `onAccent` not a 6-digit hex, a `shadow` that is anything
+  but px lengths and `rgba()` colours, or `onAccent` under 3:1 on `accent` (the bars and dot are
+  graphics; `check-contrast.mjs` already holds the same pair to 4.5:1 for Send's arrow). A family
+  that broke them would otherwise ship a bubble that silently falls back to Parchment. Syntax stops are held to 4.5:1 on
   `--background-code`, `--background-default` **and** `--background-well`, and to 3:1 under the
   selection tint composited over the paper and the well.
 - `check-contrast.mjs` asserts 404 pairs across three families × two modes (measured 2026-09-14;

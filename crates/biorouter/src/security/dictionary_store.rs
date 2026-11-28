@@ -34,7 +34,28 @@
 //! computes the path walks past the inspector, which sees only the call a model wrote.
 //! These are accident prevention for cooperative actors, as everywhere in Biorouter's
 //! privacy tiers, not a boundary against a determined one.
+//!
+//! # The dictation history
+//!
+//! The same inspector, and the same refusal at the uninspected doors, cover the dictation
+//! history's folder, `<local data>/dictation/history/` (P-18,
+//! `crate::dictation::history::history_dir`). It holds the text of everything the person
+//! dictated, private dictations included, and the only door a chat has to it is the
+//! capability's search, which applies the tier and institution rules; `cat` of the file
+//! would apply none. The refusal names the dictation history.
+//!
+//! # How a path is spelled
+//!
+//! A folder is looked for in the forms a tool argument might spell it in, built from the
+//! folder `Paths` resolves. On Windows a form and the text are compared with `\` and `/`
+//! alike and letter case ignored, and the forms include `%LOCALAPPDATA%`, `%APPDATA%`,
+//! the profile folder in cmd, PowerShell and POSIX syntax, and the verbatim `\\?\`
+//! prefix. (The history's folder resolves there as `...\data\dictation/history`, so an
+//! exact comparison missed every path written with `\`.) Off Windows the four forms and
+//! the exact comparison are unchanged. A short (8.3) name or a `..` in the path is not
+//! recognized.
 
+use std::borrow::Cow;
 use std::path::{Path, PathBuf};
 
 use anyhow::Result;
@@ -46,6 +67,7 @@ use crate::config::paths::Paths;
 use crate::config::BioRouterMode;
 use crate::conversation::message::{Message, ToolRequest};
 use crate::security::policy::command::{redirect_targets, ParsedCommand};
+use crate::security::policy::{EnvFacts, Platform};
 use crate::tool_inspection::{InspectionAction, InspectionResult, ToolInspector};
 
 /// The leaf crate's dictionary store.
@@ -77,8 +99,16 @@ pub fn open_store() -> store::DictionaryStore {
 /// Whether `path` is the store folder or inside it, compared as written and, where the
 /// path exists, after resolving links.
 pub fn is_in_dictionary_store(path: &Path) -> bool {
-    let dir = dictionary_dir();
-    if path.starts_with(&dir) {
+    is_inside(path, &dictionary_dir())
+}
+
+/// Whether `path` is the dictation history's folder or inside it, compared the same way.
+pub fn is_in_dictation_history(path: &Path) -> bool {
+    is_inside(path, &crate::dictation::history::history_dir())
+}
+
+fn is_inside(path: &Path, dir: &Path) -> bool {
+    if path.starts_with(dir) {
         return true;
     }
     match (path.canonicalize(), dir.canonicalize()) {
@@ -87,21 +117,197 @@ pub fn is_in_dictionary_store(path: &Path) -> bool {
     }
 }
 
-/// Every spelling of the store folder a tool argument might carry: the absolute path,
-/// and when the folder is under the home folder the `~`, `$HOME` and `${HOME}` forms.
-fn store_path_forms() -> Vec<String> {
-    let dir = dictionary_dir();
-    let home = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE"));
-    let mut forms = vec![dir.to_string_lossy().into_owned()];
-    if let Some(home) = home.as_ref() {
-        if let Ok(tail) = dir.strip_prefix(Path::new(home)) {
-            let tail = tail.to_string_lossy();
-            forms.push(format!("~/{tail}"));
-            forms.push(format!("$HOME/{tail}"));
-            forms.push(format!("${{HOME}}/{tail}"));
+/// The folders this module keeps tools out of.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ProtectedFolder {
+    Dictionary,
+    History,
+}
+
+impl ProtectedFolder {
+    const ALL: [ProtectedFolder; 2] = [ProtectedFolder::Dictionary, ProtectedFolder::History];
+
+    fn dir(self) -> PathBuf {
+        match self {
+            ProtectedFolder::Dictionary => dictionary_dir(),
+            ProtectedFolder::History => crate::dictation::history::history_dir(),
         }
     }
-    forms
+}
+
+/// How a platform writes a path, as data, so that the Windows spellings are checked on
+/// every platform and not only on a Windows runner.
+///
+/// On Windows `\` and `/` both separate a path's components, a run of them reads as one,
+/// and letter case never matters, so a form and the text it is looked for in are both
+/// compared folded ([`Self::fold`]). A protected folder is also reached there through
+/// `%LOCALAPPDATA%`, `%APPDATA%` and the profile folder, and through a verbatim
+/// `\\?\` prefix. Elsewhere a path is compared exactly as written, and the forms are the
+/// four they always were.
+#[derive(Debug, Clone)]
+struct PathSpelling {
+    /// The platform whose shell reads a command, and whose rules fold a spelling.
+    platform: Platform,
+    /// Folders a path may start from by name, each with the folder it stands for.
+    anchors: Vec<(&'static str, String)>,
+}
+
+/// The variables a Windows path may start from, read from the environment.
+const WINDOWS_ANCHORS: [&str; 4] = ["USERPROFILE", "HOME", "LOCALAPPDATA", "APPDATA"];
+
+/// The prefixes that put a Windows drive path in its verbatim or device form.
+const WINDOWS_PATH_PREFIXES: [&str; 2] = [r"\\?\", r"\\.\"];
+
+/// Does `path` start with a drive letter (`C:`)?
+fn has_drive_letter(path: &str) -> bool {
+    let mut chars = path.chars();
+    chars.next().is_some_and(|c| c.is_ascii_alphabetic()) && chars.next() == Some(':')
+}
+
+impl PathSpelling {
+    /// The running platform, with the folders its environment names.
+    fn host() -> Self {
+        let platform = Platform::host();
+        let anchors = if platform.is_windows() {
+            WINDOWS_ANCHORS
+                .into_iter()
+                .filter_map(|name| {
+                    std::env::var_os(name)
+                        .map(|value| (name, value.to_string_lossy().into_owned()))
+                        .filter(|(_, value)| !value.is_empty())
+                })
+                .collect()
+        } else {
+            // The home folder as these forms always read it: `HOME`, else `USERPROFILE`.
+            std::env::var_os("HOME")
+                .or_else(|| std::env::var_os("USERPROFILE"))
+                .map(|home| ("HOME", home.to_string_lossy().into_owned()))
+                .into_iter()
+                .collect()
+        };
+        PathSpelling { platform, anchors }
+    }
+
+    /// `text` as this platform compares it. On Windows every run of `\` and `/` becomes
+    /// one `/` and ASCII letters become lower case; elsewhere `text` is unchanged. A match
+    /// in the text as written is still a match folded, so folding only ever refuses more.
+    fn fold<'a>(&self, text: &'a str) -> Cow<'a, str> {
+        if !self.platform.is_windows() {
+            return Cow::Borrowed(text);
+        }
+        let mut folded = String::with_capacity(text.len());
+        let mut after_separator = false;
+        for c in text.chars() {
+            if c == '/' || c == '\\' {
+                if !after_separator {
+                    folded.push('/');
+                }
+                after_separator = true;
+            } else {
+                folded.push(c.to_ascii_lowercase());
+                after_separator = false;
+            }
+        }
+        Cow::Owned(folded)
+    }
+
+    /// What follows `anchor` in `dir` when `dir` is inside it, as a form writes it.
+    fn tail_under(&self, dir: &str, anchor: &str) -> Option<String> {
+        if !self.platform.is_windows() {
+            // Exactly as these forms were always computed.
+            return Path::new(dir)
+                .strip_prefix(Path::new(anchor))
+                .ok()
+                .map(|tail| tail.to_string_lossy().into_owned());
+        }
+        let dir = self.fold(dir);
+        let anchor = self.fold(anchor);
+        let anchor = anchor.trim_end_matches('/');
+        if anchor.is_empty() {
+            return None;
+        }
+        let tail = dir.strip_prefix(anchor)?.strip_prefix('/')?;
+        (!tail.is_empty()).then(|| tail.to_string())
+    }
+
+    /// How a path names the folder the variable `name` stands for: `~`, `$HOME` and
+    /// `${HOME}` for the home folder, and on Windows also cmd's `%NAME%`, PowerShell's
+    /// `$env:NAME` and `${env:NAME}`, and a POSIX shell's `$NAME` and `${NAME}`.
+    fn anchor_prefixes(&self, name: &str) -> Vec<String> {
+        let windows = self.platform.is_windows();
+        let mut prefixes = Vec::new();
+        if name == "HOME" || (windows && name == "USERPROFILE") {
+            prefixes.extend(["~".to_string(), "$HOME".to_string(), "${HOME}".to_string()]);
+        }
+        if windows {
+            for prefix in [
+                format!("%{name}%"),
+                format!("$env:{name}"),
+                format!("${{env:{name}}}"),
+                format!("${name}"),
+                format!("${{{name}}}"),
+            ] {
+                if !prefixes.contains(&prefix) {
+                    prefixes.push(prefix);
+                }
+            }
+        }
+        prefixes
+    }
+
+    /// Every spelling of the folder `dir` a tool argument might carry: the absolute path
+    /// (on Windows also in its verbatim and device forms), and the path from each folder
+    /// a variable names that holds it, the home folder's `~`, `$HOME` and `${HOME}` forms
+    /// among them.
+    fn forms(&self, dir: &str) -> Vec<String> {
+        let mut forms = vec![dir.to_string()];
+        let push = |form: String, forms: &mut Vec<String>| {
+            if !forms.contains(&form) {
+                forms.push(form);
+            }
+        };
+        let mut plain = dir;
+        if self.platform.is_windows() {
+            plain = WINDOWS_PATH_PREFIXES
+                .iter()
+                .find_map(|prefix| dir.strip_prefix(prefix))
+                .filter(|rest| has_drive_letter(rest))
+                .unwrap_or(dir);
+            if has_drive_letter(plain) {
+                push(plain.to_string(), &mut forms);
+                for prefix in WINDOWS_PATH_PREFIXES {
+                    push(format!("{prefix}{plain}"), &mut forms);
+                }
+            }
+        }
+        for (name, value) in &self.anchors {
+            let Some(tail) = self.tail_under(plain, value) else {
+                continue;
+            };
+            for prefix in self.anchor_prefixes(name) {
+                push(format!("{prefix}/{tail}"), &mut forms);
+            }
+        }
+        forms
+    }
+
+    /// `command` read by this platform's shell, through the policy engine's tokenizer.
+    fn parse(&self, command: &str) -> ParsedCommand {
+        // The host's own facts on the host, exactly `ParsedCommand::parse`; another
+        // platform's facts in a test that reads its spelling. The words a command splits
+        // into do not depend on them.
+        let env = if self.platform == Platform::host() {
+            EnvFacts::host(".")
+        } else {
+            EnvFacts::for_platform(self.platform, ".", "")
+        };
+        ParsedCommand::parse_for(command, self.platform, &env)
+    }
+}
+
+/// Every spelling of a protected folder a tool argument might carry on this platform.
+fn store_path_forms(folder: ProtectedFolder, spelling: &PathSpelling) -> Vec<String> {
+    spelling.forms(&folder.dir().to_string_lossy())
 }
 
 /// Does `text` name `store` as a path, ending on a path boundary, rather than merely
@@ -151,15 +357,17 @@ fn argument_role(key: &str) -> Option<ArgumentRole> {
 /// Does this shell command line name the store as a path operand or a redirect
 /// target? Read through the policy engine's tokenizer, so a quoted commit message that
 /// mentions the path is one word and not a path.
-fn shell_command_names_store(command: &str, forms: &[String]) -> bool {
+fn shell_command_names_store(command: &str, forms: &[String], spelling: &PathSpelling) -> bool {
+    let forms: Vec<Cow<'_, str>> = forms.iter().map(|form| spelling.fold(form)).collect();
     let token_is_store = |token: &str| {
+        let token = spelling.fold(token);
         forms.iter().any(|form| {
-            token.strip_prefix(form.as_str()).is_some_and(|rest| {
+            token.strip_prefix(form.as_ref()).is_some_and(|rest| {
                 rest.is_empty() || rest.starts_with('/') || rest.starts_with('\\')
             })
         })
     };
-    let parsed = ParsedCommand::parse(command, Path::new("."));
+    let parsed = spelling.parse(command);
     parsed
         .segments
         .iter()
@@ -168,38 +376,56 @@ fn shell_command_names_store(command: &str, forms: &[String]) -> bool {
         || redirect_targets(command).iter().any(|t| token_is_store(t))
 }
 
-/// Does `args` name the store in an argument that would open it?
-fn references_dictionary_store(args: &Map<String, Value>) -> bool {
-    fn in_map(map: &Map<String, Value>, forms: &[String]) -> bool {
+/// Which protected folder `args` names in an argument that would open it, if any.
+fn referenced_folder(args: &Map<String, Value>) -> Option<ProtectedFolder> {
+    let spelling = PathSpelling::host();
+    ProtectedFolder::ALL
+        .into_iter()
+        .find(|&folder| references_folder(args, &store_path_forms(folder, &spelling), &spelling))
+}
+
+/// Does `args` name the folder these forms spell in an argument that would open it?
+fn references_folder(args: &Map<String, Value>, forms: &[String], spelling: &PathSpelling) -> bool {
+    fn in_map(map: &Map<String, Value>, forms: &[String], spelling: &PathSpelling) -> bool {
         map.iter().any(|(key, value)| match argument_role(key) {
-            Some(role) => in_role(value, forms, role),
-            None => descend(value, forms),
+            Some(role) => in_role(value, forms, spelling, role),
+            None => descend(value, forms, spelling),
         })
     }
 
-    fn descend(value: &Value, forms: &[String]) -> bool {
+    fn descend(value: &Value, forms: &[String], spelling: &PathSpelling) -> bool {
         match value {
-            Value::Object(map) => in_map(map, forms),
-            Value::Array(items) => items.iter().any(|item| descend(item, forms)),
+            Value::Object(map) => in_map(map, forms, spelling),
+            Value::Array(items) => items.iter().any(|item| descend(item, forms, spelling)),
             _ => false,
         }
     }
 
-    fn in_role(value: &Value, forms: &[String], role: ArgumentRole) -> bool {
+    fn in_role(
+        value: &Value,
+        forms: &[String],
+        spelling: &PathSpelling,
+        role: ArgumentRole,
+    ) -> bool {
         match value {
             Value::String(text) => match role {
                 ArgumentRole::Path | ArgumentRole::Script => {
-                    forms.iter().any(|form| names_path(text, form))
+                    let text = spelling.fold(text);
+                    forms
+                        .iter()
+                        .any(|form| names_path(&text, &spelling.fold(form)))
                 }
-                ArgumentRole::ShellCommand => shell_command_names_store(text, forms),
+                ArgumentRole::ShellCommand => shell_command_names_store(text, forms, spelling),
             },
-            Value::Array(items) => items.iter().any(|item| in_role(item, forms, role)),
-            Value::Object(map) => map.values().any(|v| in_role(v, forms, role)),
+            Value::Array(items) => items
+                .iter()
+                .any(|item| in_role(item, forms, spelling, role)),
+            Value::Object(map) => map.values().any(|v| in_role(v, forms, spelling, role)),
             _ => false,
         }
     }
 
-    in_map(args, &store_path_forms())
+    in_map(args, forms, spelling)
 }
 
 /// What the model is told when a call names the store. It names the doors that work.
@@ -212,6 +438,19 @@ fn path_refusal() -> String {
      person views and changes their dictionary on the Dictionary page in Biorouter, or \
      with `biorouter dictionary` in their own terminal. This project's own files are not \
      affected."
+        .to_string()
+}
+
+/// What the model is told when a call names the dictation history's folder.
+fn history_path_refusal() -> String {
+    "Refused: this call names Biorouter's dictation history by path. That folder holds the \
+     text of everything the person dictated, including dictations kept only for private \
+     chats, and reading or writing it as a file bypasses every check that decides which \
+     dictations a chat may see. The refusal is about the channel, not about your \
+     capability: it applies to a private-capability session exactly as it does to a public \
+     one. The person views their dictation history on the Dictionary page in Biorouter, or \
+     with `biorouter dictation history` in their own terminal. This project's own files are \
+     not affected."
         .to_string()
 }
 
@@ -230,15 +469,19 @@ fn is_writing_tool(tool_name: &str) -> bool {
     tool_name == ADD_TERMS_TOOL || tool_name == REMOVE_ADDED_TERMS_TOOL
 }
 
-/// Classify a tool call against the store's path. `None` for every call that does not
-/// name it.
+/// Classify a tool call against the store's path and the dictation history's. `None` for
+/// every call that names neither.
 pub fn dictionary_store_gate(args: &Map<String, Value>) -> Option<String> {
-    references_dictionary_store(args).then(path_refusal)
+    referenced_folder(args).map(|folder| match folder {
+        ProtectedFolder::Dictionary => path_refusal(),
+        ProtectedFolder::History => history_path_refusal(),
+    })
 }
 
 /// The refusal a dispatch door that no [`ToolInspector`] reaches owes (DD-42):
 /// `dictionary__add_terms` and `dictionary__remove_added_terms` whatever their
-/// arguments, and any call whose already evaluated arguments name the store's folder.
+/// arguments, and any call whose already evaluated arguments name the store's folder or
+/// the dictation history's.
 /// `boundary` is logged, never read by the decision.
 pub fn uninspected_boundary_refusal(
     tool_name: &str,
@@ -259,8 +502,8 @@ pub fn uninspected_boundary_refusal(
     Some(reason)
 }
 
-/// Refuses tool reads and writes of the store's folder, in every mode that runs tools,
-/// for both tiers.
+/// Refuses tool reads and writes of the store's folder and the dictation history's, in
+/// every mode that runs tools, for both tiers.
 pub struct DictionaryStoreInspector;
 
 #[async_trait]
@@ -600,6 +843,350 @@ mod tests {
         assert!(ordinary.is_empty());
     }
 
+    /// The dictation history's files, built apart from the production helper.
+    fn history_files() -> Vec<String> {
+        let dir = Paths::local_data_dir().join("dictation").join("history");
+        ["history.jsonl", "settings.json", ".lock"]
+            .iter()
+            .map(|f| dir.join(f).to_string_lossy().into_owned())
+            .collect()
+    }
+
+    #[test]
+    fn the_history_folder_is_the_local_data_folders() {
+        let dir = Paths::local_data_dir().join("dictation").join("history");
+        assert!(is_in_dictation_history(&dir.join("history.jsonl")));
+        assert!(is_in_dictation_history(&dir));
+        assert!(!is_in_dictation_history(
+            &Paths::local_data_dir().join("dictation").join("models")
+        ));
+        assert!(!is_in_dictation_history(&dictionary_dir()));
+        assert!(!is_in_dictionary_store(&dir));
+    }
+
+    /// P-18: every read and write of the history's files is refused, with a refusal that
+    /// names the dictation history, and the speech models beside it are not.
+    #[test]
+    fn every_read_and_write_of_the_history_is_refused() {
+        let dir = Paths::local_data_dir()
+            .join("dictation")
+            .join("history")
+            .to_string_lossy()
+            .into_owned();
+        for file in history_files() {
+            for (label, arguments) in [
+                ("cat", json!({ "command": format!("cat {file}") })),
+                ("view", json!({ "command": "view", "path": file.clone() })),
+                (
+                    "write",
+                    json!({ "command": "write", "path": file.clone(), "file_text": "{}" }),
+                ),
+                ("quoted", json!({ "command": format!("cat \"{file}\"") })),
+                ("grep", json!({ "command": format!("grep EPAS1 {file}") })),
+                (
+                    "redirect",
+                    json!({ "command": format!("echo x >> {file}") }),
+                ),
+                ("nested", json!({ "opts": { "paths": [file.clone()] } })),
+                (
+                    "script",
+                    json!({ "code": format!("shell({{command: 'cat {file}'}})") }),
+                ),
+            ] {
+                let refusal = dictionary_store_gate(&args(arguments.clone()))
+                    .unwrap_or_else(|| panic!("{label} reached the history: {arguments}"));
+                assert!(refusal.contains("dictation history"), "{refusal}");
+                assert!(refusal.contains("Dictionary page"), "{refusal}");
+            }
+        }
+        for arguments in [
+            json!({ "command": format!("ls -la {dir}") }),
+            json!({ "working_directory": dir.clone() }),
+        ] {
+            assert!(
+                dictionary_store_gate(&args(arguments.clone())).is_some(),
+                "the folder is the history: {arguments}"
+            );
+        }
+        let data = Paths::local_data_dir().to_string_lossy().into_owned();
+        for arguments in [
+            json!({ "command": format!("ls {data}/dictation/models") }),
+            json!({ "command": format!("cat {data}/dictation/history-notes/a.txt") }),
+            json!({ "command": "biorouter dictation history --limit 5" }),
+            json!({
+                "command": format!("git commit -m \"docs: the history is {dir}\"")
+            }),
+        ] {
+            assert!(
+                dictionary_store_gate(&args(arguments.clone())).is_none(),
+                "{arguments} is not the history and must not be refused"
+            );
+        }
+        // The dictionary's own refusal still names the dictionary.
+        let refusal = dictionary_store_gate(&args(
+            json!({ "command": format!("cat {}", store_files().remove(0)) }),
+        ))
+        .unwrap();
+        assert!(refusal.contains("dictionary store"), "{refusal}");
+    }
+
+    /// The doors no inspector reaches refuse the history's path too.
+    #[test]
+    fn both_uninspected_doors_refuse_the_history_path() {
+        let file = history_files().remove(0);
+        for boundary in [
+            UninspectedBoundary::ExecuteCodeScript,
+            UninspectedBoundary::AgentCallToolRoute,
+        ] {
+            let refusal = uninspected_boundary_refusal(
+                "developer__shell",
+                Some(&args(json!({ "command": format!("cat {file}") }))),
+                boundary,
+            )
+            .unwrap_or_else(|| panic!("the history was read at {boundary:?}"));
+            assert_eq!(refusal, history_path_refusal());
+        }
+    }
+
+    /// P-18, through the inspector: `cat` and `text_editor view` of the history are
+    /// refused for both tiers, in every mode that runs tools.
+    #[tokio::test]
+    async fn cat_and_view_of_the_history_are_refused_for_both_tiers() {
+        let file = history_files().remove(0);
+        for tier in [
+            SessionClassification::Public,
+            SessionClassification::Private,
+        ] {
+            for mode in [
+                BioRouterMode::Auto,
+                BioRouterMode::Approve,
+                BioRouterMode::SmartApprove,
+            ] {
+                for (name, arguments) in [
+                    (
+                        "developer__shell",
+                        json!({ "command": format!("cat {file}") }),
+                    ),
+                    (
+                        "developer__text_editor",
+                        json!({ "command": "view", "path": file.clone() }),
+                    ),
+                ] {
+                    let results = inspect(mode, tier, name, arguments).await;
+                    let refusal = results
+                        .first()
+                        .unwrap_or_else(|| panic!("{name} in {mode:?} for {tier:?} ran"));
+                    assert_eq!(refusal.action, InspectionAction::Deny);
+                    assert_eq!(refusal.inspector_name, DICTIONARY_STORE_INSPECTOR_NAME);
+                    assert!(refusal.reason.contains("dictation history"));
+                }
+            }
+        }
+    }
+
+    /// One Windows account's folders, spelled as `Paths` and the environment spell them
+    /// there, so the Windows spellings are checked on every platform and not only on a
+    /// Windows runner. The history's folder keeps the `/` that
+    /// `Paths::in_local_data_dir("dictation/history")` leaves before its last component.
+    const WINDOWS_HOME: &str = r"C:\Users\Ada";
+    const WINDOWS_HISTORY: &str =
+        r"C:\Users\Ada\AppData\Local\UCSF\biorouter\data\dictation/history";
+    const WINDOWS_DICTIONARY: &str =
+        r"C:\Users\Ada\AppData\Roaming\UCSF\biorouter\config\dictionary";
+
+    fn windows_spelling() -> PathSpelling {
+        PathSpelling {
+            platform: Platform::Windows,
+            anchors: vec![
+                ("USERPROFILE", WINDOWS_HOME.to_string()),
+                ("LOCALAPPDATA", format!(r"{WINDOWS_HOME}\AppData\Local")),
+                ("APPDATA", format!(r"{WINDOWS_HOME}\AppData\Roaming")),
+            ],
+        }
+    }
+
+    /// The ways a model reaches a file at `path`, read as a Windows shell reads them.
+    fn windows_reads_of(path: &str) -> Vec<(&'static str, Value)> {
+        vec![
+            ("cat", json!({ "command": format!("cat {path}") })),
+            (
+                "double quoted",
+                json!({ "command": format!("Get-Content -Raw \"{path}\"") }),
+            ),
+            (
+                "single quoted",
+                json!({ "command": format!("type '{path}'") }),
+            ),
+            ("view", json!({ "command": "view", "path": path })),
+            (
+                "write",
+                json!({ "command": "write", "path": path, "file_text": "{}" }),
+            ),
+            (
+                "redirect",
+                json!({ "command": format!("echo x >> {path}") }),
+            ),
+            ("nested", json!({ "opts": { "paths": [path] } })),
+            (
+                "script",
+                json!({ "code": format!("shell({{command: 'cat {path}'}})") }),
+            ),
+        ]
+    }
+
+    /// P-18 on Windows. `test (windows-latest)` in run 45902896689 failed the three history
+    /// tests above: the folder was spelled only as `...\data\dictation/history`, which no
+    /// path written with `\` contains. Every spelling of the folder that reaches it there
+    /// is refused: either separator, any letter case (the drive letter's included), a
+    /// verbatim or device prefix, and the folder named through `%LOCALAPPDATA%`,
+    /// `%USERPROFILE%` or the home folder in cmd's, PowerShell's and a POSIX shell's
+    /// syntax.
+    #[test]
+    fn the_windows_spellings_of_the_history_are_refused() {
+        let spelling = windows_spelling();
+        // As `Paths` resolves it, and as `canonicalize` would print it.
+        for dir in [
+            WINDOWS_HISTORY.to_string(),
+            format!(r"\\?\{}", WINDOWS_HISTORY.replace('/', r"\")),
+        ] {
+            the_windows_spellings_of_this_history_are_refused(&spelling, &dir);
+        }
+    }
+
+    fn the_windows_spellings_of_this_history_are_refused(spelling: &PathSpelling, dir: &str) {
+        let forms = spelling.forms(dir);
+        for path in [
+            r"C:\Users\Ada\AppData\Local\UCSF\biorouter\data\dictation\history\history.jsonl",
+            r"C:\Users\Ada\AppData\Local\UCSF\biorouter\data\dictation/history\settings.json",
+            "C:/Users/Ada/AppData/Local/UCSF/biorouter/data/dictation/history/history.jsonl",
+            r"c:\users\ada\appdata\local\ucsf\biorouter\data\dictation\history\history.jsonl",
+            r"C:\USERS\ADA\APPDATA\LOCAL\UCSF\BIOROUTER\DATA\DICTATION\HISTORY\.LOCK",
+            r"C:\\Users\\Ada\\AppData\\Local\\UCSF\\biorouter\\data\\dictation\\history\\history.jsonl",
+            r"\\?\C:\Users\Ada\AppData\Local\UCSF\biorouter\data\dictation\history\history.jsonl",
+            r"\\.\C:\Users\Ada\AppData\Local\UCSF\biorouter\data\dictation\history\history.jsonl",
+            r"%LOCALAPPDATA%\UCSF\biorouter\data\dictation\history\history.jsonl",
+            "%LocalAppData%/UCSF/biorouter/data/dictation/history/history.jsonl",
+            r"$env:LOCALAPPDATA\UCSF\biorouter\data\dictation\history\history.jsonl",
+            r"${env:LOCALAPPDATA}\UCSF\biorouter\data\dictation\history\history.jsonl",
+            "$LOCALAPPDATA/UCSF/biorouter/data/dictation/history/history.jsonl",
+            "${LOCALAPPDATA}/UCSF/biorouter/data/dictation/history/history.jsonl",
+            r"%USERPROFILE%\AppData\Local\UCSF\biorouter\data\dictation\history\history.jsonl",
+            r"$env:USERPROFILE\AppData\Local\UCSF\biorouter\data\dictation\history\history.jsonl",
+            r"~\AppData\Local\UCSF\biorouter\data\dictation\history\history.jsonl",
+            "~/AppData/Local/UCSF/biorouter/data/dictation/history/history.jsonl",
+            r"$HOME\AppData\Local\UCSF\biorouter\data\dictation\history\history.jsonl",
+            r"${HOME}\AppData\Local\UCSF\biorouter\data\dictation\history\history.jsonl",
+        ] {
+            for (label, arguments) in windows_reads_of(path) {
+                assert!(
+                    references_folder(&args(arguments.clone()), &forms, spelling),
+                    "{label} reached the history: {arguments}"
+                );
+            }
+        }
+        for arguments in [
+            json!({
+                "command": r"Get-ChildItem C:\Users\Ada\AppData\Local\UCSF\biorouter\data\dictation\history"
+            }),
+            json!({
+                "command": r"cd $env:LOCALAPPDATA\UCSF\biorouter\data\dictation\history && type history.jsonl"
+            }),
+            json!({
+                "working_directory": "c:/users/ada/appdata/local/ucsf/biorouter/data/dictation/history"
+            }),
+        ] {
+            assert!(
+                references_folder(&args(arguments.clone()), &forms, spelling),
+                "the folder is the history: {arguments}"
+            );
+        }
+        for arguments in [
+            json!({
+                "command": r"Get-ChildItem C:\Users\Ada\AppData\Local\UCSF\biorouter\data\dictation\models"
+            }),
+            json!({
+                "command": r"type C:\Users\Ada\AppData\Local\UCSF\biorouter\data\dictation\history-notes\a.txt"
+            }),
+            json!({
+                "command": r"type C:\Users\Bob\AppData\Local\UCSF\biorouter\data\dictation\history\history.jsonl"
+            }),
+            // The roaming data folder is another folder; the history never roams.
+            json!({
+                "command": r"type %APPDATA%\UCSF\biorouter\data\dictation\history\history.jsonl"
+            }),
+            json!({ "command": r"type .\dictation\history\history.jsonl" }),
+            json!({ "command": format!("git commit -m \"docs: the history is {WINDOWS_HISTORY}\"") }),
+            json!({ "command": "biorouter dictation history --limit 5" }),
+            json!({ "command": "view", "path": r"docs\dictation\history.md" }),
+        ] {
+            assert!(
+                !references_folder(&args(arguments.clone()), &forms, spelling),
+                "{arguments} is not the history and must not be refused"
+            );
+        }
+    }
+
+    /// The dictionary store on Windows, under the roaming configuration folder, is refused
+    /// in the same spellings, `%APPDATA%` among them.
+    #[test]
+    fn the_windows_spellings_of_the_dictionary_are_refused() {
+        let spelling = windows_spelling();
+        let forms = spelling.forms(WINDOWS_DICTIONARY);
+        for path in [
+            r"C:\Users\Ada\AppData\Roaming\UCSF\biorouter\config\dictionary\dictionary.json",
+            "c:/users/ada/appdata/roaming/ucsf/biorouter/config/dictionary/usage.json",
+            r"%APPDATA%\UCSF\biorouter\config\dictionary\dictionary.json",
+            r"$env:APPDATA\UCSF\biorouter\config\dictionary\.lock",
+            r"~\AppData\Roaming\UCSF\biorouter\config\dictionary\dictionary.json",
+            r"\\?\C:\Users\Ada\AppData\Roaming\UCSF\biorouter\config\dictionary\dictionary.json",
+        ] {
+            for (label, arguments) in windows_reads_of(path) {
+                assert!(
+                    references_folder(&args(arguments.clone()), &forms, &spelling),
+                    "{label} reached the store: {arguments}"
+                );
+            }
+        }
+        for arguments in [
+            json!({ "command": r"type %APPDATA%\UCSF\biorouter\config\dictionary-notes\terms.txt" }),
+            json!({ "command": r"type %APPDATA%\UCSF\biorouter\config\config.yaml" }),
+            json!({ "command": r"type %LOCALAPPDATA%\UCSF\biorouter\config\dictionary\dictionary.json" }),
+        ] {
+            assert!(
+                !references_folder(&args(arguments.clone()), &forms, &spelling),
+                "{arguments} is not the store and must not be refused"
+            );
+        }
+    }
+
+    /// Off Windows a path is compared exactly as written, so the forms there are the four
+    /// they always were, a trailing separator on the home folder changing nothing.
+    #[test]
+    fn the_unix_spellings_are_the_four_they_always_were() {
+        for home in ["/home/ada", "/home/ada/"] {
+            for platform in [Platform::Linux, Platform::Macos] {
+                let spelling = PathSpelling {
+                    platform,
+                    anchors: vec![("HOME", home.to_string())],
+                };
+                assert_eq!(
+                    spelling.forms("/home/ada/.local/share/biorouter/dictation/history"),
+                    vec![
+                        "/home/ada/.local/share/biorouter/dictation/history",
+                        "~/.local/share/biorouter/dictation/history",
+                        "$HOME/.local/share/biorouter/dictation/history",
+                        "${HOME}/.local/share/biorouter/dictation/history",
+                    ]
+                );
+                assert_eq!(
+                    spelling.forms("/srv/biorouter/config/dictionary"),
+                    vec!["/srv/biorouter/config/dictionary"]
+                );
+                assert_eq!(spelling.fold(r"/Home/Ada\x"), r"/Home/Ada\x");
+            }
+        }
+    }
+
     /// The store keeps institution ids as the core normalizes them (`name_to_key`), so a
     /// row's ids and an `InstitutionId` built from the same text agree.
     #[test]
@@ -631,7 +1218,7 @@ mod issue543_redirect_consumer_tests {
             "echo x >>/issue543/private-store/child",
         ] {
             assert!(
-                shell_command_names_store(command, &forms),
+                shell_command_names_store(command, &forms, &PathSpelling::host()),
                 "protected store redirect was lost: {command}"
             );
         }
@@ -641,7 +1228,7 @@ mod issue543_redirect_consumer_tests {
             "printf 'documentation mentions /issue543/private-store'",
         ] {
             assert!(
-                !shell_command_names_store(command, &forms),
+                !shell_command_names_store(command, &forms, &PathSpelling::host()),
                 "unrelated command was misclassified: {command}"
             );
         }

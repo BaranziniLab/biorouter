@@ -174,6 +174,12 @@ const EXEMPT: &[(&str, &str)] = &[
          privacy-toggle case runs in a process of its own",
     ),
     (
+        "crates/biorouter-dictation/src/history/tests.rs",
+        "test code: history/mod.rs declares it only as `#[cfg(test)] mod tests;`, so it is \
+         never compiled into a shipped binary. Its one spawn re-execs the test binary itself, \
+         so two processes append to one history under the lock.",
+    ),
+    (
         "crates/biorouter-crew/src/broker.rs",
         "the file is included only by `#[cfg(unix)] mod broker` in biorouter-crew/src/lib.rs; its broker child therefore cannot compile on Windows",
     ),
@@ -1906,6 +1912,62 @@ fn every_exemption_still_names_something_real() {
         "these EXEMPT rows name paths that do not exist, so they exempt nothing today \
          and will silently exempt whatever is created there tomorrow: {dead:?}"
     );
+}
+
+/// Every `EXEMPT` row that exempts a whole file because the module declaration
+/// including it is gated to test builds still has that gate.
+///
+/// The census reads each file on its own, so it cannot see that a file named by
+/// `#[cfg(test)] mod tests;` elsewhere is test code; such a file needs a row. The
+/// row's reason is a fact about ANOTHER file, and nothing else checks it: drop the
+/// gate and the file ships while its row goes on exempting it. So each premise is
+/// pinned here, where it is written.
+#[test]
+fn a_test_file_exemption_still_has_its_test_gate() {
+    let root = repo_root();
+    for (exempt, declaring, declaration) in [
+        (
+            "crates/biorouter/src/test_sandbox.rs",
+            "crates/biorouter/src/lib.rs",
+            "mod test_sandbox;",
+        ),
+        (
+            "crates/biorouter/src/providers/bedrock_namespace_tests.rs",
+            "crates/biorouter/src/providers/mod.rs",
+            "mod bedrock_namespace_tests;",
+        ),
+        (
+            "crates/biorouter-dictation/src/history/tests.rs",
+            "crates/biorouter-dictation/src/history/mod.rs",
+            "mod tests;",
+        ),
+    ] {
+        assert!(
+            EXEMPT.iter().any(|(path, _)| *path == exempt),
+            "{exempt} has no EXEMPT row any more, so this premise guards nothing: remove it here"
+        );
+        let text = std::fs::read_to_string(root.join(declaring))
+            .unwrap_or_else(|e| panic!("{declaring} must be readable: {e}"));
+        let in_test = test_module_lines(&strip_literals(&text));
+        let declared_at: Vec<usize> = text
+            .lines()
+            .enumerate()
+            .filter(|(_, line)| line.trim() == declaration)
+            .map(|(i, _)| i + 1)
+            .collect();
+        assert!(
+            !declared_at.is_empty(),
+            "{declaring} no longer declares `{declaration}`, so the EXEMPT row for {exempt} \
+             rests on a declaration that is gone"
+        );
+        for line in declared_at {
+            assert!(
+                in_test.contains(&line),
+                "{declaring}:{line} `{declaration}` is not under a test-only gate, so {exempt} \
+                 is compiled into a shipped binary and its EXEMPT row hides a production spawn"
+            );
+        }
+    }
 }
 
 #[test]

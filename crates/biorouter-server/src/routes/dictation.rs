@@ -44,6 +44,18 @@
 //! opens the stream), target kinds, scopes, model ids, sample rates, segment counts and
 //! durations, under a fixed message (`crates/biorouter/tests/dictation_log_fields.rs`).
 //!
+//! **The one copy of the text that outlives the stream is the person's dictation history**
+//! (DD-96, P-2 as amended, P-17): the corrected text of a stream the person started
+//! (`HttpCaller::records_dictation_history`, decided once with the stream's target), once,
+//! off the decode's task, right after the transcript is published and only while the
+//! stream is not closed, through the routes' one handle
+//! (`routes::dictation_history::shared_history`). Its tier and institutions are
+//! `history_stamp`'s, from the same target decision and bias set the stream decoded with.
+//! Nothing is kept for a stream that was cancelled, crossed by its `DELETE` or failed, for
+//! a `no_speech` or empty transcript, for an external `dictionary_only` one (an echo of the
+//! prompt), while the person's **Dictation history** is off, or under the managed
+//! `history: false` key. The audio is still never kept anywhere (P-1).
+//!
 //! A decode that fails while the person is still speaking ends the stream's intake: every
 //! later chunk answers the same `500 engineFailed`, so the client says so at once and its
 //! **Retry** replays the audio it kept.
@@ -68,6 +80,7 @@ use biorouter::dictation::audio::{
 };
 use biorouter::dictation::bias::DictionaryCache;
 use biorouter::dictation::catalog::{SttCatalogEntry, CATALOG};
+use biorouter::dictation::history::{self as history, HistoryTarget, Surface};
 use biorouter::dictation::models::{InstallOptions, Network, Phase, Progress, WriteMode};
 use biorouter::dictation::paths::{self, Roots};
 use biorouter::dictation::recognize::{text, BiasScope, RetryReason};
@@ -77,14 +90,16 @@ use biorouter::dictation::{
     TranscribeRequest,
 };
 use biorouter::managed::{Allowance, DictationPolicy, ManagedPolicy};
+use biorouter::privacy::affiliation::{self, WriterModel};
 use biorouter::privacy::{ModelAffiliation, ProviderTier, SessionClassification};
+use biorouter::security::dictionary_store::store::{EntryId, StoreView};
 use biorouter_server::auth::{user_action_proof, UserActionProof};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tokio::sync::{mpsc, watch};
 use tokio_util::sync::CancellationToken;
 use utoipa::{IntoParams, ToSchema};
-use zeroize::Zeroize;
+use zeroize::{Zeroize, Zeroizing};
 
 use crate::routes::session_reach::{self, TargetTier};
 use crate::state::AppState;
@@ -237,6 +252,29 @@ pub struct DictationStreamRequest {
     /// At most 2 KiB; ranks the dictionary's terms and is never logged.
     #[serde(default)]
     pub context: Option<String>,
+    /// Where the text goes, as the dictation history labels it: `composer`, `crew`,
+    /// `clipboard`, `other_app`, `app_preview` or `terminal`. A label only, never read for
+    /// privacy or bias. Absent or unknown, it follows `target_kind`: `chat`, `new_chat`
+    /// and `editor` give `composer`, `crew` gives `crew`, `external` gives `clipboard`.
+    #[serde(default)]
+    #[schema(value_type = Option<DictationHistorySurface>)]
+    pub surface: Option<String>,
+}
+
+impl DictationStreamRequest {
+    /// [`Self::surface`] as the history records it.
+    fn history_surface(&self) -> Surface {
+        self.surface
+            .as_deref()
+            .and_then(Surface::parse)
+            .unwrap_or(match self.target_kind {
+                DictationTargetKind::Chat
+                | DictationTargetKind::NewChat
+                | DictationTargetKind::Editor => Surface::Composer,
+                DictationTargetKind::Crew => Surface::Crew,
+                DictationTargetKind::External => Surface::Clipboard,
+            })
+    }
 }
 
 /// 201 from `POST /dictation/streams`.
@@ -675,7 +713,54 @@ struct LiveStream {
     outcome: watch::Sender<Option<Arc<Result<DictationTranscript, Refusal>>>>,
     activity: watch::Sender<Instant>,
     usage_recorded: AtomicBool,
+    /// Where the text goes, as the history labels it.
+    surface: Surface,
+    /// What this stream's history entry would be stamped with, decided with its target.
+    history: OnceLock<HistoryFacts>,
+    /// The history entry is recorded at most once per stream.
+    history_recorded: AtomicBool,
     shared: Weak<Shared>,
+}
+
+/// What a stream's history entry is recorded with (DD-96), decided once, with the stream's
+/// bias target, from what the daemon read: never from a tier the client states.
+#[derive(Clone, Debug)]
+struct HistoryFacts {
+    /// `HttpCaller::records_dictation_history`: a stream the person started.
+    records: bool,
+    target: HistoryTarget,
+    /// Private when the bias set was private or held any private row (the master switch
+    /// off still lets one in), so a dictation that may hold a private term is never
+    /// stamped public.
+    scope: BiasScope,
+    /// The stored institutions of every private dictionary row the bias set held, each in
+    /// the row's own meaning (P-16).
+    private_rows: Vec<Option<Vec<String>>>,
+    /// The chat the text went into and the incarnation it had, for a chat the caller
+    /// could reach.
+    chat: Option<(String, i64)>,
+}
+
+impl HistoryFacts {
+    /// Nothing is recorded.
+    fn none() -> HistoryFacts {
+        HistoryFacts {
+            records: false,
+            target: HistoryTarget::Unreachable,
+            scope: BiasScope::Private,
+            private_rows: Vec::new(),
+            chat: None,
+        }
+    }
+}
+
+/// What a finished transcript leaves for the history: a copy of its text, zeroed when the
+/// draft is dropped, and the facts beside it.
+struct HistoryDraft {
+    text: Zeroizing<String>,
+    model: String,
+    duration_ms: u64,
+    created_at: chrono::DateTime<chrono::Utc>,
 }
 
 /// A stream's mutable half. Held only for short, synchronous steps, never across an
@@ -1258,6 +1343,82 @@ impl LiveStream {
             }
         });
     }
+
+    /// What `transcript` leaves for the history, or `None` when nothing is kept of it: a
+    /// stream no person started, a `no_speech` or empty transcript, an external
+    /// `dictionary_only` one (an echo of the prompt), and one already recorded.
+    fn history_draft(&self, transcript: &DictationTranscript) -> Option<HistoryDraft> {
+        let facts = self.history.get()?;
+        if !facts.records
+            || self.history_recorded.load(Ordering::SeqCst)
+            || transcript.no_speech
+            || transcript.dictionary_only == Some(true)
+            || transcript.text.trim().is_empty()
+        {
+            return None;
+        }
+        Some(HistoryDraft {
+            text: Zeroizing::new(transcript.text.clone()),
+            model: transcript.model.clone(),
+            duration_ms: (transcript.audio_s.max(0.0) * 1000.0).round() as u64,
+            created_at: chrono::Utc::now(),
+        })
+    }
+
+    /// Keeps `draft` in the person's dictation history (DD-96), once per stream, off the
+    /// decode's task. The person's switches and the managed `history` key are read now,
+    /// so one turned off while the person spoke is honoured. A history that cannot be
+    /// read is skipped silently, and an entry that cannot be written is dropped with one
+    /// fixed line naming the stream's log id: a dictation never fails for its history.
+    fn record_history(&self, draft: HistoryDraft) {
+        if self.history_recorded.swap(true, Ordering::SeqCst) {
+            return;
+        }
+        let Some(facts) = self.history.get().cloned() else {
+            return;
+        };
+        let surface = self.surface;
+        let log_id = self.log_id.clone();
+        tokio::task::spawn_blocking(move || {
+            if !ManagedPolicy::load().dictation().history.is_allowed() {
+                return;
+            }
+            let store = super::dictation_history::shared_history();
+            let settings = store.settings();
+            if !settings.keep_history {
+                return;
+            }
+            let stamp = history::history_stamp(
+                settings.public_by_default,
+                facts.scope,
+                &facts.target,
+                &facts.private_rows,
+            );
+            let (session_id, session_incarnation) = match facts.chat {
+                Some((id, incarnation)) => (Some(id), Some(incarnation)),
+                None => (None, None),
+            };
+            let entry = history::HistoryEntry {
+                id: history::store::new_entry_id(),
+                created_at: draft.created_at,
+                text: draft.text.as_str().to_string(),
+                tier: stamp.tier,
+                institutions: stamp.institutions,
+                surface,
+                duration_ms: draft.duration_ms,
+                model: draft.model.clone(),
+                private_terms: facts.scope == BiasScope::Private,
+                session_id,
+                session_incarnation,
+                truncated: None,
+            };
+            match store.append(entry) {
+                Ok(()) | Err(history::HistoryError::Unreadable { .. }) => {}
+                Err(_) => tracing::warn!(stream = %log_id, "dictation history entry dropped"),
+            }
+            drop(draft);
+        });
+    }
 }
 
 /// Drops a stream nobody touched for the idle timeout, unless it is still working.
@@ -1316,15 +1477,15 @@ fn place(offset_ms: u64, length_ms: u64, t0_ms: u64, t1_ms: u64, text: &str) -> 
 /// which zeroes their copies of the audio.
 async fn decode(
     stream: Arc<LiveStream>,
-    dictionary: tokio::task::JoinHandle<DictionaryRequest>,
+    decided: tokio::task::JoinHandle<(DictionaryRequest, HistoryFacts)>,
     jobs: mpsc::UnboundedReceiver<Job>,
 ) {
     let mut jobs = JobQueue(jobs);
-    let dictionary = Arc::new(
-        dictionary
-            .await
-            .unwrap_or_else(|_| DictionaryRequest::none()),
-    );
+    let (dictionary, facts) = decided
+        .await
+        .unwrap_or_else(|_| (DictionaryRequest::none(), HistoryFacts::none()));
+    let dictionary = Arc::new(dictionary);
+    let _ = stream.history.set(facts);
     let _ = stream.dictionary.set(Arc::clone(&dictionary));
     let _ = service::service().install_bias(&dictionary);
     let request = TranscribeRequest {
@@ -1395,11 +1556,17 @@ async fn decode(
         tail_ms = clock.tail_ms,
         "dictation stream transcribed"
     );
+    // Taken before the transcript is published, so nothing here holds the published copy
+    // and a close can still zero it.
+    let draft = stream.history_draft(&transcript);
     stream.outcome.send_replace(Some(Arc::new(Ok(transcript))));
     if stream.closed.load(Ordering::SeqCst) {
         // A `DELETE` or the expiry crossed the answer: the transcript goes as the close
-        // would have taken it.
+        // would have taken it, and the history keeps nothing of it.
         stream.retire_outcome();
+    } else if let Some(draft) = draft {
+        // DD-96: the text is out, so the person's history keeps one copy, off this task.
+        stream.record_history(draft);
     }
 }
 
@@ -1712,6 +1879,9 @@ pub struct DictationPolicyView {
     pub external_engine: Allowance,
     pub dictionary: Allowance,
     pub agent_writes: Allowance,
+    /// The managed `history` key (DD-96): refused, nothing new is kept, and tier changes
+    /// and raised history settings are refused; listing, delete and clear stay open.
+    pub history: Allowance,
     pub allowed_models: Option<Vec<String>>,
 }
 
@@ -1923,6 +2093,7 @@ pub async fn dictation_status(
             external_engine: policy.external_engine.allowance(),
             dictionary: policy.dictionary.allowance(),
             agent_writes: policy.dictionary_agent_writes.allowance(),
+            history: policy.history.allowance(),
             allowed_models: policy.allowed_models.clone(),
         },
         limits: DictationLimits {
@@ -1942,9 +2113,34 @@ pub async fn dictation_status(
 
 // ── streams ──────────────────────────────────────────────────────────────────────────
 
+/// What a stream's target decision answers: the bias target of DD-30, and for the
+/// dictation history (DD-96) the target its entry is stamped by and the chat it names.
+struct StreamTarget {
+    bias: BiasTarget,
+    history: HistoryTarget,
+    /// The reached chat's id and incarnation, read only when the stream is recorded.
+    chat: Option<(String, i64)>,
+}
+
+impl StreamTarget {
+    fn new(bias: BiasTarget, history: HistoryTarget) -> StreamTarget {
+        StreamTarget {
+            bias,
+            history,
+            chat: None,
+        }
+    }
+}
+
 /// The bias target of DD-30, decided once per stream from what the daemon reads, never
 /// from a tier the client states. A new chat's draft decision models are the one thing a
 /// client names here, and they can only make the target more public.
+///
+/// The same decision gives the history's target (DD-96): a chat the caller reached, with
+/// the institutions a private dictionary row written there would record (P-16), a chat it
+/// could not reach, a new chat's bind tier, or a target outside any chat. A chat's
+/// institutions and incarnation are read only when `records` says the stream is kept,
+/// and, like everything else of the chat, only after `session_reach` admits the caller.
 async fn stream_target(
     state: &AppState,
     request: &DictationStreamRequest,
@@ -1952,7 +2148,8 @@ async fn stream_target(
     standing: biorouter::dictation::Standing,
     proven: bool,
     enforced: bool,
-) -> BiasTarget {
+    records: bool,
+) -> StreamTarget {
     match (request.target_kind, request.session_id.as_deref()) {
         (DictationTargetKind::Chat | DictationTargetKind::Editor, Some(id)) => {
             // Resolve the tier before touching the session; a refusal degrades to public
@@ -1971,71 +2168,122 @@ async fn stream_target(
                         Some(agent) => live_model(&agent, id).await,
                         None => None,
                     };
-                    let reach =
-                        biorouter::dictation::chat_reach(stored, live.map(|(tier, _)| tier));
-                    BiasTarget {
-                        private: reach.target_private(),
-                        affiliation: live.and_then(|(_, affiliation)| affiliation),
-                        person_included: false,
+                    let reach = biorouter::dictation::chat_reach(
+                        stored,
+                        live.as_ref().map(|(tier, _)| *tier),
+                    );
+                    // The history's stamp: the chat's institutions as a private row written
+                    // there records them (O-35), unknown when its model was not read, and
+                    // the incarnation that keeps a reissued id from naming another chat.
+                    let (institutions, chat) = if records {
+                        let model = match &live {
+                            Some((_, affiliation)) => WriterModel::Known(*affiliation),
+                            None => WriterModel::Unknown,
+                        };
+                        let institutions = affiliation::dictionary_row_institutions(
+                            model,
+                            manager.session_affiliations(id).await,
+                        )
+                        .stored_ids();
+                        let chat = manager
+                            .session_incarnation(id)
+                            .await
+                            .ok()
+                            .flatten()
+                            .map(|incarnation| (id.to_string(), incarnation));
+                        (institutions, chat)
+                    } else {
+                        (Some(Vec::new()), None)
+                    };
+                    StreamTarget {
+                        bias: BiasTarget {
+                            private: reach.target_private(),
+                            affiliation: live.and_then(|(_, affiliation)| affiliation),
+                            person_included: false,
+                        },
+                        history: HistoryTarget::Chat {
+                            reach,
+                            institutions,
+                        },
+                        chat,
                     }
                 }
-                Err(_) => BiasTarget::public(),
+                Err(_) => StreamTarget::new(BiasTarget::public(), HistoryTarget::Unreachable),
             }
         }
         (DictationTargetKind::NewChat, _) => {
-            // The per tab pick counts fully only with the proof, so an unproven caller cannot
-            // choose the tier its own stream is judged by.
-            let pick = request.new_chat_provider.as_deref().filter(|_| proven);
-            let model = request.new_chat_model.as_deref().filter(|_| proven);
-            // DR-33: the draft's decision models, folded in as the start will fold them. A
-            // draft sent without the proof, or one that does not parse, makes the new chat
-            // public: its tier cannot be told.
-            let named = request.new_chat_decision_models.as_ref();
-            let parsed = named
-                .filter(|_| proven)
-                .and_then(|value| Vec::<DecisionModelRef>::deserialize(value).ok());
-            let draft = match (named, &parsed) {
-                (None, _) => NewChatDraft::None,
-                (Some(_), Some(models)) => NewChatDraft::Models(models),
-                (Some(_), None) => NewChatDraft::Unknown,
-            };
-            let mut target =
-                biorouter::dictation::new_chat_target_tier(pick, model, draft, enforced).await;
-            // Without the proof the pick cannot choose a MORE private tier than the
-            // configured default, but `/agent/start` binds a public pick without the proof,
-            // so ignoring it outright left dictation more private than the chat the start
-            // creates. The less private of the two counts: an unproven pick only lowers.
-            if !proven {
-                if let Some(unproven_pick) = request.new_chat_provider.as_deref() {
-                    let picked = biorouter::dictation::new_chat_target_tier(
-                        Some(unproven_pick),
-                        request.new_chat_model.as_deref(),
-                        draft,
-                        enforced,
-                    )
-                    .await;
-                    target = less_private(target, picked);
-                }
-            }
+            let target = new_chat_bind(request, proven, enforced).await;
             let (tier, affiliation) = target;
-            BiasTarget {
-                private: tier.is_private(),
-                affiliation,
-                person_included: false,
-            }
+            StreamTarget::new(
+                BiasTarget {
+                    private: tier.is_private(),
+                    affiliation,
+                    person_included: false,
+                },
+                HistoryTarget::NewChat(tier),
+            )
         }
         (DictationTargetKind::Crew | DictationTargetKind::External, _) => {
             // O-8: for one recording the person confirmed after MSG-PRIVATE-TERMS; every
             // private row then passes, institution tagged rows included (O-37).
             let included = request.include_private_terms && proven && standing.is_private();
-            BiasTarget {
-                private: included,
-                affiliation: None,
-                person_included: included,
-            }
+            StreamTarget::new(
+                BiasTarget {
+                    private: included,
+                    affiliation: None,
+                    person_included: included,
+                },
+                HistoryTarget::Outside,
+            )
         }
-        _ => BiasTarget::public(),
+        // A chat or an editor that names no chat: nothing says which chat the text went
+        // into, so the history fails toward private.
+        _ => StreamTarget::new(BiasTarget::public(), HistoryTarget::Unreachable),
     }
+}
+
+/// The tier and affiliation a new chat's bind would produce, for its stream's target: the
+/// per tab pick and the draft's decision models count only with the proof, and an
+/// unproven pick can only make the target less private (DR-33).
+async fn new_chat_bind(
+    request: &DictationStreamRequest,
+    proven: bool,
+    enforced: bool,
+) -> biorouter::dictation::BindTier {
+    // The per tab pick counts fully only with the proof, so an unproven caller cannot
+    // choose the tier its own stream is judged by.
+    let pick = request.new_chat_provider.as_deref().filter(|_| proven);
+    let model = request.new_chat_model.as_deref().filter(|_| proven);
+    // DR-33: the draft's decision models, folded in as the start will fold them. A
+    // draft sent without the proof, or one that does not parse, makes the new chat
+    // public: its tier cannot be told.
+    let named = request.new_chat_decision_models.as_ref();
+    let parsed = named
+        .filter(|_| proven)
+        .and_then(|value| Vec::<DecisionModelRef>::deserialize(value).ok());
+    let draft = match (named, &parsed) {
+        (None, _) => NewChatDraft::None,
+        (Some(_), Some(models)) => NewChatDraft::Models(models),
+        (Some(_), None) => NewChatDraft::Unknown,
+    };
+    let mut target = biorouter::dictation::new_chat_target_tier(pick, model, draft, enforced).await;
+    // Without the proof the pick cannot choose a MORE private tier than the
+    // configured default, but `/agent/start` binds a public pick without the proof,
+    // so ignoring it outright left dictation more private than the chat the start
+    // creates. The less private of the two counts: an unproven pick only lowers.
+    if !proven {
+        if let Some(unproven_pick) = request.new_chat_provider.as_deref() {
+            let picked = biorouter::dictation::new_chat_target_tier(
+                Some(unproven_pick),
+                request.new_chat_model.as_deref(),
+                draft,
+                enforced,
+            )
+            .await;
+            target = less_private(target, picked);
+        }
+    }
+    target
 }
 
 /// The less private of two answers for a new chat's target. Two private answers whose
@@ -2090,18 +2338,27 @@ async fn stream_dictionary(
     headers: HeaderMap,
     request: DictationStreamRequest,
     log_id: String,
-) -> DictionaryRequest {
+) -> (DictionaryRequest, HistoryFacts) {
     let started = Instant::now();
     // DD-30: the target and the caller's standing, decided here, once.
     let caller = session_reach::http_caller(&headers).await;
     let standing = caller.dictation_standing();
     let enforced = biorouter::privacy::privacy_tiers_enabled();
     let proven = user_action_proof(&headers) == UserActionProof::Proven;
-    let target = stream_target(&state, &request, &headers, standing, proven, enforced).await;
+    // DD-96: whether this stream is the person's, so its text is kept; decided here, once.
+    let records = caller.records_dictation_history();
+    let StreamTarget {
+        bias: target,
+        history: history_target,
+        chat,
+    } = stream_target(
+        &state, &request, &headers, standing, proven, enforced, records,
+    )
+    .await;
     let target_ms = started.elapsed().as_millis() as u64;
     let context = request.context.unwrap_or_default();
     let channels = BiasChannels::for_dictation();
-    let (dictionary, store_us, request_us) = tokio::task::spawn_blocking(move || {
+    let (dictionary, private_rows, store_us, request_us) = tokio::task::spawn_blocking(move || {
         // The daemon's one handle (PERF-1): its parse is cached across streams and left
         // warm by every write, so an unchanged store costs two `stat` calls here, not a
         // parse of the whole file, and its content stamp, which the bonus table's revision
@@ -2113,19 +2370,46 @@ async fn stream_dictionary(
         // daemon's cache, so an unchanged store ranks and builds the request's own part
         // alone (PERF-1).
         let built = Instant::now();
-        let dictionary = match view {
-            Ok(view) => dictionary_cache()
-                .bias_request(&view, &target, standing, enforced, &context, channels),
-            Err(_) => DictionaryRequest::new(
-                biorouter::dictation::recognize::EligibleEntries::empty(),
-                &context,
-                channels,
+        let (dictionary, private_rows) = match view {
+            Ok(view) => {
+                let dictionary = dictionary_cache()
+                    .bias_request(&view, &target, standing, enforced, &context, channels);
+                let private_rows = if records {
+                    private_rows_of(&view, &dictionary.eligible)
+                } else {
+                    Vec::new()
+                };
+                (dictionary, private_rows)
+            }
+            Err(_) => (
+                DictionaryRequest::new(
+                    biorouter::dictation::recognize::EligibleEntries::empty(),
+                    &context,
+                    channels,
+                ),
+                Vec::new(),
             ),
         };
-        (dictionary, store_us, built.elapsed().as_micros() as u64)
+        (
+            dictionary,
+            private_rows,
+            store_us,
+            built.elapsed().as_micros() as u64,
+        )
     })
     .await
-    .unwrap_or_else(|_| (DictionaryRequest::none(), 0, 0));
+    .unwrap_or_else(|_| (DictionaryRequest::none(), Vec::new(), 0, 0));
+    let facts = HistoryFacts {
+        records,
+        target: history_target,
+        scope: if private_rows.is_empty() {
+            dictionary.scope()
+        } else {
+            BiasScope::Private
+        },
+        private_rows,
+        chat,
+    };
     let dictionary_us = started.elapsed().as_micros() as u64;
     tracing::debug!(
         stream = %log_id,
@@ -2136,7 +2420,45 @@ async fn stream_dictionary(
         dictionary_ms = dictionary_us / 1000,
         "dictation stream target decided"
     );
-    dictionary
+    (dictionary, facts)
+}
+
+/// The stored institutions of every private dictionary row `eligible` holds, each in the
+/// row's own meaning (P-16), for the history's stamp. A merged twin carries its public
+/// row's id (DD-35), so in a set that may hold private rows each private twin of a public
+/// entry's written form counts too, which can only add institutions, the stricter
+/// direction. A row the view no longer holds counts as unknown (`[]`).
+fn private_rows_of(
+    view: &StoreView,
+    eligible: &biorouter::dictation::recognize::EligibleEntries,
+) -> Vec<Option<Vec<String>>> {
+    use biorouter::dictation::recognize::BonusTable;
+    let may_hold_private = !matches!(eligible.table(), BonusTable::PublicRows);
+    let institutions = |row: &biorouter::security::dictionary_store::store::Entry| {
+        row.affiliation
+            .as_ref()
+            .map(|affiliation| affiliation.institutions.clone())
+    };
+    let mut rows = Vec::new();
+    for used in eligible.entries() {
+        let Some(row) = EntryId::parse(&used.id).and_then(|id| view.find(&id)) else {
+            if used.tier.is_private() || may_hold_private {
+                rows.push(Some(Vec::new()));
+            }
+            continue;
+        };
+        if row.tier.is_private() {
+            rows.push(institutions(row));
+        } else if may_hold_private {
+            rows.extend(
+                view.entries()
+                    .iter()
+                    .filter(|twin| twin.tier.is_private() && twin.written == row.written)
+                    .map(institutions),
+            );
+        }
+    }
+    rows
 }
 
 /// The daemon's one [`DictionaryCache`]: what its dictations built from an unchanged
@@ -2201,6 +2523,7 @@ async fn open_stream(
     // provider build) never holds the stream's creation.
     let target_kind = request.target_kind;
     let rate = request.sample_rate;
+    let surface = request.history_surface();
     let dictionary = tokio::spawn(stream_dictionary(
         Arc::clone(state),
         headers.clone(),
@@ -2228,6 +2551,9 @@ async fn open_stream(
         outcome,
         activity,
         usage_recorded: AtomicBool::new(false),
+        surface,
+        history: OnceLock::new(),
+        history_recorded: AtomicBool::new(false),
         shared: Arc::downgrade(&streams.shared),
     });
     {

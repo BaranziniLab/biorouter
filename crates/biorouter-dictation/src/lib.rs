@@ -11,7 +11,9 @@
 //! speech model catalog ([`catalog`]), the installer ([`models`]) and the suitability
 //! rules ([`hardware`]) build everywhere too, and so does [`recognize`], which decides
 //! what of the engine's output is speech. So does the personal dictionary's [`store`],
-//! which the daemon, the CLI and the agent's capability share under one lock.
+//! which the daemon, the CLI and the agent's capability share under one lock, and the
+//! dictation [`history`], the text of every dictation a person started (DD-96), which
+//! takes every privacy decision as a closure from its caller.
 //!
 //! A leaf crate: no Biorouter dependency, and every path is an argument.
 
@@ -22,6 +24,7 @@ pub mod cpu;
 #[cfg(all(feature = "engine", not(br_no_native)))]
 pub mod engine;
 pub mod hardware;
+pub mod history;
 pub mod models;
 pub mod protocol;
 pub mod recognize;

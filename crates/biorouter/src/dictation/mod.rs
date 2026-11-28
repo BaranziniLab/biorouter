@@ -5,7 +5,9 @@
 //! [`file`], which transcribes a whole recording (`biorouter transcribe`), [`bias`], the
 //! one producer of the dictionary entries a dictation may use (DD-36), and [`target`],
 //! which decides whether a dictation is aimed at a private chat, and the tier a new
-//! chat's bind would produce (DD-30, DD-77). The daemon's `/dictation/*` routes (PR-15)
+//! chat's bind would produce (DD-30, DD-77). [`history`] says where the dictation history
+//! lives, stamps each new entry's tier and decides what the agent may read of it (DD-96,
+//! DD-100). The daemon's `/dictation/*` routes (PR-15)
 //! hold their streams themselves and decode each segment through
 //! [`DictationService::decode_segment`].
 //!
@@ -18,6 +20,7 @@ pub mod activation;
 pub mod bias;
 pub mod extractor;
 pub mod file;
+pub mod history;
 pub mod paths;
 pub mod service;
 pub mod suggestion_scan;

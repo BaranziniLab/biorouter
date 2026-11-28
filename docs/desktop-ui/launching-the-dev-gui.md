@@ -34,17 +34,23 @@ BIOROUTER_NO_HMR=1 npx vite --config vite.renderer.config.mts \
 
 # 2. Electron against the built main process, detached from this shell.
 #    `env -u ELECTRON_RUN_AS_NODE` is load-bearing (see failure 1).
+#    $RUN is a throwaway folder: HOME, BIOROUTER_PATH_ROOT and --user-data-dir
+#    keep the app and its daemon off your real profile (the standing cautions).
 #    ⚠ Do NOT pass MAIN_WINDOW_VITE_DEV_SERVER_URL here — it is a build-time
 #    constant, not an env var, and setting it does nothing (failure 6).
+RUN=$(mktemp -d) && mkdir -p "$RUN/home"
 env -u ELECTRON_RUN_AS_NODE -u ELECTRON_NO_ATTACH_CONSOLE \
-  BIOROUTER_NO_HMR=1 \
+  BIOROUTER_NO_HMR=1 HOME="$RUN/home" BIOROUTER_PATH_ROOT="$RUN" \
   node_modules/electron/dist/Electron.app/Contents/MacOS/Electron \
-  .vite/build/main.js --remote-debugging-port=9333 > /tmp/electron.log 2>&1 &
+  .vite/build/main.js --remote-debugging-port=9333 --user-data-dir="$RUN/electron" \
+  > /tmp/electron.log 2>&1 &
 ```
 
-`.vite/build/main.js` must exist. If it does not, build it once with
-`npx electron-forge start` (it will exit immediately — that is failure 2 — but
-it leaves the bundles behind), or run `just run-dev` at a real terminal.
+`.vite/build/main.js` must exist. If it does not, run `just run-dev` once at a
+real terminal. `npx electron-forge start` also leaves the bundles behind, but it
+may start the whole app rather than exit: forge removes `ELECTRON_RUN_AS_NODE`
+(failure 1), and only a closed stdin stops it (failure 2). Set an isolated `HOME`
+and `BIOROUTER_PATH_ROOT` before you run it, as in step 2.
 
 Then drive and inspect it over the Chrome DevTools Protocol (CDP) rather than by
 screenshotting the desktop:
@@ -68,10 +74,12 @@ curl -s http://localhost:9333/json/list | grep '"title"'   # -> "Biorouter"
 
 **1. `ELECTRON_RUN_AS_NODE=1` in the environment — Electron exits instantly.**
 Agent shells commonly export this. Electron then runs `main.js` as plain Node
-and quits with no window and *no error*. Symptom: forge prints
-`✔ Launched Electron app` and the command returns 0 seconds later. Always
+and quits with no window and *no error*. Always
 `env -u ELECTRON_RUN_AS_NODE`. `ELECTRON_NO_ATTACH_CONSOLE` is worth clearing
-alongside it.
+alongside it. This stops a direct Electron launch only. Forge 7.11.1 removes the
+variable from the app's environment (`@electron-forge/core`, `dist/api/start.js`),
+so a forge start that exits at once is failure 2, and one whose stdin stays open
+starts the whole app, under your real `HOME` unless you set another.
 
 **2. `electron-forge start` exits the moment stdin closes.** Forge reads stdin
 for its interactive `rs` (restart) command, so `nohup … < /dev/null &` gives it
@@ -159,7 +167,7 @@ Both were suspected and ruled out with evidence, so don't re-litigate them:
   `target/debug/` rather than `src/bin/`, so this bites the *packaged* app first —
   restore it anyway before you trust a dev session's backend behaviour.
 
-## Three standing cautions
+## Four standing cautions
 
 - `BIOROUTER_NO_HMR=1` freezes the renderer. Without it any save under
   `ui/desktop/src/` full-reloads the page and destroys the chat session under
@@ -168,6 +176,11 @@ Both were suspected and ruled out with evidence, so don't re-litigate them:
   sandbox with `XDG_CONFIG_HOME`, before a session that will touch settings.
 - Pick a CDP port that is not 9222 — that is usually the developer's own Chrome,
   and a debugger client will silently attach to it instead of the app.
+- Set an isolated `HOME` and `BIOROUTER_PATH_ROOT` (and pass `--user-data-dir`)
+  before any `electron-forge start` or Electron launch. Forge starts the app even
+  with `ELECTRON_RUN_AS_NODE=1`, and under your real `HOME` the daemon reads
+  `~/.claude/skills` and the project list, which can raise a macOS privacy prompt
+  for the Desktop folder.
 
 ## Related documentation
 

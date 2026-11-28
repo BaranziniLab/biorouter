@@ -12,10 +12,18 @@ import {
   attachDictationComposer,
   canStartDictationQuietly,
   cancelDictation,
+  copyLostDictation,
+  DICTATION_TRANSCRIBED_DELAY_MS,
+  DICTATION_TRANSCRIBED_EVENT,
+  dismissLostDictation,
   getDictationLevel,
   getDictationSnapshot,
+  getLostDictation,
+  insertLostDictation,
+  isDictationHolding,
   isDictationRunning,
   KEEP_FAILED_MS,
+  KEEP_LOST_MS,
   noteDictationEdit,
   resetDictationSessionForTests,
   retryDictation,
@@ -23,8 +31,18 @@ import {
   stopDictation,
   subscribeDictation,
   subscribeDictationRunning,
+  subscribeDictationTranscribed,
+  noteDictationHistoryChanged,
+  notifyDictationTranscribed,
   type DictationComposer,
 } from './dictationSession';
+import { dictationMessage } from './copy';
+import { fakeStatusApi } from './dictationTestKit';
+import {
+  handleFnIntent,
+  registerFnGestureTarget,
+  resetFnGestureClientForTests,
+} from './fnGestureClient';
 import { isPrivateDraft, resetPrivateDraftsForTests } from './privateDraft';
 import { acknowledgeSharedOriginNotice, resetSharedOriginNoticeForTests } from './sharedOriginGate';
 import { DictationStreamError, type DictationStream } from './transport';
@@ -211,7 +229,8 @@ function install() {
 
 function composer(
   key: string,
-  value = ''
+  value = '',
+  extra: Partial<DictationComposer> = {}
 ): { field: HTMLTextAreaElement; binding: DictationComposer; detach: () => void } {
   const card = document.createElement('div');
   card.className = 'biorouter-composer-card';
@@ -227,6 +246,7 @@ function composer(
     }),
     storesDraft: true,
     onInserted: vi.fn(),
+    ...extra,
   };
   const detach = attachDictationComposer(binding);
   return { field, binding, detach };
@@ -849,7 +869,7 @@ describe('who owns the microphone', () => {
     expect(isPrivateDraft('tab:a')).toBe(false);
   });
 
-  it('a composer without a stored draft that unmounts drops the text rather than writing a draft', async () => {
+  it('a composer without a stored draft that unmounts keeps the text for the person, never a draft', async () => {
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
     const editor = composer('editor:message-1', 'edited text');
     editor.binding.storesDraft = false;
@@ -863,6 +883,8 @@ describe('who owns the microphone', () => {
     await settle();
     expect(insertIntoDraft).not.toHaveBeenCalled();
     expect(streams[0].released).toBe(true);
+    expect(getLostDictation()).toEqual({ home: null, text: 'lost words' });
+    expect(getDictationSnapshot().announcement).not.toBe('Inserted');
   });
 
   it('a composer that mounts again under the same key in the same commit keeps recording', async () => {
@@ -1389,8 +1411,305 @@ describe('starting from fn down', () => {
 
     void startDictation({ key: 'tab:a', target: { target_kind: 'new_chat' } });
     expect(canStartDictationQuietly(), 'a dictation already arms').toBe(false);
+    expect(isDictationHolding('tab:a')).toBe(true);
+    expect(isDictationHolding('tab:b')).toBe(false);
     cancelDictation('tab:a');
     await settle();
     expect(canStartDictationQuietly()).toBe(true);
+    expect(isDictationHolding('tab:a')).toBe(false);
+  });
+});
+
+describe('a transcript whose field is gone (MSG-INSERT-LOST)', () => {
+  const lostText = dictationMessage('MSG-INSERT-LOST');
+
+  /** An editor that records, then closes before its text arrives. */
+  async function editorThatCloses(text: string, extra: Partial<Transcript> = {}) {
+    const editor = composer('editor:m1', 'edited', { storesDraft: false });
+    await startDictation({ key: 'editor:m1', target: { target_kind: 'editor' } });
+    captures[0].speak(1);
+    editor.detach();
+    editor.field.parentElement!.remove();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    await settle();
+    streams[0].finishDeferred.resolve(transcript(text, extra));
+    await settle();
+  }
+
+  it('keeps the text, offers it in the composer that draws it, and does not say Inserted', async () => {
+    const chat = composer('tab:a', 'Draft so far', { showsLostText: true });
+    await editorThatCloses('kept words', { bias_scope: 'private' });
+    expect(insertIntoDraft).not.toHaveBeenCalled();
+    expect(getLostDictation()).toEqual({ home: 'tab:a', text: 'kept words' });
+    const snap = getDictationSnapshot();
+    expect(snap.announcement).toBe(lostText);
+    expect(snap.announcement).not.toBe('Inserted');
+    // That composer draws the sentence and its two buttons itself.
+    expect(snap).toMatchObject({ key: 'tab:a', notice: null, activity: 'idle' });
+
+    // Insert here: the text goes in at the composer's caret, as dictated text.
+    chat.field.focus();
+    chat.field.setSelectionRange(12, 12);
+    expect(insertLostDictation('tab:a')).toBe(true);
+    expect(chat.field.value).toBe('Draft so far kept words');
+    expect(chat.binding.onInserted).toHaveBeenCalledWith(
+      expect.objectContaining({
+        key: 'tab:a',
+        path: 'undoable',
+        anchor: { start: 12, end: 12 },
+        transcript: expect.objectContaining({ text: 'kept words', bias_scope: 'private' }),
+      })
+    );
+    expect(getLostDictation()).toBeNull();
+    expect(getDictationSnapshot().announcement).toBe('Inserted');
+  });
+
+  it('a composer that does not draw it shows the sentence with the insert-lost action', async () => {
+    composer('crew:task', '', { storesDraft: false });
+    await editorThatCloses('kept words');
+    expect(getLostDictation()).toEqual({ home: 'crew:task', text: 'kept words' });
+    expect(getDictationSnapshot()).toMatchObject({
+      key: 'crew:task',
+      activity: 'idle',
+      announcement: lostText,
+      notice: { id: 'MSG-INSERT-LOST', text: lostText, action: 'insert-lost', failure: false },
+    });
+    // Dismiss forgets it.
+    dismissLostDictation();
+    expect(getLostDictation()).toBeNull();
+    expect(getDictationSnapshot().notice).toBeNull();
+  });
+
+  it('with no composer to offer it, the next one that can takes it', async () => {
+    await editorThatCloses('kept words');
+    expect(getLostDictation()).toEqual({ home: null, text: 'kept words' });
+    composer('tab:b', '', { showsLostText: true });
+    expect(getLostDictation()).toEqual({ home: 'tab:b', text: 'kept words' });
+  });
+
+  it('Copy puts the text on the clipboard from the click, and it stays for Insert here', async () => {
+    composer('tab:a', '', { showsLostText: true });
+    await editorThatCloses('kept words');
+    const writeText = vi.fn(async () => undefined);
+    const had = Object.getOwnPropertyDescriptor(navigator, 'clipboard');
+    Object.defineProperty(navigator, 'clipboard', { value: { writeText }, configurable: true });
+    try {
+      await expect(copyLostDictation()).resolves.toBe(true);
+      expect(writeText).toHaveBeenCalledWith('kept words');
+      expect(getLostDictation()?.text).toBe('kept words');
+      writeText.mockRejectedValueOnce(new Error('denied'));
+      await expect(copyLostDictation()).resolves.toBe(false);
+    } finally {
+      if (had) Object.defineProperty(navigator, 'clipboard', had);
+      else delete (navigator as { clipboard?: unknown }).clipboard;
+    }
+  });
+
+  it('is kept for five minutes', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    composer('tab:a', '', { showsLostText: true });
+    const editor = composer('editor:m1', 'edited', { storesDraft: false });
+    await startDictation({ key: 'editor:m1', target: { target_kind: 'editor' } });
+    captures[0].speak(1);
+    editor.detach();
+    editor.field.parentElement!.remove();
+    vi.advanceTimersByTime(0);
+    await settle();
+    streams[0].finishDeferred.resolve(transcript('kept words'));
+    await settle();
+    expect(getLostDictation()).not.toBeNull();
+    vi.advanceTimersByTime(KEEP_LOST_MS - 1);
+    expect(getLostDictation()).not.toBeNull();
+    vi.advanceTimersByTime(1);
+    expect(getLostDictation()).toBeNull();
+  });
+});
+
+describe('after a transcript is published', () => {
+  it('tells the history listeners once, half a second later, and nothing for no speech', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    const heard = vi.fn();
+    const fired = vi.fn();
+    subscribeDictationTranscribed(heard);
+    window.addEventListener(DICTATION_TRANSCRIBED_EVENT, fired);
+    try {
+      const { field } = composer('tab:a');
+      field.focus();
+      await startDictation({ key: 'tab:a', target: { target_kind: 'chat' } });
+      captures[0].speak(1);
+      stopDictation('tab:a');
+      await settle();
+      streams[0].finishDeferred.resolve(transcript('EPAS1'));
+      await settle();
+      expect(field.value).toBe('EPAS1');
+      expect(heard).not.toHaveBeenCalled();
+      vi.advanceTimersByTime(DICTATION_TRANSCRIBED_DELAY_MS);
+      expect(heard).toHaveBeenCalledTimes(1);
+      expect(fired).toHaveBeenCalledTimes(1);
+
+      await startDictation({ key: 'tab:a', target: { target_kind: 'chat' } });
+      captures[1].speak(1);
+      stopDictation('tab:a');
+      await settle();
+      streams[1].finishDeferred.resolve(transcript('', { no_speech: true }));
+      await settle();
+      vi.advanceTimersByTime(DICTATION_TRANSCRIBED_DELAY_MS * 2);
+      expect(heard).toHaveBeenCalledTimes(1);
+    } finally {
+      window.removeEventListener(DICTATION_TRANSCRIBED_EVENT, fired);
+    }
+  });
+
+  // F18 (DD-102): a History tab in another window reads again too, through main.
+  it('tells main at once, with nothing but the word, so every other window reads again', () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    const told = vi.fn((...args: unknown[]) => args);
+    Object.assign(window.electron, { dictationTranscribed: told });
+    const heard = vi.fn();
+    subscribeDictationTranscribed(heard);
+    notifyDictationTranscribed();
+    expect(told).toHaveBeenCalledTimes(1);
+    expect(told.mock.calls[0]).toEqual([]);
+    expect(heard).not.toHaveBeenCalled();
+    vi.advanceTimersByTime(DICTATION_TRANSCRIBED_DELAY_MS);
+    expect(heard).toHaveBeenCalledTimes(1);
+    // A bridge that predates it is no failure.
+    Object.assign(window.electron, { dictationTranscribed: undefined });
+    expect(() => notifyDictationTranscribed()).not.toThrow();
+  });
+
+  it('a change main reports from elsewhere tells the listeners half a second later, and not main', () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    const told = vi.fn();
+    Object.assign(window.electron, { dictationTranscribed: told });
+    const heard = vi.fn();
+    subscribeDictationTranscribed(heard);
+    noteDictationHistoryChanged();
+    vi.advanceTimersByTime(DICTATION_TRANSCRIBED_DELAY_MS - 1);
+    expect(heard).not.toHaveBeenCalled();
+    vi.advanceTimersByTime(1);
+    expect(heard).toHaveBeenCalledTimes(1);
+    expect(told).not.toHaveBeenCalled();
+    // This window's own transcript and main's echo of it coalesce into one read.
+    notifyDictationTranscribed();
+    noteDictationHistoryChanged();
+    vi.advanceTimersByTime(DICTATION_TRANSCRIBED_DELAY_MS);
+    expect(heard).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe('fn into a field no composer owns', () => {
+  beforeEach(() => {
+    resetFnGestureClientForTests();
+    resetDictationStoreForTests(fakeStatusApi(() => null).api);
+  });
+  afterEach(() => resetFnGestureClientForTests());
+
+  /** A hold in the focused field: what fn down, the threshold and the release do. */
+  async function holdAndSpeak(text: string) {
+    handleFnIntent('prime');
+    handleFnIntent('start-hold');
+    await settle();
+    captures[captures.length - 1].speak(1);
+    handleFnIntent('end-hold');
+    await settle();
+    streams[streams.length - 1].finishDeferred.resolve(transcript(text));
+    await settle();
+  }
+
+  it('a focused rename box gets the text, with public terms only', async () => {
+    composer('tab:a', '', { showsLostText: true });
+    const rename = document.createElement('input');
+    rename.value = 'Untitled';
+    document.body.append(rename);
+    rename.focus();
+    rename.setSelectionRange(8, 8);
+    await holdAndSpeak('EPAS1 notes');
+    expect(streams[0].request).toMatchObject({ target_kind: 'external' });
+    expect(rename.value).toBe('Untitled EPAS1 notes');
+    // The field has no notice row: the visible composer announces it.
+    expect(getDictationSnapshot()).toMatchObject({ key: 'tab:a', announcement: 'Inserted' });
+  });
+
+  it('a password field is never one: the text goes to the composer', async () => {
+    const chat = composer('tab:a', '', { showsLostText: true });
+    // The composer offers itself to fn, as `useDictationComposer` does.
+    registerFnGestureTarget('tab:a', {
+      press: () => void startDictation({ key: 'tab:a', target: { target_kind: 'chat' } }),
+      field: () => chat.field,
+    });
+    const secret = document.createElement('input');
+    secret.type = 'password';
+    document.body.append(secret);
+    secret.focus();
+    await holdAndSpeak('hunter two');
+    expect(secret.value).toBe('');
+    expect(streams[0].request).toMatchObject({ target_kind: 'chat' });
+    expect(chat.field.value).toBe('hunter two');
+  });
+
+  it('a box that closed before the text arrived: the text is offered in the composer', async () => {
+    composer('tab:a', '', { showsLostText: true });
+    const rename = document.createElement('input');
+    document.body.append(rename);
+    rename.focus();
+    handleFnIntent('prime');
+    handleFnIntent('start-hold');
+    await settle();
+    captures[0].speak(1);
+    handleFnIntent('end-hold');
+    await settle();
+    rename.remove();
+    streams[0].finishDeferred.resolve(transcript('kept words'));
+    await settle();
+    expect(getLostDictation()).toEqual({ home: 'tab:a', text: 'kept words' });
+    expect(getDictationSnapshot().announcement).toBe(dictationMessage('MSG-INSERT-LOST'));
+  });
+
+  it('a field that puts its old value back does not keep the text, so it is offered', async () => {
+    composer('tab:a', '', { showsLostText: true });
+    const rename = document.createElement('input');
+    rename.value = 'fixed';
+    document.body.append(rename);
+    // A controlled field that refuses every change, read back after its input event.
+    rename.addEventListener('input', () => {
+      rename.value = 'fixed';
+    });
+    rename.focus();
+    handleFnIntent('prime');
+    handleFnIntent('start-hold');
+    await settle();
+    captures[0].speak(1);
+    handleFnIntent('end-hold');
+    await settle();
+    // The person moved to another field, so the text takes the field's own setter.
+    const other = document.createElement('input');
+    other.type = 'checkbox';
+    document.body.append(other);
+    other.focus();
+    streams[0].finishDeferred.resolve(transcript('words'));
+    await settle();
+    expect(rename.value).toBe('fixed');
+    expect(getLostDictation()).toEqual({ home: 'tab:a', text: 'words' });
+  });
+
+  it('what a field’s dictation ends with shows in the visible composer, without Retry', async () => {
+    composer('tab:a', '', { showsLostText: true });
+    const rename = document.createElement('input');
+    document.body.append(rename);
+    rename.focus();
+    handleFnIntent('prime');
+    handleFnIntent('start-hold');
+    await settle();
+    captures[0].speak(1);
+    handleFnIntent('end-hold');
+    await settle();
+    streams[0].finishDeferred.reject(new DictationStreamError('engineFailed'));
+    await settle();
+    expect(getDictationSnapshot()).toMatchObject({
+      key: 'tab:a',
+      activity: 'error',
+      notice: { id: 'MSG-ENGINE-FAILED', action: null },
+    });
   });
 });

@@ -41,6 +41,7 @@ import { InlineCodeText } from '../providers/subcomponents/InlineCodeText';
 import { SettingSelect } from '../SettingSelect';
 import { SETTINGS_SECTION_IDS } from '../settingsSections';
 import { speechModelsCopy as copy } from './copy';
+import DictationHistorySettingsRows from './DictationHistorySettingsRows';
 import DictionarySettingsRows from './DictionarySettingsRows';
 import {
   activeSpeechModel,
@@ -70,7 +71,11 @@ import {
 import './models.css';
 import './speechModels.css';
 import { DEFAULT_ANYWHERE_SHORTCUT } from '../../../utils/dictationAnywhere';
-import { DictationShortcutRows, FnOtherAppsRow } from './DictationShortcutRows';
+import {
+  DictationShortcutRows,
+  FnOtherAppsRow,
+  TypeIntoFrontAppRow,
+} from './DictationShortcutRows';
 
 /**
  * **Settings > Models > Speech models** (DD-66, PR-18): install, use, remove, update and cancel
@@ -83,6 +88,12 @@ import { DictationShortcutRows, FnOtherAppsRow } from './DictationShortcutRows';
  * Everything the daemon decides (what is installed, what is in use, whether this caller may
  * install, what managed policy turns off) is read from `GET /dictation/status`; this file never
  * decides it again, and never offers a button the daemon would refuse.
+ *
+ * The section ends with two groups of rows kept in their own files: the dictionary's
+ * (`DictionarySettingsRows.tsx`, deep link `dictionary`) and the dictation history's
+ * (`DictationHistorySettingsRows.tsx`, deep link `dictation-history`). Under **Dictate into other
+ * apps**, **Type into the app you are using** is `TypeIntoFrontAppRow` in
+ * `DictationShortcutRows.tsx`.
  */
 export default function SpeechModelSection() {
   return <SpeechModelSectionBody />;
@@ -294,6 +305,7 @@ function SpeechModelRows({ status }: { status: DictationStatus }) {
       <MicrophoneRow status={status} />
       <SpeedRow status={status} />
       <DictionarySettingsRows status={status} activationChoiceShown={activationChoiceShown} />
+      <DictationHistorySettingsRows status={status} />
 
       {/* Not `destructive`: a slow model is a choice, not a deletion. */}
       <ConfirmationModal
@@ -1114,6 +1126,9 @@ function AnywhereSettingsRows({
           />
         </SettingRow>
       )}
+      {/* Where the text goes, for both ways in above (fn and the shortcut): typed into the app in
+          front where main can (macOS), otherwise copied. Absent where it cannot. */}
+      {snapshot.enabled && <TypeIntoFrontAppRow />}
       {snapshot.saveFailed && (
         <Note tone="warning" role="alert">
           {snapshot.enabled

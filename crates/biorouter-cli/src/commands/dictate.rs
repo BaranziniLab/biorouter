@@ -24,6 +24,11 @@
 //! to MSG-PRIVATE-TERMS (O-8), or `--session` names a private chat under the same rule as
 //! `transcribe`.
 //!
+//! Once the text is out it is kept in the dictation history (DD-96), filed as `terminal`,
+//! or `clipboard` with `--copy`, and for the `--session` chat when one is named;
+//! `--no-history` keeps it out, as it keeps a copy out of the clipboard's own history. The
+//! hidden `--file` is `biorouter transcribe`, which keeps nothing.
+//!
 //! Exit codes: 0 text, 1 a failure, 2 declined to start, 3 nothing heard, 4 cancelled, 5
 //! `--copy` found no clipboard and printed the text.
 
@@ -55,6 +60,8 @@ impl DictateFormat {
 /// `biorouter dictate`'s arguments.
 pub struct DictateArgs {
     pub copy: bool,
+    /// Keep this dictation out of the dictation history, and with `--copy` ask clipboard
+    /// managers to keep it out of theirs.
     pub no_history: bool,
     pub format: DictateFormat,
     /// At most 600; a cap, never a way around the terminal check.
@@ -68,6 +75,20 @@ pub struct DictateArgs {
     pub no_review: bool,
     /// The hidden `--file PATH`, an alias of `transcribe PATH`.
     pub file: Option<String>,
+}
+
+/// Where the dictation history files a dictation (DD-96): `clipboard` with `--copy`,
+/// `terminal` otherwise, and nowhere with `--no-history`, which keeps it out of Biorouter's
+/// history as well as the clipboard's.
+pub fn history_surface(args: &DictateArgs) -> Option<biorouter::dictation::history::Surface> {
+    use biorouter::dictation::history::Surface;
+    if args.no_history {
+        None
+    } else if args.copy {
+        Some(Surface::Clipboard)
+    } else {
+        Some(Surface::Terminal)
+    }
 }
 
 /// Where the time went, in milliseconds from the command's start unless named otherwise.
@@ -311,6 +332,7 @@ mod live {
         StopReason,
     };
     use crate::dictation::environment::{self, CaptureVerdict, Environment};
+    use crate::dictation::history_record;
 
     /// `BIOROUTER_CLI_DICTATION_DEVICE` names an input device from `biorouter dictation
     /// devices`; unset, the system default.
@@ -411,6 +433,7 @@ mod live {
         let closing = tokio::spawn(child.close());
         let (screen, pcm, audio_ms) = ended(&take, screen, recorder, &env)?;
         let stopped = Stopped {
+            consent,
             language,
             model_id,
             prepared,
@@ -834,6 +857,9 @@ mod live {
     /// What the stop leaves for the text: the live decode with the open tail still to
     /// decode, the recording, and the terminal, still in raw mode.
     struct Stopped {
+        /// The person at this terminal who opened the microphone; the dictation history
+        /// records only what they started.
+        consent: CaptureConsent,
         language: String,
         model_id: String,
         prepared: JoinHandle<(Result<Loaded, DictationError>, Duration)>,
@@ -856,6 +882,7 @@ mod live {
         mut timings: DictateTimings,
     ) -> Result<(), Failure> {
         let Stopped {
+            consent,
             language,
             model_id,
             prepared,
@@ -942,7 +969,7 @@ mod live {
             audio_ms,
             timings,
         };
-        deliver(args, text, dictionary, report)
+        deliver(args, &consent, text, dictionary, report).await
     }
 
     /// The decode's own timings, and the model's load once it has finished.
@@ -999,13 +1026,19 @@ mod live {
 
     /// The text out: to the clipboard with `--copy` (printed on stdout, exit 5, when no
     /// clipboard can be reached), as one schema 1 object with `--format json`, or on
-    /// stdout.
-    fn deliver(
+    /// stdout. Once it is out the dictionary learns which terms it used, and the dictation
+    /// history keeps it unless `--no-history` asked otherwise.
+    async fn deliver(
         args: &DictateArgs,
+        consent: &CaptureConsent,
         text: String,
         dictionary: Option<Arc<DictionaryRequest>>,
         report: Report,
     ) -> Result<(), Failure> {
+        let kept = KeptDictation {
+            model: report.model_id.clone(),
+            duration_ms: report.audio_ms,
+        };
         // The text goes out, and only then does the dictionary learn which terms it used.
         let destination;
         if args.copy {
@@ -1023,6 +1056,7 @@ mod live {
                 ),
                 clipboard::Copied::Unreachable => {
                     record_uses(dictionary.as_deref(), &text);
+                    keep_in_history(args, consent, &text, dictionary.as_ref(), kept).await;
                     return Err(Failure {
                         outcome: Outcome::ClipboardFallback,
                         lines: vec![messages::MSG_NO_CLIPBOARD.into()],
@@ -1052,7 +1086,38 @@ mod live {
             }
         }
         record_uses(dictionary.as_deref(), &text);
+        keep_in_history(args, consent, &text, dictionary.as_ref(), kept).await;
         Ok(())
+    }
+
+    /// What the history keeps of a recording beside its text.
+    struct KeptDictation {
+        model: String,
+        duration_ms: u64,
+    }
+
+    /// The dictation history's entry for `text`, once it is out (DD-96): `terminal`, or
+    /// `clipboard` with `--copy`, for the `--session` chat when one was named. Nothing with
+    /// `--no-history`. A history that cannot be written never fails the dictation.
+    async fn keep_in_history(
+        args: &DictateArgs,
+        consent: &CaptureConsent,
+        text: &str,
+        dictionary: Option<&Arc<DictionaryRequest>>,
+        kept: KeptDictation,
+    ) {
+        let Some(surface) = history_surface(args) else {
+            return;
+        };
+        let dictation = history_record::Dictation {
+            text: text.to_string(),
+            surface,
+            duration_ms: kept.duration_ms,
+            model: kept.model,
+            dictionary: dictionary.cloned(),
+        };
+        let into = history_record::DictatedInto::from_session(args.session.clone());
+        history_record::record(consent, dictation, into).await;
     }
 
     /// `--format json`'s object for `text`, sent to `destination`.
@@ -1674,5 +1739,66 @@ mod tests {
         assert_eq!(Outcome::ClipboardFallback.exit_code(), 5);
         assert_eq!(DictateFormat::parse("json"), DictateFormat::Json);
         assert_eq!(DictateFormat::parse("text"), DictateFormat::Text);
+    }
+
+    fn args(copy: bool, no_history: bool) -> DictateArgs {
+        DictateArgs {
+            copy,
+            no_history,
+            format: DictateFormat::Text,
+            seconds: None,
+            session: None,
+            private_terms: false,
+            language: None,
+            model: None,
+            no_dictionary: false,
+            no_review: false,
+            file: None,
+        }
+    }
+
+    /// DD-96: `dictate` files its text as `terminal`, `dictate --copy` as `clipboard`, and
+    /// `--no-history` keeps either out of the history.
+    #[test]
+    fn dictate_files_its_text_by_where_it_went() {
+        use biorouter::dictation::history::Surface;
+        assert_eq!(
+            history_surface(&args(false, false)),
+            Some(Surface::Terminal)
+        );
+        assert_eq!(
+            history_surface(&args(true, false)),
+            Some(Surface::Clipboard)
+        );
+        assert_eq!(history_surface(&args(false, true)), None);
+        assert_eq!(history_surface(&args(true, true)), None);
+    }
+
+    /// Both ways the text goes out (the clipboard's fallback to stdout, and the ordinary
+    /// end) keep it in the history after the dictionary's usage; `--file`, which is
+    /// `transcribe`, returns before any of it.
+    #[test]
+    fn every_delivery_keeps_the_dictation_and_transcribe_does_not() {
+        let source = include_str!("dictate.rs");
+        let deliver = source
+            .split_once("    async fn deliver(")
+            .and_then(|(_, rest)| rest.split_once("\n    }\n"))
+            .map(|(body, _)| body)
+            .expect("deliver is in dictate.rs");
+        assert_eq!(deliver.matches("keep_in_history(args, consent").count(), 2);
+        assert_eq!(
+            deliver.matches("record_uses(").count(),
+            deliver.matches("keep_in_history(").count()
+        );
+        let handle = source
+            .split_once("pub async fn handle_dictate(")
+            .and_then(|(_, rest)| rest.split_once("\n}\n"))
+            .map(|(body, _)| body)
+            .expect("handle_dictate is in dictate.rs");
+        let (file_path, _) = handle
+            .split_once("let format = args.format;")
+            .expect("the --file branch comes first");
+        assert!(file_path.contains("handle_transcribe"));
+        assert!(!file_path.contains("history"));
     }
 }

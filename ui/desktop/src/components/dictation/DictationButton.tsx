@@ -36,7 +36,7 @@ import { Spinner } from '../ui/spinner';
 import { Tooltip, TooltipContent, TooltipTrigger } from '../ui/Tooltip';
 import { levelToMeter } from './level';
 import { getFnKeySnapshot, subscribeFnKey } from './fnKeyStore';
-import { fnShortcutWorks } from '../../utils/dictationFnKey';
+import { fnKeyAriaShortcut, fnKeyLabel, fnShortcutWorks } from '../../utils/dictationFnKey';
 import {
   DICTATION_ACTIONS,
   DICTATION_LABELS,
@@ -214,6 +214,14 @@ export function DictationButton({
   const chord = browser ? '' : getDictationShortcutText();
   // On macOS the fn gestures are the shortcut once they work; ⌘⇧D keeps working beside them.
   const fnWorks = !browser && fnShortcutWorks(fnView);
+  // The key that dictates now (DD-101): fn while fn alone works, else the modifier with fn. A view
+  // from before main said which key is fn alone, as it was.
+  const fnActive = fnView?.active ?? { bare: true, modifier: null };
+  const fnKey = fnKeyLabel(fnActive.bare ? null : fnActive.modifier);
+  const fnShortcuts = [
+    ...(fnActive.bare ? [fnKeyAriaShortcut(null)] : []),
+    ...(fnActive.modifier ? [fnKeyAriaShortcut(fnActive.modifier)] : []),
+  ].join(' ');
   const clock = formatDictationClock(snapshot.key === control.key ? snapshot.elapsedS : 0);
   const label =
     phase === 'unavailable'
@@ -237,7 +245,7 @@ export function DictationButton({
           (browser
             ? DICTATION_LABELS.idle
             : fnWorks
-              ? `${DICTATION_LABELS.idle} · ${DICTATION_LABELS.fnGesture}`
+              ? `${DICTATION_LABELS.idle} · ${fillMessage(DICTATION_LABELS.fnGestureWith, { key: fnKey })}`
               : `${DICTATION_LABELS.idle} ${chord}`))
         : label;
 
@@ -311,8 +319,8 @@ export function DictationButton({
       aria-keyshortcuts={
         browser
           ? undefined
-          : fnWorks
-            ? `Fn ${getDictationAriaKeyShortcuts()}`
+          : fnWorks && fnShortcuts
+            ? `${fnShortcuts} ${getDictationAriaKeyShortcuts()}`
             : getDictationAriaKeyShortcuts()
       }
       aria-haspopup={phase === 'not-installed' || phase === 'installing' ? 'dialog' : undefined}

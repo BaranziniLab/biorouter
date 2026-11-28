@@ -1,6 +1,7 @@
 import { useFontSize } from '../hooks/useFontSize';
 import { suspendTransitionsForThemeChange } from '../styles/motion';
 import { THEME_FAMILY_IDS } from '../styles/themes.generated';
+import { parseThemeAppearanceView } from '../utils/themeAppearance';
 import React, { createContext, useContext, useEffect, useState, useCallback } from 'react';
 
 type ThemePreference = 'light' | 'dark' | 'system';
@@ -246,12 +247,91 @@ export function ThemeProvider({ children }: ThemeProviderProps) {
     applyFamilyToDocument(themeFamily);
   }, [themeFamily]);
 
+  // Tell main the appearance as words (DD-99): on mount and on every change of mode, family or
+  // preference, so the dictation indicator, which has no stylesheet of its own, wears this
+  // family's accent in this mode, and keeps it while no chat window is open (main persists it).
+  // A family id, a mode and a boolean, never a colour (utils/themeAppearance.ts). Optional-called
+  // on the method, like `setWindowCanvas`: a `biorouter serve` browser's bridge has none.
+  useEffect(() => {
+    window.electron?.setThemeAppearance?.({
+      family: themeFamily,
+      mode: resolvedTheme,
+      followsSystem: userThemePreference === 'system',
+    });
+  }, [resolvedTheme, themeFamily, userThemePreference]);
+
   const value: ThemeContextValue = {
     userThemePreference,
     setUserThemePreference,
     resolvedTheme,
     themeFamily,
     setThemeFamily,
+  };
+
+  return <ThemeContext.Provider value={value}>{children}</ThemeContext.Provider>;
+}
+
+/** What the document shows now: the class and `data-theme` index.html's script stamped. */
+function documentAppearance(): { family: ThemeFamily; mode: ResolvedTheme } {
+  const root = document.documentElement;
+  const family = root.getAttribute('data-theme');
+  return {
+    family: isThemeFamily(family) ? family : 'parchment',
+    mode: root.classList.contains('dark') ? 'dark' : 'light',
+  };
+}
+
+const ignoreThemeChoice = () => undefined;
+
+/**
+ * A theme for a window that shows main's appearance rather than its own: the dictation review
+ * card (DD-99). That window has no Appearance controls, and it may run in a session whose
+ * `localStorage` holds no theme at all (main opens it on the default session when no chat window
+ * exists), so the family and mode `index.html` stamped can be Parchment and the system mode
+ * whatever the person chose.
+ *
+ * It starts from what the document shows, then asks main (`getThemeAppearance`) and follows every
+ * change main announces (`onThemeAppearance`), applying each to the document as a chat window
+ * would. Every answer is checked again here (a known family and a mode); anything else is ignored.
+ * It never reports an appearance and never writes `localStorage`: the person's choice is made in a
+ * chat window, so the setters do nothing. Without the bridge methods (a browser surface) it keeps
+ * the document's theme.
+ */
+export function MainAppearanceThemeProvider({ children }: ThemeProviderProps) {
+  const [appearance, setAppearance] = useState(documentAppearance);
+
+  useEffect(() => {
+    let live = true;
+    const adopt = (raw: unknown) => {
+      const next = parseThemeAppearanceView(raw);
+      if (!live || !next || !isThemeFamily(next.family)) return;
+      const family = next.family;
+      setAppearance((current) =>
+        current.family === family && current.mode === next.mode
+          ? current
+          : { family, mode: next.mode }
+      );
+    };
+    const unsubscribe = window.electron?.onThemeAppearance?.(adopt);
+    const pending = window.electron?.getThemeAppearance?.();
+    void pending?.then(adopt, () => undefined);
+    return () => {
+      live = false;
+      unsubscribe?.();
+    };
+  }, []);
+
+  useEffect(() => {
+    applyThemeToDocument(appearance.mode);
+    applyFamilyToDocument(appearance.family);
+  }, [appearance]);
+
+  const value: ThemeContextValue = {
+    userThemePreference: appearance.mode,
+    setUserThemePreference: ignoreThemeChoice,
+    resolvedTheme: appearance.mode,
+    themeFamily: appearance.family,
+    setThemeFamily: ignoreThemeChoice,
   };
 
   return <ThemeContext.Provider value={value}>{children}</ThemeContext.Provider>;

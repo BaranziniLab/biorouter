@@ -238,6 +238,22 @@ const config = JSON.parse(process.argv.find((arg) => arg.startsWith('{')) || '{}
 /** Mirrors `DaemonConnectionState` in `biorouterdSingleton.ts` (the preload imports no main code). */
 type DaemonConnectionState = 'attached' | 'lost' | 'reconnecting';
 
+/**
+ * The theme a chat window shows, as words (DD-99): the family id and the mode, and whether the
+ * mode follows the system. Main checks each word before it keeps one (`utils/themeAppearance.ts`).
+ */
+type ThemeAppearanceReport = { family: string; mode: 'light' | 'dark'; followsSystem: boolean };
+
+/** The appearance main resolved from the last report, its saved settings and the system. */
+type ThemeAppearanceView = { family: string; mode: 'light' | 'dark' };
+
+/**
+ * Typing a dictation into the app in front (DD-97, macOS), as main reports it: `supported` on a
+ * system where Biorouter can type into another app, `enabled` the person's setting, and `allowed`
+ * whether macOS lets Biorouter post the paste (Accessibility).
+ */
+type DictationInsertView = { supported: boolean; enabled: boolean; allowed: boolean };
+
 /** Mirrors `AttentionNotification` in `components/crew/attention/crewAttention.ts`. */
 interface CrewAttentionNotification {
   key: string;
@@ -454,7 +470,32 @@ type ElectronAPI = {
   dictationFnOpenSettings?: (pane: 'input-monitoring' | 'keyboard') => Promise<boolean>;
   onDictationFnState?: (callback: (view: FnKeyView) => void) => () => void;
   onDictationFnIntent?: (callback: (intent: FnIntent) => void) => () => void;
+  /**
+   * A one-word notice about the fn key for this window, the focused one (DD-101): `use-alternative`
+   * when a bare fn hold was left to another app that also uses fn, so the composer can say once
+   * which key dictates in Biorouter. It carries nothing else.
+   */
+  onDictationFnNotice?: (callback: (notice: 'use-alternative') => void) => () => void;
   dictationIndicator?: (report: DictationActivityReport) => void;
+  /**
+   * The dictation history, kept current in every window (F18): `dictationTranscribed` tells main
+   * this window published a transcript; `onDictationHistoryChanged` hears main say a dictation
+   * finished somewhere (any window, another app, the hidden capture page). Neither carries a
+   * payload: each History tab reads the listing again itself.
+   */
+  dictationTranscribed?: () => void;
+  onDictationHistoryChanged?: (callback: () => void) => () => void;
+  /**
+   * Typing a dictation into the app in front (DD-97, macOS), a setting written only by main.
+   * - `dictationInsertGet` and `dictationInsertSet`: the setting, with whether this system
+   *   supports it and whether macOS allows it; `dictationInsertSet` turns it on or off only.
+   * - `dictationInsertOpenSettings`: from a person's click in Settings, ask macOS for
+   *   Accessibility and open its pane. It takes nothing, and it is the only way the renderer can
+   *   make macOS ask.
+   */
+  dictationInsertGet?: () => Promise<DictationInsertView>;
+  dictationInsertSet?: (enabled: boolean) => Promise<DictationInsertView>;
+  dictationInsertOpenSettings?: () => Promise<void>;
   /**
    * The context menu's **Add to Biorouter dictionary…** (DD-68): the word or
    * selection and where the menu opened, `{text, x, y}`, so the renderer can
@@ -503,6 +544,18 @@ type ElectronAPI = {
    * own canvas (utils/windowCanvas.ts). Optional: a browser surface has no window.
    */
   setWindowCanvas?: (mode: 'light' | 'dark') => void;
+  /**
+   * The theme as words, for surfaces outside the renderer such as the dictation indicator
+   * (DD-99). Optional, like `setWindowCanvas`: a browser surface has none of them.
+   * - `setThemeAppearance`: this window's family and mode, and whether the mode follows the
+   *   system. Words only, never a colour.
+   * - `getThemeAppearance` and `onThemeAppearance`: the appearance main resolved, for a window
+   *   that has no theme of its own to show (the dictation review card); `null` before main has
+   *   one. A change that is not a family string and a mode is dropped here.
+   */
+  setThemeAppearance?: (appearance: ThemeAppearanceReport) => void;
+  getThemeAppearance?: () => Promise<ThemeAppearanceView | null>;
+  onThemeAppearance?: (callback: (appearance: ThemeAppearanceView) => void) => () => void;
   // Functions for image pasting
   saveDataUrlToTemp: (dataUrl: string, uniqueId: string) => Promise<SaveDataUrlResponse>;
   deleteTempFile: (filePath: string) => void;
@@ -1038,8 +1091,26 @@ const electronAPI: ElectronAPI = {
     ipcRenderer.on('dictation:fn:intent', listener);
     return () => ipcRenderer.removeListener('dictation:fn:intent', listener);
   },
+  onDictationFnNotice: (callback: (notice: 'use-alternative') => void) => {
+    const listener = (_event: Electron.IpcRendererEvent, notice: unknown) => {
+      if (notice === 'use-alternative') callback(notice);
+    };
+    ipcRenderer.on('dictation:fn:notice', listener);
+    return () => ipcRenderer.removeListener('dictation:fn:notice', listener);
+  },
   dictationIndicator: (report: DictationActivityReport) =>
     ipcRenderer.send('dictation:indicator', report),
+  dictationTranscribed: () => ipcRenderer.send('dictation:transcribed'),
+  onDictationHistoryChanged: (callback: () => void) => {
+    // Main sends no payload; anything that comes with the event is not read.
+    const listener = () => callback();
+    ipcRenderer.on('dictation:history:changed', listener);
+    return () => ipcRenderer.removeListener('dictation:history:changed', listener);
+  },
+  dictationInsertGet: () => ipcRenderer.invoke('dictation:insert:get'),
+  dictationInsertSet: (enabled: boolean) =>
+    ipcRenderer.invoke('dictation:insert:set', enabled === true),
+  dictationInsertOpenSettings: () => ipcRenderer.invoke('dictation:insert:open-settings'),
   onDictationLockScreen: (callback: () => void) => {
     const listener = () => callback();
     ipcRenderer.on('dictation:lock-screen', listener);
@@ -1092,6 +1163,20 @@ const electronAPI: ElectronAPI = {
   },
   setWindowCanvas: (mode: 'light' | 'dark') => {
     ipcRenderer.send('set-window-canvas', mode);
+  },
+  setThemeAppearance: (appearance: ThemeAppearanceReport) => {
+    ipcRenderer.send('theme:appearance', appearance);
+  },
+  getThemeAppearance: () => ipcRenderer.invoke('theme:appearance:get'),
+  onThemeAppearance: (callback: (appearance: ThemeAppearanceView) => void) => {
+    const listener = (_event: Electron.IpcRendererEvent, raw: unknown) => {
+      if (!raw || typeof raw !== 'object') return;
+      const { family, mode } = raw as Record<string, unknown>;
+      if (typeof family !== 'string' || (mode !== 'light' && mode !== 'dark')) return;
+      callback({ family, mode });
+    };
+    ipcRenderer.on('theme:appearance:changed', listener);
+    return () => ipcRenderer.removeListener('theme:appearance:changed', listener);
   },
   saveDataUrlToTemp: (dataUrl: string, uniqueId: string): Promise<SaveDataUrlResponse> => {
     return ipcRenderer.invoke('save-data-url-to-temp', dataUrl, uniqueId);
@@ -1358,6 +1443,10 @@ contextBridge.exposeInMainWorld('appConfig', appConfigAPI);
 // the main process, and the update restart would ask about a dictation that is
 // gone (`utils/dictationBusy.ts`).
 ipcRenderer.send('dictation:busy', false);
+// Nor is it recording. A `recording` report left by the old document would keep the indicator
+// on screen and make main read a dictation as running, so every fn press would start nothing.
+const idleDictation: DictationActivityReport = { activity: 'idle', level: 0 };
+ipcRenderer.send('dictation:indicator', idleDictation);
 
 // Type declaration for TypeScript
 declare global {

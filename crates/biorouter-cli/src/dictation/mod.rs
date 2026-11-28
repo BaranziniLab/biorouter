@@ -3,6 +3,8 @@
 //! [`environment`] decides where live dictation can run before any device opens,
 //! [`consent`] mints the one key to the microphone, [`capture`] runs the capture child, and
 //! [`controller`] turns its frames into text, decoding while the person speaks.
+//! `history_record` keeps each finished dictation's text in the dictation history
+//! (DD-96); `transcribe` never does.
 //!
 //! The exit codes and the `--format json` error shape are shared by `transcribe` and
 //! `dictate`, so they live here: 0 ok; 1 a failure, a failed transcription included; 2
@@ -27,6 +29,11 @@ pub mod decode;
 pub mod environment;
 #[cfg(feature = "dictation")]
 pub mod frontend;
+/// The dictation history's terminal recorder (DD-96): what `dictate` and the front ends
+/// keep once their text is out. `biorouter dictation history` reads and changes the
+/// history in `commands/dictation_history.rs`.
+#[cfg(feature = "dictation")]
+pub mod history_record;
 pub mod messages;
 
 use serde::Serialize;

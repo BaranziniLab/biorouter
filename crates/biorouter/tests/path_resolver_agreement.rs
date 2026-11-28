@@ -205,6 +205,32 @@ fn dictionary_store_honours_the_sandbox_root() {
     });
 }
 
+/// The dictation history sits in the local data folder (DD-96), which never roams on
+/// Windows. Under a sandbox root it must land inside the sandbox, or an isolated run would
+/// read and write the text of the person's real dictations.
+#[test]
+#[serial]
+fn dictation_history_honours_the_sandbox_root() {
+    with_path_root(Some("/tmp/br-path-agreement"), || {
+        assert_eq!(
+            biorouter::dictation::history::history_dir(),
+            PathBuf::from("/tmp/br-path-agreement/data/dictation/history"),
+            "the history must be read from the sandbox, not the user's own folder"
+        );
+        assert_eq!(
+            biorouter::dictation::history::open_history().history_path(),
+            PathBuf::from("/tmp/br-path-agreement/data/dictation/history/history.jsonl")
+        );
+    });
+    with_path_root(None, || {
+        assert_eq!(
+            biorouter::dictation::history::history_dir(),
+            Paths::local_data_dir().join("dictation").join("history"),
+            "without a root the history sits in the platform's local data folder"
+        );
+    });
+}
+
 #[test]
 #[serial]
 fn knowledge_store_honours_the_sandbox_root() {
