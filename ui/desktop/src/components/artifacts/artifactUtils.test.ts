@@ -707,7 +707,7 @@ describe('resolveMarkdownImageSource', () => {
     expect(resolveMarkdownImageSource('   ')).toEqual({ kind: 'blocked' });
   });
 
-  it('passes remote http(s) and data URIs straight through', () => {
+  it('classifies http(s) images as remote, which wait for a click (OP-P0-09)', () => {
     expect(resolveMarkdownImageSource('https://example.com/a.png', FILE_DIR)).toEqual({
       kind: 'remote',
       url: 'https://example.com/a.png',
@@ -716,10 +716,77 @@ describe('resolveMarkdownImageSource', () => {
       kind: 'remote',
       url: 'http://example.com/a.png',
     });
+  });
+
+  it('keeps a data URI apart from remote images: it is drawn at once and requests nothing', () => {
     expect(resolveMarkdownImageSource('data:image/png;base64,AAAA')).toEqual({
-      kind: 'remote',
+      kind: 'data',
       url: 'data:image/png;base64,AAAA',
     });
+    expect(resolveMarkdownImageSource('DATA:image/png;base64,AAAA')).toEqual({
+      kind: 'data',
+      url: 'DATA:image/png;base64,AAAA',
+    });
+  });
+
+  it('reads an http(s) address the URL parser accepts with odd slashes as remote too', () => {
+    // `https:/host` and `https:\\host` name the same host to a URL parser, so
+    // they wait for a click like any web image rather than becoming a file read.
+    expect(resolveMarkdownImageSource('https:/evil.test/a.png', FILE_DIR)).toEqual({
+      kind: 'remote',
+      url: 'https:/evil.test/a.png',
+    });
+    expect(resolveMarkdownImageSource('HTTPS:\\\\evil.test\\a.png', FILE_DIR)).toEqual({
+      kind: 'remote',
+      url: 'HTTPS:\\\\evil.test\\a.png',
+    });
+  });
+
+  // On Windows a path that starts with two separators is a network path: reading
+  // it (even the `realpath` and `lstat` the file read starts with) opens an SMB
+  // connection to the named host, with no click. So such an image is refused here,
+  // whatever form it is written in.
+  it.each([
+    ['scheme-relative', '//evil.test/a.png'],
+    ['a UNC path', '\\\\evil.test\\share\\a.png'],
+    ['mixed separators', '/\\evil.test\\share\\a.png'],
+    ['mixed separators, the other way', '\\/evil.test/a.png'],
+    ['a Windows device path', '\\\\?\\UNC\\evil.test\\share\\a.png'],
+    ['a file URL naming a host', 'file://evil.test/share/a.png'],
+    ['a file URL with a UNC path', 'file:////evil.test/a.png'],
+    ['a file URL with encoded backslashes', 'file:///%5C%5Cevil.test%5Cshare%5Ca.png'],
+    ['a file URL with backslashes', 'file:\\\\evil.test\\share\\a.png'],
+    ['encoded backslashes', '%5C%5Cevil.test%5Cshare%5Ca.png'],
+    ['encoded slashes', '%2F%2Fevil.test%2Fa.png'],
+  ])('blocks %s, which would reach a network host on read', (_form, src) => {
+    for (const base of [FILE_DIR, 'C:\\Users\\ada\\proj', undefined]) {
+      expect(resolveMarkdownImageSource(src, base)).toEqual({ kind: 'blocked' });
+    }
+  });
+
+  it('still reads an image on the network share the markdown itself sits in', () => {
+    const share = '\\\\lab-server\\share\\proj';
+    expect(resolveMarkdownImageSource('fig.png', share)).toEqual({
+      kind: 'local',
+      path: '\\\\lab-server\\share\\proj\\fig.png',
+    });
+    expect(resolveMarkdownImageSource('\\\\LAB-SERVER\\share\\proj\\out\\fig.png', share)).toEqual({
+      kind: 'local',
+      path: '\\\\LAB-SERVER\\share\\proj\\out\\fig.png',
+    });
+    // Another share, another host, or a sibling whose name only extends the folder's.
+    expect(resolveMarkdownImageSource('\\\\lab-server\\other\\fig.png', share)).toEqual({
+      kind: 'blocked',
+    });
+    expect(resolveMarkdownImageSource('\\\\evil.test\\share\\proj\\fig.png', share)).toEqual({
+      kind: 'blocked',
+    });
+    expect(resolveMarkdownImageSource('\\\\lab-server\\share\\proj2\\fig.png', share)).toEqual({
+      kind: 'blocked',
+    });
+    expect(
+      resolveMarkdownImageSource('\\\\lab-server\\share\\proj\\..\\..\\other\\fig.png', share)
+    ).toEqual({ kind: 'blocked' });
   });
 });
 

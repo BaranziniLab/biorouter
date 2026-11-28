@@ -35,6 +35,7 @@ import {
   Play,
 } from './icons/app-icons';
 import { TranscriptIconButton } from './transcript/TranscriptIconButton';
+import { Button } from './ui/button';
 import { Tooltip, TooltipContent, TooltipTrigger } from './ui/Tooltip';
 import { scrollRegionProps, useOverflowsSideways } from './transcript/useOverflowsSideways';
 import { transcriptCopy } from './transcript/copy';
@@ -49,6 +50,7 @@ import {
   looksLikePreviewableFile,
   normalizeCodeLanguage,
   resolveMarkdownImageSource,
+  type MarkdownImageSource,
 } from './artifacts/artifactUtils';
 import {
   isLocalFileReference,
@@ -60,6 +62,7 @@ import { isOpenableFileLink, useFileLinkExistence } from './artifacts/fileLinkSt
 import { opensInDefaultBrowser, withLinkClickOrigin } from './artifacts/browserLinks';
 import { readLinkTarget } from './artifacts/linkPreference';
 import { openInBrowser } from '../utils/openInBrowser';
+import { remoteImageTarget, type RemoteImageTarget } from '../utils/remoteImage';
 
 const codeCopy = transcriptCopy.code;
 
@@ -483,32 +486,223 @@ function BrokenImage({ alt }: { alt?: string }) {
   );
 }
 
-// Markdown images in the preview. Remote (`http(s)`/`data:`) srcs render
-// directly — the same reach chat already has. A LOCAL image (relative to the
-// previewed file, absolute, `~`, or `file://`) can't be loaded by the renderer
-// from disk, so it is read through the existing allowlisted `readArtifactFile`
-// IPC and inlined as a `data:` URI (CSP-safe). Anything the allowlist denies, or
-// that traverses out of the file's directory, degrades to `BrokenImage`.
+// The bar an image shows while its bytes are on the way. A `status`, so a screen
+// reader says what is loading: a bare span's `aria-label` is read by nothing.
+function LoadingImage({ alt }: { alt?: string }) {
+  const name = alt?.trim();
+  return (
+    <span
+      role="status"
+      className="inline-block h-4 w-24 rounded-inner bg-background-medium align-middle"
+    >
+      <span className="sr-only">
+        {name ? codeCopy.loadingImageNamed(name) : codeCopy.loadingImage}
+      </span>
+    </span>
+  );
+}
+
+/** Longest address the load button's tooltip shows; the rest is cut with "…". */
+const REMOTE_IMAGE_TOOLTIP_CHARS = 300;
+
+/** What a remote image shows: a load button, then the image, or the unavailable chip. */
+type RemoteImageState =
+  | { phase: 'waiting' }
+  | { phase: 'loading' }
+  | { phase: 'shown'; src: string }
+  | { phase: 'failed' };
+
+/**
+ * A remote image in markdown, which loads on a person's click (OP-P0-09, the
+ * owner's answer to D15; why in `utils/remoteImage.ts`). Until the click it is a
+ * button naming the host, and its tooltip shows the address.
+ *
+ * - **The click loads this image and nothing else.** The state is this
+ *   component's own, so a second copy of the same address, another image from
+ *   the same host and the same message drawn again (in this chat or another)
+ *   all wait for their own click. Nothing is stored anywhere.
+ * - **The desktop fetches it in the main process** (`loadRemoteImage`, no
+ *   cookie, referrer or cache, never a private address) and draws the bytes from
+ *   a `blob:` URL, revoked when the image goes away. The desktop page policy
+ *   admits no web image at all (`img-src` in `main.ts`), so this is the only way
+ *   one can appear there.
+ * - **A browser on `biorouter serve` has no main process**, so there the click
+ *   sets the address itself, asking for no referrer. That request is the
+ *   browser's own: it carries whatever cookies the browser keeps for the host.
+ * - **Inside a link it is not a second button.** A button nested in the link's
+ *   own button is invalid and would be two click targets for one link; the link
+ *   is what a click there opens, so the image stays a chip naming its host.
+ */
+const RemoteMarkdownImage = memo(function RemoteMarkdownImage({
+  target,
+  alt,
+  insideLink,
+}: {
+  target: RemoteImageTarget;
+  alt?: string;
+  insideLink: boolean;
+}) {
+  const [state, setState] = useState<RemoteImageState>({ phase: 'waiting' });
+  const blobUrlRef = useRef<string | null>(null);
+  const mountedRef = useRef(true);
+  const name = alt?.trim() ?? '';
+
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      if (blobUrlRef.current) URL.revokeObjectURL(blobUrlRef.current);
+      blobUrlRef.current = null;
+    };
+  }, []);
+
+  const load = (event: React.MouseEvent<HTMLButtonElement>) => {
+    event.preventDefault();
+    event.stopPropagation();
+    if (state.phase !== 'waiting') return;
+    const loadRemoteImage = window.electron?.loadRemoteImage;
+    if (typeof loadRemoteImage !== 'function') {
+      setState({ phase: 'shown', src: target.url });
+      return;
+    }
+    setState({ phase: 'loading' });
+    loadRemoteImage(target.url)
+      .then((result) => {
+        if (!mountedRef.current) return;
+        if (
+          !result?.ok ||
+          !ArrayBuffer.isView(result.bytes) ||
+          typeof result.mimeType !== 'string' ||
+          !result.mimeType.startsWith('image/')
+        ) {
+          setState({ phase: 'failed' });
+          return;
+        }
+        // A fresh copy: the IPC hands back a view whose buffer type a Blob
+        // does not accept as written.
+        const url = URL.createObjectURL(
+          new Blob([new Uint8Array(result.bytes)], { type: result.mimeType })
+        );
+        blobUrlRef.current = url;
+        setState({ phase: 'shown', src: url });
+      })
+      .catch(() => {
+        if (mountedRef.current) setState({ phase: 'failed' });
+      });
+  };
+
+  if (state.phase === 'failed') return <BrokenImage alt={alt} />;
+  if (state.phase === 'loading') return <LoadingImage alt={alt} />;
+  if (state.phase === 'shown') {
+    return (
+      <img
+        src={state.src}
+        alt={alt ?? ''}
+        referrerPolicy="no-referrer"
+        className="mx-auto my-2 h-auto max-w-full rounded-element"
+        onError={() => setState({ phase: 'failed' })}
+      />
+    );
+  }
+
+  if (insideLink) {
+    return (
+      // The unavailable chip's recipe, so an image that has not loaded reads the
+      // same inside a link and out of one.
+      <span className="inline-flex max-w-full items-center gap-1 rounded-inner border border-transparent bg-background-medium px-1.5 py-0.5 align-middle text-supporting text-text-muted">
+        <ImageIcon className="size-3.5 shrink-0" aria-hidden="true" />
+        <span className="truncate">
+          {name ? codeCopy.imageFromNamed(target.host, name) : codeCopy.imageFrom(target.host)}
+        </span>
+      </span>
+    );
+  }
+
+  const shownAddress =
+    target.url.length > REMOTE_IMAGE_TOOLTIP_CHARS
+      ? `${target.url.slice(0, REMOTE_IMAGE_TOOLTIP_CHARS)}…`
+      : target.url;
+  // The address is a tooltip, never a `title`: the app's tooltip layer turns a
+  // button's title into its name, and the name is the sentence below.
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <Button
+          type="button"
+          variant="secondary"
+          size="xs"
+          shape="pill"
+          className="max-w-full align-middle"
+          aria-label={
+            name
+              ? codeCopy.loadImageFromNamed(target.host, name)
+              : codeCopy.loadImageFrom(target.host)
+          }
+          onClick={load}
+        >
+          <ImageIcon aria-hidden="true" />
+          <span className="truncate">{codeCopy.loadImageFrom(target.host)}</span>
+        </Button>
+      </TooltipTrigger>
+      <TooltipContent>
+        <span className="break-all">{shownAddress}</span>
+      </TooltipContent>
+    </Tooltip>
+  );
+});
+
+// Markdown images, in chat and in the preview. A REMOTE (`http(s)`) image waits
+// for a click (`RemoteMarkdownImage`) and is never an `<img>` source on its own.
+// A `data:` URI is drawn at once: it requests nothing. A LOCAL image (relative
+// to the previewed file, absolute, `~`, or `file://`) can't be loaded by the
+// renderer from disk, so it is read through the existing allowlisted
+// `readArtifactFile` IPC and inlined as a `data:` URI (CSP-safe). Anything the
+// allowlist denies, or that traverses out of the file's directory, degrades to
+// `BrokenImage`, as does a remote address a person may not load (one carrying a
+// user name or password).
 const MarkdownImage = memo(function MarkdownImage({
   src,
   alt,
   workingDir,
+  insideLink = false,
 }: {
   src?: string;
   alt?: string;
   workingDir?: string;
+  insideLink?: boolean;
 }) {
   const source = useMemo(
     () => resolveMarkdownImageSource(src ?? '', workingDir),
     [src, workingDir]
   );
+  const remote = useMemo(
+    () => (source.kind === 'remote' ? remoteImageTarget(source.url) : null),
+    [source]
+  );
+  if (source.kind === 'remote') {
+    if (!remote) return <BrokenImage alt={alt} />;
+    // Keyed on the address, so a different image never inherits this one's click.
+    return (
+      <RemoteMarkdownImage key={remote.url} target={remote} alt={alt} insideLink={insideLink} />
+    );
+  }
+  return <NonRemoteMarkdownImage source={source} alt={alt} />;
+});
+
+const NonRemoteMarkdownImage = memo(function NonRemoteMarkdownImage({
+  source,
+  alt,
+}: {
+  source: Exclude<MarkdownImageSource, { kind: 'remote' }>;
+  alt?: string;
+}) {
   const [resolvedSrc, setResolvedSrc] = useState<string | null>(
-    source.kind === 'remote' ? source.url : null
+    source.kind === 'data' ? source.url : null
   );
   const [failed, setFailed] = useState(source.kind === 'blocked');
 
   useEffect(() => {
-    if (source.kind === 'remote') {
+    if (source.kind === 'data') {
       setResolvedSrc(source.url);
       setFailed(false);
       return;
@@ -556,14 +750,7 @@ const MarkdownImage = memo(function MarkdownImage({
   }, [source]);
 
   if (failed) return <BrokenImage alt={alt} />;
-  if (!resolvedSrc) {
-    return (
-      <span
-        aria-label={alt?.trim() || codeCopy.loadingImage}
-        className="inline-block h-4 w-24 rounded-inner bg-background-medium align-middle"
-      />
-    );
-  }
+  if (!resolvedSrc) return <LoadingImage alt={alt} />;
   return (
     <img
       src={resolvedSrc}
@@ -883,11 +1070,13 @@ function MarkdownAnchor({ href, children: linkChildren, node: _node, ...props }:
 
 function MarkdownImageSlot({ src, alt }: SlotProps<'img'>) {
   const { workingDir } = useContext(MarkdownRenderContext);
+  const insideLink = useContext(InsideLinkContext);
   return (
     <MarkdownImage
       src={typeof src === 'string' ? src : undefined}
       alt={typeof alt === 'string' ? alt : undefined}
       workingDir={workingDir}
+      insideLink={insideLink}
     />
   );
 }

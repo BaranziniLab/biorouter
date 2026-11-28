@@ -41,7 +41,7 @@ organisation's plan runs 20 jobs at once, 5 of them on macOS.
 
 | Check | What it runs | Run time (min) |
 |---|---|---|
-| `guards` | cross-drift, retired-name, version, Copilot naming, vendored source guards (agent-desktop and whisper.cpp), the dictation fixture budget and build prerequisites | 0.5 |
+| `guards` | cross-drift, retired-name, version, Copilot naming, vendored source guards (agent-desktop and whisper.cpp), the dictation fixture budget and build prerequisites, and workflow least privilege and action pins (added after this was measured) | 0.5 |
 | `cross-check (x86_64-pc-windows-gnu)` | `cargo check --workspace --all-targets` (8.9) and the hostname-call clippy gate (4.1), in the release's docker image | 13.2 |
 | `No inheritable sockets (x86_64-pc-windows-gnu)` | the socket gate on the target where the bug lives | 8.1 |
 | `lib tests (ubuntu)` | `cargo test --workspace --lib` (9.1) | 10.5 |
@@ -237,6 +237,16 @@ windows-gnu, and `no-ai-coauthor` as before.
   merge can join a gate's `needs` instead.
 - vitest commands are read by `ui/desktop/src/test/vitestIsolation.test.ts`, which hands each one
   to vitest's own parser, so write literal flags (`--shard=2/3`), not `${{ }}` expressions.
+- Every workflow holds a top-level `permissions:` block that writes nothing, because this
+  repository's default token can write to every scope. A job that writes (a release, a Pages
+  deploy) names the scope in its own `permissions:` block, as `deploy` in `deploy-landing.yml`
+  and `windows-runtime` in `release-artifact-smoke.yml` do.
+- Every action is named by its full commit SHA with the release it carries,
+  `uses: actions/checkout@<40-character SHA> # v4.4.0`, and so are the BRXT adapter kit's
+  workflow templates. Resolve the SHA from the tag with `gh api` (a tag can point at a tag
+  object; follow it to the commit), never from memory. `scripts/check-workflow-hardening.py`
+  enforces both rules in `guards` and in `just check-everything`, and its `--self-test` shows
+  each rule refusing what it should.
 
 ## Related documentation
 

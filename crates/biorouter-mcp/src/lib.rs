@@ -30,6 +30,7 @@ pub mod mcp_server_runner;
 mod memory;
 pub mod paths;
 pub mod privacy_toggle;
+pub mod safe_fetch;
 pub mod secret_guard;
 #[cfg(test)]
 mod test_sandbox;

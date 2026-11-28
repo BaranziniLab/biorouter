@@ -3,6 +3,7 @@ use crate::knowledge::{
     subagent::loop_::{Completer, SubAgent, SubAgentBounds, ToolDispatch},
     types::{Credibility, CredibilityTier},
 };
+use crate::safe_fetch::{FetchError, SafeFetch};
 use anyhow::Result;
 use async_trait::async_trait;
 use rmcp::model::{JsonObject, Tool};
@@ -104,19 +105,34 @@ fn agentic_tools() -> Vec<Tool> {
 // ---------------------------------------------------------------------------
 
 pub struct AgenticToolDispatch {
+    /// For the two search tools, whose host is fixed here.
     client: reqwest::Client,
+    /// For `fetch_url`, whose URL the classifier model chooses, so it reaches
+    /// public internet addresses only (`crate::safe_fetch`).
+    fetch: SafeFetch,
     crossref_base: String,
     openalex_base: String,
 }
+
+fn classifier_fetch() -> SafeFetch {
+    SafeFetch::builder()
+        .user_agent(CLASSIFIER_USER_AGENT)
+        .timeout(std::time::Duration::from_secs(10))
+        .build()
+        .expect("reqwest client")
+}
+
+const CLASSIFIER_USER_AGENT: &str = "Biorouter-Knowledge/1.0 (mailto:knowledge@biorouter.local)";
 
 impl AgenticToolDispatch {
     pub fn new() -> Self {
         Self {
             client: reqwest::Client::builder()
-                .user_agent("Biorouter-Knowledge/1.0 (mailto:knowledge@biorouter.local)")
+                .user_agent(CLASSIFIER_USER_AGENT)
                 .timeout(std::time::Duration::from_secs(10))
                 .build()
                 .expect("reqwest client"),
+            fetch: classifier_fetch(),
             crossref_base: "https://api.crossref.org".to_string(),
             openalex_base: "https://api.openalex.org".to_string(),
         }
@@ -126,6 +142,7 @@ impl AgenticToolDispatch {
     pub fn with_bases(crossref_base: &str, openalex_base: &str) -> Self {
         Self {
             client: reqwest::Client::new(),
+            fetch: classifier_fetch(),
             crossref_base: crossref_base.to_string(),
             openalex_base: openalex_base.to_string(),
         }
@@ -146,7 +163,12 @@ impl ToolDispatch for AgenticToolDispatch {
                 let url = args["url"]
                     .as_str()
                     .ok_or_else(|| anyhow::anyhow!("fetch_url: missing 'url'"))?;
-                let resp = self.client.get(url).send().await?;
+                let resp = self
+                    .fetch
+                    .get(url)?
+                    .send()
+                    .await
+                    .map_err(FetchError::from)?;
                 let bytes = resp.bytes().await?;
                 let text = String::from_utf8_lossy(&bytes[..bytes.len().min(4096)]).to_string();
                 Ok(strip_html_tags(&text))
@@ -589,6 +611,29 @@ mod tests {
         assert_eq!(c.classifier_version, 2);
         // And every search went to the mock, not to the live API.
         assert!(!server.received_requests().await.unwrap().is_empty());
+    }
+
+    /// The classifier sub-agent picks the URL its `fetch_url` tool reads, so the
+    /// tool reaches public addresses only.
+    #[tokio::test]
+    async fn fetch_url_tool_refuses_a_loopback_address() {
+        use wiremock::{matchers::method, Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("local secret"))
+            .expect(0)
+            .mount(&server)
+            .await;
+        let dispatch = AgenticToolDispatch::new();
+        let error = match dispatch
+            .call("fetch_url", serde_json::json!({ "url": server.uri() }))
+            .await
+        {
+            Ok(text) => panic!("a loopback URL must be refused, got: {text}"),
+            Err(error) => format!("{error:#}"),
+        };
+        assert!(error.contains("loopback"), "{error}");
     }
 
     // ── Test 4: parse_credibility_json edge cases ─────────────────────────────

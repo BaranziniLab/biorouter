@@ -25,8 +25,8 @@ jobs:
           - x86_64-unknown-linux-gnu
           - x86_64-pc-windows-gnu
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/cache@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: |
             .cross-cache/registry
@@ -47,13 +47,13 @@ jobs:
           if [ -d .cross-cache ]; then
             sudo chown -R "$(id -u):$(id -g)" .cross-cache
           fi
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: package-backends-${{ matrix.target }}
           path: target/${{ matrix.target }}/release/
           if-no-files-found: error
           retention-days: 7
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: package-copilot-helper-${{ matrix.target }}
           path: target/computer-use/${{ matrix.target == 'x86_64-pc-windows-gnu' && 'win32-x64' || 'linux-x64' }}/
@@ -75,13 +75,13 @@ jobs:
             runner: windows-latest
             triple: x86_64-pc-windows-gnu
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         if: matrix.triple != ''
         with:
           name: package-backends-${{ matrix.triple }}
           path: target/${{ matrix.triple }}/release/
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         if: matrix.triple != ''
         with:
           name: package-copilot-helper-${{ matrix.triple }}
@@ -91,12 +91,12 @@ jobs:
         run: |
           chmod +x target/${{ matrix.triple }}/release/biorouter target/${{ matrix.triple }}/release/biorouterd
           chmod +x target/computer-use/${{ matrix.target }}/agent-desktop
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: '24'
           cache: npm
           cache-dependency-path: ui/desktop/package-lock.json
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
           python-version: '3.12'
       - name: Install Linux package maker and extraction tools
@@ -109,7 +109,7 @@ jobs:
       - name: Verify archives and installed runtimes
         timeout-minutes: 35
         run: python scripts/computer-use-package-acceptance.py verify ${{ matrix.target }}
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: always()
         with:
           name: installed-packages-${{ matrix.target }}
@@ -144,22 +144,22 @@ jobs:
           - target: darwin-x64
             runner: macos-26-intel
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: '24'
           cache: npm
           cache-dependency-path: ui/desktop/package-lock.json
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
           python-version: '3.12'
-      - uses: dtolnay/rust-toolchain@master
+      - uses: dtolnay/rust-toolchain@df2a88e9fe4098bad09cb42c3dec7187f15861fc # master
         with:
           toolchain: '1.92'
-      - uses: arduino/setup-protoc@v3
+      - uses: arduino/setup-protoc@c65c819552d16ad3c9b72d9dfd5ba5237b9c906b # v3.0.0
         with:
           repo-token: ${{ github.token }}
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           key: package-release-${{ matrix.target }}
           cache-on-failure: true
@@ -170,7 +170,7 @@ jobs:
       - name: Verify archives and installed runtimes
         timeout-minutes: 35
         run: python scripts/computer-use-package-acceptance.py verify ${{ matrix.target }}
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: always()
         with:
           name: installed-packages-${{ matrix.target }}

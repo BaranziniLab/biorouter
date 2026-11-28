@@ -5389,6 +5389,8 @@ mod tests {
             )
             .mount(&server)
             .await;
+        // Ingest reaches public addresses only; this mock is admitted on its port.
+        let _admitted = crate::safe_fetch::test_support::admit_local_server(*server.address());
 
         let cancel = CancellationToken::new();
         let task_cancel = cancel.clone();

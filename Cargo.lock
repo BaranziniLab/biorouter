@@ -1321,6 +1321,7 @@ dependencies = [
  "futures",
  "git2",
  "htmd",
+ "hyper 0.14.32",
  "ignore",
  "image 0.24.9",
  "include_dir",

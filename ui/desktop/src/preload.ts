@@ -26,6 +26,7 @@ import type {
   EmbeddedBrowserSuggestion,
 } from './browser/types';
 import type { SearchEngine } from './browser/addressBar';
+import { REMOTE_IMAGE_CHANNEL, type RemoteImageResult } from './utils/remoteImage';
 import type {
   BrowserAgentActivity,
   BrowserAgentRequest,
@@ -301,6 +302,13 @@ type ElectronAPI = {
   importSessionFile: () => Promise<string | null>;
   readFile: (directory: string) => Promise<FileResponse>;
   readArtifactFile: (filePath: string) => Promise<ArtifactFilePreview>;
+  /**
+   * Fetch the one remote image a person clicked in a chat, in the main process,
+   * with no cookie, referrer or cache (OP-P0-09, `utils/remoteImageFetch.ts`).
+   * Optional because the page `biorouter serve` sends to a browser has no main
+   * process: there the click sets the address itself.
+   */
+  loadRemoteImage?: (url: string) => Promise<RemoteImageResult>;
   /**
    * Does each of these paths exist, and is it a directory? One answer per
    * request, in order.
@@ -946,6 +954,7 @@ const electronAPI: ElectronAPI = {
   importSessionFile: () => ipcRenderer.invoke('import-session-file'),
   readFile: (filePath: string) => ipcRenderer.invoke('read-file', filePath),
   readArtifactFile: (filePath: string) => ipcRenderer.invoke('read-artifact-file', filePath),
+  loadRemoteImage: (url: string) => ipcRenderer.invoke(REMOTE_IMAGE_CHANNEL, url),
   checkFilePaths: (requests: FilePathCheckRequest[]) =>
     ipcRenderer.invoke('check-file-paths', requests),
   writeFile: (filePath: string, content: string) =>
