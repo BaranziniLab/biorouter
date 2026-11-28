@@ -309,7 +309,7 @@
       "manifest_name": "bioroffice",
       "repository": "BaranziniLab/BiorOffice",
       "group": "tools",
-      "version": "1.1.0",
+      "version": "1.1.2",
       "status": "active",
       "aliases": [],
       "job": "office.cli-document-editing",
@@ -333,14 +333,14 @@
           "name": "OfficeCLI",
           "version": "1.0.163",
           "licence": "Apache-2.0",
-          "how": "bundled binary with LICENSE, NOTICE and THIRD-PARTY-NOTICES.txt"
+          "how": "bundled binary, unmodified and run as a child process, with LICENSE, NOTICE and THIRD-PARTY-NOTICES.txt kept verbatim"
         }
       ],
       "licence": "Apache-2.0",
       "release": {
-        "tag": "v1.1.0",
+        "tag": "v1.1.2",
         "asset": "bioroffice.brxt",
-        "sha256": "465e9b0ac1190dee7ecb755c83e965976affe18fdb5e48fd5290188a2c321668"
+        "sha256": "c5922e45c0abdaf2cb21fe9cae4af92fdbaff07f090717671c89ca11c03a759d"
       },
       "privacy": "public",
       "affiliation": null,
@@ -383,6 +383,11 @@
           "version": "1.1.0",
           "date": "2026-11-22",
           "note": "OfficeCLI 1.0.163 with its licence and notices; repository BaranziniLab/BiorOffice"
+        },
+        {
+          "version": "1.1.2",
+          "date": "2026-11-28",
+          "note": "Two security patches, same OfficeCLI 1.0.163 binary and notices. 1.1.1 runs the engine as a child and removes OfficeCLI's install, update and download instructions from what the engine returns to the agent (load_skill word-form had handed it OfficeCLI's installer), and refuses OfficeCLI's install, mcp and skills install commands when a command starts with them. 1.1.2 refuses them in every spelling the engine's parser accepts (leading options such as --json, help, response files, the engine's name in any case or as a path)"
         }
       ]
     },
@@ -777,7 +782,7 @@
         {
           "name": "protocols-io-methods",
           "job": "lab.protocols-io.tool-usage",
-          "method_skill": null
+          "method_skill": "experimental-design"
         }
       ],
       "overlaps_builtin": [],
@@ -813,6 +818,11 @@
           "version": "0.2.0",
           "date": "2026-11-22",
           "note": "BRXT adapter kit: credential bound to its own host"
+        },
+        {
+          "version": "0.2.0",
+          "date": "2026-11-28",
+          "note": "Catalog correction, no new release: the bundled protocols-io-methods skill's method_skill is experimental-design, as that skill in the released v0.2.0 bundle names it (it was null). The detail card's token line now follows the v0.2.0 manifest and README: PROTOCOLS_IO_TOKEN is marked optional, and the v3 API answers \"Authorization token is not correct\" without it"
         }
       ]
     },
@@ -1956,12 +1966,7 @@
         "upstreams": [],
         "built_with": "brxt-adapter-kit 1.0.1"
       },
-      "third_party": [
-        {
-          "name": "zotero-mcp core",
-          "licence": "MIT"
-        }
-      ],
+      "third_party": [],
       "licence": "Apache-2.0",
       "release": {
         "tag": "v0.2.0",
@@ -1998,6 +2003,11 @@
           "version": "0.2.0",
           "date": "2026-11-22",
           "note": "BRXT adapter kit: credential bound to its own host"
+        },
+        {
+          "version": "0.2.0",
+          "date": "2026-11-28",
+          "note": "Catalog correction, no new release: third_party no longer lists \"zotero-mcp core, MIT\". The released v0.2.0 bundle holds no zotero-mcp code; it vendors only the BRXT adapter kit 1.0.1 and installs fastmcp, httpx and pydantic from PyPI"
         }
       ]
     },
@@ -2007,7 +2017,7 @@
       "manifest_name": "markitdownagent",
       "repository": "BaranziniLab/MarkItDownAgent",
       "group": "adapters",
-      "version": "0.2.0",
+      "version": "0.3.1",
       "status": "active",
       "aliases": [],
       "job": "documents.markitdown-conversion",
@@ -2018,7 +2028,7 @@
         "MarkItDown",
         "Documents",
         "Markdown",
-        "Apache-2.0"
+        "Apache-2.0 AND MIT"
       ],
       "source": {
         "origin": "in-house",
@@ -2030,14 +2040,20 @@
           "name": "markitdown",
           "version": "0.1.9",
           "licence": "MIT",
-          "how": "Python dependency with the [all] extras"
+          "how": "Python dependency with only the extras docx, outlook, pdf, pptx, xls, xlsx and youtube-transcription"
+        },
+        {
+          "name": "markitdown-mcp",
+          "version": "0.0.1a8",
+          "licence": "MIT",
+          "how": "error messages of convert_to_markdown ported from it; NOTICE carries Microsoft's MIT licence text"
         }
       ],
-      "licence": "Apache-2.0",
+      "licence": "Apache-2.0 AND MIT",
       "release": {
-        "tag": "v0.2.0",
+        "tag": "v0.3.1",
         "asset": "markitdownagent.brxt",
-        "sha256": "185bfbc97de8705bf949a7bd4c57fcd99bf4c660868d5185a22609f56d885ef4"
+        "sha256": "30ac691850169c6697fbf7bed199e4e227f88dd26a6e0eebffa3b7d404f8d00e"
       },
       "privacy": "public",
       "affiliation": null,
@@ -2065,6 +2081,11 @@
           "version": "0.2.0",
           "date": "2026-11-22",
           "note": "wraps MarkItDown 0.1.9; formats the built-ins lack"
+        },
+        {
+          "version": "0.3.1",
+          "date": "2026-11-28",
+          "note": "0.3.0: MarkItDown is installed with only the extras for its documented formats in place of [all], so speech transcription (which sent audio to Google) and the Azure cloud converters are not installed and audio gives its metadata only; PyMuPDF is not a dependency; NOTICE carries Microsoft's MIT text for the error messages copied from markitdown-mcp, so the licence is Apache-2.0 AND MIT. 0.3.1: credits lesyk for MarkItDown's PDF converter work beside Adam Fourney; the build backend is pinned (hatchling 1.33.0); THIRD-PARTY-NOTICES.md lists every package uv.lock installs, on every platform"
         }
       ]
     },
