@@ -21,14 +21,15 @@
 //   2. Without JavaScript, every static card has its line and the extension lines show.
 //   3. Each shelf's curator line shows when the shelf is selected, the footer's shows,
 //      and no card carries the curator sentence.
-//   4. At 1440 and 390 wide, eight named rows open on a provenance row that matches
+//   4. At 1440 and 390 wide, nine named rows open on a provenance row that matches
 //      their credits.json entry (summary, the source or idea list with "Show all N",
 //      data and earlier versions collapsed, people, curator, Licence files and Full
 //      record links), every link in it is http(s), the row stays inside its card
 //      with every fold opened and the page does not scroll sideways, and opening the
 //      row moves none of the controls beside the name (on a phone an extension's
 //      GitHub link and download sit under the description and move only as far as
-//      its opened clamp grows).
+//      its opened clamp grows). The panel's other rows (What it does, Requirements
+//      and the rest) carry no credit wording: credit is said once, in that row.
 //   5. Steps 1 and 3 run under a light and a dark colour scheme, and every line paints
 //      at 4.5:1 or more against what is painted under it (rasterised, as
 //      baam-privacy-facet.test.mjs reads its badges).
@@ -67,6 +68,8 @@ import { createReadStream, existsSync, readFileSync, statSync } from 'node:fs';
 import { dirname, extname, join, normalize, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import { creditLinePhrases, creditWordingPattern } from './lib/credits.mjs';
+
 const SCRIPTS = dirname(fileURLToPath(import.meta.url));
 const REPO = resolve(SCRIPTS, '../..');
 const ROOT = process.env.LANDING_ROOT ? resolve(process.env.LANDING_ROOT) : resolve(SCRIPTS, '..');
@@ -89,6 +92,7 @@ const PANEL_ITEMS = [
   ['extensions', 'biomcpagent', 'third-party, with a data list'],
   ['extensions', 'idcagent', 'a bridge to a hosted service'],
   ['extensions', 'opencomputeruseagent', 'adapted, three sources'],
+  ['extensions', 'gptragent', 'in-house, private, its panel text written by hand'],
   ['skills', 'replication-package-audit', 'adapted, ten sources'],
   ['skills', 'empirical-research-router', 'ideas-derived'],
   ['skills', 'superpowers', 'a third-party bundle'],
@@ -273,6 +277,8 @@ if (!existsSync(PLAYWRIGHT)) {
   });
 
   const CURATED_BY = CREDITS.curated_by;
+  /** The words a credit is written in (lib/credits.mjs), with the lead of every line in credits.json. */
+  const CREDIT_WORDING = creditWordingPattern(creditLinePhrases(CREDITS));
   const active = (kind) => Object.keys(CREDITS[kind]).filter((id) => CREDITS[kind][id].status === 'active');
   const entry = (kind, id) => (Object.hasOwn(CREDITS[kind], id) ? CREDITS[kind][id] : null);
 
@@ -626,8 +632,13 @@ if (!existsSync(PLAYWRIGHT)) {
       });
       const links = [...r.querySelectorAll('a')].map((a) => ({ text: a.textContent.replace(/\s*↗\s*$/, '').trim(), href: a.getAttribute('href') }));
       const next = r.nextElementSibling;
+      const others = [...card.querySelectorAll(':scope > .row-detail .detail-row:not([data-row="credits"])')].map((o) => ({
+        dt: o.querySelector(':scope > dt')?.textContent.trim() ?? '',
+        text: o.textContent.replace(/\s+/g, ' '),
+      }));
       return {
         count: rows.length,
+        others,
         dt: r.querySelector(':scope > dt')?.textContent.trim() ?? null,
         blocks,
         links,
@@ -759,6 +770,13 @@ if (!existsSync(PLAYWRIGHT)) {
       out.push(`${label}: Full record links ${JSON.stringify(record.map((l) => l.href))}, credits.json says ${e.record}`);
     }
     for (const l of seen.links) if (!/^https?:\/\//i.test(l.href || '')) out.push(`${label}: links "${l.text}" to ${l.href}, not an http(s) URL`);
+    // Credit is said once, in this row: the panel's other rows (What it does,
+    // Requirements and the rest, from baam-details.js and baam.js) say none.
+    for (const o of seen.others) {
+      CREDIT_WORDING.lastIndex = 0;
+      const hit = CREDIT_WORDING.exec(o.text);
+      if (hit) out.push(`${label}: the "${o.dt}" row says "${hit[0]}"; credit belongs in the ${PANEL_ROW_LABEL} row only`);
+    }
     return out;
   }
 

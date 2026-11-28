@@ -46,7 +46,9 @@
 import {
   CARD_CREDIT_PATTERN,
   CURATED_BY,
+  EXTENSION_BY_LAB,
   MADE_BY_LAB,
+  ORIGIN_SENTENCES,
   creditLine,
   currentIdeas,
   isPublication,
@@ -284,8 +286,41 @@ const CARD_START = { extensions: /<div class="ext-card(?:\s[^"]*)?"[^>]*>/g, ski
 const DESC = { extensions: /<p class="ext-desc">[\s\S]*?<\/p>/, skills: /<p class="skill-desc">[\s\S]*?<\/p>/ };
 const DOWNLOAD = { extensions: /<a href="([^"]+)"[^>]*class="brxt-chip"/, skills: /<a href="([^"]+)"[^>]*class="skill-dl-btn"/ };
 const CREDIT_EL = /<p class="item-credit">([\s\S]*?)<\/p>/g;
-const ANY_CREDIT_CLASS = /class="[^"]*\bitem-credit\b[^"]*"/g;
+/**
+ * A class attribute holding one of `tokens`, as a browser reads it: the value
+ * in double quotes, single quotes or none, the attribute name in any case, the
+ * token a whole class name (so "item-credits" is not "item-credit").
+ */
+function classAttr(...tokens) {
+  const t = `(?:${tokens.join('|')})`;
+  return new RegExp(
+    `\\s[cC][lL][aA][sS][sS]\\s*=\\s*(?:"(?:[^"]*\\s)?${t}(?:\\s[^"]*)?"|'(?:[^']*\\s)?${t}(?:\\s[^']*)?'|${t}(?=[\\s/>]))`,
+    'g',
+  );
+}
+const ANY_CREDIT_CLASS = classAttr(CARD_CREDIT_CLASS);
+const ANY_CURATOR_CLASS = classAttr(SHELF_CURATOR_CLASS, FOOT_CURATOR_CLASS);
 const REGISTRY_ID = /\sdata-registry-id="([^"]*)"/;
+
+/**
+ * [closeStart, closeEnd) of the end tag that closes the element whose start
+ * tag begins at `open` (a card's or a shelf's <div>), counting nested elements
+ * of the same name and skipping comments and scripts. [length, length] when
+ * it never closes.
+ */
+export function elementClose(html, open) {
+  const name = /^<([a-zA-Z][a-zA-Z0-9]*)\b/.exec(html.slice(open, open + 40))?.[1];
+  if (!name) return [html.length, html.length];
+  const re = new RegExp(`<!--[\\s\\S]*?-->|<script\\b[\\s\\S]*?<\\/script\\s*>|<(\\/?)${name}(?=[\\s/>])[^>]*>`, 'gi');
+  re.lastIndex = open;
+  let depth = 0;
+  for (let m = re.exec(html); m; m = re.exec(html)) {
+    if (m[1] === undefined) continue;
+    depth += m[1] ? -1 : 1;
+    if (depth === 0) return [m.index, m.index + m[0].length];
+  }
+  return [html.length, html.length];
+}
 
 /**
  * A card's id as build-registry.mjs and baam.js read it: an extension card's
@@ -302,8 +337,10 @@ function cardId(kind, startTag, download) {
 
 /**
  * Every card the credit rule covers, in page order:
- * { kind, id, start, end, descEnd, indent, credits: [{ start, end, inner }], stray }
- * Offsets are into `html`. `descEnd` is null for a card with no description,
+ * { kind, id, start, end, close, descEnd, indent, credits: [{ start, end, inner }], stray }
+ * Offsets are into `html`. [start, end) runs to the next card (for a shelf's
+ * last card, to the end of the shelf's cards range); `close` is the offset just
+ * past the card's own end tag. `descEnd` is null for a card with no description,
  * `id` null for one with no download link. `stray` counts item-credit classes
  * that are not the exact <p class="item-credit"> element.
  */
@@ -337,6 +374,7 @@ export function cardCreditSites(html) {
         id: cardId(kind, tags[k], dl ? dl[1] : null),
         start,
         end,
+        close: elementClose(html, start)[1],
         descEnd: desc ? start + desc.index + desc[0].length : null,
         indent,
         credits,
@@ -347,17 +385,30 @@ export function cardCreditSites(html) {
   return sites;
 }
 
-/** { shelves: { <shelf id>: [{ start, end, inner }] }, footer: [...], stray } for the curator lines. */
-export function curatorSites(html) {
+/**
+ * { shelves: { <shelf id>: [{ start, end, inner }] }, footer: [...], stray,
+ * shelfClose: { <shelf id>: offset } } for the curator lines. A curator element
+ * on a card is never a shelf's line (it is counted in `stray`), and
+ * `shelfClose` is where the shelf's own end tag starts, so a caller can tell
+ * whether its line is the shelf's last element.
+ */
+export function curatorSites(html, sites = cardCreditSites(html)) {
   const ranges = pageRanges(html);
+  const onCard = (at) => sites.some((s) => at >= s.start && at < s.close);
   const find = (re, [from, to]) =>
-    [...html.slice(from, to).matchAll(re)].map((m) => ({ start: from + m.index, end: from + m.index + m[0].length, inner: m[1] }));
+    [...html.slice(from, to).matchAll(re)]
+      .map((m) => ({ start: from + m.index, end: from + m.index + m[0].length, inner: m[1] }))
+      .filter((c) => !onCard(c.start));
   const shelves = {};
-  for (const id of CURATED_SHELVES) shelves[id] = find(/<p class="shelf-curator">([\s\S]*?)<\/p>/g, ranges.shelves[id]);
+  const shelfClose = {};
+  for (const id of CURATED_SHELVES) {
+    shelves[id] = find(/<p class="shelf-curator">([\s\S]*?)<\/p>/g, ranges.shelves[id]);
+    shelfClose[id] = elementClose(html, html.lastIndexOf('<', ranges.shelves[id][0]))[0];
+  }
   const footer = find(/<span class="foot-curator">([\s\S]*?)<\/span>/g, ranges.footer);
   const placed = Object.values(shelves).reduce((n, s) => n + s.length, 0) + footer.length;
-  const all = (html.match(/class="[^"]*\b(?:shelf|foot)-curator\b[^"]*"/g) ?? []).length;
-  return { shelves, footer, stray: all - placed };
+  const all = (html.match(ANY_CURATOR_CLASS) ?? []).length;
+  return { shelves, footer, stray: all - placed, shelfClose };
 }
 
 /**
@@ -385,7 +436,7 @@ export function generatedCreditRanges(html) {
   let cur;
   try {
     sites = cardCreditSites(html);
-    cur = curatorSites(html);
+    cur = curatorSites(html, sites);
   } catch {
     const text = String(html);
     return [/<p class="item-credit">[\s\S]*?<\/p>/g, /<p class="shelf-curator">[\s\S]*?<\/p>/g, /<span class="foot-curator">[\s\S]*?<\/span>/g]
@@ -410,9 +461,11 @@ export function entryFor(credits, kind, id) {
  * line that is missing, doubled, misplaced or different from what `credits`
  * (buildCredits' output) says, and for credit wording written by hand
  * elsewhere on the page. Subjects: "card:<kind>:<id>",
- * "card-id:<kind>:<offset>", "shelf:<shelf id>", "footer", "stray" (a
- * curator class outside a shelf or the footer, or an item-credit class
- * outside a card, both counted page-wide), "text:<excerpt>".
+ * "card-id:<kind>:<offset>", "shelf:<shelf id>" (also when its one line is
+ * not the shelf's last element), "footer", "stray" (a curator class on a card
+ * or outside a shelf or the footer, or an item-credit class outside a card,
+ * both counted page-wide), "text:<excerpt>" (handWrittenCredit, which reads
+ * `credits` for the lines it looks for).
  */
 export function creditPageProblems(html, credits) {
   const out = [];
@@ -442,21 +495,24 @@ export function creditPageProblems(html, credits) {
     }
     if (c.inner !== want) out.push({ subject, message: `${where} says "${c.inner}", the catalog gives "${want}" (run node landing/scripts/write-credits.mjs)` });
   }
-  const cur = curatorSites(html);
+  const cur = curatorSites(html, sites);
   const want = escapeText(CURATED_BY);
   for (const id of CURATED_SHELVES) {
     const found = cur.shelves[id];
-    if (found.length !== 1) out.push({ subject: `shelf:${id}`, message: `the shelf #${id} has ${found.length} curator lines; it needs exactly one <p class="shelf-curator">` });
+    if (found.length !== 1) out.push({ subject: `shelf:${id}`, message: `the shelf #${id} has ${found.length} curator lines outside its cards; it needs exactly one <p class="shelf-curator">` });
     else if (found[0].inner !== want) out.push({ subject: `shelf:${id}`, message: `the curator line of #${id} says "${found[0].inner}", not "${want}"` });
+    else if (html.slice(found[0].end, cur.shelfClose[id]).trim() !== '') {
+      out.push({ subject: `shelf:${id}`, message: `the curator line of #${id} is not the shelf's last element; it goes after the shelf's no-results line, right before the shelf closes` });
+    }
   }
   if (cur.footer.length !== 1) out.push({ subject: 'footer', message: `the footer has ${cur.footer.length} curator lines; it needs exactly one <span class="foot-curator">` });
   else if (cur.footer[0].inner !== want) out.push({ subject: 'footer', message: `the footer's curator line says "${cur.footer[0].inner}", not "${want}"` });
-  if (cur.stray > 0) out.push({ subject: 'stray', message: `${cur.stray} curator class(es) sit outside a shelf or the footer, or on another element` });
+  if (cur.stray > 0) out.push({ subject: 'stray', message: `${cur.stray} curator class(es) sit on a card, outside a shelf or the footer, or on another element` });
   const strayCredits = strayCardCredits(html, sites);
   if (strayCredits > 0) {
     out.push({ subject: 'stray', message: `${strayCredits} item-credit class(es) sit outside a card (a shelf header, the moved list, the footer or a detail panel); a credit line belongs on a card, written by node landing/scripts/write-credits.mjs` });
   }
-  for (const hit of handWrittenCredit(html)) {
+  for (const hit of handWrittenCredit(html, credits)) {
     out.push({ subject: `text:${hit}`, message: `the page says "${hit}" outside a generated credit line; credit lives in the generated lines only (take it out of the card or heading text)` });
   }
   return out;
@@ -478,20 +534,141 @@ function decodeReferences(text) {
   });
 }
 
+// ---------------------------------------------------------------- credit wording
+
+const reEscape = (s) => String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+/** A fixed phrase as a pattern source: its full stop dropped, any run of spaces one space. */
+const phraseSource = (s) => reEscape(String(s).trim().replace(/[.\s]+$/, '')).replace(/\s+/g, '\\s+');
+
 /**
- * Credit wording (CARD_CREDIT_PATTERN: "Made by the Baranzini Lab", "Adapted
- * from ", "Curated and organized by", "packaged for Biorouter by") anywhere in
- * the page's text outside the generated elements, as short excerpts. Only an
- * element where the generator puts it is exempt (generatedCreditRanges): an
- * item-credit outside a card, or a curator element outside a shelf or the
- * footer, is read as page text like any other. Comments
- * and scripts are not text; attribute values are not read. Character
- * references are read as the characters a browser shows ("Adapted&#32;from",
- * "Adapted&nbsp;from" and "Ad&#97;pted from" all show the phrase), in one pass,
- * so "&amp;#32;" stays the literal text "&#32;". Soft hyphens and zero-width
- * characters show nothing and are dropped.
+ * The clauses of the origin sentences (the sentence a full record and an
+ * opened panel start with) that say who made an item: the ones naming the lab
+ * or Biorouter ("Original work of the Baranzini Lab.", "the Baranzini Lab
+ * wrote the extension around it."). The other clauses ("The program below does
+ * the work") credit no one.
  */
-export function handWrittenCredit(html) {
+export const ORIGIN_CREDIT_CLAUSES = Object.freeze(
+  Object.values(ORIGIN_SENTENCES)
+    .flatMap((s) => s.split(/(?<=\.)\s+|;\s+/))
+    .filter((c) => /baranzini lab|biorouter/i.test(c)),
+);
+
+/**
+ * Credit wording a page may carry only in a generated element (PV14): the
+ * phrases PV13 keeps out of card text (CARD_CREDIT_PATTERN, from the rules
+ * file biorouter-skills shares, which knows no extension line), the clause
+ * every "Runs" and "Bridges to" extension line ends with (EXTENSION_BY_LAB)
+ * and the crediting clauses of the origin sentences. Built from the rules
+ * file's own constants, so the words it looks for are the words the
+ * generator writes. Case-insensitive.
+ */
+export const PAGE_CREDIT_PATTERN = new RegExp(
+  [CARD_CREDIT_PATTERN.source, ...[EXTENSION_BY_LAB, ...ORIGIN_CREDIT_CLAUSES].map(phraseSource)].join('|'),
+  'i',
+);
+
+/**
+ * The part of a credit line that says what an item comes from and who made
+ * it, without the lab's clause, "and N more" or the full stop: "Runs Playwright
+ * MCP 0.0.86 by Microsoft Corporation (Apache-2.0)", "Bridges to IDC MCP
+ * server by Imaging Data Commons", "From superpowers by Jesse Vincent (MIT)".
+ */
+export function lineLead(line) {
+  return String(line ?? '')
+    .split(/;\s+|,\s+packaged for /i)[0]
+    .replace(/\s+and \d+ more\.?$/i, '')
+    .replace(/[.\s]+$/, '')
+    .trim();
+}
+
+/**
+ * The lead of every generated line in `credits` (lineLead) that the fixed
+ * phrases do not already find, lower-cased and deduplicated: a "Runs X by Y"
+ * or "From X by Y" written out without the lab's clause still credits X's
+ * makers, so it is credit wording too.
+ */
+export function creditLinePhrases(credits) {
+  const out = new Set();
+  for (const kind of ['extensions', 'skills']) {
+    for (const entry of Object.values(credits?.[kind] ?? {})) {
+      const lead = lineLead(entry?.line);
+      if (lead.length >= 12 && !PAGE_CREDIT_PATTERN.test(lead)) out.add(lead.replace(/\s+/g, ' ').toLowerCase());
+    }
+  }
+  return [...out].sort();
+}
+
+/** PAGE_CREDIT_PATTERN and the given line leads as one global, case-insensitive pattern. */
+export function creditWordingPattern(phrases = []) {
+  return new RegExp([PAGE_CREDIT_PATTERN.source, ...phrases.map(phraseSource)].join('|'), 'gi');
+}
+
+/** Characters a browser shows nothing for: soft hyphens and zero-width characters. */
+const INVISIBLE = /[­​-‍⁠﻿]/g;
+const shown = (t) => String(t).replace(INVISIBLE, '').replace(/\s+/g, ' ');
+
+/** [{ key, excerpt }] for every match of `re` (global) in the shown text `t`. */
+function hitsIn(t, re) {
+  const out = [];
+  for (const m of t.matchAll(re)) {
+    out.push({ key: m[0].replace(/\s+/g, ' ').toLowerCase(), excerpt: t.slice(Math.max(0, m.index - 30), m.index + m[0].length + 40).trim() });
+  }
+  return out;
+}
+
+/** Credit wording in one text as a reader sees it (spaces as one, invisible characters dropped), as excerpts. */
+export function creditWording(text, phrases = []) {
+  return hitsIn(shown(text), creditWordingPattern(phrases)).map((h) => h.excerpt);
+}
+
+/** The elements whose tags join the text either side of them, as a browser lays them out: no space is shown for them. */
+const INLINE_TAG = /<\/?(?:a|abbr|b|bdi|bdo|cite|code|data|dfn|em|i|kbd|mark|q|s|samp|small|span|strong|sub|sup|time|u|var|wbr)(?=[\s/>])[^>]*>/gi;
+/** Attributes a browser shows or a screen reader announces. */
+const SHOWN_ATTRIBUTES = new Set(['title', 'alt', 'aria-label', 'aria-description', 'aria-placeholder', 'placeholder']);
+const START_TAG = /<([a-zA-Z][a-zA-Z0-9-]*)((?:"[^"]*"|'[^']*'|[^'">])*)>/g;
+const ATTRIBUTE = /([^\s"'<>/=]+)(?:\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'=<>`]+)))?/g;
+
+/**
+ * The shown attribute values of every start tag (SHOWN_ATTRIBUTES, and the
+ * content of a <meta> whose name or property is a description or a title, which
+ * search results and link previews show), references read.
+ */
+function shownAttributeValues(page) {
+  const out = [];
+  for (const tag of page.matchAll(START_TAG)) {
+    const attrs = {};
+    for (const a of tag[2].matchAll(ATTRIBUTE)) {
+      const key = a[1].toLowerCase();
+      if (!Object.hasOwn(attrs, key)) attrs[key] = a[2] ?? a[3] ?? a[4] ?? '';
+    }
+    for (const [key, value] of Object.entries(attrs)) if (SHOWN_ATTRIBUTES.has(key)) out.push(value);
+    const meta = attrs.name ?? attrs.property ?? '';
+    if (tag[1].toLowerCase() === 'meta' && /(?:^|:)(?:description|title)$/i.test(meta)) out.push(attrs.content ?? '');
+  }
+  return out.map((v) => shown(decodeReferences(v))).filter((v) => v.trim());
+}
+
+/**
+ * Credit wording (PAGE_CREDIT_PATTERN, and with `credits` the lead of every
+ * generated line, creditLinePhrases) anywhere on the page outside the
+ * generated elements, as short excerpts. Only an element where the generator
+ * puts it is exempt (generatedCreditRanges): an item-credit outside a card, or
+ * a curator element outside a shelf or the footer, is read as page text like
+ * any other.
+ *
+ * The page is read as a browser shows it. Comments and scripts are not text.
+ * The text is read twice, once with every tag a space and once with inline
+ * elements (b, span, a, wbr and the like) joining the text either side, so
+ * "Adap<b>ted</b> from" is the phrase it shows; a phrase found only the second
+ * way is reported once. The attributes a browser shows or announces (title,
+ * alt, aria-label, placeholder, a meta description) are read as well; others
+ * (class, data-*) are not. Character references are read as the characters a
+ * browser shows ("Adapted&#32;from", "Adapted&nbsp;from" and "Ad&#97;pted
+ * from" all show the phrase), in one pass, so "&amp;#32;" stays the literal
+ * text "&#32;". Soft hyphens and zero-width characters show nothing and are
+ * dropped.
+ */
+export function handWrittenCredit(html, credits = null) {
   let page = String(html);
   // Overlapping ranges (only on a malformed page) merged, then blanked back to
   // front, so each range's offsets still hold when it is blanked.
@@ -502,16 +679,92 @@ export function handWrittenCredit(html) {
     else merged.push([start, end]);
   }
   for (const [start, end] of merged.reverse()) page = page.slice(0, start) + ' ' + page.slice(end);
-  const bare = decodeReferences(
-    page
-      .replace(/<!--[\s\S]*?-->/g, ' ')
-      .replace(/<script\b[\s\S]*?<\/script>/gi, ' ')
-      .replace(/<[^>]+>/g, ' '),
-  )
-    .replace(/[­​-‍⁠﻿]/g, '')
-    .replace(/\s+/g, ' ');
-  const re = new RegExp(CARD_CREDIT_PATTERN.source, 'gi');
-  return [...bare.matchAll(re)].map((m) => bare.slice(Math.max(0, m.index - 30), m.index + m[0].length + 40).trim());
+  page = page.replace(/<!--[\s\S]*?-->/g, ' ').replace(/<script\b[\s\S]*?<\/script\s*>/gi, ' ');
+  const re = creditWordingPattern(credits ? creditLinePhrases(credits) : []);
+  const spaced = hitsIn(shown(decodeReferences(page.replace(/<[^>]+>/g, ' '))), re);
+  const joined = hitsIn(shown(decodeReferences(page.replace(INLINE_TAG, '').replace(/<[^>]+>/g, ' '))), re);
+  // A phrase found both ways is one phrase: the joined reading adds only the
+  // matches beyond what the spaced reading found for the same words.
+  const seen = new Map();
+  for (const h of spaced) seen.set(h.key, (seen.get(h.key) ?? 0) + 1);
+  const extra = joined.filter((h) => {
+    const n = seen.get(h.key) ?? 0;
+    if (n > 0) seen.set(h.key, n - 1);
+    return n === 0;
+  });
+  const attrs = shownAttributeValues(page).flatMap((v) => hitsIn(v, re));
+  return [...spaced, ...extra, ...attrs].map((h) => h.excerpt);
+}
+
+/**
+ * The string literals of a script, decoded as JavaScript reads them
+ * (\n, \xHH, \uHHHH, \u{H...}, a line continuation), comments skipped. Meant
+ * for a data file such as landing/baam-details.js, which holds object literals
+ * of strings and no regular expressions.
+ */
+export function scriptStrings(source) {
+  const s = String(source ?? '');
+  const out = [];
+  const SIMPLE = { n: '\n', t: '\t', r: '\r', b: '\b', f: '\f', v: '\v', 0: '\0' };
+  let i = 0;
+  while (i < s.length) {
+    const c = s[i];
+    if (c === '/' && s[i + 1] === '/') {
+      const e = s.indexOf('\n', i);
+      i = e === -1 ? s.length : e;
+    } else if (c === '/' && s[i + 1] === '*') {
+      const e = s.indexOf('*/', i + 2);
+      i = e === -1 ? s.length : e + 2;
+    } else if (c === '"' || c === "'" || c === '`') {
+      let j = i + 1;
+      let v = '';
+      while (j < s.length && s[j] !== c) {
+        if (s[j] === '\\') {
+          const n = s[j + 1];
+          let m;
+          if (n === '\n') j += 2;
+          else if (n === '\r') j += s[j + 2] === '\n' ? 3 : 2;
+          else if ((m = /^x([0-9a-fA-F]{2})/.exec(s.slice(j + 1, j + 4)))) { v += String.fromCodePoint(Number.parseInt(m[1], 16)); j += 4; }
+          else if ((m = /^u([0-9a-fA-F]{4})/.exec(s.slice(j + 1, j + 6)))) { v += String.fromCharCode(Number.parseInt(m[1], 16)); j += 6; }
+          else if ((m = /^u\{([0-9a-fA-F]{1,6})\}/.exec(s.slice(j + 1, j + 10))) && Number.parseInt(m[1], 16) <= 0x10ffff) { v += String.fromCodePoint(Number.parseInt(m[1], 16)); j += 1 + m[0].length; }
+          else { v += Object.hasOwn(SIMPLE, n) ? SIMPLE[n] : (n ?? ''); j += 2; }
+        } else if (c === '`' && s[j] === '$' && s[j + 1] === '{') {
+          // An expression in a template literal is code, not text: skipped.
+          let depth = 1;
+          j += 2;
+          while (j < s.length && depth > 0) {
+            if (s[j] === '{') depth += 1;
+            else if (s[j] === '}') depth -= 1;
+            j += 1;
+          }
+          v += ' ';
+        } else if (c !== '`' && s[j] === '\n') {
+          break;
+        } else {
+          v += s[j];
+          j += 1;
+        }
+      }
+      out.push(v);
+      i = j + 1;
+    } else {
+      i += 1;
+    }
+  }
+  return out;
+}
+
+/**
+ * Credit wording in the panel data (landing/baam-details.js), as excerpts:
+ * every string there reaches an opened extension panel as text (baam.js
+ * escapes it), next to the generated "Provenance and credits" row, so a credit
+ * written into one would say who made the item a second time, by hand. Read
+ * with the same words as the page (creditWordingPattern); a string shows as
+ * written, so no character reference is read.
+ */
+export function detailsCredit(source, credits = null) {
+  const re = creditWordingPattern(credits ? creditLinePhrases(credits) : []);
+  return scriptStrings(source).flatMap((v) => hitsIn(shown(v), re)).map((h) => h.excerpt);
 }
 
 /**

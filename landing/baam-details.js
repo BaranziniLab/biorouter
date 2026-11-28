@@ -339,7 +339,7 @@ window.BAAM_DETAILS = {
   },
   gptragent: {
     domain: 'Code',
-    what: 'Connects Biorouter to an R session you already have open, through the gptr package\'s MCP endpoint. The agent can find your running sessions, look at objects in memory without reloading data, and run R code in that session to analyse, plot or fix things in place. Every call passes gptr\'s own permission settings, and Biorouter asks before code runs. The extension is private: a chat on a public model never sees it, because a live session holds whatever you loaded. Made by the Baranzini Lab (Wanjun Gu, UCSF); the bridge lives in the gptr repository and is released with gptr.',
+    what: 'Connects Biorouter to an R session you already have open, through the gptr package\'s MCP endpoint. The agent can find your running sessions, look at objects in memory without reloading data, and run R code in that session to analyse, plot or fix things in place. Every call passes gptr\'s own permission settings, and Biorouter asks before code runs. The extension is private: a chat on a public model never sees it, because a live session holds whatever you loaded. The bridge lives in the gptr repository and is released with gptr.',
     asks: [
       'Look at the data frame I have loaded and tell me what is wrong with the dates.',
       'Fit a mixed model on df in my session and plot the residuals.',

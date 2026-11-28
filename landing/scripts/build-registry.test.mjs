@@ -50,8 +50,9 @@ const REAL_REPO = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
  * killed mid-test, where no `finally` runs) left a mutated credits copy behind,
  * and every other test and generator reading the tree failed until someone
  * repaired it by hand. The copy holds the generator and its libraries, the
- * catalogs, the page, the five outputs and the four files the catalog check reads
- * for Biorouter's built-in names; a file a later generator needs and this list
+ * catalogs, the page and its panel data (baam-details.js, which the catalog
+ * check scans for credit wording), the five outputs and the four files the
+ * catalog check reads for Biorouter's built-in names; a file a later generator needs and this list
  * lacks fails loudly with ENOENT, never quietly against the worktree.
  *
  * It is resolved with realpath so the paths a test writes in a message match the
@@ -61,6 +62,7 @@ const TREE_FILES = [
   'landing/scripts',
   'landing/catalog',
   'landing/baam.html',
+  'landing/baam-details.js',
   'landing/registry.json',
   'landing/credits.json',
   'ui/desktop/src/components/baam/registry.fallback.json',

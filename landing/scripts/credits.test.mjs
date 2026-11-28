@@ -31,14 +31,21 @@ import {
   CREDITS_VERSION,
   CURATED_SHELVES,
   EXTENSION_NOTICE_PATHS,
+  ORIGIN_CREDIT_CLAUSES,
+  PAGE_CREDIT_PATTERN,
   buildCredits,
   cardCreditSites,
+  creditLinePhrases,
   creditPageProblems,
+  creditWordingPattern,
   creditsEntry,
+  detailsCredit,
   escapeText,
   handWrittenCredit,
   httpUrl,
+  lineLead,
   pinText,
+  scriptStrings,
   serializeCredits,
   writeCreditsHtml,
 } from './lib/credits.mjs';
@@ -48,6 +55,7 @@ import { loadCatalogs, regeneratePage, writeSkillCardFields } from './write-cred
 const SCRIPTS = dirname(fileURLToPath(import.meta.url));
 const LANDING = resolve(SCRIPTS, '..');
 const REAL_PAGE = readFileSync(join(LANDING, 'baam.html'), 'utf8');
+const DETAILS_SRC = readFileSync(join(LANDING, 'baam-details.js'), 'utf8');
 const CATALOGS = loadCatalogs(join(LANDING, 'catalog'));
 
 // ---------------------------------------------------------------- fixtures
@@ -561,6 +569,205 @@ caught(
   'stray',
 );
 
+// ---- the words the scan looks for
+
+// The shared PV13 pattern knows four phrases and no extension line, so before
+// the page pattern each of the mutants below passed PV14 and write-credits
+// wrote the page with zero problems.
+const lineOf = (kind, id) => WRITTEN.credits[kind][id].line;
+const reEsc = (t) => t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+const inDesc = (h, s, words) => {
+  const close = h.lastIndexOf('</p>', s.descEnd);
+  return replaceSpan(h, close, close, ` ${words}`);
+};
+
+test('the page pattern holds the shared phrases, the extension clause and the crediting origin clauses, and no other words', () => {
+  for (const t of [MADE_BY_LAB, 'Adapted from X', CURATED_BY, 'packaged for Biorouter by the Baranzini Lab', 'extension by the Baranzini Lab', ...ORIGIN_CREDIT_CLAUSES]) {
+    assert.ok(PAGE_CREDIT_PATTERN.test(t), t);
+  }
+  assert.ok(ORIGIN_CREDIT_CLAUSES.some((c) => /wrote the extension/.test(c)), JSON.stringify(ORIGIN_CREDIT_CLAUSES));
+  for (const t of ['The program below does the work', 'Their licences and copyright lines ship with it.', 'From the Baranzini Lab and other authors']) {
+    assert.ok(!PAGE_CREDIT_PATTERN.test(t), t);
+  }
+});
+
+test('every generated line, and the lead of every line, is credit wording to the scan', () => {
+  const phrases = creditLinePhrases(WRITTEN.credits);
+  const re = creditWordingPattern(phrases);
+  const leads = new Set();
+  for (const kind of ['extensions', 'skills']) {
+    for (const [id, entry] of Object.entries(WRITTEN.credits[kind])) {
+      if (entry.status !== 'active') continue;
+      re.lastIndex = 0;
+      assert.ok(re.test(entry.line), `${kind} ${id}: "${entry.line}"`);
+      re.lastIndex = 0;
+      assert.ok(re.test(lineLead(entry.line)), `${kind} ${id}: the lead "${lineLead(entry.line)}"`);
+      leads.add(lineLead(entry.line).split(' ')[0]);
+    }
+  }
+  // Every line form is here: Made by, Adapted from, From, Runs, Bridges to.
+  for (const word of ['Made', 'Adapted', 'From', 'Runs', 'Bridges']) assert.ok(leads.has(word), `no active line starts "${word}"`);
+  assert.equal(lineLead(lineOf('extensions', 'playwrightagent')), 'Runs Playwright MCP 0.0.86 by Microsoft Corporation (Apache-2.0)');
+  assert.equal(lineLead(lineOf('extensions', 'idcagent')), 'Bridges to IDC MCP server by Imaging Data Commons');
+});
+
+caught(
+  "playwrightagent's exact \"Runs\" line written into its description",
+  (h) => inDesc(h, extById('playwrightagent'), escapeText(lineOf('extensions', 'playwrightagent'))),
+  /^text:.*Runs Playwright MCP 0\.0\.86/,
+);
+caught(
+  "idcagent's \"Bridges to\" line in the Extensions group head",
+  (h) => once(h, '<p>From the Baranzini Lab and other authors</p>', `<p>From the Baranzini Lab and other authors. ${escapeText(lineOf('extensions', 'idcagent'))}</p>`),
+  /^text:.*Bridges to IDC MCP server/,
+);
+caught(
+  'a paraphrased "Runs" line above the shelf bar',
+  (h) => once(h, '<div class="shelf-bar">', '<p>Runs Playwright by Microsoft; extension by the Baranzini Lab.</p><div class="shelf-bar">'),
+  /^text:.*extension by the Baranzini Lab/,
+);
+caught(
+  'a "Runs" line lead with no lab clause in a skill description',
+  (h) => inDesc(h, skillAt(7), 'Runs BioMCP 0.9.3 by Ian Maurer (MIT).'),
+  /^text:.*Runs BioMCP 0\.9\.3 by Ian Maurer/,
+);
+caught(
+  "a third-party skill's line lead in another skill's description",
+  (h) => inDesc(h, skillAt(9), 'From superpowers by Jesse Vincent (MIT).'),
+  /^text:.*From superpowers by Jesse Vincent/,
+);
+for (const clause of ORIGIN_CREDIT_CLAUSES) {
+  caught(
+    `an origin sentence's credit in a detail template ("${clause.slice(0, 40)}")`,
+    (h) => once(h, '<dl class="detail-list">', `<dl class="detail-list"><dd>${escapeText(clause)}</dd>`),
+    new RegExp(`^text:.*${reEsc(clause.slice(0, 24))}`, 'i'),
+  );
+}
+
+// A class a browser reads as item-credit is one, however the attribute is written.
+for (const [name, el] of [
+  ['single quotes', "<p class='item-credit'>"],
+  ['no quotes', '<p class=item-credit>'],
+  ['an upper-case attribute name', '<p CLASS="item-credit">'],
+]) {
+  const insert = (h) =>
+    once(h, '<div class="group-head"><h2>Extensions</h2>', `${el}${escapeText(lineOf('extensions', 'playwrightagent'))}</p><div class="group-head"><h2>Extensions</h2>`);
+  caught(`an item-credit class written with ${name} outside a card (stray)`, insert, 'stray');
+  caught(`an item-credit class written with ${name} outside a card (text)`, insert, /^text:.*Runs Playwright MCP/);
+}
+caught(
+  'a single-quoted item-credit class on a card',
+  (h) => {
+    const s = skillAt(5);
+    return replaceSpan(h, s.credits[0].end, s.credits[0].end, "<span class='item-credit'></span>");
+  },
+  `card:skills:${skillAt(5).id}`,
+);
+
+// ---- the page as a browser shows it: inline elements and shown attributes
+
+for (const [name, words] of [
+  ['a bold element inside a word', 'Adap<b>ted</b> from Foo.'],
+  ['a span inside a word', 'Cu<span>rated</span> and organized by Foo.'],
+  ['a word-break opportunity inside a word', 'Made by the Bara<wbr>nzini Lab.'],
+  ['a link around part of a word', 'Bridges to IDC MCP ser<a href="#x">ver</a> by Imaging Data Commons.'],
+]) {
+  caught(`credit wording split by ${name}`, (h) => inDesc(h, skillAt(7), words), /^text:/);
+}
+
+test('a phrase found both with and without its inline elements is reported once', () => {
+  const page = once(WRITTEN.html, '<footer class="site-footer">', '<p><b>Adapted</b> from X.</p><footer class="site-footer">');
+  assert.equal(handWrittenCredit(page, WRITTEN.credits).length, 1, JSON.stringify(handWrittenCredit(page, WRITTEN.credits)));
+});
+
+for (const [name, mutate] of [
+  ["the lab line in an extension card link's title", (h) => once(h, 'class="ext-gh-link" title="View on GitHub"', `class="ext-gh-link" title="${escapeText(MADE_BY_LAB)}"`)],
+  ['a credit in an aria-label', (h) => once(h, 'aria-label="Biorouter home"', 'aria-label="Adapted from Foo by Bar (MIT)"')],
+  ["the curator sentence in the footer logo's alt", (h) => once(h, '<img src="icon-transparent.svg" alt="" width="26"', `<img src="icon-transparent.svg" alt="${escapeText(CURATED_BY)}" width="26"`)],
+  ['the lab line in the meta description', (h) => once(h, '<meta name="description" content="', `<meta name="description" content="${escapeText(MADE_BY_LAB)} `)],
+  ['a single-quoted placeholder written with a reference', (h) => once(h, '<footer class="site-footer">', "<input placeholder='Adapted&#32;from X'><footer class=\"site-footer\">")],
+]) {
+  caught(`credit wording in ${name}`, mutate, /^text:/);
+}
+
+// ---- where the curator lines sit
+
+const SHELF_LINE = `<p class="shelf-curator">${escapeText(CURATED_BY)}</p>`;
+caught(
+  "the extensions shelf's curator line moved onto an extension card (shelf)",
+  (h) => {
+    const without = once(h, SHELF_LINE, '');
+    const s = sitesOf(without, 'extensions').find((x) => x.id === 'cdwagent');
+    return replaceSpan(without, s.credits[0].end, s.credits[0].end, SHELF_LINE);
+  },
+  'shelf:extensions-section',
+);
+caught(
+  "the skills shelf's curator line moved onto a skill card (stray)",
+  (h) => {
+    const at = h.lastIndexOf(SHELF_LINE);
+    const without = replaceSpan(h, at, at + SHELF_LINE.length, '');
+    const s = sitesOf(without, 'skills')[12];
+    return replaceSpan(without, s.credits[0].end, s.credits[0].end, SHELF_LINE);
+  },
+  'stray',
+);
+test('a second shelf curator line on a card is a stray, not the shelf\'s line', () => {
+  const s = skillAt(12);
+  const page = replaceSpan(WRITTEN.html, s.credits[0].end, s.credits[0].end, SHELF_LINE);
+  const got = subjects(creditPageProblems(page, WRITTEN.credits));
+  assert.ok(got.includes('stray'), JSON.stringify(got));
+  assert.ok(!got.includes('shelf:skills-section'), 'the shelf still has its own one line');
+});
+caught(
+  "the skills shelf's curator line placed before its no-results line",
+  (h) => {
+    const at = h.lastIndexOf(SHELF_LINE);
+    const without = replaceSpan(h, at, at + SHELF_LINE.length, '');
+    return once(without, '<div class="no-results" id="skills-no-results"', `${SHELF_LINE}<div class="no-results" id="skills-no-results"`);
+  },
+  'shelf:skills-section',
+);
+caught(
+  "the extensions shelf's curator line inside its card grid",
+  (h) => {
+    const without = once(h, SHELF_LINE, '');
+    const grid = without.indexOf('>', without.indexOf('id="extensions-grid"')) + 1;
+    return replaceSpan(without, grid, grid, SHELF_LINE);
+  },
+  'shelf:extensions-section',
+);
+
+// ---- the panel data (landing/baam-details.js)
+
+test("scriptStrings reads a data script's strings as JavaScript does, and skips its comments", () => {
+  const src = [
+    '/* Adapted from A. */ // Made by the Baranzini Lab',
+    "window.X = { a: 'It\\'s adapted from B', b: \"Made by the Bara\\u006ezini Lab\",",
+    '  c: `Adapted\\x20from ${x} C`, d: \'one \\',
+    " two', e: 'Cura\\u{74}ed' };",
+  ].join('\n');
+  assert.deepEqual(scriptStrings(src), ["It's adapted from B", 'Made by the Baranzini Lab', 'Adapted from   C', 'one  two', 'Curated']);
+});
+
+test('detailsCredit finds credit wording in the panel data, and none in the committed file', () => {
+  assert.deepEqual(detailsCredit(DETAILS_SRC, WRITTEN.credits), []);
+  const anchor = 'The bridge lives in the gptr repository';
+  assert.ok(DETAILS_SRC.includes(anchor), 'the anchor must be in the panel data, or this proves nothing');
+  const gptr = DETAILS_SRC.replace(anchor, 'Made by the Baranzini Lab (Wanjun Gu, UCSF); the bridge lives in the gptr repository');
+  assert.ok(detailsCredit(gptr, WRITTEN.credits).some((h) => h.includes('Made by the Baranzini Lab')), JSON.stringify(detailsCredit(gptr, WRITTEN.credits)));
+  for (const words of [
+    'Runs Playwright MCP 0.0.86 by Microsoft Corporation (Apache-2.0).',
+    'Bridges to IDC MCP server by Imaging Data Commons.',
+    'Extension by the Baranzini Lab.',
+    'Original work of the Baranzini Lab.',
+  ]) {
+    const src = `window.BAAM_DETAILS = { x: { what: ${JSON.stringify(words)} } };`;
+    assert.equal(detailsCredit(src, WRITTEN.credits).length, 1, words);
+  }
+  assert.deepEqual(detailsCredit('/* Adapted from X. */ window.BAAM_DETAILS = {};', WRITTEN.credits), [], 'a comment is not shown');
+});
+
 test('a curator element outside every shelf and the footer is read as page text', () => {
   // The moved list sits after the last shelf and before the footer. (One inside
   // a shelf, a panel included, is that shelf's second line and fails "shelf:".)
@@ -602,7 +809,7 @@ caught(
 );
 caught('a card with no entry in credits.json', (h) => h.replace(/releases\/download\/skill-([a-z0-9-]+)\/\1\.zip/, 'releases/download/skill-not-a-row/not-a-row.zip'), 'card:skills:not-a-row');
 
-test('a hand-written phrase in a comment, a script or an attribute is not page text', () => {
+test('a hand-written phrase in a comment, a script or an attribute nobody is shown (data-*) is not page text', () => {
   const page = once(
     WRITTEN.html,
     '<footer class="site-footer">',

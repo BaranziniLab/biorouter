@@ -24,10 +24,14 @@
 //                  not mirror
 //   PV14           the page and credits.json: every card's credit line, the shelf
 //                  and footer curator lines, no credit wording written by hand
-//                  (lib/credits.mjs, creditPageProblems), and, from the CLI,
-//                  landing/credits.json and the app's copy byte-equal to what
-//                  buildCredits gives, with an entry for every active row
-//   PV15           the extension rows' credits (ruleExtensionCredits below)
+//                  on the page or in the panel data of landing/baam-details.js
+//                  (lib/credits.mjs, creditPageProblems and detailsCredit), and,
+//                  from the CLI, landing/credits.json and the app's copy
+//                  byte-equal to what buildCredits gives, with an entry for
+//                  every active row
+//   PV15           the extension rows' credits (ruleExtensionCredits below),
+//                  the extension line forms PV13's shared pattern does not
+//                  know included
 //
 // build-registry.mjs runs the same checkCatalogs() on the registry it has just
 // built in memory, before it writes or compares anything, so the published
@@ -57,13 +61,23 @@ import {
   ruleD4,
   ruleG1,
   BRIDGE_USES,
+  CARD_CREDIT_PATTERN,
   RUN_USES,
+  creditLine,
   isLabOwned,
   ruleProvenance,
   sourceKey,
   usesOf,
 } from './lib/catalog-rules.mjs';
-import { CREDITS_PATHS, buildCredits, creditPageProblems, serializeCredits } from './lib/credits.mjs';
+import {
+  CREDITS_PATHS,
+  buildCredits,
+  creditPageProblems,
+  creditWording,
+  detailsCredit,
+  lineLead,
+  serializeCredits,
+} from './lib/credits.mjs';
 
 const LANDING = join(dirname(fileURLToPath(import.meta.url)), '..');
 export const REPO_ROOT = join(LANDING, '..');
@@ -266,11 +280,23 @@ const MATCH_USES = Object.freeze(['text', 'code', 'data', 'bundled', 'bundled-mo
  *                            warning of the row rules instead
  *   field:<id>:third_party   a row that still carries third_party (format 2 records
  *                            it in source.upstreams)
+ *   card-credit:<id>         an active row whose summary or card.description
+ *                            carries credit wording PV13 does not catch: the
+ *                            shared CARD_CREDIT_PATTERN (catalog-rules.mjs, the
+ *                            file biorouter-skills shares verbatim) knows no
+ *                            extension line, so "Runs X by Y (L); extension by
+ *                            the Baranzini Lab.", "Bridges to X by Y", an origin
+ *                            sentence or any row's line lead (lineLead) is
+ *                            caught here, with the page's words (creditWording)
  *
- * Every row is read, active or not.
+ * Every row is read, active or not, except card-credit, which reads the active
+ * rows as PV13 does.
  */
 export function ruleExtensionCredits(rows) {
   const out = [];
+  const phrases = [...new Set((Array.isArray(rows) ? rows : [])
+    .map((r) => lineLead(creditLine(r, { catalog: 'extensions' })).replace(/\s+/g, ' ').toLowerCase())
+    .filter((lead) => lead.length >= 12))];
   for (const row of Array.isArray(rows) ? rows : []) {
     const id = row?.id;
     const f = (subject, message) => out.push(failure('PV15', subject, `extension ${id}: ${message}`, [`extension:${id}`]));
@@ -304,6 +330,15 @@ export function ruleExtensionCredits(rows) {
       if (problems.length) f(`data:${id}:${name}`, `data or service ${name}: ${problems.join('; ')}`);
     });
     if (row && Object.hasOwn(row, 'third_party')) f(`field:${id}:third_party`, '`third_party` is retired in format 2; its entries belong in source.upstreams');
+    if (row?.status === 'active') {
+      // PV13 already fails a text its shared pattern matches; this names the rest.
+      const texts = [['summary', row.summary], ['card.description', row.card?.description]].filter(([, t]) => filled(t));
+      const hit = texts
+        .filter(([, t]) => !CARD_CREDIT_PATTERN.test(t))
+        .map(([where, t]) => [where, creditWording(t, phrases)[0]])
+        .find(([, h]) => h);
+      if (hit) f(`card-credit:${id}`, `${hit[0]} carries credit wording ("${hit[1]}"); the credit line is generated, so take it out of summary and card.description`);
+    }
   }
   return out;
 }
@@ -313,15 +348,17 @@ export function ruleExtensionCredits(rows) {
 /**
  * PV14: the page's credit lines (creditPageProblems in lib/credits.mjs:
  * "card:<kind>:<id>", "card-id:<kind>:<offset>", "shelf:<shelf id>", "footer",
- * "stray" (a curator class outside a shelf or the footer, or an item-credit
- * class outside a card, counted page-wide), "text:<excerpt>", and "page" when
- * the page lacks a landmark the finders need), and, when `creditsTexts` is
- * given ({ <CREDITS_PATHS entry>:
- * text or null }), "file:<path>" for a copy that is missing or not byte-equal
- * to serializeCredits(buildCredits(...)), and "entry:<kind>:<id>" for an active
- * row with no entry in the parsed landing/credits.json.
+ * "stray" (a curator class on a card or outside a shelf or the footer, or an
+ * item-credit class outside a card, counted page-wide), "text:<excerpt>", and
+ * "page" when the page lacks a landmark the finders need); when `detailsText`
+ * (landing/baam-details.js) is given, "details:<excerpt>" for credit wording in
+ * the panel data (detailsCredit); and, when `creditsTexts` is given
+ * ({ <CREDITS_PATHS entry>: text or null }), "file:<path>" for a copy that is
+ * missing or not byte-equal to serializeCredits(buildCredits(...)), and
+ * "entry:<kind>:<id>" for an active row with no entry in the parsed
+ * landing/credits.json.
  */
-export function ruleCredits({ html, extensions, skills, creditsTexts = null }) {
+export function ruleCredits({ html, extensions, skills, creditsTexts = null, detailsText = null }) {
   const out = [];
   const expected = buildCredits({ extensions, skills });
   let page;
@@ -331,6 +368,11 @@ export function ruleCredits({ html, extensions, skills, creditsTexts = null }) {
     page = [{ subject: 'page', message: `landing/baam.html cannot be read for its credit lines: ${e.message}` }];
   }
   for (const p of page) out.push(failure('PV14', p.subject, p.message));
+  if (detailsText !== null && detailsText !== undefined) {
+    for (const hit of detailsCredit(detailsText, expected)) {
+      out.push(failure('PV14', `details:${hit}`, `landing/baam-details.js says "${hit}"; an opened panel shows that text beside its generated Provenance and credits row, so take the credit out of it`));
+    }
+  }
   if (!creditsTexts) return out;
   const want = serializeCredits(expected);
   for (const path of CREDITS_PATHS) {
@@ -362,9 +404,11 @@ export function ruleCredits({ html, extensions, skills, creditsTexts = null }) {
  * 'ui/desktop/src/components/baam/credits.fallback.json': text | null }, the
  * committed copies PV14 compares (CREDITS_PATHS); the CLI reads them, and
  * build-registry.mjs passes none.
+ * detailsText (optional): landing/baam-details.js, the panel data PV14 scans
+ * for credit wording; the CLI and a real build-registry.mjs run pass it.
  * Returns { errors, warnings, accepted, counts }.
  */
-export function checkCatalogs({ registry, html, catalogs, builtins, creditsTexts = null }) {
+export function checkCatalogs({ registry, html, catalogs, builtins, creditsTexts = null, detailsText = null }) {
   const raw = [];
   const warnings = [];
   const { extensions: extCat, skills: skillCat, jobs } = catalogs;
@@ -584,7 +628,7 @@ export function checkCatalogs({ registry, html, catalogs, builtins, creditsTexts
   raw.push(...prov.failures);
   warnings.push(...prov.warnings);
   raw.push(...ruleExtensionCredits(extRows));
-  raw.push(...ruleCredits({ html, extensions: extCat, skills: skillCat, creditsTexts }));
+  raw.push(...ruleCredits({ html, extensions: extCat, skills: skillCat, creditsTexts, detailsText }));
 
   const baseline = [...(extCat?.baseline_violations ?? []), ...(skillCat?.baseline_violations ?? [])];
   const done = [...(extCat?.done_work_packages ?? []), ...(skillCat?.done_work_packages ?? [])];
@@ -630,7 +674,9 @@ async function main(argv) {
   const catalogs = loadCatalogs(dir);
   // The committed credits.json and the app's copy (absent = null), for PV14's file and entry halves.
   const creditsTexts = Object.fromEntries(CREDITS_PATHS.map((p) => [p, readOrNull(join(REPO_ROOT, p))]));
-  const res = checkCatalogs({ registry, html, catalogs, builtins: readBuiltins(REPO_ROOT), creditsTexts });
+  // The panel data PV14 scans for credit wording.
+  const detailsText = readFileSync(resolve(opt('--details') ?? join(LANDING, 'baam-details.js')), 'utf8');
+  const res = checkCatalogs({ registry, html, catalogs, builtins: readBuiltins(REPO_ROOT), creditsTexts, detailsText });
   const skillsText = readFileSync(join(dir, 'skills.json'), 'utf8');
   const rulesText = readFileSync(join(REPO_ROOT, RULES_PATH), 'utf8');
   const commit = catalogs.skills.source_commit;

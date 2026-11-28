@@ -1369,6 +1369,9 @@ if (IS_REAL_RUN || CATALOG !== null) {
     html,
     catalogs,
     builtins: readBuiltins(REPO),
+    // The panel data beside the real page, which PV14 scans for credit
+    // wording; a fixture page has none.
+    detailsText: IS_REAL_RUN ? readFileSync(join(ROOT, 'baam-details.js'), 'utf8') : null,
   });
   for (const e of res.errors) fail(`catalog [${e.rule}]: ${e.message}`);
   if (IS_REAL_RUN && res.errors.length === 0) {

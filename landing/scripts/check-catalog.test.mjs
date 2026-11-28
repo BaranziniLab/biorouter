@@ -27,19 +27,20 @@ import {
   ruleExtensionCredits,
   skillCardVersions,
 } from './check-catalog.mjs';
-import { CURATED_BY, DEFAULT_SIMILARITY_THRESHOLD, lookalikeScores, ruleD1, ruleD3 } from './lib/catalog-rules.mjs';
+import { CURATED_BY, DEFAULT_SIMILARITY_THRESHOLD, creditLine, lookalikeScores, ruleD1, ruleD3 } from './lib/catalog-rules.mjs';
 import { CREDITS_PATHS, buildCredits, cardCreditSites, curatorSites, serializeCredits } from './lib/credits.mjs';
 
 const SCRIPTS = dirname(fileURLToPath(import.meta.url));
 const LANDING = process.env.LANDING_ROOT ? resolve(process.env.LANDING_ROOT) : join(SCRIPTS, '..');
 const HTML = readFileSync(join(LANDING, 'baam.html'), 'utf8');
+const DETAILS = readFileSync(join(LANDING, 'baam-details.js'), 'utf8');
 const REGISTRY = JSON.parse(readFileSync(join(LANDING, 'registry.json'), 'utf8'));
 const CATALOGS = loadCatalogs(join(LANDING, 'catalog'));
 const BUILTINS = readBuiltins();
 const clone = (v) => structuredClone(v);
 
-function check({ registry = REGISTRY, html = HTML, catalogs = CATALOGS, creditsTexts } = {}) {
-  return checkCatalogs({ registry, html, catalogs, builtins: BUILTINS, creditsTexts });
+function check({ registry = REGISTRY, html = HTML, catalogs = CATALOGS, creditsTexts, detailsText } = {}) {
+  return checkCatalogs({ registry, html, catalogs, builtins: BUILTINS, creditsTexts, detailsText });
 }
 const ext = (catalogs, id) => catalogs.extensions.items.find((r) => r.id === id);
 const fails = (res, rule, subject) =>
@@ -322,6 +323,42 @@ test('PV15 mutant: a row that still carries third_party (field)', () => {
   assert.ok(failsAt(check({ catalogs: c }), 'PV15', 'field:zoteroagent:third_party'));
 });
 
+// PV13's card-text check uses the pattern biorouter-skills shares, which knows no
+// extension line: "Runs X by Y (L); extension by the Baranzini Lab." and
+// "Bridges to X by Y; extension by the Baranzini Lab." both passed it. PV15's
+// card-credit reads those with the page's words.
+test('PV15 mutant: a "Runs" line appended to an extension summary (card-credit)', () => {
+  const c = clone(CATALOGS);
+  const row = ext(c, 'playwrightagent');
+  row.summary += ' ' + creditLine(row, { catalog: 'extensions' });
+  assert.match(row.summary, /Runs Playwright MCP .*; extension by the Baranzini Lab\.$/);
+  const res = check({ catalogs: c });
+  assert.ok(failsAt(res, 'PV15', 'card-credit:playwrightagent'), JSON.stringify(res.errors));
+  assert.ok(!failsAt(res, 'PV13', 'card-credit:playwrightagent'), 'the shared pattern does not know the line; if it learns it, drop this half');
+});
+
+test('PV15 mutant: a "Bridges to" line, and a line lead with no lab clause, in extension text (card-credit)', () => {
+  const c = clone(CATALOGS);
+  ext(c, 'idcagent').card = { description: 'Bridges to IDC MCP server by Imaging Data Commons; extension by the Baranzini Lab.' };
+  ext(c, 'biomcpagent').summary += ' Runs BioMCP 0.9.3 by Ian Maurer (MIT).';
+  ext(c, 'codegraphagent').summary += ' The program below does the work; the Baranzini Lab wrote the extension around it.';
+  const res = check({ catalogs: c });
+  assert.ok(failsAt(res, 'PV15', 'card-credit:idcagent'));
+  assert.ok(failsAt(res, 'PV15', 'card-credit:biomcpagent'), 'the line lead alone credits BioMCP');
+  assert.ok(failsAt(res, 'PV15', 'card-credit:codegraphagent'), 'an origin sentence is credit wording too');
+});
+
+test('PV15 card-credit leaves to PV13 what the shared pattern catches, and reads active rows only', () => {
+  const c = clone(CATALOGS);
+  ext(c, 'playwrightagent').summary += ' Adapted from X.';
+  const res = check({ catalogs: c });
+  assert.ok(failsAt(res, 'PV13', 'card-credit:playwrightagent'));
+  assert.ok(!failsAt(res, 'PV15', 'card-credit:playwrightagent'), 'one failure per hand-written credit');
+  const retired = c.extensions.items.find((r) => r.status !== 'active');
+  retired.summary = `${retired.summary ?? ''} Runs X by Y (MIT); extension by the Baranzini Lab.`;
+  assert.ok(!failsAt(check({ catalogs: c }), 'PV15', `card-credit:${retired.id}`));
+});
+
 test('PV15 reads only what it states: an in-house row and a hosted bridge pass', () => {
   const row = (origin, upstreams, data = []) => ({ id: 'x', status: 'active', source: { origin, upstreams, data_and_services: data } });
   const hosted = { display: 'S', repo: 'o/s', owner: 'external', use: ['text', 'hosted'], licence: 'MIT', credit: 'C', what: 'w' };
@@ -436,6 +473,20 @@ test('PV14 mutant: credit wording written by hand into a card description (text)
   const close = HTML.lastIndexOf('</p>', s.descEnd);
   const html = splice(HTML, close, close, ' Adapted from X.');
   assert.ok(fails(check({ html }), 'PV14', 'text:'));
+});
+
+test('PV14 passes on the committed panel data, and fails credit wording written into it (details)', () => {
+  const details = (res) => res.errors.filter((e) => e.rule === 'PV14' && e.subject.startsWith('details:'));
+  assert.deepEqual(details(check({ detailsText: DETAILS })), []);
+  assert.ok(!fails(check(), 'PV14', 'details:'), 'no panel data passed, none read');
+  // gptr Agent's "What it does" text carried this clause until the scan read the panel data.
+  const anchor = 'The bridge lives in the gptr repository';
+  assert.ok(DETAILS.includes(anchor), 'the anchor must be in the panel data, or this proves nothing');
+  const gptr = DETAILS.replace(anchor, 'Made by the Baranzini Lab (Wanjun Gu, UCSF); the bridge lives in the gptr repository');
+  assert.ok(details(check({ detailsText: gptr })).some((e) => /Made by the Baranzini Lab/.test(e.subject)));
+  // An extension line, in a string the panel shows, with a JavaScript escape inside a word.
+  const runs = DETAILS.replace(anchor, 'Runs Playwright MCP 0.0.86 by Microsoft Corpor\\u0061tion (Apache-2.0). ' + anchor);
+  assert.ok(details(check({ detailsText: runs })).some((e) => /Runs Playwright MCP/.test(e.subject)), JSON.stringify(details(check({ detailsText: runs }))));
 });
 
 test('PV14 mutant: credits.json and its app copy differ from the generator, or lack an active row (file, entry)', () => {
