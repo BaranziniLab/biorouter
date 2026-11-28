@@ -106,7 +106,7 @@
       "id": "bioroffice",
       "name": "BiorOffice",
       "organization": "BaranziniLab · UCSF",
-      "version": "v1.1.0",
+      "version": "v1.1.2",
       "description": "Create, read, and edit Word (.docx), Excel (.xlsx), and PowerPoint (.pptx) files from chat. Handles headings, tables, charts, and 150+ Excel functions with live formula evaluation. Built on the open-source OfficeCLI engine, so no Microsoft Office install is needed. Ships four bundled skills for the office suite, Word, Excel, and PowerPoint.",
       "tags": [
         "MCP",
@@ -117,7 +117,7 @@
         "PowerPoint"
       ],
       "github": "https://github.com/BaranziniLab/BiorOffice",
-      "download": "https://github.com/BaranziniLab/BiorOffice/releases/download/v1.1.0/bioroffice.brxt",
+      "download": "https://github.com/BaranziniLab/BiorOffice/releases/download/v1.1.2/bioroffice.brxt",
       "filename": "bioroffice.brxt",
       "license": "Apache-2.0",
       "privacy": "public"

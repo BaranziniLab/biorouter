@@ -309,7 +309,7 @@
       "manifest_name": "bioroffice",
       "repository": "BaranziniLab/BiorOffice",
       "group": "tools",
-      "version": "1.1.0",
+      "version": "1.1.2",
       "status": "active",
       "aliases": [],
       "job": "office.cli-document-editing",
@@ -333,14 +333,14 @@
           "name": "OfficeCLI",
           "version": "1.0.163",
           "licence": "Apache-2.0",
-          "how": "bundled binary with LICENSE, NOTICE and THIRD-PARTY-NOTICES.txt"
+          "how": "bundled binary, unmodified and run as a child process, with LICENSE, NOTICE and THIRD-PARTY-NOTICES.txt kept verbatim"
         }
       ],
       "licence": "Apache-2.0",
       "release": {
-        "tag": "v1.1.0",
+        "tag": "v1.1.2",
         "asset": "bioroffice.brxt",
-        "sha256": "465e9b0ac1190dee7ecb755c83e965976affe18fdb5e48fd5290188a2c321668"
+        "sha256": "c5922e45c0abdaf2cb21fe9cae4af92fdbaff07f090717671c89ca11c03a759d"
       },
       "privacy": "public",
       "affiliation": null,
@@ -383,6 +383,11 @@
           "version": "1.1.0",
           "date": "2026-11-22",
           "note": "OfficeCLI 1.0.163 with its licence and notices; repository BaranziniLab/BiorOffice"
+        },
+        {
+          "version": "1.1.2",
+          "date": "2026-11-28",
+          "note": "Two security patches, same OfficeCLI 1.0.163 binary and notices. 1.1.1 runs the engine as a child and removes OfficeCLI's install, update and download instructions from what the engine returns to the agent (load_skill word-form had handed it OfficeCLI's installer), and refuses OfficeCLI's install, mcp and skills install commands when a command starts with them. 1.1.2 refuses them in every spelling the engine's parser accepts (leading options such as --json, help, response files, the engine's name in any case or as a path)"
         }
       ]
     },

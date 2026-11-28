@@ -79,15 +79,15 @@ window.BAAM_DETAILS = {
   },
   bioroffice: {
     domain: 'Productivity',
-    what: 'Packages the open source OfficeCLI engine (iOfficeAI, Apache-2.0), so the agent can create, read, analyze and edit .docx, .xlsx and .pptx files without Microsoft Office. One tool, officecli, covers document edits, tables, charts, pivot tables, Excel formula evaluation (more than 150 functions) and rendering to HTML or PNG. Four bundled skills (office suite, Word, Excel, PowerPoint) load at the start of a session. More specific ones, such as academic-paper, pitch-deck and financial-model, load when a task needs them.',
+    what: 'Packages the open source OfficeCLI engine (iOfficeAI, Apache-2.0; its NOTICE credits goworm, who created and maintains it), so the agent can create, read, analyze and edit .docx, .xlsx and .pptx files without Microsoft Office. One tool, officecli, covers document edits, tables, charts, pivot tables, Excel formula evaluation (more than 150 functions) and rendering to HTML or PNG. BiorOffice runs the engine unmodified as a child process and removes OfficeCLI\'s own install, update and download instructions from what the engine returns to the agent; a document\'s own text passes unchanged. Four bundled skills (office suite, Word, Excel, PowerPoint) load at the start of a session. More specific ones, such as academic-paper, pitch-deck and financial-model, load when a task needs them.',
     asks: [
       'Turn this results table into an Excel workbook with a bar chart.',
       'Write a Word document from my notes with headings, a table of contents and footnotes.',
       'Make a PowerPoint of six slides that summarizes this analysis, with speaker notes.'
     ],
     tools: ['officecli'],
-    toolsNote: 'Its commands include create, view, get, query, set, add, remove, move, swap, validate and batch.',
-    needs: 'No credentials and no Microsoft Office. OfficeCLI 1.0.163 ships inside the bundle for macOS on Apple silicon, with its licence and notices. Other platforms download the same release the first time it starts, checked against its published SHA-256. It needs uv.',
+    toolsNote: 'Its commands include create, view, get, query, set, add, remove, move, swap, validate and batch. Commands that would install, update or register OfficeCLI (install, update, mcp, skills install and their help) are answered by BiorOffice and never reach the engine, however they are spelled.',
+    needs: 'No credentials and no Microsoft Office. OfficeCLI 1.0.163 ships inside the bundle for macOS on Apple silicon, with its licence and notices. Other platforms download the same release the first time it starts, checked against its published SHA-256. The engine never installs or updates itself. It needs uv.',
     sources: ['Local .docx, .xlsx and .pptx files']
   },
   benchlingagent: {
