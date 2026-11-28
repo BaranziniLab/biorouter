@@ -33,7 +33,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - name: Check protocol harness identity and error assertions
         run: python3 scripts/test-crew-native-linux-acceptance.py -v
       - name: Verify release run and artifact digest, extract only its broker
@@ -90,7 +90,7 @@ jobs:
             --root /var/lib/biorouter-native-acceptance-fixture \
             --report "$RUNNER_TEMP/native-crew-acceptance.json" \
             --source-sha "$SOURCE_SHA" --release-run-id "$RELEASE_RUN" --version "$VERSION"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: always()
         with:
           name: native-crew-protocol-evidence
@@ -104,7 +104,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 35
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - name: Verify exact successful package source and download only its four distributions
         env:
           GH_TOKEN: ${{ github.token }}
@@ -185,7 +185,7 @@ jobs:
           modes=[line.split('=',1)[1] for line in (root/'rpm-smoke.log').read_text().splitlines() if line.startswith('CHROMIUM_SANDBOX_MODE=')];assert len(modes)==1
           (root/'rpm-runtime.json').write_text(json.dumps(dict(**proof,distro='rockylinux-9',architecture='native-x86_64-container',uid=64011,chromiumSandbox=modes[0],status='PASS',checks=['GUI silent shared startup','shared reuse','missing-key replacement','fatal startup shutdown','per-window startup/shutdown','installed CLI/daemon/Crew versions','terminal help']),indent=2)+'\n')
           PY
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: always()
         with:
           name: native-linux-package-runtime-evidence

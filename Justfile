@@ -32,6 +32,8 @@ check-everything:
     ./scripts/check-dictation-fixtures.sh
     @echo "  → Checking cross-compile recipes have not drifted (glibc floor pin)..."
     ./scripts/check-no-cross-drift.sh
+    @echo "  → Checking every workflow holds a read-only default token and pins its actions by commit..."
+    python3 -I scripts/check-workflow-hardening.py
     @echo "  → Checking the BAAM registry generator and the Baseten feed builder still refuse what they must..."
     just check-registry
     @echo "  → Checking the BAAM private set agrees in all three committed copies..."

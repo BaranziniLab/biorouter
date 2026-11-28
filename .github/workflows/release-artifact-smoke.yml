@@ -30,11 +30,16 @@ on:
         default: ''
 
 permissions:
-  contents: write
-  actions: read
+  contents: read
 
 jobs:
   windows-runtime:
+    # contents: write only because GitHub lists a DRAFT release to a token that
+    # can write, and the draft is what the publish gate asks about (62aa38428).
+    # actions: read reads the package run named by windows_package_run.
+    permissions:
+      contents: write
+      actions: read
     runs-on: windows-latest
     timeout-minutes: 20
     steps:
@@ -46,7 +51,7 @@ jobs:
           if ($env:VERSION -notmatch '\A(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\z') {
             throw 'Release version must be stable major.minor.patch without a v prefix'
           }
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - name: Parse the installed application smoke helper
         shell: pwsh
         run: |
@@ -253,14 +258,14 @@ jobs:
             -Report artifact/normal-zip/windows-normal-smoke.json
           Write-Host "Windows packaged runtime smoke passed for v$env:VERSION"
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: always()
         with:
           name: release-windows-copilot-console
           path: artifact/windows-packaged-console.json
           if-no-files-found: warn
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: always()
         with:
           name: release-windows-installer-runtime

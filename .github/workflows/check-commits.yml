@@ -9,11 +9,17 @@ on:
     branches: [main]
   pull_request:
 
+# The repository's default token can write to every scope, and a workflow with
+# no permissions block hands it to every job. Nothing here writes: checkout reads
+# the history the trailer check walks (scripts/check-workflow-hardening.py).
+permissions:
+  contents: read
+
 jobs:
   no-ai-coauthor:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           fetch-depth: 0
 

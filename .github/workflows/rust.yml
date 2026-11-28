@@ -86,6 +86,13 @@ env:
   # variables into its key, and a new one would make every cache miss.
   CI_FULL_SUITE: ${{ github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'ci:full') }}
 
+# The repository's default token can write to every scope, and a workflow with
+# no permissions block hands it to every job. Nothing here writes: checkout reads
+# the tree, and caches and artifacts use the runner's own token
+# (scripts/check-workflow-hardening.py).
+permissions:
+  contents: read
+
 jobs:
   # ── 1. Cheap guards ────────────────────────────────────────────────────────
   guards:
@@ -100,11 +107,19 @@ jobs:
     if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - name: Cross recipes have not drifted / glibc floor pin intact
         run: ./scripts/check-no-cross-drift.sh
       - name: Tracked tree names neither the retired upstream nor its publisher
         run: ./scripts/check-no-goose-block.sh
+      # Every workflow has a top-level permissions block that writes nothing (a
+      # job that writes grants itself the scope), and every action is a full
+      # commit SHA with the release it carries, the BRXT kit's templates too.
+      # The self test proves each rule refuses what it should (J-F11).
+      - name: Workflows hold least privilege and pinned actions
+        run: |
+          python3 -I scripts/check-workflow-hardening.py
+          python3 -I scripts/check-workflow-hardening.py --self-test
       - name: Version consistency (CLI = daemon = GUI)
         run: ./scripts/check-version-consistency.sh
       # The capability is "Biorouter Copilot" wherever a person reads it -- never
@@ -191,7 +206,7 @@ jobs:
       matrix:
         target: ${{ fromJSON(github.event_name == 'pull_request' && '["x86_64-pc-windows-gnu"]' || '["x86_64-unknown-linux-gnu", "x86_64-pc-windows-gnu"]') }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
       - name: cargo check --workspace --all-targets (${{ matrix.target }})
         run: |
@@ -245,7 +260,7 @@ jobs:
     if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - name: No production socket a Windows child process can inherit (x86_64-pc-windows-gnu)
         run: |
           set -euo pipefail
@@ -283,8 +298,8 @@ jobs:
     timeout-minutes: 60
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@master
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: dtolnay/rust-toolchain@df2a88e9fe4098bad09cb42c3dec7187f15861fc # master
         with:
           toolchain: "1.92"
           components: clippy
@@ -341,14 +356,14 @@ jobs:
       # runs the clippy and release-profile socket checks, so their artifacts
       # are in the saved cache too. The shards read it and never write it,
       # which would race four writers for one key.
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           shared-key: ubuntu-latest-test
           cache-on-failure: "true"
           save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Install protoc (build-script dep)
-        uses: arduino/setup-protoc@v3
+        uses: arduino/setup-protoc@c65c819552d16ad3c9b72d9dfd5ba5237b9c906b # v3.0.0
         with:
           repo-token: ${{ secrets.GITHUB_TOKEN }}
 
@@ -366,7 +381,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install --yes libdbus-1-dev libxcb1-dev pkg-config
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 24
 
@@ -430,8 +445,8 @@ jobs:
       SHARD: ${{ matrix.shard }}
       SHARDS: ${{ github.event_name == 'pull_request' && 3 || 1 }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@master
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: dtolnay/rust-toolchain@df2a88e9fe4098bad09cb42c3dec7187f15861fc # master
         with:
           toolchain: "1.92"
           components: clippy
@@ -450,12 +465,12 @@ jobs:
             if [ "$t" != "$pinned" ]; then rustup toolchain uninstall "$t"; fi
           done
           rustup toolchain list
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           shared-key: ubuntu-latest-test
           save-if: "false"
       - name: Install protoc (build-script dep)
-        uses: arduino/setup-protoc@v3
+        uses: arduino/setup-protoc@c65c819552d16ad3c9b72d9dfd5ba5237b9c906b # v3.0.0
         with:
           repo-token: ${{ secrets.GITHUB_TOKEN }}
       - name: Install Linux native build dependencies
@@ -466,7 +481,7 @@ jobs:
                      /etc/apt/sources.list.d/azure-cli.sources
           sudo apt-get update
           sudo apt-get install --yes libdbus-1-dev libxcb1-dev pkg-config
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 24
           cache: npm
@@ -884,7 +899,7 @@ jobs:
     runs-on: macos-latest
     steps:
       # Depth 2: the merge commit and its base, so the chooser can read the diff.
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           fetch-depth: 2
       # Full suite or pull request subset; scripts/ci/choose-os-suite.sh says
@@ -893,7 +908,7 @@ jobs:
         id: suite
         shell: bash
         run: scripts/ci/choose-os-suite.sh macos
-      - uses: dtolnay/rust-toolchain@master
+      - uses: dtolnay/rust-toolchain@df2a88e9fe4098bad09cb42c3dec7187f15861fc # master
         with:
           toolchain: "1.92"
           components: clippy
@@ -915,16 +930,16 @@ jobs:
       # The key the one `test` matrix job used, so main's cache keeps working.
       # `cache-on-failure`: this job was once cancelled at 360 minutes with its
       # post step skipped, and every run after compiled the workspace cold.
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           shared-key: macos-latest-test
           cache-on-failure: "true"
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Install protoc (build-script dep)
-        uses: arduino/setup-protoc@v3
+        uses: arduino/setup-protoc@c65c819552d16ad3c9b72d9dfd5ba5237b9c906b # v3.0.0
         with:
           repo-token: ${{ secrets.GITHUB_TOKEN }}
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 24
       - name: Full export payload (generated launchers and authenticated daemon fixture)
@@ -1059,7 +1074,7 @@ jobs:
     runs-on: windows-latest
     steps:
       # Depth 2: the merge commit and its base, so the chooser can read the diff.
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           fetch-depth: 2
       # Full suite or pull request subset; scripts/ci/choose-os-suite.sh says
@@ -1075,7 +1090,7 @@ jobs:
           python scripts/security/windows-directory-lease-probe.py
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           python scripts/security/windows-nested-handle-probe.py
-      - uses: dtolnay/rust-toolchain@master
+      - uses: dtolnay/rust-toolchain@df2a88e9fe4098bad09cb42c3dec7187f15861fc # master
         with:
           toolchain: "1.92"
           components: clippy
@@ -1094,16 +1109,16 @@ jobs:
             if [ "$t" != "$pinned" ]; then rustup toolchain uninstall "$t"; fi
           done
           rustup toolchain list
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           shared-key: windows-latest-test
           cache-on-failure: "true"
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Install protoc (build-script dep)
-        uses: arduino/setup-protoc@v3
+        uses: arduino/setup-protoc@c65c819552d16ad3c9b72d9dfd5ba5237b9c906b # v3.0.0
         with:
           repo-token: ${{ secrets.GITHUB_TOKEN }}
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 24
       - name: Windows launcher runtime digest (actual PowerShell template)
@@ -1139,7 +1154,7 @@ jobs:
 
       - name: Upload Windows Cargo timings
         if: ${{ always() && steps.suite.outputs.full == 'true' }}
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: windows-cargo-timings
           path: target/cargo-timings/cargo-timing.html
@@ -1185,7 +1200,7 @@ jobs:
 
       - name: Upload Windows Copilot hostname process trace and screenshots
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: windows-copilot-hostname-evidence
           path: target/copilot-hostname-evidence/
@@ -1208,7 +1223,7 @@ jobs:
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - name: Build shipped binaries for both cross targets (release command)
         run: |
           set -euo pipefail
@@ -1220,7 +1235,7 @@ jobs:
       # beside them, exactly as this job's release command built them. Uploaded before the
       # Linux checks that follow, so a red Linux step never hides the Windows result.
       - name: Keep the mingw binaries for the native Windows run
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: mingw-binaries
           path: |
@@ -1382,8 +1397,8 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: mingw-binaries
           path: mingw-binaries
@@ -1477,7 +1492,7 @@ jobs:
       # download nothing and every run still goes through the installer's verification.
       - name: Restore the Light model and its voice detector
         id: m1-models
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: ${{ runner.temp }}\m1-models
           key: dictation-m1-windows-small-en-${{ hashFiles('crates/biorouter-dictation/src/catalog.rs') }}
@@ -1525,7 +1540,7 @@ jobs:
           Write-Host "timings: $($transcript.timings | ConvertTo-Json -Compress)"
       - name: Save the Light model and its voice detector
         if: success() && steps.m1-models.outputs.cache-hit != 'true' && github.ref == 'refs/heads/main'
-        uses: actions/cache/save@v4
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: ${{ runner.temp }}\m1-models
           key: dictation-m1-windows-small-en-${{ hashFiles('crates/biorouter-dictation/src/catalog.rs') }}

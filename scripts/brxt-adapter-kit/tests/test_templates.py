@@ -10,6 +10,7 @@ import hashlib
 import importlib.util
 import json
 import os
+import re
 import shutil
 import sys
 import tempfile
@@ -328,6 +329,21 @@ class GeneratorRules(unittest.TestCase):
             _, files = new_adapter.plan(load_source(fixture))
             for relative, text in files.items():
                 self.assertNotRegex(text, r"@@[A-Z_]+@@", f"{fixture}: {relative}")
+
+    def test_rendered_workflows_pin_every_action_by_commit(self):
+        # An action named by a tag runs whatever the tag points at on the day the job
+        # starts, and the release workflow holds contents: write. Every action is a full
+        # commit SHA followed by the release it carries.
+        pinned = re.compile(r"^\s*-?\s*uses:\s*[A-Za-z0-9_.-]+/[A-Za-z0-9_./-]+@[0-9a-f]{40} # v\d+\.\d+\.\d+$")
+        for fixture in ("sample-adapter.json", "single-adapter.json", "sunset-adapter.json", "tombstone-adapter.json"):
+            _, files = new_adapter.plan(load_source(fixture))
+            workflows = {relative: text for relative, text in files.items() if relative.startswith(".github/workflows/")}
+            self.assertEqual(sorted(workflows), [".github/workflows/ci.yml", ".github/workflows/release.yml"], fixture)
+            for relative, text in workflows.items():
+                uses = [line for line in text.splitlines() if re.match(r"^\s*-?\s*uses:", line)]
+                self.assertTrue(uses, f"{fixture}: {relative}")
+                for line in uses:
+                    self.assertRegex(line, pinned, f"{fixture}: {relative}")
 
 
 if __name__ == "__main__":

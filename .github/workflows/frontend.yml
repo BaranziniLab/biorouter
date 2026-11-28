@@ -51,6 +51,13 @@ env:
   ELECTRON_SKIP_BINARY_DOWNLOAD: "1"
   FORCE_COLOR: "1"
 
+# The repository's default token can write to every scope, and a workflow with
+# no permissions block hands it to every job. Nothing here writes: checkout reads
+# the tree, and caches and artifacts use the runner's own token
+# (scripts/check-workflow-hardening.py).
+permissions:
+  contents: read
+
 jobs:
   # ── Static gates: typecheck, lint, theme codegen, contrast, token mirrors ──
   # Measured at ~42s CPU (tsc) + ~32s CPU (eslint) + ~1s CPU (the three node
@@ -61,9 +68,9 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           # package.json declares engines ^24.0.0 and hermit pins 24.10.0.
           # (Note: apps-smoke.yml still pins 22 — that is a pre-existing
@@ -257,9 +264,9 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: "24"
           cache: npm
@@ -319,9 +326,9 @@ jobs:
       matrix:
         shard: ${{ fromJSON(github.event_name == 'pull_request' && '[1, 2, 3]' || '[0]') }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: "24"
           cache: npm
@@ -404,7 +411,7 @@ jobs:
 
       - name: Upload test report
         if: ${{ !cancelled() }}
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: vitest-junit-${{ matrix.shard }}
           path: ui/desktop/vitest-junit.xml
@@ -454,9 +461,9 @@ jobs:
     runs-on: macos-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: "24"
           cache: npm
@@ -475,7 +482,7 @@ jobs:
 
       - name: Upload preview screenshots
         if: ${{ !cancelled() }}
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: preview-panel-evidence-${{ runner.arch }}
           path: ui/desktop/preview-panel-evidence
@@ -506,9 +513,9 @@ jobs:
     runs-on: macos-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: "24"
           cache: npm
@@ -526,7 +533,7 @@ jobs:
 
       - name: Upload the measurements
         if: ${{ !cancelled() }}
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: dictation-capture-evidence-${{ runner.arch }}
           path: ui/desktop/dictation-capture-evidence
@@ -556,9 +563,9 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: "24"
           cache: npm
@@ -594,7 +601,7 @@ jobs:
 
       - name: Upload the measurement
         if: ${{ !cancelled() }}
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: windows-console-tap
           path: ui/desktop/windows-console.tap
