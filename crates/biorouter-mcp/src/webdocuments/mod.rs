@@ -1,4 +1,5 @@
-use reqwest::{Client, Url};
+use crate::safe_fetch::{FetchError, FetchRefused, SafeFetch};
+use reqwest::Url;
 use rmcp::{
     handler::server::{router::tool::ToolRouter, wrapper::Parameters},
     model::{
@@ -56,6 +57,12 @@ fn web_scrape_status_hint(status: reqwest::StatusCode) -> &'static str {
         }
         _ => "",
     }
+}
+
+/// A URL the address rule refused. `INVALID_PARAMS`, because the model chose the
+/// URL and a retry of the same one is refused again.
+fn web_scrape_refusal(refused: FetchRefused) -> ErrorData {
+    ErrorData::new(ErrorCode::INVALID_PARAMS, refused.to_string(), None)
 }
 
 fn bounded_web_content(content: &str) -> (&str, bool) {
@@ -293,7 +300,9 @@ pub struct WebDocumentsServer {
     tool_router: ToolRouter<Self>,
     cache_dir: PathBuf,
     active_resources: Arc<Mutex<HashMap<String, ResourceContents>>>,
-    http_client: Arc<Mutex<Option<Client>>>,
+    /// Built on first use. It reaches public internet addresses only
+    /// (`crate::safe_fetch`), because the URL is the model's choice.
+    http_client: Arc<Mutex<Option<SafeFetch>>>,
     web_scrape_timeout: std::time::Duration,
     instructions: String,
 }
@@ -323,7 +332,7 @@ impl WebDocumentsServer {
         }
     }
 
-    fn http_client(&self) -> Result<Client, ErrorData> {
+    fn http_client(&self) -> Result<SafeFetch, ErrorData> {
         let mut slot = self
             .http_client
             .lock()
@@ -333,11 +342,13 @@ impl WebDocumentsServer {
         }
 
         // macOS SystemConfiguration can return -36 while several extension
-        // instances read the system proxy settings concurrently.
+        // instances read the system proxy settings concurrently. The safe client
+        // reads no proxy settings, but it still loads the native root
+        // certificates, so client builds stay serialized.
         let _build_guard = WEB_SCRAPE_CLIENT_BUILD_LOCK
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let client = Client::builder()
+        let client = SafeFetch::builder()
             .user_agent(WEB_SCRAPE_USER_AGENT)
             .timeout(std::time::Duration::from_secs(WEB_SCRAPE_TIMEOUT_SECS))
             .build()
@@ -406,7 +417,9 @@ impl WebDocumentsServer {
         description = "
             Fetch an HTTP(S) URL for simple web research, APIs, RSS/Atom feeds, and web or news search-result URLs.
             Text and JSON content is returned inline so it can be used immediately, and a cached copy is also saved.
-            Use this when the URL is already known. The content can be saved as:
+            Use this when the URL is already known. Only public internet addresses can be fetched:
+            URLs on this computer, a private network or a cloud metadata service are refused,
+            including through a redirect. The content can be saved as:
             - text (for HTML pages)
             - json (for API responses)
             - binary (for images and other files)
@@ -429,6 +442,10 @@ impl WebDocumentsServer {
         // already waits up to WEB_SCRAPE_TIMEOUT_SECS, so a retry against a
         // server that is still hung would double worst-case latency to ~60 s
         // for no realistic gain.
+        //
+        // A refused address (J-F05) is never retried either: reqwest reports a
+        // refusal made while resolving the name as a connect error, so it is
+        // picked out before the connect-error retry below sees it.
         let mut response = None;
         let mut last_error = String::new();
         for attempt in 0..2 {
@@ -438,8 +455,8 @@ impl WebDocumentsServer {
                 ))
                 .await;
             }
-            match http_client
-                .get(url)
+            let request = http_client.get(url).map_err(web_scrape_refusal)?;
+            match request
                 .timeout(self.web_scrape_timeout)
                 .header("Accept", "text/markdown, */*")
                 .send()
@@ -460,6 +477,10 @@ impl WebDocumentsServer {
                     }
                 }
                 Err(e) => {
+                    let e = match FetchError::from(e) {
+                        FetchError::Refused(refused) => return Err(web_scrape_refusal(refused)),
+                        FetchError::Request(e) => e,
+                    };
                     last_error = format!("Failed to fetch URL: {e}");
                     if !e.is_connect() {
                         break;
@@ -1022,6 +1043,7 @@ impl ServerHandler for WebDocumentsServer {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::safe_fetch::test_support::admit_local_server;
     use rmcp::model::RawContent;
     use wiremock::{matchers::method, Mock, MockServer, ResponseTemplate};
     fn text_of(result: &CallToolResult) -> String {
@@ -1046,6 +1068,9 @@ mod tests {
             .mount(&mock_server)
             .await;
 
+        // The mock is this computer's own server, which web_scrape refuses
+        // unless this one port is admitted for the test.
+        let _admitted = admit_local_server(*mock_server.address());
         let cache = tempfile::tempdir().unwrap();
         let mut server = WebDocumentsServer::new();
         server.cache_dir = cache.path().to_path_buf();
@@ -1083,6 +1108,7 @@ mod tests {
             .mount(&mock_server)
             .await;
 
+        let _admitted = admit_local_server(*mock_server.address());
         let cache = tempfile::tempdir().unwrap();
         let mut server = WebDocumentsServer::new();
         server.cache_dir = cache.path().to_path_buf();
@@ -1112,6 +1138,7 @@ mod tests {
             .mount(&mock_server)
             .await;
 
+        let _admitted = admit_local_server(*mock_server.address());
         let cache = tempfile::tempdir().unwrap();
         let mut server = WebDocumentsServer::new();
         server.cache_dir = cache.path().to_path_buf();
@@ -1149,6 +1176,7 @@ mod tests {
             .mount(&mock_server)
             .await;
 
+        let _admitted = admit_local_server(*mock_server.address());
         let cache = tempfile::tempdir().unwrap();
         let mut server = WebDocumentsServer::new();
         server.cache_dir = cache.path().to_path_buf();
@@ -1181,6 +1209,7 @@ mod tests {
             .mount(&mock_server)
             .await;
 
+        let _admitted = admit_local_server(*mock_server.address());
         let cache = tempfile::tempdir().unwrap();
         let mut server = WebDocumentsServer::new();
         server.cache_dir = cache.path().to_path_buf();
@@ -1214,6 +1243,7 @@ mod tests {
             .mount(&mock_server)
             .await;
 
+        let _admitted = admit_local_server(*mock_server.address());
         let cache = tempfile::tempdir().unwrap();
         let mut server = WebDocumentsServer::new();
         server.cache_dir = cache.path().to_path_buf();
@@ -1225,6 +1255,151 @@ mod tests {
             .await
             .expect("UA-matched fetch should succeed");
         assert!(text_of(&result).contains("ua ok"));
+    }
+
+    // ---- J-F05: web_scrape reaches public addresses only ---------------------
+
+    /// A model-chosen URL that points at this computer is refused before any
+    /// request is sent. The mock is never told it may be reached, so a request
+    /// it receives is a request the old code sent.
+    #[tokio::test]
+    async fn web_scrape_refuses_a_loopback_address_and_sends_nothing() {
+        let mock_server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("local secret"))
+            .expect(0)
+            .mount(&mock_server)
+            .await;
+
+        let cache = tempfile::tempdir().unwrap();
+        let mut server = WebDocumentsServer::new();
+        server.cache_dir = cache.path().to_path_buf();
+        let error = server
+            .web_scrape(Parameters(WebScrapeParams {
+                url: mock_server.uri(),
+                save_as: SaveAsFormat::Text,
+            }))
+            .await
+            .expect_err("a loopback URL must be refused");
+        let message = error.to_string();
+        assert!(message.contains("loopback"), "{message}");
+        assert!(!message.contains("local secret"), "{message}");
+    }
+
+    /// `localhost` is refused by name, before it is resolved.
+    #[tokio::test]
+    async fn web_scrape_refuses_localhost_by_name_and_sends_nothing() {
+        let mock_server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("local secret"))
+            .expect(0)
+            .mount(&mock_server)
+            .await;
+
+        let cache = tempfile::tempdir().unwrap();
+        let mut server = WebDocumentsServer::new();
+        server.cache_dir = cache.path().to_path_buf();
+        let url = format!("http://localhost:{}/", mock_server.address().port());
+        let error = server
+            .web_scrape(Parameters(WebScrapeParams {
+                url,
+                save_as: SaveAsFormat::Text,
+            }))
+            .await
+            .expect_err("localhost must be refused");
+        let message = error.to_string();
+        assert!(message.contains("localhost"), "{message}");
+        assert!(!message.contains("local secret"), "{message}");
+    }
+
+    /// Every name resolves to `ip`, so a test reaches a host name without DNS.
+    struct FixedLookup(std::net::IpAddr);
+
+    impl crate::safe_fetch::HostLookup for FixedLookup {
+        fn lookup(&self, _host: &str) -> crate::safe_fetch::LookupFuture {
+            let ip = self.0;
+            Box::pin(async move { Ok(vec![ip]) })
+        }
+    }
+
+    fn server_resolving_names_to(ip: &str, cache: &std::path::Path) -> WebDocumentsServer {
+        let mut server = WebDocumentsServer::new();
+        server.cache_dir = cache.to_path_buf();
+        let fetch = SafeFetch::builder()
+            .lookup(Arc::new(FixedLookup(ip.parse().unwrap())))
+            .user_agent(WEB_SCRAPE_USER_AGENT)
+            .timeout(std::time::Duration::from_secs(10))
+            .build()
+            .unwrap();
+        *server.http_client.lock().unwrap() = Some(fetch);
+        server
+    }
+
+    /// A public page that redirects to a name resolving to this computer is
+    /// refused at the hop, and the refusal is not retried: the old connect-error
+    /// retry would have asked the first server twice.
+    #[tokio::test]
+    async fn web_scrape_refuses_a_redirect_inward_and_does_not_retry() {
+        let inner = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("local secret"))
+            .expect(0)
+            .mount(&inner)
+            .await;
+        let outer = MockServer::start().await;
+        let location = format!("http://inward.example:{}/", inner.address().port());
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(302).insert_header("location", location.as_str()))
+            .expect(1)
+            .mount(&outer)
+            .await;
+        let _admitted = admit_local_server(*outer.address());
+
+        let cache = tempfile::tempdir().unwrap();
+        let server = server_resolving_names_to("127.0.0.1", cache.path());
+        let error = server
+            .web_scrape(Parameters(WebScrapeParams {
+                url: outer.uri(),
+                save_as: SaveAsFormat::Text,
+            }))
+            .await
+            .expect_err("the redirect hop must be refused");
+        assert_eq!(error.code, ErrorCode::INVALID_PARAMS, "{error:?}");
+        let message = error.to_string();
+        assert!(message.contains("inward.example"), "{message}");
+        assert!(message.contains("loopback"), "{message}");
+        assert!(message.contains("public internet"), "{message}");
+    }
+
+    /// Cloud metadata names are refused by name. The stub resolver points
+    /// every name at a local server standing in for the metadata service, so a
+    /// name that got as far as a lookup would show up as a request.
+    #[tokio::test]
+    async fn web_scrape_refuses_cloud_metadata_names() {
+        let stand_in = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("instance credentials"))
+            .expect(0)
+            .mount(&stand_in)
+            .await;
+        let port = stand_in.address().port();
+
+        let cache = tempfile::tempdir().unwrap();
+        let server = server_resolving_names_to("127.0.0.1", cache.path());
+        for url in [
+            format!("http://metadata.google.internal:{port}/computeMetadata/v1/"),
+            format!("http://metadata:{port}/computeMetadata/v1/"),
+            format!("http://instance-data:{port}/latest/meta-data/"),
+        ] {
+            let error = server
+                .web_scrape(Parameters(WebScrapeParams {
+                    url: url.clone(),
+                    save_as: SaveAsFormat::Text,
+                }))
+                .await
+                .expect_err("a metadata name must be refused");
+            assert!(error.to_string().contains("metadata"), "{url}: {error}");
+        }
     }
 
     /// The extension instructions must agree with the tool description: the

@@ -50,6 +50,11 @@ reqwest = { version = "0.11", features = [
     "json",
     "rustls-tls-native-roots",
 ], default-features = false }
+# `safe_fetch` installs its own DNS resolver in the reqwest 0.11 client, and
+# reqwest's `Resolve` trait takes hyper 0.14's `Name`, which reqwest does not
+# re-export. The same hyper reqwest already builds, with features it already
+# enables, so this adds nothing to the lock.
+hyper = { version = "0.14", default-features = false, features = ["client", "tcp"] }
 chrono = { version = "0.4.38", features = ["serde"] }
 etcetera = { workspace = true }
 tempfile = "3.8"
@@ -129,6 +134,10 @@ ctor = "0.2"
 
 [features]
 utoipa = ["dep:utoipa"]
+# Lets a test reach its own loopback server through the built-in fetchers
+# (`safe_fetch::test_support`). Only a `[dev-dependencies]` entry may enable it;
+# `safe_fetch`'s tests check every manifest.
+test-support = []
 
 [target."cfg(windows)".dependencies]
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_System_Diagnostics_ToolHelp", "Win32_System_JobObjects", "Win32_System_StationsAndDesktops", "Win32_System_SystemInformation", "Win32_System_Threading", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_Shell"] }

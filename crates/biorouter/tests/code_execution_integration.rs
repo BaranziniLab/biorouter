@@ -19,6 +19,7 @@ use wiremock::{matchers::method, Mock, MockServer, ResponseTemplate};
 
 use biorouter::agents::extension::ExtensionConfig;
 use biorouter::agents::extension_manager::ExtensionManager;
+use biorouter_mcp::safe_fetch::test_support::admit_local_server;
 
 const SESSION: &str = "code-exec-it";
 
@@ -667,6 +668,8 @@ async fn simple_news_search_discovery_and_fetch_needs_no_read_module_call() {
         ))
         .mount(&mock_server)
         .await;
+    // web_scrape reaches public addresses only; this mock is admitted on its port.
+    let _admitted = admit_local_server(*mock_server.address());
     let manager = manager_with_webdocuments().await;
 
     let discovery = call_tool(
@@ -701,6 +704,7 @@ async fn failed_nested_web_fetch_is_an_execute_code_error() {
         .respond_with(ResponseTemplate::new(503).set_body_string("search unavailable"))
         .mount(&mock_server)
         .await;
+    let _admitted = admit_local_server(*mock_server.address());
     let manager = manager_with_webdocuments().await;
     let (is_error, result) = exec_raw(
         &manager,
