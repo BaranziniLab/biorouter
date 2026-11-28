@@ -2017,7 +2017,7 @@
       "manifest_name": "markitdownagent",
       "repository": "BaranziniLab/MarkItDownAgent",
       "group": "adapters",
-      "version": "0.2.0",
+      "version": "0.3.1",
       "status": "active",
       "aliases": [],
       "job": "documents.markitdown-conversion",
@@ -2028,7 +2028,7 @@
         "MarkItDown",
         "Documents",
         "Markdown",
-        "Apache-2.0"
+        "Apache-2.0 AND MIT"
       ],
       "source": {
         "origin": "in-house",
@@ -2040,14 +2040,20 @@
           "name": "markitdown",
           "version": "0.1.9",
           "licence": "MIT",
-          "how": "Python dependency with the [all] extras"
+          "how": "Python dependency with only the extras docx, outlook, pdf, pptx, xls, xlsx and youtube-transcription"
+        },
+        {
+          "name": "markitdown-mcp",
+          "version": "0.0.1a8",
+          "licence": "MIT",
+          "how": "error messages of convert_to_markdown ported from it; NOTICE carries Microsoft's MIT licence text"
         }
       ],
-      "licence": "Apache-2.0",
+      "licence": "Apache-2.0 AND MIT",
       "release": {
-        "tag": "v0.2.0",
+        "tag": "v0.3.1",
         "asset": "markitdownagent.brxt",
-        "sha256": "185bfbc97de8705bf949a7bd4c57fcd99bf4c660868d5185a22609f56d885ef4"
+        "sha256": "30ac691850169c6697fbf7bed199e4e227f88dd26a6e0eebffa3b7d404f8d00e"
       },
       "privacy": "public",
       "affiliation": null,
@@ -2075,6 +2081,11 @@
           "version": "0.2.0",
           "date": "2026-11-22",
           "note": "wraps MarkItDown 0.1.9; formats the built-ins lack"
+        },
+        {
+          "version": "0.3.1",
+          "date": "2026-11-28",
+          "note": "0.3.0: MarkItDown is installed with only the extras for its documented formats in place of [all], so speech transcription (which sent audio to Google) and the Azure cloud converters are not installed and audio gives its metadata only; PyMuPDF is not a dependency; NOTICE carries Microsoft's MIT text for the error messages copied from markitdown-mcp, so the licence is Apache-2.0 AND MIT. 0.3.1: credits lesyk for MarkItDown's PDF converter work beside Adam Fourney; the build backend is pinned (hatchling 1.33.0); THIRD-PARTY-NOTICES.md lists every package uv.lock installs, on every platform"
         }
       ]
     },

@@ -278,15 +278,15 @@ window.BAAM_DETAILS = {
   },
   markitdownagent: {
     domain: 'Productivity',
-    what: 'Wraps Microsoft\'s MarkItDown 0.1.9 (MIT) as one tool that converts a file or URL to Markdown. It is meant for the formats the built-in document tools do not read: PowerPoint, EPUB, Outlook .msg, older .xls, notebooks, ZIP archives, image and audio metadata, YouTube transcripts, RSS and Wikipedia pages.',
+    what: 'Wraps Microsoft\'s MarkItDown 0.1.9 (MIT, Copyright (c) Microsoft Corporation) as one tool, convert_to_markdown, that converts a local file or a URL to Markdown. It is meant for the formats the built-in document tools do not read: PowerPoint, EPUB, Outlook .msg, older .xls, notebooks, ZIP archives, image and audio metadata, YouTube transcripts, RSS and Wikipedia pages. MarkItDown is installed with only the extras docx, outlook, pdf, pptx, xls, xlsx and youtube-transcription, so speech is never transcribed (audio gives its metadata only) and the Azure cloud converters and PyMuPDF are not installed. The tool refuses addresses on this machine and link-local addresses and never loads MarkItDown plugins. Its error messages are ported from Microsoft\'s markitdown-mcp (MIT). Adam Fourney is the listed author of markitdown and markitdown-mcp, and MarkItDown\'s PDF converter carries work by the GitHub account lesyk.',
     asks: [
-      'Check whether the markitdown command is installed.',
-      'Convert report.pdf in ~/Documents to Markdown with markitdown.',
-      'Plan the markitdown command to convert slides.pptx and show me what will run before running it.'
+      'Convert ~/Downloads/slides.pptx to Markdown and summarize each slide.',
+      'Read the Outlook message ~/Documents/invite.msg and tell me who sent it and what it asks.',
+      'Convert the Wikipedia page on multiple sclerosis to Markdown and list its section headings.'
     ],
     tools: ['convert_to_markdown'],
-    needs: 'No credentials. MarkItDown and its converters install with the extension. It needs uv.',
-    sources: ['Local documents you name']
+    needs: 'No credentials. MarkItDown and the converters for these formats install with the extension. It needs uv, and on a Mac macOS 13 or later. Image and audio metadata come from exiftool when it is installed.',
+    sources: ['Local documents, and http or https URLs, that you name']
   },
   adaptyvbiofoundryagent: {
     domain: 'Lab & ELN',
